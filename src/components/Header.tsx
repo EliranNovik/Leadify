@@ -274,7 +274,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         </button>
         <div className="h-16 flex items-center">
           <Link to="/">
-            <img src="/src/public/Leadify12.png" alt="Leadify Logo" className="h-36 object-contain mt-2 cursor-pointer" />
+            <img src="/Leadify12.png" alt="Leadify Logo" className="h-36 object-contain mt-2 cursor-pointer" />
           </Link>
         </div>
       </div>

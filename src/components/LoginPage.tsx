@@ -67,7 +67,7 @@ const LoginPage: React.FC = () => {
         </div>
       )}
       <form className={`bg-white shadow-2xl rounded-2xl p-10 max-w-md w-full flex flex-col items-center z-10 relative transition-opacity duration-500 ${showSuccessAnim ? 'opacity-0 pointer-events-none' : 'opacity-100'}`} onSubmit={handleSignIn}>
-        <img src="/src/public/Leadify12.png" alt="Leadify Logo" className="h-32 mb-8" />
+        <img src="/Leadify12.png" alt="Leadify Logo" className="h-32 mb-8" />
         <h1 className="text-4xl font-bold mb-4 text-primary">Welcome to Leadify</h1>
         <p className="mb-8 text-gray-500 text-center">
           Please sign in to access the Leadify CRM.
