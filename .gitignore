@@ -1,0 +1,36 @@
+# Node modules
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Local env files
+.env
+.env.*
+
+# Log files
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# macOS system files
+.DS_Store
+
+# VSCode settings
+.vscode/
+
+# IDE files
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# Misc
+*.log
+coverage/
+
+# Optional: OS generated files
+Thumbs.db
+Desktop.ini 
