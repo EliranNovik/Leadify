@@ -114,7 +114,7 @@ const LoginPage: React.FC = () => {
         {/* Side Image (hidden on mobile, only show if not logged in) */}
         {!showSuccessAnim && (
           <div className="hidden md:flex flex-1 justify-center items-center">
-            <img src="src/public/DATA_IMAGE.jpg" alt="Leadify Visual" className="max-h-[700px] max-w-[800px] rounded-2xl shadow-2xl object-contain" />
+            <img src="/DATA_IMAGE.jpg" alt="Leadify Visual" className="max-h-[700px] max-w-[800px] rounded-2xl shadow-2xl object-contain" />
           </div>
         )}
       </div>
