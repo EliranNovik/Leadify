@@ -6,6 +6,7 @@ import Dashboard from './components/Dashboard';
 import CreateNewLead from './components/CreateNewLead';
 import CalendarPage from './components/CalendarPage';
 import ExpertPage from './components/ExpertPage';
+import PipelinePage from './components/PipelinePage';
 
 interface AppRoutesProps {
   selectedClient: any;
@@ -23,7 +24,7 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
     <Route path="/clients" element={<Clients {...props} />} />
     <Route path="/create" element={<CreateNewLead />} />
     <Route path="/calendar" element={<CalendarPage />} />
-    <Route path="/pipeline" element={<div>Pipeline</div>} />
+    <Route path="/pipeline" element={<PipelinePage />} />
     <Route path="/collection" element={<div>Collection</div>} />
     <Route path="/expert" element={<ExpertPage />} />
     <Route path="/qa" element={<div>QA</div>} />

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
 import { 
   AcademicCapIcon, 
@@ -16,6 +16,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
+import DocumentModal from '../DocumentModal';
 
 interface UploadedFile {
   name: string;
@@ -66,9 +67,12 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
 
+  // Document Modal State
+  const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [documentCount, setDocumentCount] = useState<number>(0);
+
   // Placeholder for document count and link
   const expertName = client.expert || 'Not assigned';
-  const documentCount = 3; // Replace with actual count logic
   const documentLink = client.onedrive_folder_link || '#';
   const hasDocumentLink = !!client.onedrive_folder_link;
 
@@ -285,6 +289,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const selectedEligibility = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value);
 
+  // Function to update document count from DocumentModal
+  const handleDocumentCountChange = (count: number) => {
+    setDocumentCount(count);
+  };
+
   return (
     <div className="p-6 space-y-8">
       {/* Header */}
@@ -314,17 +323,15 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
           </div>
           <div className="flex items-center mt-2 md:mt-0">
-            <a
-              href={documentLink}
-              target="_blank"
-              rel="noopener noreferrer"
+            <button
+              onClick={() => setIsDocumentModalOpen(true)}
               className={`btn btn-outline btn-primary flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg shadow hover:bg-primary hover:text-white transition-colors ${!hasDocumentLink ? 'btn-disabled' : ''}`}
-              onClick={(e) => { if (!hasDocumentLink) e.preventDefault(); }}
+              disabled={!hasDocumentLink}
             >
               <FolderIcon className="w-5 h-5" />
               Documents
               <span className="badge badge-primary badge-sm ml-2">{documentCount}</span>
-            </a>
+            </button>
           </div>
         </div>
       </div>
@@ -616,6 +623,15 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       </div>
+
+      {/* Document Modal */}
+      <DocumentModal
+        isOpen={isDocumentModalOpen}
+        onClose={() => setIsDocumentModalOpen(false)}
+        leadNumber={client.lead_number || ''}
+        clientName={client.name || ''}
+        onDocumentCountChange={handleDocumentCountChange}
+      />
     </div>
   );
 };

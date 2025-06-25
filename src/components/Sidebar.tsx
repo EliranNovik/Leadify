@@ -67,17 +67,17 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, onOpenAIChat, userNa
   return (
     <>
       {/* Desktop Sidebar */}
-      <div className="w-16 hover:w-64 transition-all duration-300 shadow-lg group hidden md:block">
+      <div className="w-16 hover:w-64 transition-all duration-500 ease-out shadow-lg group hidden md:block">
         <div className={sidebarClasses}>
           {/* AI Button */}
           <div className="h-16 flex items-center justify-center border-b border-base-200">
             <button
               onClick={onOpenAIChat}
-              className="btn btn-ghost btn-circle hover:bg-base-200"
+              className="btn btn-ghost btn-circle hover:bg-base-200 hover:scale-110 transition-all duration-300 ease-out"
             >
               <SparklesIcon className="w-6 h-6 text-primary" />
             </button>
-            <span className="ml-2 font-semibold text-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+            <span className="ml-2 font-semibold text-lg opacity-0 group-hover:opacity-100">
               AI Assistant
             </span>
           </div>
@@ -92,14 +92,14 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, onOpenAIChat, userNa
                   <li key={index}>
                     <Link
                       to={item.path}
-                      className={`flex items-center p-2 rounded-lg transition-colors duration-200
+                      className={`flex items-center p-2 rounded-lg transition-all duration-300 ease-out hover:scale-105 hover:shadow-md
                         ${isActive 
-                          ? 'bg-primary text-primary-content' 
+                          ? 'bg-primary text-primary-content shadow-lg' 
                           : 'hover:bg-base-200'
                         }`}
                     >
                       <Icon className="w-6 h-6 min-w-[1.5rem]" />
-                      <span className="ml-4 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                      <span className="ml-4 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-all duration-400 ease-out transform translate-x-2 group-hover:translate-x-0">
                         {item.label}
                       </span>
                     </Link>
@@ -113,13 +113,13 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, onOpenAIChat, userNa
           <div className="p-4 border-t border-base-200">
             <div className="flex items-center">
               <button
-                className="btn btn-circle btn-ghost text-purple-700 border-none text-2xl"
+                className="btn btn-circle btn-ghost text-purple-700 border-none text-2xl transition-all duration-300 ease-out hover:scale-110 hover:bg-base-200"
                 title="Sign out"
                 onClick={handleSignOut}
               >
                 <ArrowRightOnRectangleIcon className="w-7 h-7" />
               </button>
-              <div className="ml-4 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+              <div className="ml-4 opacity-0 group-hover:opacity-100 transition-all duration-400 ease-out transform translate-x-2 group-hover:translate-x-0">
                 <p className="text-sm font-medium">{userName}</p>
                 <p className="text-xs text-base-content/70">Admin</p>
               </div>
@@ -129,20 +129,20 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, onOpenAIChat, userNa
       </div>
 
       {/* Mobile Sidebar */}
-      <div className={`md:hidden fixed inset-y-0 left-0 z-40 w-64 bg-base-100 shadow-lg transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+      <div className={`md:hidden fixed inset-y-0 left-0 z-40 w-64 bg-base-100 shadow-lg transform transition-all duration-400 ease-out ${isOpen ? 'translate-x-0' : '-translate-x-full'}`}>
         <div className={sidebarClasses}>
           {/* Header with Close Button */}
           <div className="h-16 flex items-center justify-between px-4 border-b border-base-200">
             <button
               onClick={() => { onOpenAIChat(); onClose(); }}
-              className="flex items-center gap-2 btn btn-ghost"
+              className="flex items-center gap-2 btn btn-ghost transition-all duration-300 ease-out hover:scale-105"
             >
               <SparklesIcon className="w-6 h-6 text-primary" />
               <span className="font-semibold text-lg">AI Assistant</span>
             </button>
             <button
               onClick={onClose}
-              className="btn btn-ghost btn-circle"
+              className="btn btn-ghost btn-circle transition-all duration-200 ease-out hover:scale-110 hover:bg-base-200"
             >
               <XMarkIcon className="w-6 h-6" />
             </button>
@@ -159,9 +159,9 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, onOpenAIChat, userNa
                     <Link
                       to={item.path}
                       onClick={onClose}
-                      className={`flex items-center p-2 rounded-lg transition-colors duration-200
+                      className={`flex items-center p-2 rounded-lg transition-all duration-300 ease-out hover:scale-105 hover:shadow-md
                         ${isActive 
-                          ? 'bg-primary text-primary-content' 
+                          ? 'bg-primary text-primary-content shadow-lg' 
                           : 'hover:bg-base-200'
                         }`}
                     >
@@ -180,7 +180,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, onOpenAIChat, userNa
           <div className="p-4 border-t border-base-200">
             <div className="flex items-center">
               <button
-                className="btn btn-circle btn-ghost text-purple-700 border-none text-2xl"
+                className="btn btn-circle btn-ghost text-purple-700 border-none text-2xl transition-all duration-300 ease-out hover:scale-110 hover:bg-base-200"
                 title="Sign out"
                 onClick={handleSignOut}
               >
@@ -198,7 +198,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose, onOpenAIChat, userNa
       {/* Overlay when mobile sidebar is open */}
       {isOpen && (
         <div 
-          className="md:hidden fixed inset-0 bg-black bg-opacity-50 z-30"
+          className="md:hidden fixed inset-0 bg-black bg-opacity-50 z-30 transition-opacity duration-400 ease-out"
           onClick={onClose}
         />
       )}

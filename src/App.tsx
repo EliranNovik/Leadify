@@ -20,6 +20,8 @@ import CreateNewLead from './components/CreateNewLead';
 import LoginPage from './components/LoginPage';
 import ProtectedRoute from './components/ProtectedRoute';
 import OutlookCalendarPage from './components/OutlookCalendarPage';
+import PipelinePage from './components/PipelinePage';
+import NewCasesPage from './pages/NewCasesPage';
 
 const msalInstance = new PublicClientApplication(msalConfig);
 
@@ -136,6 +138,8 @@ const AppContent: React.FC = () => {
                     <Route path="/expert" element={<ExpertPage />} />
                     <Route path="/create" element={<CreateNewLead />} />
                     <Route path="/lead-search" element={<LeadSearchPage />} />
+                    <Route path="/pipeline" element={<PipelinePage />} />
+                    <Route path="/new-cases" element={<NewCasesPage />} />
                   </Routes>
                 </main>
               </div>
