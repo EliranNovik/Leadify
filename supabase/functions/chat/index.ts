@@ -99,10 +99,75 @@ const tools = [
   }
 ];
 
+// System message with lead creation template
+const SYSTEM_MESSAGE = {
+  role: "system",
+  content: `You are an AI assistant for Leadify CRM. When a user uploads an image (such as a document, form, or screenshot) and asks about it, you should:
+
+- Immediately analyze the image and extract all relevant details, such as names, dates, places, and any structured or biographical information.
+- Provide a clear, concise, and user-friendly summary of the document or image content.
+- Always use the following structure for your response:
+
+Summary:
+- [One or two sentence summary of the document]
+
+Key Details:
+- Name: [value]
+- Birth Date: [value]
+- Occupation: [value]
+- Languages: [value]
+- Family Members: [value]
+- Emigration Details: [value]
+- Economic Situation: [value]
+- Citizenship: [value]
+- Country of Residence: [value]
+- Country of Origin: [value]
+- Residency from: [value]
+- Address: [value]
+- City: [value]
+- Country: [value]
+- Date of arrival: [value]
+- Date of departure: [value]
+- Parents
+- Partner's names: [value]
+- Children's names: [value
+- Religion: [value]
+- Gender: [value]
+- Marital Status: [value]
+- Education: [value]
+- Other Details: [value]
+
+
+If a section is not present, omit it. Do not use asterisks, markdown, or code blocks. Use plain text and clear labels. Each key detail should be on its own line.
+
+- If the user asks for a summary, give a brief overview of the main points and key facts.
+- If the image contains a historical or biographical document, summarize the person's details, important dates, locations, and any notable events in a natural, conversational way.
+- Do NOT refuse to answer unless the content is clearly inappropriate or violates privacy in a way not expected in a CRM context.
+- Always be helpful, professional, and concise.
+
+If the user asks a follow-up question about the image, use the information you extracted to answer as specifically as possible.
+
+LEAD CREATION TEMPLATE:
+When a user wants to create a lead, follow this step-by-step process:
+1. Ask for the client's full name first
+2. Once you have the name, ask for their topic of interest (e.g., "German Citizenship", "Austrian Citizenship", "Investment Visa", etc.)
+3. Once you have the required information (name and topic), use the create_lead function to create the lead
+
+Example conversation flow:
+User: "create a lead"
+Assistant: "I'll help you create a new lead. What's the client's full name?"
+User: "John Smith"
+Assistant: "Great! What topic is John Smith interested in? (e.g., German Citizenship, Austrian Citizenship, etc.)"
+User: "German Citizenship"
+Assistant: [Creates the lead using create_lead function]
+
+Always be friendly and professional. If the user provides multiple pieces of information at once, collect them all before creating the lead.`
+};
+
 async function openaiChat({ model, messages, tools, tool_choice }) {
   const body = {
     model,
-    messages,
+    messages: [SYSTEM_MESSAGE, ...messages],
     ...(tools ? { tools } : {}),
     ...(tool_choice ? { tool_choice } : {}),
   };
@@ -128,21 +193,55 @@ serve(async (req) => {
   }
 
   try {
-    const { messages } = await req.json();
+    const { messages, images } = await req.json();
     if (!messages) {
       throw new Error("No messages provided");
     }
 
-    // Detect if any message contains an image_url (OpenAI Vision format)
-    const hasImage = messages.some((msg: any) =>
+    // Process messages to handle images properly
+    let processedMessages = [...messages];
+    
+    if (images && images.length > 0) {
+      // Convert the last user message to include image data
+      const lastMessage = processedMessages[processedMessages.length - 1];
+      if (lastMessage.role === 'user') {
+        const content = [];
+        
+        // Add text content if present
+        if (typeof lastMessage.content === 'string' && lastMessage.content.trim()) {
+          content.push({ type: 'text', text: lastMessage.content });
+        }
+        
+        // Add images as base64 data URLs
+        for (const image of images) {
+          content.push({ 
+            type: 'image_url', 
+            image_url: { 
+              url: image.data,
+              detail: 'high' // Use high detail for better image analysis
+            } 
+          });
+        }
+        
+        processedMessages[processedMessages.length - 1] = {
+          ...lastMessage,
+          content
+        };
+      }
+    }
+
+    // Detect if any message contains images
+    const hasImage = processedMessages.some((msg: any) =>
       Array.isArray(msg.content) && msg.content.some((item: any) => item.type === 'image_url')
     );
-    const model = hasImage ? 'gpt-image-1' : 'gpt-4-turbo-preview';
+    
+    // Use GPT-4o for vision support, fallback to GPT-4-turbo for text-only
+    const model = hasImage ? 'gpt-4o' : 'gpt-4-turbo-preview';
 
-    // 1. Send user/assistant messages to OpenAI (via fetch)
+    // Send messages to OpenAI
     const response = await openaiChat({
       model,
-      messages,
+      messages: processedMessages,
       tools,
       tool_choice: "auto",
     });
@@ -152,14 +251,15 @@ serve(async (req) => {
       responseMessage.content = "";
     }
 
-    // 2. If the response contains tool_calls, handle them
+    // Handle tool calls if present
     if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
       const toolCallMsg = {
         role: "assistant",
         content: responseMessage.content,
         tool_calls: responseMessage.tool_calls
       };
-      const newMessages = [...messages, toolCallMsg];
+      const newMessages = [...processedMessages, toolCallMsg];
+      
       for (const toolCall of responseMessage.tool_calls) {
         let toolResult;
         if (toolCall.function && toolCall.function.name === 'query_executor') {
@@ -174,8 +274,9 @@ serve(async (req) => {
           content: JSON.stringify(toolResult)
         });
       }
+      
       const followup = await openaiChat({
-        model: "gpt-4-turbo-preview",
+        model: hasImage ? 'gpt-4o' : 'gpt-4-turbo-preview',
         messages: newMessages,
         tools,
         tool_choice: "auto"

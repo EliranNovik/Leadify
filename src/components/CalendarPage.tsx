@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/outline';
+import DocumentModal from './DocumentModal';
 
 const CalendarPage: React.FC = () => {
   const [meetings, setMeetings] = useState<any[]>([]);
@@ -19,6 +20,25 @@ const CalendarPage: React.FC = () => {
       handler_notes?: any;
     }
   }>({});
+  const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [selectedMeeting, setSelectedMeeting] = useState<any>(null);
+
+  // Navigation functions for date switching
+  const goToPreviousDay = () => {
+    const currentDate = new Date(selectedDate);
+    currentDate.setDate(currentDate.getDate() - 1);
+    setSelectedDate(currentDate.toISOString().split('T')[0]);
+  };
+
+  const goToNextDay = () => {
+    const currentDate = new Date(selectedDate);
+    currentDate.setDate(currentDate.getDate() + 1);
+    setSelectedDate(currentDate.toISOString().split('T')[0]);
+  };
+
+  const goToToday = () => {
+    setSelectedDate(new Date().toISOString().split('T')[0]);
+  };
 
   useEffect(() => {
     const fetchMeetingsAndStaff = async () => {
@@ -190,17 +210,18 @@ const CalendarPage: React.FC = () => {
                       </div>
                     </div>
                     <div className="md:col-span-2 flex justify-center">
-                      <a
-                        href={meeting.lead.onedrive_folder_link}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={() => {
+                          setSelectedMeeting(meeting);
+                          setIsDocumentModalOpen(true);
+                        }}
                         className={`btn btn-outline btn-primary flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg shadow hover:bg-primary hover:text-white transition-colors ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
-                        onClick={(e) => { if (!meeting.lead.onedrive_folder_link) e.preventDefault(); }}
+                        disabled={!meeting.lead.onedrive_folder_link}
                       >
                         <FolderIcon className="w-5 h-5" />
                         Documents
                         <span className="badge badge-primary badge-sm ml-2">3</span>
-                      </a>
+                      </button>
                     </div>
                   </div>
                 )}
@@ -229,6 +250,43 @@ const CalendarPage: React.FC = () => {
 
   return (
     <div className="p-4 md:p-6 lg:p-8">
+      {/* Date Navigation */}
+      <div className="mb-6 flex items-center justify-center gap-4">
+        <button
+          onClick={goToPreviousDay}
+          className="btn btn-circle btn-outline btn-primary"
+          title="Previous Day"
+        >
+          <ChevronLeftIcon className="w-6 h-6" />
+        </button>
+        
+        <div className="flex items-center gap-3">
+          <span className="text-lg font-semibold">
+            {new Date(selectedDate).toLocaleDateString('en-US', { 
+              weekday: 'long', 
+              year: 'numeric', 
+              month: 'long', 
+              day: 'numeric' 
+            })}
+          </span>
+          <button
+            onClick={goToToday}
+            className="btn btn-sm btn-primary"
+            title="Go to Today"
+          >
+            Today
+          </button>
+        </div>
+        
+        <button
+          onClick={goToNextDay}
+          className="btn btn-circle btn-outline btn-primary"
+          title="Next Day"
+        >
+          <ChevronRightIcon className="w-6 h-6" />
+        </button>
+      </div>
+
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
         <h1 className="text-3xl font-bold flex items-center gap-3">
           <CalendarIcon className="w-8 h-8 text-primary" />
@@ -298,6 +356,20 @@ const CalendarPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Document Modal */}
+      {isDocumentModalOpen && selectedMeeting && (
+        <DocumentModal
+          isOpen={isDocumentModalOpen}
+          onClose={() => {
+            setIsDocumentModalOpen(false);
+            setSelectedMeeting(null);
+          }}
+          leadNumber={selectedMeeting.lead.lead_number}
+          clientName={selectedMeeting.lead.name}
+          onDocumentCountChange={() => {}}
+        />
+      )}
     </div>
   );
 };

@@ -65,6 +65,7 @@ import {
   type AccountInfo,
 } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
+import LeadSummaryDrawer from './LeadSummaryDrawer';
 
 interface TabItem {
   id: string;
@@ -177,6 +178,7 @@ const Clients: React.FC<ClientsProps> = ({
     return today.toISOString().split('T')[0];
   });
   const [showDeclinedDrawer, setShowDeclinedDrawer] = useState(false);
+  const [showLeadSummaryDrawer, setShowLeadSummaryDrawer] = useState(false);
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
@@ -321,39 +323,43 @@ const Clients: React.FC<ClientsProps> = ({
   const getStageBadge = (stage: string) => {
     switch (stage) {
       case 'created':
-        return <span className="badge badge-primary ml-2">Created</span>;
+        return <span className="badge badge-primary badge-lg ml-2">Created</span>;
       case 'scheduler_assigned':
-        return <span className="badge badge-info ml-2">Scheduler Assigned</span>;
+        return <span className="badge badge-info badge-lg ml-2">Scheduler Assigned</span>;
       case 'meeting_scheduled':
-        return <span className="badge badge-info ml-2">Meeting Scheduled</span>;
+        return <span className="badge badge-info badge-lg ml-2">Meeting Scheduled</span>;
       case 'meeting_paid':
-        return <span className="badge badge-success ml-2">Paid Meeting</span>;
+        return <span className="badge badge-success badge-lg ml-2">Paid Meeting</span>;
       case 'unactivated':
-        return <span className="badge badge-error ml-2">Unactivated</span>;
+        return <span className="badge badge-error badge-lg ml-2">Unactivated</span>;
       case 'communication_started':
-        return <span className="badge badge-warning ml-2">Communication Started</span>;
+        return <span className="badge badge-warning badge-lg ml-2">Communication Started</span>;
       case 'waiting_for_mtng_sum':
-        return <span className="badge badge-info ml-2">Waiting for Meeting Summary</span>;
+        return <span className="badge badge-info badge-lg ml-2">Waiting for Meeting Summary</span>;
       case 'another_meeting':
-        return <span className="badge badge-info ml-2">Another Meeting</span>;
+        return <span className="badge badge-info badge-lg ml-2">Another Meeting</span>;
       case 'revised_offer':
-        return <span className="badge badge-warning ml-2">Revised Offer</span>;
+        return <span className="badge badge-warning badge-lg ml-2">Revised Offer</span>;
       case 'offer_sent':
-        return <span className="badge badge-info ml-2">Offer Sent</span>;
+        return <span className="badge badge-info badge-lg ml-2">Offer Sent</span>;
       case 'client_signed':
-        return <span className="badge badge-success ml-2">Client Signed</span>;
+        return <span className="badge badge-success badge-lg ml-2">Client Signed</span>;
+      case 'Client Signed Agreement':
+        return <span className="badge badge-secondary badge-lg ml-2">Client Signed Agreement</span>;
       case 'client_declined':
-        return <span className="badge badge-error ml-2">Client Declined</span>;
+        return <span className="badge badge-error badge-lg ml-2">Client Declined</span>;
       case 'lead_summary':
-        return <span className="badge badge-neutral ml-2">Lead Summary</span>;
+        return <span className="badge badge-neutral badge-lg ml-2">Lead Summary</span>;
       case 'meeting_rescheduled':
-        return <span className="badge badge-warning ml-2">Meeting Rescheduled</span>;
+        return <span className="badge badge-warning badge-lg ml-2">Meeting Rescheduled</span>;
       case 'meeting_ended':
-        return <span className="badge badge-success ml-2">Meeting Ended</span>;
+        return <span className="badge badge-success badge-lg ml-2">Meeting Ended</span>;
       case 'Mtng sum+Agreement sent':
-        return <span className="badge badge-info ml-2">Mtng sum+Agreement sent</span>;
+        return <span className="badge badge-info badge-lg ml-2">Mtng sum+Agreement sent</span>;
+      case 'payment_request_sent':
+        return <span className="badge badge-accent badge-lg ml-2">Payment request sent</span>;
       default:
-        return <span className="badge badge-neutral ml-2">{stage}</span>;
+        return <span className="badge badge-neutral badge-lg ml-2">{stage}</span>;
     }
   };
 
@@ -630,7 +636,15 @@ const Clients: React.FC<ClientsProps> = ({
       // Save the offer body, total, currency, closer, and update stage
       await supabase
         .from('leads')
-        .update({ proposal_text: offerBody, proposal_total: offerTotal, proposal_currency: offerCurrency, closer: closerName, stage: 'Mtng sum+Agreement sent' })
+        .update({
+          proposal_text: offerBody,
+          proposal_total: offerTotal,
+          proposal_currency: offerCurrency,
+          closer: closerName,
+          stage: 'Mtng sum+Agreement sent',
+          balance: offerTotal ? parseFloat(offerTotal) : null,
+          balance_currency: offerCurrency
+        })
         .eq('id', selectedClient.id);
       toast.success('Offer email sent!');
       setShowSendOfferDrawer(false);
@@ -729,6 +743,150 @@ const Clients: React.FC<ClientsProps> = ({
 
   const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component;
 
+  // Before the return statement, add:
+  let dropdownItems = null;
+  if (selectedClient.stage === 'Client signed agreement') {
+    dropdownItems = (
+      <>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+            <CalendarDaysIcon className="w-5 h-5 text-black" />
+            Schedule Meeting
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => setShowLeadSummaryDrawer(true)}>
+            <DocumentTextIcon className="w-5 h-5 text-black" />
+            Lead summary
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('payment_request_sent')}>
+            <CurrencyDollarIcon className="w-5 h-5 text-black" />
+            Payment request sent
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('finances_and_payments_plan')}>
+            <BanknotesIcon className="w-5 h-5 text-black" />
+            Finances & Payments plan
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Unactivate/Spam')}>
+            <NoSymbolIcon className="w-5 h-5 text-red-500" />
+            <span className="text-red-500">Unactivate/Spam</span>
+          </a>
+        </li>
+      </>
+    );
+  } else if (selectedClient.stage === 'payment_request_sent') {
+    dropdownItems = (
+      <>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+            <CalendarDaysIcon className="w-5 h-5 text-black" />
+            Schedule Meeting
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => setShowLeadSummaryDrawer(true)}>
+            <DocumentTextIcon className="w-5 h-5 text-black" />
+            Lead summary
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('client_signed')}>
+            <CheckCircleIcon className="w-5 h-5 text-green-600" />
+            Payment Received - new Client !!!
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('finances_and_payments_plan')}>
+            <BanknotesIcon className="w-5 h-5 text-black" />
+            Finances & Payments plan
+          </a>
+        </li>
+      </>
+    );
+  } else if (!['unactivated', 'client_signed', 'client_declined', 'Mtng sum+Agreement sent'].includes(selectedClient.stage)) {
+    dropdownItems = (
+      <>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+            <CalendarDaysIcon className="w-5 h-5 text-black" />
+            Schedule Meeting
+          </a>
+        </li>
+        {selectedClient.stage === 'meeting_scheduled' && (
+          <li>
+            <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Meeting Ended')}>
+              <CheckCircleIcon className="w-5 h-5 text-black" />
+              Meeting Ended
+            </a>
+          </li>
+        )}
+        {selectedClient.stage === 'waiting_for_mtng_sum' && (
+          <li>
+            <a className="flex items-center gap-3 py-3" onClick={openSendOfferDrawer}>
+              <DocumentCheckIcon className="w-5 h-5 text-black" />
+              Send Price Offer
+            </a>
+          </li>
+        )}
+        {!['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started'].includes(selectedClient.stage) && (
+          <li>
+            <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Communication Started')}>
+              <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
+              Communication Started
+            </a>
+          </li>
+        )}
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Unactivate/Spam')}>
+            <NoSymbolIcon className="w-5 h-5 text-red-500" />
+            <span className="text-red-500">Unactivate/Spam</span>
+          </a>
+        </li>
+      </>
+    );
+  } else if (selectedClient.stage === 'Mtng sum+Agreement sent') {
+    dropdownItems = (
+      <>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+            <CalendarDaysIcon className="w-5 h-5 text-black" />
+            Schedule Meeting
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={handleOpenSignedDrawer}>
+            <HandThumbUpIcon className="w-5 h-5 text-black" />
+            Client signed
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={handleOpenDeclinedDrawer}>
+            <HandThumbDownIcon className="w-5 h-5 text-black" />
+            <span className="text-black">Client declined</span>
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => setShowLeadSummaryDrawer(true)}>
+            <DocumentTextIcon className="w-5 h-5 text-black" />
+            Lead summary
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('revised_offer')}>
+            <PencilSquareIcon className="w-5 h-5 text-black" />
+            Revised price offer
+          </a>
+        </li>
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-base-200">
       {/* Lead is cold warning */}
@@ -753,143 +911,7 @@ const Clients: React.FC<ClientsProps> = ({
                 <ChevronDownIcon className="w-5 h-5" />
               </label>
               <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                {!['unactivated', 'client_signed', 'client_declined', 'Mtng sum+Agreement sent'].includes(selectedClient.stage) && (
-                  <>
-                    <li>
-                      <a 
-                        className="flex items-center gap-3 py-3" 
-                        onClick={e => { 
-                          e.preventDefault(); 
-                          setShowScheduleMeetingPanel(true);
-                        }}
-                      >
-                        <CalendarDaysIcon className="w-5 h-5 text-black" />
-                        Schedule Meeting
-                      </a>
-                    </li>
-                    {selectedClient.stage === 'meeting_scheduled' ? (
-                      <li>
-                        <a 
-                          className="flex items-center gap-3 py-3"
-                          onClick={() => handleStageUpdate('Meeting Ended')}
-                        >
-                          <CheckCircleIcon className="w-5 h-5 text-black" />
-                          Meeting Ended
-                        </a>
-                      </li>
-                    ) : selectedClient.stage === 'waiting_for_mtng_sum' ? (
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3"
-                          onClick={openSendOfferDrawer}
-                        >
-                          <DocumentCheckIcon className="w-5 h-5 text-black" />
-                          Send Price Offer
-                        </a>
-                      </li>
-                    ) : (
-                      <>
-                        {!['client_signed', 'client signed agreement', 'Client signed agreement'].includes(selectedClient.stage) && (
-                          <li>
-                            <a 
-                              className="flex items-center gap-3 py-3"
-                              onClick={() => handleStageUpdate('Communication Started')}
-                            >
-                              <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
-                              Communication Started
-                            </a>
-                          </li>
-                        )}
-                      </>
-                    )}
-                    <li>
-                      <a 
-                        className="flex items-center gap-3 py-3" 
-                        onClick={() => handleStageUpdate('Unactivate/Spam')}
-                      >
-                        <NoSymbolIcon className="w-5 h-5 text-red-500" />
-                        <span className="text-red-500">Unactivate/Spam</span>
-                      </a>
-                    </li>
-                  </>
-                )}
-                {selectedClient.stage === 'Mtng sum+Agreement sent' ? (
-                  <>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
-                        <CalendarDaysIcon className="w-5 h-5 text-black" />
-                        Schedule Meeting
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={handleOpenSignedDrawer}>
-                        <HandThumbUpIcon className="w-5 h-5 text-black" />
-                        Client signed
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={handleOpenDeclinedDrawer}>
-                        <HandThumbDownIcon className="w-5 h-5 text-black" />
-                        <span className="text-black">Client declined</span>
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('lead_summary')}>
-                        <DocumentTextIcon className="w-5 h-5 text-black" />
-                        Lead summary
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('revised_offer')}>
-                        <PencilSquareIcon className="w-5 h-5 text-black" />
-                        Revised price offer
-                      </a>
-                    </li>
-                  </>
-                ) : selectedClient.stage === 'Client signed agreement' ? (
-                  <>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('lead_summary')}>
-                        <DocumentTextIcon className="w-5 h-5 text-black" />
-                        Lead summary
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('payment_request_sent')}>
-                        <CurrencyDollarIcon className="w-5 h-5 text-black" />
-                        Payment request sent
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('finances_and_payments_plan')}>
-                        <BanknotesIcon className="w-5 h-5 text-black" />
-                        Finances and payments plan
-                      </a>
-                    </li>
-                  </>
-                ) : selectedClient.stage === 'waiting_for_mtng_sum' ? (
-                  <li>
-                    <a
-                      className="flex items-center gap-3 py-3"
-                      onClick={openSendOfferDrawer}
-                    >
-                      <DocumentCheckIcon className="w-5 h-5 text-black" />
-                      Send Price Offer
-                    </a>
-                  </li>
-                ) : (
-                  <>
-                    <li>
-                      <a 
-                        className="flex items-center gap-3 py-3"
-                        onClick={() => handleStageUpdate('Communication Started')}
-                      >
-                        <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
-                        Communication Started
-                      </a>
-                    </li>
-                  </>
-                )}
+                {dropdownItems}
               </ul>
             </div>
             {selectedClient.stage === 'created' && (
@@ -1079,143 +1101,7 @@ const Clients: React.FC<ClientsProps> = ({
                 <ChevronDownIcon className="w-5 h-5" />
               </label>
               <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                {!['unactivated', 'client_signed', 'client_declined', 'Mtng sum+Agreement sent'].includes(selectedClient.stage) && (
-                  <>
-                    <li>
-                      <a 
-                        className="flex items-center gap-3 py-3" 
-                        onClick={e => { 
-                          e.preventDefault(); 
-                          setShowScheduleMeetingPanel(true);
-                        }}
-                      >
-                        <CalendarDaysIcon className="w-5 h-5 text-black" />
-                        Schedule Meeting
-                      </a>
-                    </li>
-                    {selectedClient.stage === 'meeting_scheduled' ? (
-                      <li>
-                        <a 
-                          className="flex items-center gap-3 py-3"
-                          onClick={() => handleStageUpdate('Meeting Ended')}
-                        >
-                          <CheckCircleIcon className="w-5 h-5 text-black" />
-                          Meeting Ended
-                        </a>
-                      </li>
-                    ) : selectedClient.stage === 'waiting_for_mtng_sum' ? (
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3"
-                          onClick={openSendOfferDrawer}
-                        >
-                          <DocumentCheckIcon className="w-5 h-5 text-black" />
-                          Send Price Offer
-                        </a>
-                      </li>
-                    ) : (
-                      <>
-                        {!['client_signed', 'client signed agreement', 'Client signed agreement'].includes(selectedClient.stage) && (
-                          <li>
-                            <a 
-                              className="flex items-center gap-3 py-3"
-                              onClick={() => handleStageUpdate('Communication Started')}
-                            >
-                              <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
-                              Communication Started
-                            </a>
-                          </li>
-                        )}
-                      </>
-                    )}
-                    <li>
-                      <a 
-                        className="flex items-center gap-3 py-3" 
-                        onClick={() => handleStageUpdate('Unactivate/Spam')}
-                      >
-                        <NoSymbolIcon className="w-5 h-5 text-red-500" />
-                        <span className="text-red-500">Unactivate/Spam</span>
-                      </a>
-                    </li>
-                  </>
-                )}
-                {selectedClient.stage === 'Mtng sum+Agreement sent' ? (
-                  <>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
-                        <CalendarDaysIcon className="w-5 h-5 text-black" />
-                        Schedule Meeting
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={handleOpenSignedDrawer}>
-                        <HandThumbUpIcon className="w-5 h-5 text-black" />
-                        Client signed
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={handleOpenDeclinedDrawer}>
-                        <HandThumbDownIcon className="w-5 h-5 text-black" />
-                        <span className="text-black">Client declined</span>
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('lead_summary')}>
-                        <DocumentTextIcon className="w-5 h-5 text-black" />
-                        Lead summary
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('revised_offer')}>
-                        <PencilSquareIcon className="w-5 h-5 text-black" />
-                        Revised price offer
-                      </a>
-                    </li>
-                  </>
-                ) : selectedClient.stage === 'Client signed agreement' ? (
-                  <>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('lead_summary')}>
-                        <DocumentTextIcon className="w-5 h-5 text-black" />
-                        Lead summary
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('payment_request_sent')}>
-                        <CurrencyDollarIcon className="w-5 h-5 text-black" />
-                        Payment request sent
-                      </a>
-                    </li>
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('finances_and_payments_plan')}>
-                        <BanknotesIcon className="w-5 h-5 text-black" />
-                        Finances and payments plan
-                      </a>
-                    </li>
-                  </>
-                ) : selectedClient.stage === 'waiting_for_mtng_sum' ? (
-                  <li>
-                    <a
-                      className="flex items-center gap-3 py-3"
-                      onClick={openSendOfferDrawer}
-                    >
-                      <DocumentCheckIcon className="w-5 h-5 text-black" />
-                      Send Price Offer
-                    </a>
-                  </li>
-                ) : (
-                  <>
-                    <li>
-                      <a 
-                        className="flex items-center gap-3 py-3"
-                        onClick={() => handleStageUpdate('Communication Started')}
-                      >
-                        <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
-                        Communication Started
-                      </a>
-                    </li>
-                  </>
-                )}
+                {dropdownItems}
               </ul>
             </div>
             {selectedClient.stage === 'created' && (
@@ -1872,6 +1758,8 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
+
+      <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
     </div>
   );
 };

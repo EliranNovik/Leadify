@@ -147,6 +147,7 @@ const AppContent: React.FC = () => {
                 isOpen={isAiChatOpen} 
                 onClose={() => setIsAiChatOpen(false)} 
                 onClientUpdate={selectedClient ? () => refreshClientData(selectedClient.id) : undefined}
+                userName={userFullName || userName}
               />
             </div>
           </ProtectedRoute>

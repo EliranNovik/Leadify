@@ -7,6 +7,7 @@ interface AIChatWindowProps {
   isOpen: boolean;
   onClose: () => void;
   onClientUpdate?: () => void;
+  userName?: string;
 }
 
 interface Message {
@@ -231,13 +232,14 @@ const sanitizeMessages = (messages: Message[]) => {
   return sanitized;
 };
 
-const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate }) => {
+const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate, userName }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [images, setImages] = useState<File[]>([]);
   const [imagePreviews, setImagePreviews] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isDragActive, setIsDragActive] = useState(false);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -249,12 +251,19 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   
   useEffect(() => {
     if (isOpen && messages.length === 0) {
+      const greeting = userName ? `Hi ${userName}, how can I help you?` : "Hello! How can I help you?";
+      
       setMessages([{ 
         role: 'assistant', 
-        content: "Hello! I can help you create leads, schedule meetings, and analyze your CRM data. You can ask me questions like:\n\n• How many contracts were signed yesterday?\n• What is the average proposal value this month?\n• List all leads created by John this week\n• How many new clients entered the system last month?\n\nHow can I help you today?" 
+        content: greeting
       }]);
     }
-  }, [isOpen, messages.length]);
+  }, [isOpen, messages.length, userName]);
+
+  // Quick action handlers
+  const handleQuickAction = (action: string) => {
+    handleSend(action);
+  };
 
   // Handle image selection (multi-image)
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -280,24 +289,27 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const handleSend = async () => {
-    if (!input.trim() && images.length === 0) return;
+  const handleSend = async (customInput?: string) => {
+    const messageToSend = customInput || input;
+    if (!messageToSend.trim() && images.length === 0) return;
     setIsLoading(true);
     let userMessage: any;
     if (images.length > 0 && imagePreviews.length > 0) {
       userMessage = {
         role: 'user',
         content: [
-          ...(input.trim() ? [{ type: 'text', text: input.trim() }] : []),
+          ...(messageToSend.trim() ? [{ type: 'text', text: messageToSend.trim() }] : []),
           ...imagePreviews.map(url => ({ type: 'image_url', image_url: { url } }))
         ]
       };
     } else {
-      userMessage = { role: 'user', content: input.trim() };
+      userMessage = { role: 'user', content: messageToSend.trim() };
     }
     const newMessages = [...messages, userMessage];
     setMessages(newMessages);
-    setInput('');
+    if (!customInput) {
+      setInput('');
+    }
     setImages([]);
     setImagePreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -307,6 +319,12 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     
     const messagesForApi = sanitizeMessages(newMessages);
 
+    // Prepare images data for upload
+    const imagesData = images.map((file, index) => ({
+      name: file.name,
+      data: imagePreviews[index]
+    }));
+
     try {
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`, {
         method: 'POST',
@@ -314,7 +332,10 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
         },
-        body: JSON.stringify({ messages: messagesForApi }),
+        body: JSON.stringify({ 
+          messages: messagesForApi,
+          images: imagesData
+        }),
       });
 
       if (!response.ok) {
@@ -327,39 +348,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       // Replace placeholder with actual response (which could be a question or a tool call)
       setMessages(prev => [...prev.slice(0, -1), aiResponseMessage]);
 
-      if (aiResponseMessage.tool_calls) {
-        setMessages(prev => [...prev, { role: 'assistant', content: '...' }]);
-
-        const toolResults = await Promise.all(
-          aiResponseMessage.tool_calls.map((tool_call: any) => executeTool(tool_call, onClientUpdate))
-        );
-        
-        const toolResponseMessage: Message = {
-          role: 'tool',
-          tool_call_id: aiResponseMessage.tool_calls[0].id,
-          content: toolResults.join('\n'),
-        };
-
-        const finalMessages = [...messagesForApi, aiResponseMessage, toolResponseMessage];
-        const finalMessagesForApi = sanitizeMessages(finalMessages);
-        
-        const finalResponse = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-          },
-          body: JSON.stringify({ messages: finalMessagesForApi }),
-        });
-        
-        if (!finalResponse.ok) {
-          const errorData = await finalResponse.json();
-          throw new Error(errorData.error || `Request failed with status ${finalResponse.status}`);
-        }
-        
-        const finalAiMessage = await finalResponse.json();
-        setMessages(prev => [...prev.slice(0, -1), finalAiMessage]);
-      }
     } catch (error) {
       console.error('Error in handleSend:', error);
       const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
@@ -373,15 +361,79 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     }
   };
 
+  // Drag and drop handlers
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragActive(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragActive(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragActive(false);
+    const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+    if (files.length + images.length > 10) {
+      alert('You can upload up to 10 images.');
+      return;
+    }
+    setImages(prev => [...prev, ...files]);
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setImagePreviews(prev => [...prev, ev.target?.result as string]);
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   if (!isOpen) return null;
 
   return (
-    <div className={`fixed z-50 right-0 top-0 bottom-0 w-full max-w-2xl bg-base-100 shadow-2xl border-l border-base-200 transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} flex flex-col`} style={{ height: '100vh', minHeight: '100vh', maxHeight: '100vh', borderTopLeftRadius: 0, borderTopRightRadius: 0 }}>
+    <div
+      className={`fixed z-50 right-0 top-0 bottom-0 w-full max-w-2xl bg-base-100 shadow-2xl border-l border-base-200 transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} flex flex-col ${isDragActive ? 'ring-4 ring-primary/40' : ''}`}
+      style={{ height: '100vh', minHeight: '100vh', maxHeight: '100vh', borderTopLeftRadius: 0, borderTopRightRadius: 0 }}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Header */}
       <div className="p-4 border-b border-base-300 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <SparklesIcon className="h-6 w-6 text-primary" />
           <h3 className="font-bold text-lg">AI Assistant</h3>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => handleQuickAction('create a lead')}
+            className="btn btn-xs btn-primary"
+            disabled={isLoading}
+            title="Create a new lead"
+          >
+            📝 Lead
+          </button>
+          <button
+            onClick={() => handleQuickAction('show me today\'s statistics')}
+            className="btn btn-xs btn-secondary"
+            disabled={isLoading}
+            title="Today's statistics"
+          >
+            📊 Stats
+          </button>
+          <button
+            onClick={() => handleQuickAction('how many leads were created this week?')}
+            className="btn btn-xs btn-accent"
+            disabled={isLoading}
+            title="Weekly leads"
+          >
+            📈 Weekly
+          </button>
         </div>
         <button className="btn btn-sm btn-ghost btn-circle" onClick={onClose}>
           <XMarkIcon className="w-6 h-6" />
@@ -454,10 +506,18 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5V19a2.003 2.003 0 002 2h14a2.003 2.003 0 002-2v-2.5M16.5 12.5l-4.5 4.5-4.5-4.5M12 3v13.5" />
           </svg>
         </button>
-        <button className="btn btn-primary ml-2" onClick={handleSend} disabled={isLoading || (!input.trim() && images.length === 0)}>
+        <button className="btn btn-primary ml-2" onClick={() => handleSend()} disabled={isLoading || (!input.trim() && images.length === 0)}>
           Send
         </button>
       </div>
+
+      {isDragActive && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+          <div className="bg-primary/80 text-white px-8 py-6 rounded-2xl shadow-xl text-2xl font-bold border-4 border-white/60 animate-pulse">
+            Drop images to upload
+          </div>
+        </div>
+      )}
     </div>
   );
 };

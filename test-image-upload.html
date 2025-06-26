@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Upload Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .upload-area {
+            border: 2px dashed #ccc;
+            padding: 20px;
+            text-align: center;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .upload-area.dragover {
+            border-color: #007bff;
+            background-color: #f8f9fa;
+        }
+        .preview {
+            display: flex;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        .preview img {
+            width: 100px;
+            height: 100px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .input-group {
+            margin: 20px 0;
+        }
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .response {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: #f8f9fa;
+            white-space: pre-wrap;
+        }
+        .error {
+            color: red;
+            background-color: #ffe6e6;
+            border-color: #ff9999;
+        }
+    </style>
+</head>
+<body>
+    <h1>AI Chat Image Upload Test</h1>
+    
+    <div class="input-group">
+        <label for="message">Message:</label>
+        <input type="text" id="message" placeholder="Ask about the uploaded image...">
+    </div>
+    
+    <div class="upload-area" id="uploadArea">
+        <p>Drag and drop images here or click to select</p>
+        <input type="file" id="fileInput" accept="image/*" multiple style="display: none;">
+    </div>
+    
+    <div class="preview" id="preview"></div>
+    
+    <button onclick="sendMessage()">Send Message</button>
+    
+    <div id="response" class="response" style="display: none;"></div>
+
+    <script>
+        const uploadArea = document.getElementById('uploadArea');
+        const fileInput = document.getElementById('fileInput');
+        const preview = document.getElementById('preview');
+        const responseDiv = document.getElementById('response');
+        
+        let selectedFiles = [];
+        let imageDataUrls = [];
+
+        // Drag and drop handlers
+        uploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadArea.classList.add('dragover');
+        });
+
+        uploadArea.addEventListener('dragleave', () => {
+            uploadArea.classList.remove('dragover');
+        });
+
+        uploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadArea.classList.remove('dragover');
+            const files = Array.from(e.dataTransfer.files);
+            handleFiles(files);
+        });
+
+        uploadArea.addEventListener('click', () => {
+            fileInput.click();
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleFiles(Array.from(e.target.files));
+        });
+
+        function handleFiles(files) {
+            const imageFiles = files.filter(file => file.type.startsWith('image/'));
+            
+            if (imageFiles.length === 0) {
+                alert('Please select image files only.');
+                return;
+            }
+
+            selectedFiles = imageFiles;
+            imageDataUrls = [];
+            preview.innerHTML = '';
+
+            imageFiles.forEach((file, index) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    imageDataUrls[index] = e.target.result;
+                    
+                    const img = document.createElement('img');
+                    img.src = e.target.result;
+                    img.alt = file.name;
+                    preview.appendChild(img);
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function sendMessage() {
+            const message = document.getElementById('message').value.trim();
+            
+            if (!message && imageDataUrls.length === 0) {
+                alert('Please enter a message or upload an image.');
+                return;
+            }
+
+            responseDiv.style.display = 'block';
+            responseDiv.textContent = 'Sending message...';
+            responseDiv.className = 'response';
+
+            try {
+                const imagesData = selectedFiles.map((file, index) => ({
+                    name: file.name,
+                    data: imageDataUrls[index]
+                }));
+
+                const response = await fetch('YOUR_SUPABASE_URL/functions/v1/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer YOUR_SUPABASE_ANON_KEY`
+                    },
+                    body: JSON.stringify({
+                        messages: [{
+                            role: 'user',
+                            content: message || 'Please analyze this image.'
+                        }],
+                        images: imagesData
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `Request failed with status ${response.status}`);
+                }
+
+                const data = await response.json();
+                responseDiv.textContent = `AI Response:\n\n${data.content}`;
+                responseDiv.className = 'response';
+
+            } catch (error) {
+                console.error('Error:', error);
+                responseDiv.textContent = `Error: ${error.message}`;
+                responseDiv.className = 'response error';
+            }
+        }
+    </script>
+</body>
+</html> 
