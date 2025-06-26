@@ -15,6 +15,7 @@ import {
   SparklesIcon,
   DocumentChartBarIcon,
   CalendarIcon,
+  ArrowRightOnRectangleIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -324,7 +325,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         </div>
         
         {/* Search bar */}
-        <div className="flex-1 justify-center flex relative">
+        <div className="flex-1 justify-center flex relative ml-[-32px] md:ml-[-48px]">
           <div 
             ref={searchContainerRef}
             className={`relative ${isSearchActive ? 'w-full max-w-sm' : 'w-1'} transition-all duration-500 ease-out`}
@@ -401,7 +402,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
         {/* Right section with notifications and user */}
         <div className="flex-1 justify-end flex items-center gap-2 md:gap-4">
-          {/* Welcome message - desktop only */}
+          {/* Sign out button and Welcome message - desktop only */}
+          <button
+            className="btn btn-ghost btn-circle btn-sm mr-2 hidden md:inline-flex"
+            title="Sign out"
+            onClick={handleSignOut}
+          >
+            <ArrowRightOnRectangleIcon className="w-5 h-5" />
+          </button>
           <span className={`text-base font-medium hidden md:inline-block ${appJustLoggedIn ? 'slide-fade-in' : ''}`}>
             Welcome, <span className="font-semibold">{userFullName || 'User'}</span>
           </span>
