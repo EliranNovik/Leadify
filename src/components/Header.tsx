@@ -12,6 +12,9 @@ import {
   EnvelopeIcon,
   PhoneIcon,
   UserIcon,
+  SparklesIcon,
+  DocumentChartBarIcon,
+  CalendarIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -22,6 +25,7 @@ interface HeaderProps {
   isSearchOpen: boolean;
   setIsSearchOpen: (isOpen: boolean) => void;
   appJustLoggedIn?: boolean;
+  onOpenAIChat?: () => void;
 }
 
 interface Notification {
@@ -63,7 +67,7 @@ const mockNotifications: Notification[] = [
   }
 ];
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -83,6 +87,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [userFullName, setUserFullName] = useState<string | null>(null);
 
   const unreadCount = notifications.filter(n => !n.read).length;
+
+  const navTabs = [
+    {
+      label: 'Calendar',
+      path: '/calendar',
+      icon: CalendarIcon,
+    },
+    {
+      label: 'Lead Search',
+      path: '/lead-search',
+      icon: MagnifyingGlassIcon,
+    },
+    {
+      label: 'Reports',
+      path: '/reports',
+      icon: DocumentChartBarIcon,
+    },
+  ];
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -232,6 +254,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setNotifications(notifications.map(n => ({ ...n, read: true })));
   };
 
+  const handleAIClick = () => {
+    if (typeof onOpenAIChat === 'function') {
+      onOpenAIChat();
+    }
+  };
+
   const handleMicrosoftSignIn = async () => {
     if (!instance || !isMsalInitialized) {
       console.error('MSAL is not initialized yet');
@@ -266,173 +294,209 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   return (
-    <div className="navbar bg-base-100 shadow-lg px-2 md:px-0 h-16">
-      {/* Left section with menu and logo */}
-      <div className="flex-1 justify-start flex items-center gap-4 overflow-hidden">
-        <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label="Open menu">
-          <Bars3Icon className="w-6 h-6" />
-        </button>
-        <div className="h-16 flex items-center">
-          <Link to="/">
-            <img src="/Leadify12.png" alt="Leadify Logo" className="h-36 object-contain mt-2 cursor-pointer" />
-          </Link>
+    <>
+      <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+        {/* Left section with menu and logo */}
+        <div className="flex-1 justify-start flex items-center gap-4 overflow-hidden">
+          <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label="Open menu">
+            <Bars3Icon className="w-6 h-6" />
+          </button>
+          <div className="h-16 flex items-center">
+            <Link to="/">
+              <img src="/Leadify12.png" alt="Leadify Logo" className="h-36 object-contain mt-2 cursor-pointer" />
+            </Link>
+          </div>
+          {/* Nav Tabs */}
+          <nav className="flex gap-2 ml-4">
+            {navTabs.map(tab => {
+              const isActive = location.pathname === tab.path;
+              return (
+                <Link
+                  key={tab.path}
+                  to={tab.path}
+                  className={`flex items-center px-3 py-2 rounded-lg font-medium transition-colors duration-200 ${isActive ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
+                >
+                  <span>{tab.label}</span>
+                </Link>
+              );
+            })}
+          </nav>
         </div>
-      </div>
-      
-      {/* Search bar */}
-      <div className="flex-1 justify-center flex relative">
-        <div 
-          ref={searchContainerRef}
-          className={`relative ${isSearchActive ? 'w-full max-w-xl' : 'w-10'} transition-all duration-500 ease-out`}
-          onMouseEnter={() => {
-            setIsSearchActive(true);
-            setTimeout(() => searchInputRef.current?.focus(), 100);
-          }}
-          onMouseLeave={handleSearchMouseLeave}
-        >
-          <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-500 ease-out`}>
-            <input
-              ref={searchInputRef}
-              type="text"
-              placeholder="Search leads by number, name, email, or phone..."
-              value={searchValue}
-              onChange={handleSearchChange}
-              onFocus={handleSearchFocus}
-              className={`
-                input input-bordered w-full
-                ${isSearchActive ? 'opacity-100 visible' : 'opacity-0 invisible'}
-                transition-all duration-500 ease-out
-                pl-10
-                ${searchValue.trim() || searchResults.length > 0 ? 'pr-10' : ''}
-              `}
-            />
-            <MagnifyingGlassIcon 
-              className={`
-                w-6 h-6 absolute left-2
-                ${isSearchActive ? 'text-base-content/70' : 'text-base-content cursor-pointer'}
-                transition-all duration-500 ease-out
-              `}
-              onClick={handleSearchFocus}
-            />
-            {(searchValue.trim() || searchResults.length > 0) && (
-              <button
-                onClick={handleClearSearch}
-                className="absolute right-2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out"
-                title="Clear search"
-              >
-                <XMarkIcon className="w-4 h-4" />
-              </button>
+        
+        {/* Search bar */}
+        <div className="flex-1 justify-center flex relative">
+          <div 
+            ref={searchContainerRef}
+            className={`relative ${isSearchActive ? 'w-full max-w-sm' : 'w-1'} transition-all duration-500 ease-out`}
+            onMouseEnter={() => {
+              setIsSearchActive(true);
+              setTimeout(() => searchInputRef.current?.focus(), 100);
+            }}
+            onMouseLeave={handleSearchMouseLeave}
+          >
+            <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-500 ease-out`}>
+              <input
+                ref={searchInputRef}
+                type="text"
+                placeholder="Search leads by number, name, email, or phone..."
+                value={searchValue}
+                onChange={handleSearchChange}
+                onFocus={handleSearchFocus}
+                className={`
+                  input input-bordered w-full
+                  ${isSearchActive ? 'opacity-100 visible' : 'opacity-0 invisible'}
+                  transition-all duration-500 ease-out
+                  pl-10
+                  ${searchValue.trim() || searchResults.length > 0 ? 'pr-10' : ''}
+                `}
+              />
+              <MagnifyingGlassIcon 
+                className={`
+                  w-6 h-6 absolute left-2
+                  ${isSearchActive ? 'text-base-content/70' : 'text-base-content cursor-pointer'}
+                  transition-all duration-500 ease-out
+                `}
+                onClick={handleSearchFocus}
+              />
+              {(searchValue.trim() || searchResults.length > 0) && (
+                <button
+                  onClick={handleClearSearch}
+                  className="absolute right-2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out"
+                  title="Clear search"
+                >
+                  <XMarkIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Search Results Dropdown */}
+            {isSearchActive && (searchResults.length > 0 || isSearching) && (
+              <div className="absolute top-full left-0 right-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 max-h-96 overflow-y-auto z-50 transition-all duration-300 ease-out animate-in fade-in slide-in-from-top-2">
+                {isSearching ? (
+                  <div className="p-4 text-center text-base-content/70">
+                    Searching...
+                  </div>
+                ) : (
+                  <div className="divide-y divide-base-200">
+                    {searchResults.map((result) => (
+                      <button
+                        key={result.id}
+                        className="w-full px-4 py-3 hover:bg-base-200 flex items-center gap-3 text-left transition-colors duration-200"
+                        onClick={() => handleSearchResultClick(result)}
+                      >
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium">{result.name}</span>
+                            <span className="text-sm text-primary">{result.lead_number}</span>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
           </div>
-
-          {/* Search Results Dropdown */}
-          {isSearchActive && (searchResults.length > 0 || isSearching) && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 max-h-96 overflow-y-auto z-50 transition-all duration-300 ease-out animate-in fade-in slide-in-from-top-2">
-              {isSearching ? (
-                <div className="p-4 text-center text-base-content/70">
-                  Searching...
-                </div>
-              ) : (
-                <div className="divide-y divide-base-200">
-                  {searchResults.map((result) => (
-                    <button
-                      key={result.id}
-                      className="w-full px-4 py-3 hover:bg-base-200 flex items-center gap-3 text-left transition-colors duration-200"
-                      onClick={() => handleSearchResultClick(result)}
-                    >
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{result.name}</span>
-                          <span className="text-sm text-primary">{result.lead_number}</span>
-                        </div>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
         </div>
-      </div>
 
-      {/* Right section with notifications and user */}
-      <div className="flex-1 justify-end flex items-center gap-2 md:gap-4">
-        {/* Welcome message - desktop only */}
-        <span className={`text-base font-medium hidden md:inline-block ${appJustLoggedIn ? 'slide-fade-in' : ''}`}>
-          Welcome, <span className="font-semibold">{userFullName || 'User'}</span>
-        </span>
+        {/* Right section with notifications and user */}
+        <div className="flex-1 justify-end flex items-center gap-2 md:gap-4">
+          {/* Welcome message - desktop only */}
+          <span className={`text-base font-medium hidden md:inline-block ${appJustLoggedIn ? 'slide-fade-in' : ''}`}>
+            Welcome, <span className="font-semibold">{userFullName || 'User'}</span>
+          </span>
 
-        {/* Microsoft sign in button */}
-        <button 
-          className="btn btn-outline btn-sm gap-2 hidden md:flex" 
-          onClick={handleMicrosoftSignIn} 
-          disabled={isMsalLoading || !!userAccount || !isMsalInitialized}
-        >
-          <svg className="w-5 h-5" viewBox="0 0 24 24">
-            <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
-          </svg>
-          {!userAccount && (isMsalLoading ? 'Signing in...' : 'Sign in')}
-        </button>
-
-        {/* Microsoft sign in - mobile only */}
-        <button 
-          className="btn btn-outline btn-sm btn-square md:hidden" 
-          onClick={handleMicrosoftSignIn} 
-          disabled={isMsalLoading || !!userAccount || !isMsalInitialized}
-        >
-          <svg className="w-5 h-5" viewBox="0 0 24 24">
-            <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
-          </svg>
-        </button>
-
-        {/* Notifications */}
-        <div className="relative" ref={notificationsRef}>
-          <button 
-            className="btn btn-ghost btn-circle"
-            onClick={handleNotificationClick}
+          {/* AI Assistant Button */}
+          <button
+            className="btn btn-ghost btn-circle flex items-center justify-center"
+            title="Open AI Assistant"
+            onClick={handleAIClick}
           >
-            <div className="indicator">
-              <BellIcon className="w-6 h-6" />
-              {unreadCount > 0 && (
-                <span className="indicator-item badge badge-primary badge-sm">{unreadCount}</span>
-              )}
-            </div>
+            <SparklesIcon className="w-6 h-6 text-primary" />
           </button>
 
-          {showNotifications && (
-            <div className="absolute right-0 mt-2 w-80 bg-base-100 shadow-xl rounded-lg overflow-hidden z-50">
-              <div className="p-4 border-b border-base-200">
-                <div className="flex justify-between items-center">
-                  <h3 className="font-semibold">Notifications</h3>
-                  <button 
-                    className="btn btn-ghost btn-xs"
-                    onClick={markAllAsRead}
-                  >
-                    Mark all as read
-                  </button>
-                </div>
+          {/* Microsoft sign in button */}
+          <button 
+            className="btn btn-outline btn-sm gap-2 hidden md:flex" 
+            onClick={handleMicrosoftSignIn} 
+            disabled={isMsalLoading || !!userAccount || !isMsalInitialized}
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+            </svg>
+            {!userAccount && (isMsalLoading ? 'Signing in...' : 'Sign in')}
+          </button>
+
+          {/* Microsoft sign in - mobile only */}
+          <button 
+            className="btn btn-outline btn-sm btn-square md:hidden" 
+            onClick={handleMicrosoftSignIn} 
+            disabled={isMsalLoading || !!userAccount || !isMsalInitialized}
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+            </svg>
+          </button>
+
+          {/* Notifications */}
+          <div className="relative" ref={notificationsRef}>
+            <button 
+              className="btn btn-ghost btn-circle"
+              onClick={handleNotificationClick}
+            >
+              <div className="indicator">
+                <BellIcon className="w-6 h-6" />
+                {unreadCount > 0 && (
+                  <span className="indicator-item badge badge-primary badge-sm">{unreadCount}</span>
+                )}
               </div>
-              <div className="max-h-96 overflow-y-auto">
-                {notifications.map((notification) => (
-                  <div 
-                    key={notification.id}
-                    className={`p-4 border-b border-base-200 hover:bg-base-200/50 ${!notification.read ? 'bg-base-200/20' : ''}`}
-                  >
-                    <div className="flex gap-3">
-                      <div className={`w-2 h-2 rounded-full mt-2 ${notification.type === 'action' ? 'bg-primary' : 'bg-info'}`} />
-                      <div className="flex-1">
-                        <p className="text-sm">{notification.message}</p>
-                        <p className="text-xs text-base-content/70 mt-1">{notification.time}</p>
+            </button>
+
+            {showNotifications && (
+              <div className="absolute right-0 mt-2 w-80 glassy-notification-box shadow-xl rounded-xl overflow-hidden z-50">
+                <div className="p-4 border-b border-base-200">
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-semibold">Notifications</h3>
+                    <button 
+                      className="btn btn-ghost btn-xs"
+                      onClick={markAllAsRead}
+                    >
+                      Mark all as read
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-96 overflow-y-auto">
+                  {notifications.map((notification) => (
+                    <div 
+                      key={notification.id}
+                      className={`p-4 border-b border-base-200 hover:bg-base-200/50 ${!notification.read ? 'bg-base-200/20' : ''}`}
+                    >
+                      <div className="flex gap-3">
+                        <div className={`w-2 h-2 rounded-full mt-2 ${notification.type === 'action' ? 'bg-primary' : 'bg-info'}`} />
+                        <div className="flex-1">
+                          <p className="text-sm">{notification.message}</p>
+                          <p className="text-xs text-base-content/70 mt-1">{notification.time}</p>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </div>
-    </div>
+      {/* Spacer to prevent content from being hidden behind the fixed header */}
+      <div className="h-16 w-full" />
+      <style>{`
+        .glassy-notification-box {
+          background: rgba(255,255,255,0.60);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          border-radius: 1rem;
+        }
+      `}</style>
+    </>
   );
 };
 

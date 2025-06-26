@@ -788,15 +788,19 @@ const Clients: React.FC<ClientsProps> = ({
                         </a>
                       </li>
                     ) : (
-                      <li>
-                        <a 
-                          className="flex items-center gap-3 py-3"
-                          onClick={() => handleStageUpdate('Communication Started')}
-                        >
-                          <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
-                          Communication Started
-                        </a>
-                      </li>
+                      <>
+                        {!['client_signed', 'client signed agreement', 'Client signed agreement'].includes(selectedClient.stage) && (
+                          <li>
+                            <a 
+                              className="flex items-center gap-3 py-3"
+                              onClick={() => handleStageUpdate('Communication Started')}
+                            >
+                              <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
+                              Communication Started
+                            </a>
+                          </li>
+                        )}
+                      </>
                     )}
                     <li>
                       <a 
@@ -1110,15 +1114,19 @@ const Clients: React.FC<ClientsProps> = ({
                         </a>
                       </li>
                     ) : (
-                      <li>
-                        <a 
-                          className="flex items-center gap-3 py-3"
-                          onClick={() => handleStageUpdate('Communication Started')}
-                        >
-                          <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
-                          Communication Started
-                        </a>
-                      </li>
+                      <>
+                        {!['client_signed', 'client signed agreement', 'Client signed agreement'].includes(selectedClient.stage) && (
+                          <li>
+                            <a 
+                              className="flex items-center gap-3 py-3"
+                              onClick={() => handleStageUpdate('Communication Started')}
+                            >
+                              <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
+                              Communication Started
+                            </a>
+                          </li>
+                        )}
+                      </>
                     )}
                     <li>
                       <a 
@@ -1374,10 +1382,10 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
 
-        {/* Tab Content */}
-        <div className="w-full">
+        {/* Tab Content - full width, white background */}
+        <div className="w-full bg-white min-h-screen">
           <div
-            key={activeTab} // force re-mount on tab change to trigger animation
+            key={activeTab}
             className="p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
           >
             {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} />}

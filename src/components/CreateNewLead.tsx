@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 
@@ -42,6 +42,15 @@ const CreateNewLead: React.FC = () => {
     facts: '',
     specialNotes: '',
   });
+  const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      setCurrentUserEmail(user?.email || null);
+    };
+    fetchUser();
+  }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -59,6 +68,8 @@ const CreateNewLead: React.FC = () => {
         lead_phone: form.phone,
         lead_topic: form.topic,
         lead_language: form.language,
+        lead_source: form.source,
+        created_by: currentUserEmail,
       });
 
       if (error) throw error;

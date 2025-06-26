@@ -114,19 +114,19 @@ const AppContent: React.FC = () => {
           <ProtectedRoute user={user}>
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
               <Sidebar 
-                isOpen={isSidebarOpen} 
-                onClose={() => setIsSidebarOpen(false)} 
-                onOpenAIChat={() => setIsAiChatOpen(true)}
                 userName={userFullName || userName}
                 userInitials={userInitials}
+                isOpen={isSidebarOpen}
+                onClose={() => setIsSidebarOpen(false)}
               />
-              <div className="flex-1 flex flex-col overflow-hidden">
+              <div className="flex-1 flex flex-col overflow-hidden md:pl-20">
                 <Header 
                   onMenuClick={() => setIsSidebarOpen(true)} 
                   onSearchClick={() => setIsSearchOpen(prev => !prev)}
                   isSearchOpen={isSearchOpen}
                   setIsSearchOpen={setIsSearchOpen}
                   appJustLoggedIn={appJustLoggedIn}
+                  onOpenAIChat={() => setIsAiChatOpen(true)}
                 />
                 <main className="flex-1 overflow-x-hidden overflow-y-auto">
                   <Routes>

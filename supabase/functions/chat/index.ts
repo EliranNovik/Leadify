@@ -1,11 +1,11 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
-import { OpenAI } from "https://deno.land/x/openai/mod.ts";
 import { supabase } from '../_shared/supabase-client.ts';
 
 console.log(`Function "chat" up and running!`);
 
-const openAI = new OpenAI(Deno.env.get('OPENAI_API_KEY'));
+const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
+const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
 const tools = [
   {
@@ -43,7 +43,83 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "query_executor",
+      description: "Run dynamic, secure database queries on CRM data. For filtering by lead creator, use the created_by column. For citizenship queries, use the 'category' column (e.g., 'German Citizenship', 'Austrian Citizenship').",
+      parameters: {
+        type: "object",
+        properties: {
+          table: {
+            type: "string",
+            description: "Allowed values: 'leads', 'meetings', 'interactions', 'experts', 'schedulers', 'users', 'created_by', 'created_at', 'updated_at', 'deleted_at'"
+          },
+          operation: {
+            type: "string",
+            enum: ["count", "avg", "sum", "min", "max", "distinct", "select"],
+            description: "The type of data query to run"
+          },
+          column: {
+            type: "string",
+            description: "Column name to perform operation on (required for avg, sum, etc.)"
+          },
+          filters: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                column: { type: "string" },
+                operator: {
+                  type: "string",
+                  enum: ["=", "!=", "<", "<=", ">", ">=", "like"]
+                },
+                value: { type: "string" }
+              },
+              required: ["column", "operator", "value"]
+            },
+            description: "Filter conditions for rows"
+          },
+          group_by: {
+            type: "string",
+            description: "Column to group results by (optional)"
+          },
+          limit: {
+            type: "integer",
+            description: "Max number of rows to return (for select operations)"
+          },
+          offset: {
+            type: "integer",
+            description: "Row offset (for paginated select operations)"
+          }
+        },
+        required: ["table", "operation"]
+      }
+    }
+  }
 ];
+
+async function openaiChat({ model, messages, tools, tool_choice }) {
+  const body = {
+    model,
+    messages,
+    ...(tools ? { tools } : {}),
+    ...(tool_choice ? { tool_choice } : {}),
+  };
+  const res = await fetch(OPENAI_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(`${res.status} ${err.error?.message || res.statusText}`);
+  }
+  return await res.json();
+}
 
 serve(async (req) => {
   // This is needed if you're planning to invoke your function from a browser.
@@ -57,18 +133,57 @@ serve(async (req) => {
       throw new Error("No messages provided");
     }
 
-    const response = await openAI.chat.completions.create({
-      model: "gpt-4-turbo-preview",
+    // Detect if any message contains an image_url (OpenAI Vision format)
+    const hasImage = messages.some((msg: any) =>
+      Array.isArray(msg.content) && msg.content.some((item: any) => item.type === 'image_url')
+    );
+    const model = hasImage ? 'gpt-image-1' : 'gpt-4-turbo-preview';
+
+    // 1. Send user/assistant messages to OpenAI (via fetch)
+    const response = await openaiChat({
+      model,
       messages,
-      tools: tools,
-      tool_choice: "auto", 
+      tools,
+      tool_choice: "auto",
     });
 
-    const responseMessage = response.choices[0].message;
-
-    // Ensure content is not null if it's missing, which can happen with tool calls
+    let responseMessage = response.choices[0].message;
     if (!responseMessage.content) {
       responseMessage.content = "";
+    }
+
+    // 2. If the response contains tool_calls, handle them
+    if (responseMessage.tool_calls && responseMessage.tool_calls.length > 0) {
+      const toolCallMsg = {
+        role: "assistant",
+        content: responseMessage.content,
+        tool_calls: responseMessage.tool_calls
+      };
+      const newMessages = [...messages, toolCallMsg];
+      for (const toolCall of responseMessage.tool_calls) {
+        let toolResult;
+        if (toolCall.function && toolCall.function.name === 'query_executor') {
+          toolResult = { result: toolCall.function.arguments };
+        } else {
+          toolResult = { result: `Mock result for tool: ${toolCall.function.name}` };
+        }
+        newMessages.push({
+          tool_call_id: toolCall.id,
+          role: "tool",
+          name: toolCall.function.name,
+          content: JSON.stringify(toolResult)
+        });
+      }
+      const followup = await openaiChat({
+        model: "gpt-4-turbo-preview",
+        messages: newMessages,
+        tools,
+        tool_choice: "auto"
+      });
+      responseMessage = followup.choices[0].message;
+      if (!responseMessage.content) {
+        responseMessage.content = "";
+      }
     }
 
     return new Response(JSON.stringify(responseMessage), {
