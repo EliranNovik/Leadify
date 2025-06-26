@@ -56,7 +56,7 @@ const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex bg-white relative overflow-hidden">
+    <div className={`min-h-screen flex relative overflow-hidden ${showSuccessAnim ? 'bg-gradient-to-br from-blue-600 via-purple-800 to-purple-900 animated-gradient' : 'bg-white'}`}>
       {/* Logo at top left, tighter to corner */}
       <div className="absolute top-0 left-0 p-4 z-20">
         <img src="/Leadify12.png" alt="Leadify Logo" className="h-40 w-auto" />
@@ -115,12 +115,14 @@ const LoginPage: React.FC = () => {
         </form>
       </div>
       {/* Right: Large Image (hidden on mobile) */}
-      <div className="hidden md:flex w-1/2 h-full flex-col items-center justify-center p-8">
-        <img src="/DATA_IMAGE.jpg" alt="Leadify Illustration" className="w-full h-[90vh] object-cover rounded-3xl mx-auto my-auto" onError={e => { e.currentTarget.style.display = 'none'; }} />
-        <div className="w-full flex justify-center mt-6">
-          <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Leadify CRM {new Date().getFullYear()}</span>
+      {!showSuccessAnim && (
+        <div className="hidden md:flex w-1/2 h-full flex-col items-center justify-center p-8">
+          <img src="/DATA_IMAGE.jpg" alt="Leadify Illustration" className="w-full h-[90vh] object-cover rounded-3xl mx-auto my-auto" onError={e => { e.currentTarget.style.display = 'none'; }} />
+          <div className="w-full flex justify-center mt-6">
+            <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Leadify CRM {new Date().getFullYear()}</span>
+          </div>
         </div>
-      </div>
+      )}
       {/* Success animation overlay */}
       {showSuccessAnim && (
         <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-black/30 fade-in">
