@@ -22,6 +22,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import OutlookCalendarPage from './components/OutlookCalendarPage';
 import PipelinePage from './components/PipelinePage';
 import NewCasesPage from './pages/NewCasesPage';
+import CaseManagerPage from './components/CaseManagerPage';
 
 const msalInstance = new PublicClientApplication(msalConfig);
 
@@ -140,6 +141,7 @@ const AppContent: React.FC = () => {
                     <Route path="/lead-search" element={<LeadSearchPage />} />
                     <Route path="/pipeline" element={<PipelinePage />} />
                     <Route path="/new-cases" element={<NewCasesPage />} />
+                    <Route path="/case-manager" element={<CaseManagerPage />} />
                   </Routes>
                 </main>
               </div>

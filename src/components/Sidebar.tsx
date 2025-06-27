@@ -45,6 +45,7 @@ const sidebarItems: SidebarItem[] = [
   { icon: TagIcon, label: 'My Leads', path: '/my-leads' },
   { icon: FolderPlusIcon, label: 'New Cases', path: '/new-cases' },
   { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
+  { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: PlusCircleIcon, label: 'Create New', path: '/create' },
   // { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' }, // moved to header
