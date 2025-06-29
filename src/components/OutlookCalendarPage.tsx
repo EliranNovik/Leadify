@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Calendar, momentLocalizer, Views } from 'react-big-calendar';
 import { useMsal } from '@azure/msal-react';
 import moment from 'moment';
-import { PlusIcon, TrashIcon, PencilIcon, CheckIcon, XMarkIcon, ClockIcon, UserIcon, MapPinIcon, VideoCameraIcon, CalendarIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, TrashIcon, PencilIcon, CheckIcon, XMarkIcon, ClockIcon, UserIcon, MapPinIcon, VideoCameraIcon, CalendarIcon, FunnelIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 
 const localizer = momentLocalizer(moment);
@@ -39,30 +39,18 @@ const OutlookCalendarPage: React.FC = () => {
   const { instance, accounts } = useMsal();
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(false);
-  const [sharedMailboxes, setSharedMailboxes] = useState<SharedMailbox[]>(DEFAULT_MAILBOXES);
-  const [showAddMailbox, setShowAddMailbox] = useState(false);
-  const [newMailbox, setNewMailbox] = useState({ email: '', label: '', color: '#6366f1' });
-  const [editingMailbox, setEditingMailbox] = useState<string | null>(null);
+  const sharedMailboxes = DEFAULT_MAILBOXES;
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
   const [showEventModal, setShowEventModal] = useState(false);
   const [view, setView] = useState(Views.MONTH);
-
-  // Load saved mailboxes from localStorage on component mount
-  useEffect(() => {
-    const savedMailboxes = localStorage.getItem('outlook-shared-mailboxes');
-    if (savedMailboxes) {
-      try {
-        setSharedMailboxes(JSON.parse(savedMailboxes));
-      } catch (error) {
-        console.error('Error loading saved mailboxes:', error);
-      }
-    }
-  }, []);
-
-  // Save mailboxes to localStorage whenever they change
-  useEffect(() => {
-    localStorage.setItem('outlook-shared-mailboxes', JSON.stringify(sharedMailboxes));
-  }, [sharedMailboxes]);
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [selectedMailbox, setSelectedMailbox] = useState('');
+  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
+  const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [totalAmount, setTotalAmount] = useState(0);
+  const [viewMode, setViewMode] = useState<'list' | 'month'>('list');
+  const [monthModalDay, setMonthModalDay] = useState<Date | null>(null);
+  const [monthModalEvents, setMonthModalEvents] = useState<CalendarEvent[]>([]);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -138,46 +126,6 @@ const OutlookCalendarPage: React.FC = () => {
     
     fetchEvents();
   }, [instance, accounts, sharedMailboxes]);
-
-  const handleAddMailbox = () => {
-    if (newMailbox.email && newMailbox.label) {
-      const mailbox: SharedMailbox = {
-        id: Date.now().toString(),
-        email: newMailbox.email.trim(),
-        label: newMailbox.label.trim(),
-        color: newMailbox.color,
-      };
-      setSharedMailboxes([...sharedMailboxes, mailbox]);
-      setNewMailbox({ email: '', label: '', color: '#6366f1' });
-      setShowAddMailbox(false);
-    }
-  };
-
-  const handleDeleteMailbox = (id: string) => {
-    setSharedMailboxes(sharedMailboxes.filter(m => m.id !== id));
-  };
-
-  const handleEditMailbox = (mailbox: SharedMailbox) => {
-    setEditingMailbox(mailbox.id);
-    setNewMailbox({ email: mailbox.email, label: mailbox.label, color: mailbox.color });
-  };
-
-  const handleSaveEdit = () => {
-    if (editingMailbox && newMailbox.email && newMailbox.label) {
-      setSharedMailboxes(sharedMailboxes.map(m => 
-        m.id === editingMailbox 
-          ? { ...m, email: newMailbox.email.trim(), label: newMailbox.label.trim(), color: newMailbox.color }
-          : m
-      ));
-      setNewMailbox({ email: '', label: '', color: '#6366f1' });
-      setEditingMailbox(null);
-    }
-  };
-
-  const handleCancelEdit = () => {
-    setNewMailbox({ email: '', label: '', color: '#6366f1' });
-    setEditingMailbox(null);
-  };
 
   const handleEventClick = (event: CalendarEvent) => {
     setSelectedEvent(event);
@@ -357,176 +305,383 @@ const OutlookCalendarPage: React.FC = () => {
     );
   };
 
+  // Date navigation
+  const goToPreviousDay = () => {
+    const currentDate = new Date(selectedDate);
+    currentDate.setDate(currentDate.getDate() - 1);
+    setSelectedDate(currentDate.toISOString().split('T')[0]);
+  };
+  const goToNextDay = () => {
+    const currentDate = new Date(selectedDate);
+    currentDate.setDate(currentDate.getDate() + 1);
+    setSelectedDate(currentDate.toISOString().split('T')[0]);
+  };
+  const goToToday = () => {
+    setSelectedDate(new Date().toISOString().split('T')[0]);
+  };
+
+  // Filter events by date and mailbox
+  const filteredEvents = events.filter(ev => {
+    const eventDate = ev.start.toISOString().split('T')[0];
+    const dateMatch = eventDate === selectedDate;
+    const mailboxMatch = selectedMailbox ? ev.mailbox === selectedMailbox : true;
+    return dateMatch && mailboxMatch;
+  });
+
+  useEffect(() => {
+    // Calculate total amount (mock: use event.resource.amount or 0)
+    const total = filteredEvents.reduce((acc, ev) => acc + (ev.resource?.amount || 0), 0);
+    setTotalAmount(total);
+  }, [filteredEvents]);
+
+  // Render event row (like renderMeetingRow in CalendarPage)
+  const renderEventRow = (event: CalendarEvent) => {
+    const isExpanded = expandedEventId === event.id;
+    return (
+      <React.Fragment key={event.id}>
+        <tr className="hover:bg-base-200/50">
+          <td className="font-bold flex items-center gap-2">
+            <span style={{ background: event.color, width: 12, height: 12, borderRadius: 6, display: 'inline-block' }} />
+            {event.title}
+          </td>
+          <td>{event.start.toLocaleDateString()} at {event.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+          <td>{event.group}</td>
+          <td>{event.mailbox}</td>
+          <td>${event.resource?.amount?.toLocaleString() || '0'}</td>
+          <td><span className="badge badge-success">{event.resource?.status || 'Scheduled'}</span></td>
+          <td>
+            <button 
+              className="btn btn-primary btn-sm gap-2"
+              onClick={() => {
+                if (event.resource?.teamsMeetingUrl) {
+                  window.open(event.resource.teamsMeetingUrl, '_blank');
+                } else {
+                  alert('No meeting URL available');
+                }
+              }}
+            >
+              <VideoCameraIcon className="w-4 h-4" />
+              Join Meeting
+            </button>
+          </td>
+        </tr>
+        {/* Expanded Details Row */}
+        {isExpanded && (
+          <tr>
+            <td colSpan={7} className="p-0">
+              <div className="bg-base-100/50 p-4 border-t border-base-200">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="bg-base-200/50 p-4 rounded-lg">
+                    <h5 className="font-semibold text-base-content/90 mb-2">Description</h5>
+                    <div className="text-sm text-base-content/90 whitespace-pre-wrap">{event.description ? stripHtml(event.description) : 'No description.'}</div>
+                  </div>
+                  <div className="bg-base-200/50 p-4 rounded-lg">
+                    <h5 className="font-semibold text-base-content/90 mb-2">Attendees</h5>
+                    <div className="space-y-2">
+                      {event.attendees && event.attendees.length > 0 ? (
+                        event.attendees.map((a: any, idx: number) => (
+                          <div key={idx} className="flex items-center gap-2 text-sm">
+                            <UserIcon className="w-4 h-4" />
+                            {a.emailAddress?.name || a.emailAddress?.address}
+                          </div>
+                        ))
+                      ) : (
+                        <span className="text-base-content/70">No attendees.</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="md:col-span-2 flex justify-center">
+                    <button
+                      onClick={() => {
+                        setSelectedEvent(event);
+                        setIsDocumentModalOpen(true);
+                      }}
+                      className="btn btn-outline btn-primary flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg shadow hover:bg-primary hover:text-white transition-colors"
+                    >
+                      <FolderIcon className="w-5 h-5" />
+                      Documents
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+        )}
+        {/* Toggle Row */}
+        <tr>
+          <td colSpan={7} className="p-0">
+            <div
+              className="bg-base-200 hover:bg-base-300 cursor-pointer transition-colors p-2 text-center"
+              onClick={() => setExpandedEventId(expandedEventId === event.id ? null : event.id)}
+            >
+              <div className="flex items-center justify-center gap-2 text-sm font-medium text-primary">
+                <span>{expandedEventId === event.id ? 'Show Less' : 'Show More'}</span>
+                <ChevronDownIcon className={`w-5 h-5 transition-transform ${expandedEventId === event.id ? 'rotate-180' : ''}`} />
+              </div>
+            </div>
+          </td>
+        </tr>
+      </React.Fragment>
+    );
+  };
+
+  // Helper: get all days in current month
+  const getMonthDays = (date: Date) => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const days: Date[] = [];
+    for (let d = 1; d <= lastDay.getDate(); d++) {
+      days.push(new Date(year, month, d));
+    }
+    return days;
+  };
+  // Helper: get events for a given day
+  const getEventsForDay = (day: Date) => {
+    const dayStr = day.toISOString().split('T')[0];
+    return events.filter(ev => ev.start.toISOString().split('T')[0] === dayStr);
+  };
+  // Month view state
+  const [monthViewDate, setMonthViewDate] = useState(() => {
+    const d = new Date(selectedDate);
+    d.setDate(1);
+    return d;
+  });
+  // Month navigation
+  const goToPrevMonth = () => {
+    setMonthViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  };
+  const goToNextMonth = () => {
+    setMonthViewDate(prev => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  };
+  // Month grid rendering
+  const renderMonthGrid = () => {
+    const days = getMonthDays(monthViewDate);
+    const firstDayOfWeek = new Date(monthViewDate.getFullYear(), monthViewDate.getMonth(), 1).getDay();
+    const blanks = Array.from({ length: firstDayOfWeek }, (_, i) => <div key={'blank-' + i}></div>);
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <button className="btn btn-circle btn-outline btn-primary" onClick={goToPrevMonth}><ChevronLeftIcon className="w-6 h-6" /></button>
+          <span className="text-lg font-semibold">
+            {monthViewDate.toLocaleString('en-US', { month: 'long', year: 'numeric' })}
+          </span>
+          <button className="btn btn-circle btn-outline btn-primary" onClick={goToNextMonth}><ChevronRightIcon className="w-6 h-6" /></button>
+        </div>
+        <div className="grid grid-cols-7 gap-2 mb-2 text-center text-base-content/70 font-semibold">
+          <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
+        </div>
+        <div className="grid grid-cols-7 gap-2">
+          {blanks}
+          {days.map(day => {
+            const evs = getEventsForDay(day);
+            const isToday = day.toDateString() === new Date().toDateString();
+            return (
+              <div
+                key={day.toISOString()}
+                className={`card cursor-pointer transition-all hover:shadow-lg p-2 min-h-[80px] flex flex-col items-start ${isToday ? 'border-2 border-primary' : 'border border-base-200'}`}
+                onClick={() => {
+                  setMonthModalDay(day);
+                  setMonthModalEvents(evs);
+                }}
+              >
+                <div className="font-bold text-base-content/80 mb-1">{day.getDate()}</div>
+                <div className="flex flex-wrap gap-1">
+                  {evs.slice(0, 3).map(ev => (
+                    <span key={ev.id} className="badge badge-xs" style={{ background: ev.color }} title={ev.title}></span>
+                  ))}
+                  {evs.length > 3 && <span className="badge badge-xs bg-base-200">+{evs.length - 3}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Modal for day events */}
+        {monthModalDay && (
+          <div className="modal modal-open">
+            <div className="modal-box max-w-lg">
+              <div className="flex items-center justify-between mb-4">
+                <div className="text-lg font-bold">
+                  {monthModalDay.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                </div>
+                <button className="btn btn-sm btn-circle btn-ghost" onClick={() => setMonthModalDay(null)}>✕</button>
+              </div>
+              {monthModalEvents.length === 0 ? (
+                <div className="text-base-content/60">No events for this day.</div>
+              ) : (
+                <div className="space-y-4">
+                  {monthModalEvents.map(ev => (
+                    <div key={ev.id} className="card bg-base-100 shadow p-3 flex flex-col gap-1">
+                      <div className="flex items-center gap-2">
+                        <span className="badge badge-xs" style={{ background: ev.color }}></span>
+                        <span className="font-semibold">{ev.title}</span>
+                      </div>
+                      <div className="text-xs text-base-content/70">
+                        {ev.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {ev.end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                      <div className="text-xs text-base-content/60">{ev.group} • {ev.mailbox}</div>
+                      {ev.location && (
+                        <div className="text-xs text-base-content/70 mt-1"><span className="font-medium">Location:</span> {ev.location}</div>
+                      )}
+                      <div className="text-xs text-base-content/70 mt-1">
+                        <span className="font-medium">Description:</span> {ev.description ? stripHtml(ev.description) : 'No description'}
+                      </div>
+                      <div className="flex gap-2 mt-1">
+                        <button className="btn btn-xs btn-outline btn-primary" onClick={() => window.open(ev.resource?.teamsMeetingUrl, '_blank')}>Join</button>
+                        <button className="btn btn-xs btn-outline" onClick={() => setSelectedEvent(ev)}>Details</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Add a helper function to strip HTML tags
+  function stripHtml(html?: string): string {
+    if (!html) return '';
+    const tmp = document.createElement('DIV');
+    tmp.innerHTML = html;
+    return tmp.textContent || tmp.innerText || '';
+  }
+
   return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
-        <h1 className="text-3xl font-bold">Outlook Calendar</h1>
-        <button 
-          className="btn btn-primary btn-sm gap-2"
-          onClick={() => setShowAddMailbox(true)}
+    <div className="p-4 md:p-6 lg:p-8">
+      {/* Removed Outlook Calendar title */}
+
+      {/* Date Navigation */}
+      <div className="mb-6 flex items-center justify-center gap-4">
+        <button
+          onClick={goToPreviousDay}
+          className="btn btn-circle btn-outline btn-primary"
+          title="Previous Day"
         >
-          <PlusIcon className="w-4 h-4" />
-          Add Mailbox
+          <ChevronLeftIcon className="w-6 h-6" />
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-lg font-semibold">
+            {new Date(selectedDate).toLocaleDateString('en-US', { 
+              weekday: 'long', 
+              year: 'numeric', 
+              month: 'long', 
+              day: 'numeric' 
+            })}
+          </span>
+          <button
+            onClick={goToToday}
+            className="btn btn-sm btn-primary"
+            title="Go to Today"
+          >
+            Today
+          </button>
+        </div>
+        <button
+          onClick={goToNextDay}
+          className="btn btn-circle btn-outline btn-primary"
+          title="Next Day"
+        >
+          <ChevronRightIcon className="w-6 h-6" />
         </button>
       </div>
 
-      {/* Shared Mailboxes Management */}
-      <div className="bg-base-100 rounded-lg shadow-lg p-6 mb-6">
-        <h2 className="text-xl font-semibold mb-4">Shared Mailboxes</h2>
-        
-        {/* Add/Edit Mailbox Form */}
-        {(showAddMailbox || editingMailbox) && (
-          <div className="bg-base-200 rounded-lg p-4 mb-4">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-              <div>
-                <label className="label">
-                  <span className="label-text">Email Address</span>
-                </label>
-                <input
-                  type="email"
-                  className="input input-bordered w-full"
-                  placeholder="shared-calendar@domain.com"
-                  value={newMailbox.email}
-                  onChange={(e) => setNewMailbox({ ...newMailbox, email: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="label">
-                  <span className="label-text">Display Name</span>
-                </label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Calendar Name"
-                  value={newMailbox.label}
-                  onChange={(e) => setNewMailbox({ ...newMailbox, label: e.target.value })}
-                />
-              </div>
-              <div>
-                <label className="label">
-                  <span className="label-text">Color</span>
-                </label>
-                <input
-                  type="color"
-                  className="input input-bordered w-full h-12"
-                  value={newMailbox.color}
-                  onChange={(e) => setNewMailbox({ ...newMailbox, color: e.target.value })}
-                />
-              </div>
-              <div className="flex gap-2">
-                <button 
-                  className="btn btn-success btn-sm gap-2"
-                  onClick={editingMailbox ? handleSaveEdit : handleAddMailbox}
-                >
-                  <CheckIcon className="w-4 h-4" />
-                  {editingMailbox ? 'Save' : 'Add'}
-                </button>
-                <button 
-                  className="btn btn-ghost btn-sm gap-2"
-                  onClick={editingMailbox ? handleCancelEdit : () => setShowAddMailbox(false)}
-                >
-                  <XMarkIcon className="w-4 h-4" />
-                  Cancel
-                </button>
-              </div>
-            </div>
+      {/* Filters */}
+      <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
+        <h1 className="text-3xl font-bold flex items-center gap-3">
+          <CalendarIcon className="w-8 h-8 text-primary" />
+          Outlook Calendar
+        </h1>
+        <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
+          <div className="flex items-center gap-2">
+            <FunnelIcon className="w-5 h-5 text-gray-500" />
+            <input 
+              type="date" 
+              className="input input-bordered w-full md:w-auto"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+            />
           </div>
-        )}
-
-        {/* Mailboxes List */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {sharedMailboxes.map((mailbox) => (
-            <div 
-              key={mailbox.id}
-              className="flex items-center justify-between p-3 bg-base-200 rounded-lg"
+          <div className="flex items-center gap-2">
+            <UserIcon className="w-5 h-5 text-gray-500" />
+            <select 
+              className="select select-bordered w-full md:w-auto"
+              value={selectedMailbox}
+              onChange={(e) => setSelectedMailbox(e.target.value)}
             >
-              <div className="flex items-center gap-3">
-                <span 
-                  style={{ background: mailbox.color, width: 16, height: 16, borderRadius: 4, display: 'inline-block' }}
-                />
-                <div>
-                  <div className="font-medium">{mailbox.label}</div>
-                  <div className="text-sm text-base-content/70">{mailbox.email}</div>
-                </div>
-              </div>
-              <div className="flex gap-1">
-                <button 
-                  className="btn btn-ghost btn-xs"
-                  onClick={() => handleEditMailbox(mailbox)}
-                >
-                  <PencilIcon className="w-3 h-3" />
-                </button>
-                <button 
-                  className="btn btn-ghost btn-xs text-error"
-                  onClick={() => handleDeleteMailbox(mailbox.id)}
-                >
-                  <TrashIcon className="w-3 h-3" />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Calendar */}
-      <div className="bg-base-100 rounded-lg shadow-lg p-8">
-        <div className="mb-4 flex flex-wrap gap-4">
-          {sharedMailboxes.map(mailbox => (
-            <span key={mailbox.id} className="inline-flex items-center gap-2 text-sm">
-              <span 
-                style={{ background: mailbox.color, width: 16, height: 16, borderRadius: 4, display: 'inline-block' }}
-              />
-              {mailbox.label}
-            </span>
-          ))}
-        </div>
-        
-        {loading ? (
-          <div className="flex items-center justify-center h-96">
-            <span className="loading loading-spinner loading-lg"></span>
-            <span className="ml-3">Loading calendar events...</span>
+              <option value="">All Calendars</option>
+              {sharedMailboxes.map(mb => <option key={mb.email} value={mb.email}>{mb.label}</option>)}
+            </select>
           </div>
-        ) : (
-          <Calendar
-            localizer={localizer}
-            events={events}
-            startAccessor="start"
-            endAccessor="end"
-            style={{ height: 700 }}
-            eventPropGetter={eventStyleGetter}
-            onSelectEvent={handleEventClick}
-            components={{
-              toolbar: CustomToolbar,
-              month: { event: MonthEventComponent },
-              week: { event: TitleOnlyEventComponent },
-              day: { event: TitleOnlyEventComponent },
-              agenda: { event: AgendaEventComponent },
-            }}
-            views={['month', 'week', 'day', 'agenda']}
-            defaultView={Views.MONTH}
-            step={60}
-            timeslots={1}
-            selectable
-            popup
-            tooltipAccessor={(event) => `${event.title} (${event.group})`}
-          />
-        )}
+        </div>
       </div>
 
-      {/* Event Details Modal */}
-      {showEventModal && selectedEvent && (
+      {/* View Toggle */}
+      <div className="flex justify-end mb-4">
+        <div className="btn-group">
+          <button className={`btn btn-sm ${viewMode === 'list' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('list')}>List View</button>
+          <button className={`btn btn-sm ${viewMode === 'month' ? 'btn-primary' : 'btn-outline'}`} onClick={() => setViewMode('month')}>Month View</button>
+        </div>
+      </div>
+
+      {viewMode === 'month' ? (
+        renderMonthGrid()
+      ) : (
+        <div className="bg-base-100 rounded-lg shadow-lg overflow-x-auto">
+          <table className="table w-full">
+            <thead>
+              <tr className="bg-base-200">
+                <th>Title</th>
+                <th>Date & Time</th>
+                <th>Group</th>
+                <th>Mailbox</th>
+                <th>Amount</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={7} className="text-center p-8">Loading events...</td></tr>
+              ) : filteredEvents.length > 0 ? (
+                filteredEvents.map(renderEventRow)
+              ) : (
+                <tr><td colSpan={7} className="text-center p-8">No events found for the selected filters.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Total Amount */}
+      <div className="mt-6 flex justify-end">
+        <div className="card bg-primary text-primary-content p-4 shadow-lg">
+          <div className="flex items-center gap-3">
+            <CurrencyDollarIcon className="w-7 h-7" />
+            <div>
+              <div className="text-lg font-bold">Total Balance</div>
+              <div className="text-2xl font-extrabold">${totalAmount.toLocaleString()}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Document Modal */}
+      {isDocumentModalOpen && selectedEvent && (
         <div className="modal modal-open">
           <div className="modal-box max-w-2xl">
             <div className="flex justify-between items-start mb-4">
               <h3 className="font-bold text-lg">{selectedEvent.title}</h3>
               <button 
                 className="btn btn-sm btn-circle btn-ghost"
-                onClick={closeEventModal}
+                onClick={() => setIsDocumentModalOpen(false)}
               >
                 ✕
               </button>
             </div>
-            
             <div className="space-y-4">
               <div className="flex items-center gap-3">
                 <span 
@@ -534,13 +689,12 @@ const OutlookCalendarPage: React.FC = () => {
                 />
                 <span className="text-sm font-medium">{selectedEvent.group}</span>
               </div>
-              
               <div className="flex items-center gap-2">
                 <ClockIcon className="w-5 h-5 text-base-content/70" />
                 <div>
                   <div className="font-medium">
                     {selectedEvent.allDay ? 'All Day' : 
-                      `${moment(selectedEvent.start).format('MMM D, YYYY h:mm A')} - ${moment(selectedEvent.end).format('h:mm A')}`
+                      `${selectedEvent.start.toLocaleDateString()} ${selectedEvent.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${selectedEvent.end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
                     }
                   </div>
                   <div className="text-sm text-base-content/70">
@@ -548,20 +702,15 @@ const OutlookCalendarPage: React.FC = () => {
                   </div>
                 </div>
               </div>
-              
               {selectedEvent.location && (
                 <div className="flex items-center gap-2">
-                  <MapPinIcon className="w-5 h-5 text-base-content/70" />
+                  <span className="font-medium">Location:</span>
                   <span>{selectedEvent.location}</span>
                 </div>
               )}
-              
               {selectedEvent.attendees && selectedEvent.attendees.length > 0 && (
                 <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <UserIcon className="w-5 h-5 text-base-content/70" />
-                    <span className="font-medium">Attendees</span>
-                  </div>
+                  <div className="font-medium mb-2">Attendees</div>
                   <div className="space-y-1">
                     {selectedEvent.attendees.map((attendee: any, index: number) => (
                       <div key={index} className="text-sm text-base-content/80">
@@ -571,20 +720,17 @@ const OutlookCalendarPage: React.FC = () => {
                   </div>
                 </div>
               )}
-              
               {selectedEvent.description && (
                 <div>
                   <div className="font-medium mb-2">Description</div>
-                  <div 
-                    className="text-sm text-base-content/80 prose prose-sm max-w-none"
-                    dangerouslySetInnerHTML={{ __html: selectedEvent.description }}
-                  />
+                  <div className="text-sm text-base-content/80 prose prose-sm max-w-none">
+                    {selectedEvent.description}
+                  </div>
                 </div>
               )}
             </div>
-            
             <div className="modal-action">
-              <button className="btn" onClick={closeEventModal}>
+              <button className="btn" onClick={() => setIsDocumentModalOpen(false)}>
                 Close
               </button>
             </div>

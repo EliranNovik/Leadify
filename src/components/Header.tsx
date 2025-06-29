@@ -304,7 +304,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </button>
           <div className="h-16 flex items-center">
             <Link to="/">
-              <img src="/Leadify12.png" alt="Leadify Logo" className="h-36 object-contain mt-2 cursor-pointer" />
+              <span className="ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>Leadify</span>
             </Link>
           </div>
           {/* Nav Tabs */}
@@ -449,7 +449,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           {/* Notifications */}
           <div className="relative" ref={notificationsRef}>
             <button 
-              className="btn btn-ghost btn-circle"
+              className="btn btn-ghost btn-circle mr-1"
               onClick={handleNotificationClick}
             >
               <div className="indicator">
