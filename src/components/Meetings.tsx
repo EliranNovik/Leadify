@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { CalendarIcon, ClockIcon, MapPinIcon, UserIcon, LinkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
+import { Link } from 'react-router-dom';
 
 interface Meeting {
   id: number;
@@ -51,8 +52,10 @@ const Meetings: React.FC = () => {
   useEffect(() => {
     const fetchMeetings = async () => {
       try {
-        const today = new Date().toISOString().split('T')[0];
-        const tomorrow = new Date(Date.now() + 86400000).toISOString().split('T')[0];
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const tomorrow = new Date(today.getTime() + 86400000);
+        const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
         // Fetch meetings from Supabase - join with leads table to get lead information
         const { data: meetings, error: fetchError } = await supabase
@@ -78,7 +81,7 @@ const Meetings: React.FC = () => {
               manager
             )
           `)
-          .or(`meeting_date.eq.${today},meeting_date.eq.${tomorrow}`)
+          .or(`meeting_date.eq.${todayStr},meeting_date.eq.${tomorrowStr}`)
           .not('teams_meeting_url', 'is', null)
           .returns<MeetingRecord[]>();
 
@@ -114,8 +117,8 @@ const Meetings: React.FC = () => {
           leadManager: meeting.leads?.manager || ''
         }));
 
-        setTodayMeetings(transformedMeetings.filter(m => m.date === today));
-        setTomorrowMeetings(transformedMeetings.filter(m => m.date === tomorrow));
+        setTodayMeetings(transformedMeetings.filter(m => m.date === todayStr));
+        setTomorrowMeetings(transformedMeetings.filter(m => m.date === tomorrowStr));
         setError(null);
       } catch (err) {
         console.error('Error in fetchMeetings:', err);
@@ -127,6 +130,16 @@ const Meetings: React.FC = () => {
 
     fetchMeetings();
   }, []);
+
+  // Helper to format date as DD/MM/YYYY
+  const formatDate = (dateStr: string) => {
+    const d = new Date(dateStr);
+    return d.toLocaleDateString(undefined, { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
+
+  // Get today's and tomorrow's date strings for titles
+  const todayDateStr = formatDate(new Date().toISOString().split('T')[0]);
+  const tomorrowDateStr = formatDate(new Date(Date.now() + 86400000).toISOString().split('T')[0]);
 
   const getLocationBadge = (location: Meeting['location']) => {
     switch (location) {
@@ -144,39 +157,16 @@ const Meetings: React.FC = () => {
   const getStageBadge = (stage: string) => {
     if (!stage) return null;
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    let badgeClass = 'badge inline-flex items-center justify-center h-8 px-3 py-1 text-sm font-medium rounded-lg border-none min-w-[90px] max-w-[160px] text-center whitespace-nowrap overflow-hidden text-ellipsis';
-    switch (stage) {
-      case 'created':
-      case 'scheduler_assigned':
-        badgeClass += ' bg-blue-100 text-blue-800';
-        break;
-      case 'meeting_scheduled':
-      case 'another_meeting':
-      case 'offer_sent':
-      case 'waiting_for_mtng_sum':
-        badgeClass += ' bg-sky-100 text-sky-800';
-        break;
-      case 'meeting_paid':
-      case 'client_signed':
-      case 'meeting_ended':
-        badgeClass += ' bg-green-100 text-green-800';
-        break;
-      case 'unactivated':
-      case 'client_declined':
-        badgeClass += ' bg-red-100 text-red-800';
-        break;
-      case 'lead_summary':
-        badgeClass += ' bg-gray-200 text-gray-800';
-        break;
-      case 'communication_started':
-      case 'meeting_rescheduled':
-      case 'revised_offer':
-        badgeClass += ' bg-yellow-100 text-yellow-800';
-        break;
-      default:
-        badgeClass += ' bg-base-200 text-base-content';
-    }
-    return <span className={badgeClass} title={stageText}>{stageText}</span>;
+    const style = {
+      backgroundColor: '#3b28c7',
+      color: '#fff',
+      border: 'none',
+    };
+    return (
+      <span className="badge inline-flex items-center justify-center h-7 px-4 py-1 text-xs font-semibold rounded-lg text-center whitespace-nowrap font-semibold" style={style} title={stageText}>
+        {stageText}
+      </span>
+    );
   };
 
   const renderMeetingsTable = (meetings: Meeting[]) => (
@@ -200,7 +190,11 @@ const Meetings: React.FC = () => {
         <tbody>
           {meetings.map((meeting) => (
             <tr key={meeting.id}>
-              <td className="font-medium text-primary">{meeting.lead}</td>
+              <td className="font-medium text-primary">
+                <Link to={`/clients/${meeting.lead}`} className="font-bold text-primary">
+                  {meeting.lead}
+                </Link>
+              </td>
               <td className="align-middle">
                 {getStageBadge(meeting.info)}
               </td>
@@ -306,6 +300,9 @@ const Meetings: React.FC = () => {
           <h2 className="text-2xl md:text-xl font-bold md:font-semibold flex items-center gap-4 md:gap-2">
             <CalendarIcon className="w-7 h-7 md:w-6 md:h-6 text-primary" />
             Today's Meetings
+            <span className="inline-flex items-center gap-1 bg-primary/10 text-[#3b28c7] font-semibold rounded-full px-3 py-1 text-base ml-2">
+              {todayDateStr}
+            </span>
           </h2>
         </div>
         {/* Mobile: Cards */}
@@ -338,6 +335,9 @@ const Meetings: React.FC = () => {
           <h2 className="text-2xl md:text-xl font-bold md:font-semibold flex items-center gap-4 md:gap-2">
             <CalendarIcon className="w-7 h-7 md:w-6 md:h-6 text-primary" />
             Tomorrow's Meetings
+            <span className="inline-flex items-center gap-1 bg-primary/10 text-[#3b28c7] font-semibold rounded-full px-3 py-1 text-base ml-2">
+              {tomorrowDateStr}
+            </span>
           </h2>
         </div>
         {/* Mobile: Cards */}
