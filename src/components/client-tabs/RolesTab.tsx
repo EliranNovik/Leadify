@@ -121,20 +121,28 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         <h3 className="text-2xl font-semibold">Roles</h3>
       </div>
 
-      <div className="card bg-base-100 shadow-lg">
-        <div className="card-body">
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4 md:gap-8">
-            {roles.map((role) => (
-              <div 
-                key={role.id}
-                className="flex flex-col items-center text-center space-y-3 p-4 rounded-lg bg-base-200/50"
-              >
-                <span className="text-base text-base-content/70 font-medium">
+      <div className="relative animate-fadeInUp">
+        {/* Roles Grid - 2 columns, smaller boxes, no colored line */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-10 w-full max-w-3xl mx-auto">
+          {roles.map((role) => {
+            const hasAssignee = role.assignee && role.assignee !== '---';
+            const initials = hasAssignee
+              ? role.assignee.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+              : '';
+            return (
+              <div key={role.id} className="w-full max-w-sm mx-auto bg-white border border-base-200 rounded-xl shadow p-4 flex flex-col items-center justify-center gap-2 min-h-[80px] relative">
+                {/* Role Title */}
+                <div className="absolute top-2 left-3 text-lg font-extrabold uppercase tracking-wider text-primary/80">
                   {role.title}
-                </span>
+                </div>
+                {/* Initials or Icon */}
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold shadow mb-1 ${hasAssignee ? 'bg-primary text-white' : 'bg-base-200 text-base-content/40'}`}>
+                  {hasAssignee ? initials : <UserIcon className="w-6 h-6" />}
+                </div>
+                {/* Assignee Name */}
                 {isEditing ? (
                   <select
-                    className="select select-bordered w-full"
+                    className="select select-bordered w-full max-w-xs font-semibold text-base bg-base-100/80 hover:bg-primary/10 transition-colors duration-150 shadow-sm"
                     value={role.assignee}
                     onChange={(e) => handleRoleChange(role.id, e.target.value)}
                   >
@@ -145,49 +153,49 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     ))}
                   </select>
                 ) : (
-                  <span className={`text-xl font-semibold ${role.assignee === '---' ? 'text-base-content/30' : ''}`}>
-                    {role.assignee}
+                  <span className={`text-base font-bold text-center ${hasAssignee ? 'text-base-content' : 'text-base-content/40 italic'}`}>
+                    {hasAssignee ? role.assignee : 'Unassigned'}
                   </span>
                 )}
               </div>
-            ))}
-          </div>
-
-          <div className="card-actions justify-start gap-3 mt-8">
-            {isEditing ? (
-              <>
-                <button 
-                  className="btn btn-primary gap-2"
-                  onClick={handleSaveRoles}
-                >
-                  <CheckIcon className="w-5 h-5" />
-                  Save Roles
-                </button>
-                <button 
-                  className="btn btn-ghost gap-2"
-                  onClick={handleCancelEdit}
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                  Cancel
-                </button>
-              </>
-            ) : (
+            );
+          })}
+        </div>
+        {/* Action Bar - centered */}
+        <div className="flex flex-row gap-4 px-6 py-4 rounded-xl bg-white shadow border border-base-200/60 w-fit mx-auto z-20 animate-fadeInUp">
+          {isEditing ? (
+            <>
               <button 
-                className="btn btn-neutral gap-2"
-                onClick={() => setIsEditing(true)}
+                className="btn btn-primary gap-2 px-6 shadow-md hover:scale-105 transition-transform"
+                onClick={handleSaveRoles}
               >
-                <PencilSquareIcon className="w-5 h-5" />
-                Set Roles
+                <CheckIcon className="w-5 h-5" />
+                Save Roles
               </button>
-            )}
+              <button 
+                className="btn btn-ghost gap-2 px-6 border border-base-200 shadow-sm hover:bg-base-200/60 hover:scale-105 transition-transform"
+                onClick={handleCancelEdit}
+              >
+                <XMarkIcon className="w-5 h-5" />
+                Cancel
+              </button>
+            </>
+          ) : (
             <button 
-              className="btn btn-ghost text-primary hover:bg-primary/10 gap-2"
-              onClick={handleSetMeAsCloser}
+              className="btn btn-neutral gap-2 px-6 shadow-md hover:scale-105 transition-transform"
+              onClick={() => setIsEditing(true)}
             >
-              <UserIcon className="w-5 h-5" />
-              Set me as closer
+              <PencilSquareIcon className="w-5 h-5" />
+              Set Roles
             </button>
-          </div>
+          )}
+          <button 
+            className="btn btn-ghost text-primary hover:bg-primary/10 gap-2 px-6 border border-primary/30 shadow-sm hover:scale-105 transition-transform"
+            onClick={handleSetMeAsCloser}
+          >
+            <UserIcon className="w-5 h-5" />
+            Set me as closer
+          </button>
         </div>
       </div>
     </div>

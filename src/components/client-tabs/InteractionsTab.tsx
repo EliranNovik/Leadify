@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Fragment } from 'react';
 import { ClientTabProps } from '../../types/client';
 import {
   ChatBubbleLeftRightIcon,
@@ -10,6 +10,8 @@ import {
   PaperClipIcon,
   XMarkIcon,
   UserIcon,
+  PaperAirplaneIcon,
+  FaceSmileIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useMsal } from '@azure/msal-react';
@@ -40,6 +42,7 @@ interface Interaction {
   content: string;
   observation: string;
   editable: boolean;
+  status?: string;
 }
 
 const contactMethods = [
@@ -273,6 +276,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [composeAttachments, setComposeAttachments] = useState<{ name: string; contentType: string; contentBytes: string }[]>([]);
   const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
   const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
+  const [activeInteraction, setActiveInteraction] = useState<Interaction | null>(null);
+  const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
+  const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
+  const [whatsAppInput, setWhatsAppInput] = useState("");
+  const [fakeMessages, setFakeMessages] = useState([
+    { from: 'client', text: 'Hi, I have a question about my documents.', time: '09:15', seen: true },
+    { from: 'me', text: 'Of course! How can I help you?', time: '09:16', seen: true },
+    { from: 'client', text: 'Which documents do I still need to upload?', time: '09:17', seen: true },
+    { from: 'me', text: 'You still need to upload your birth certificate and proof of address.', time: '09:18', seen: true },
+    { from: 'client', text: 'Thank you! I will upload them today.', time: '09:19', seen: false },
+  ]);
 
   // This function now ONLY syncs with Graph and then triggers a full refresh
   const runGraphSync = useCallback(async () => {
@@ -305,12 +319,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
         raw_date: e.sent_at,
         employee: e.direction === 'outgoing' ? (accounts[0]?.name || 'You') : client.name,
-        direction: e.direction,
+        direction: e.direction === 'outgoing' ? 'out' : 'in',
         kind: 'email',
         length: '',
         content: e.subject,
         observation: e.observation || '',
         editable: true,
+        status: e.status,
       };
     });
 
@@ -596,115 +611,187 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   };
 
+  const sendFakeClientMessage = (text: string) => {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setFakeMessages(msgs => [...msgs, { from: 'client', text, time: timeStr, seen: true }]);
+    setInteractions(prev => [
+      {
+        id: `whatsapp_client_${now.getTime()}`,
+        date: now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+        time: timeStr,
+        raw_date: now.toISOString(),
+        employee: client.name,
+        direction: 'in',
+        kind: 'whatsapp',
+        length: '',
+        content: text,
+        observation: '',
+        editable: false,
+      },
+      ...prev
+    ]);
+  };
+
   return (
     <div className="p-8">
-      <h2 className="text-3xl font-bold mb-2">Interactions</h2>
-      <div className="text-lg mb-4 text-base-content/80">
-        <span className="font-semibold">Closer:</span> Hadar
-      </div>
-      {/* Action Buttons */}
-      <div className="flex flex-wrap gap-2 mb-6">
+      <div className="flex gap-2 mb-2">
         <button className="btn btn-neutral btn-md gap-2" onClick={() => setIsEmailModalOpen(true)}>
-          <EnvelopeIcon className="w-5 h-5" />
-          Emails
+          <EnvelopeIcon className="w-5 h-5" /> Emails
         </button>
-        <button className="btn btn-success btn-md gap-2"><FaWhatsapp className="w-5 h-5" />Whatsapp</button>
-        <button className="btn btn-primary btn-md gap-2" onClick={openContactDrawer}>Contact</button>
+        <button className="btn btn-success btn-md gap-2" onClick={() => setIsWhatsAppOpen(true)}>
+          <FaWhatsapp className="w-5 h-5" /> WhatsApp
+        </button>
+        <button className="btn btn-primary btn-md gap-2" onClick={openContactDrawer}>
+          Contact
+        </button>
       </div>
-      {/* Table */}
-      <div className="overflow-x-auto rounded-xl shadow-lg border border-base-200 bg-base-100">
-        <table className="table w-full">
-          {/* head */}
-          <thead>
-            <tr className="text-left text-sm font-semibold uppercase text-base-content/60 bg-base-200">
-              <th className="px-6 py-4">Details</th>
-              <th className="px-6 py-4">Kind</th>
-              <th className="px-6 py-4 max-w-sm">Content</th>
-              <th className="px-6 py-4 max-w-sm">Observation</th>
-              <th className="px-6 py-4"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {interactions.map((row, idx) => (
-              <tr key={idx} className="hover:bg-base-200/50 transition-colors duration-150 border-b border-base-200 last:border-b-0">
-                {/* Details Column */}
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <span title={row.direction === 'out' ? 'Outgoing' : 'Incoming'}>
-                      {row.direction === 'out' ? (
-                        <ArrowUturnRightIcon className="w-5 h-5 text-primary" />
-                      ) : (
-                        <ArrowUturnLeftIcon className="w-5 h-5 text-neutral" />
-                      )}
-                    </span>
-                    <div>
-                      <div className="font-bold text-base">{row.employee}</div>
-                      <div className="text-sm text-base-content/70">{row.date} at {row.time}</div>
+      <div className="relative pl-8 mt-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          {/* Employee (Outgoing) Timeline - Left */}
+          <div className="relative">
+            {/* Stylish Title */}
+            <div className="flex items-center gap-2 mb-6">
+              <span className="inline-block w-2 h-6 rounded bg-primary" />
+              <span className="text-xl md:text-2xl font-bold text-primary">Employee Interactions</span>
+            </div>
+            <div className="absolute left-3 top-0 bottom-0 w-1 bg-base-200 rounded-full" style={{ zIndex: 0 }} />
+            <div className="flex flex-col gap-12">
+              {[...interactions].filter(row => row.direction === 'out').sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()).map((row, idx) => {
+                // Date formatting
+                const dateObj = new Date(row.raw_date);
+                const day = dateObj.getDate().toString().padStart(2, '0');
+                const month = dateObj.toLocaleString('en', { month: 'short' });
+                const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                // Icon and color
+                let icon, iconBg;
+                if (row.kind === 'sms') {
+                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
+                  iconBg = 'bg-purple-300';
+                } else if (row.kind === 'call') {
+                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
+                  iconBg = 'bg-yellow-100';
+                } else if (row.kind === 'whatsapp') {
+                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
+                  iconBg = 'bg-green-100';
+                } else if (row.kind === 'email') {
+                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
+                  iconBg = 'bg-blue-100';
+                } else if (row.kind === 'office') {
+                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
+                  iconBg = 'bg-orange-100';
+                } else {
+                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
+                  iconBg = 'bg-gray-200';
+                }
+                // Initials
+                const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
+                return (
+                  <div key={row.id} className="relative flex items-start group cursor-pointer" onClick={() => {
+                    setActiveInteraction(row);
+                    setDetailsDrawerOpen(true);
+                  }}>
+                    {/* Timeline dot */}
+                    <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
+                      {icon}
+                    </div>
+                    {/* Date/time */}
+                    <div className="w-28 text-right pr-4 pt-1 select-none">
+                      <div className="text-base font-semibold text-base-content/80">{day} {month},</div>
+                      <div className="text-sm text-base-content/60">{time}</div>
+                    </div>
+                    {/* Card (summary only) */}
+                    <div className="ml-8 flex-1">
+                      <div className="bg-base-100 border border-primary rounded-2xl shadow-md p-5 min-w-[220px] max-w-xl hover:shadow-lg transition-all duration-150 flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-base-content/80 bg-base-200 text-lg">{initials}</div>
+                        <div>
+                          <div className="font-semibold text-base text-base-content/90">{row.employee}</div>
+                          <div className="flex flex-wrap gap-2 mt-1">
+                            <span className="badge badge-outline text-xs">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
+                            {row.status && <span className={`badge badge-outline text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'}`}>{row.status}</span>}
+                            {row.length && row.length !== 'm' && <span className="badge badge-outline text-xs">{row.length}</span>}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </td>
-
-                {/* Kind Column */}
-                <td className="px-6 py-4 align-middle">
-                  <div className="flex flex-col items-center gap-1">
-                    {row.kind === 'whatsapp' && <FaWhatsapp className="w-6 h-6 text-success" title="Whatsapp"/>}
-                    {row.kind === 'call' && <PhoneIcon className="w-6 h-6 text-primary" title="Call"/>}
-                    {row.kind === 'email' && 
-                      <button 
-                        className="btn btn-ghost btn-circle btn-sm"
-                        onClick={() => {
-                          setIsEmailModalOpen(true);
-                          setActiveEmailId((row as any).id);
-                        }}
-                      >
-                        <EnvelopeIcon className="w-6 h-6 text-neutral" title="Email"/>
-                      </button>
-                    }
-                    {row.kind === 'sms' && <ChatBubbleLeftRightIcon className="w-6 h-6 text-info" title="SMS"/>}
-                    {row.kind === 'office' && <UserIcon className="w-6 h-6 text-warning" title="In Office"/>}
-                    {row.length && row.length !== 'm' && <span className="text-xs text-base-content/60">{row.length}</span>}
+                );
+              })}
+            </div>
+          </div>
+          {/* Client (Ingoing) Timeline - Right */}
+          <div className="relative">
+            {/* Stylish Title */}
+            <div className="flex items-center gap-2 mb-6">
+              <span className="inline-block w-2 h-6 rounded bg-accent" />
+              <span className="text-xl md:text-2xl font-bold text-accent">Client Interactions</span>
+            </div>
+            <div className="absolute left-3 top-0 bottom-0 w-1 bg-base-200 rounded-full" style={{ zIndex: 0 }} />
+            <div className="flex flex-col gap-12">
+              {[...interactions].filter(row => row.direction === 'in').sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()).map((row, idx) => {
+                // Date formatting
+                const dateObj = new Date(row.raw_date);
+                const day = dateObj.getDate().toString().padStart(2, '0');
+                const month = dateObj.toLocaleString('en', { month: 'short' });
+                const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+                // Icon and color
+                let icon, iconBg;
+                if (row.kind === 'sms') {
+                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
+                  iconBg = 'bg-purple-300';
+                } else if (row.kind === 'call') {
+                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
+                  iconBg = 'bg-yellow-100';
+                } else if (row.kind === 'whatsapp') {
+                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
+                  iconBg = 'bg-green-100';
+                } else if (row.kind === 'email') {
+                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
+                  iconBg = 'bg-blue-100';
+                } else if (row.kind === 'office') {
+                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
+                  iconBg = 'bg-orange-100';
+                } else {
+                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
+                  iconBg = 'bg-gray-200';
+                }
+                // Initials
+                const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
+                return (
+                  <div key={row.id} className="relative flex items-start group cursor-pointer" onClick={() => {
+                    setActiveInteraction(row);
+                    setDetailsDrawerOpen(true);
+                  }}>
+                    {/* Timeline dot */}
+                    <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
+                      {icon}
+                    </div>
+                    {/* Date/time */}
+                    <div className="w-28 text-right pr-4 pt-1 select-none">
+                      <div className="text-base font-semibold text-base-content/80">{day} {month},</div>
+                      <div className="text-sm text-base-content/60">{time}</div>
+                    </div>
+                    {/* Card (summary only) */}
+                    <div className="ml-8 flex-1">
+                      <div className="bg-base-100 border border-green-400 rounded-2xl shadow-md p-5 min-w-[220px] max-w-xl hover:shadow-lg transition-all duration-150 flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-base-content/80 bg-base-200 text-lg">{initials}</div>
+                        <div>
+                          <div className="font-semibold text-base text-base-content/90">{row.employee}</div>
+                          <div className="flex flex-wrap gap-2 mt-1">
+                            <span className="badge badge-outline text-xs">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
+                            {row.status && <span className={`badge badge-outline text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'}`}>{row.status}</span>}
+                            {row.length && row.length !== 'm' && <span className="badge badge-outline text-xs">{row.length}</span>}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </td>
-
-                {/* Content Column */}
-                <td className="px-6 py-4 align-middle max-w-sm">
-                  {row.kind === 'email' ? (
-                    <button 
-                      className="btn btn-ghost btn-sm gap-2"
-                      onClick={() => {
-                        setIsEmailModalOpen(true);
-                        setActiveEmailId((row as any).id);
-                      }}
-                    >
-                      <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                      View Message
-                    </button>
-                  ) : (
-                    <p className="text-base-content/90 whitespace-normal break-words">{row.content}</p>
-                  )}
-                </td>
-                
-                {/* Observation Column */}
-                <td className="px-6 py-4 align-middle max-w-sm">
-                   <p className="text-sm text-base-content/60 whitespace-normal break-words">{row.observation}</p>
-                </td>
-                
-                {/* Actions Column */}
-                <td className="px-6 py-4 align-middle text-right">
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    title="Edit Row"
-                    onClick={() => openEditDrawer(idx)}
-                  >
-                    <PencilSquareIcon className="w-5 h-5" />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       </div>
-
       {/* Email Thread Modal */}
       {isEmailModalOpen && createPortal(
         <div className="fixed inset-0 bg-black/50 z-[999] flex items-start justify-center p-4">
@@ -721,7 +808,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 </button>
               </div>
             </div>
-
             {/* Conversation Body */}
             <div ref={(el) => {
               if (el && activeEmailId) {
@@ -755,7 +841,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                       </div>
                       <div className="font-bold mb-2">{email.subject}</div>
                       <div className="prose" dangerouslySetInnerHTML={{ __html: email.bodyPreview }} />
-                      
                       {/* Incoming Attachments */}
                       {email.attachments && email.attachments.length > 0 && (
                         <div className="mt-4 pt-2 border-t border-black/10">
@@ -788,7 +873,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         </div>,
         document.body
       )}
-
       {/* Compose Email Modal (Drawer style) */}
       {showCompose && createPortal(
         <div className="fixed inset-0 z-[999]">
@@ -821,9 +905,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         const processedBody = template.body
                             .replace(/{client_name}/g, client.name)
                             .replace(/{upload_link}/g, uploadLink);
-                        
                         const newSubject = `[${client.lead_number}] - ${template.subject}`;
-                        
                         setComposeBody(processedBody);
                         setComposeSubject(newSubject);
                       }}
@@ -837,7 +919,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 <label className="block font-semibold mb-1">Body</label>
                 <textarea className="textarea textarea-bordered w-full min-h-[120px]" value={composeBody} onChange={e => setComposeBody(e.target.value)} />
               </div>
-
               {/* Attachments Section */}
               <div>
                 <label className="block font-semibold mb-1">Attachments</label>
@@ -871,89 +952,61 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         </div>,
         document.body
       )}
-
-      {/* Drawer for editing */}
-      {drawerOpen && (
-        <div className="fixed inset-0 z-50 flex">
+      {/* Details Drawer */}
+      {detailsDrawerOpen && activeInteraction && createPortal(
+        <div className="fixed inset-0 z-[999] flex">
           {/* Overlay */}
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={closeDrawer}
-          />
+          <div className="fixed inset-0 bg-black/30" onClick={() => setDetailsDrawerOpen(false)} />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
             <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Edit Interaction</h3>
-              <button className="btn btn-ghost btn-sm" onClick={closeDrawer}>
+              <h3 className="text-2xl font-bold">Interaction Details</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDetailsDrawerOpen(false)}>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
             <div className="flex flex-col gap-4 flex-1">
               <div>
-                <label className="block font-semibold mb-1">Date</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={editData.date}
-                  onChange={e => handleEditChange('date', e.target.value)}
-                />
+                <label className="block font-semibold mb-1">Employee</label>
+                <div className="text-lg font-bold">{activeInteraction.employee}</div>
               </div>
               <div>
-                <label className="block font-semibold mb-1">Time</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={editData.time}
-                  onChange={e => handleEditChange('time', e.target.value)}
-                />
+                <label className="block font-semibold mb-1">Type</label>
+                <div className="badge badge-outline text-base">{activeInteraction.kind.charAt(0).toUpperCase() + activeInteraction.kind.slice(1)}</div>
               </div>
               <div>
-                <label className="block font-semibold mb-1">Minutes</label>
-                <input
-                  type="number"
-                  min="0"
-                  className="input input-bordered w-full"
-                  value={editData.length}
-                  onChange={e => handleEditChange('length', e.target.value)}
-                />
+                <label className="block font-semibold mb-1">Date & Time</label>
+                <div>{new Date(activeInteraction.raw_date).toLocaleString()}</div>
               </div>
-              <div>
-                <label className="block font-semibold mb-1">Content</label>
-                <textarea
-                  className="textarea textarea-bordered w-full min-h-[80px]"
-                  value={editData.content}
-                  onChange={e => handleEditChange('content', e.target.value)}
-                  disabled={editIndex !== null && interactions[editIndex]?.kind === 'email'}
-                />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Observation</label>
-                <textarea
-                  className="textarea textarea-bordered w-full min-h-[60px]"
-                  value={editData.observation}
-                  onChange={e => handleEditChange('observation', e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={handleSave}>
-                Save
-              </button>
+              {activeInteraction.length && (
+                <div>
+                  <label className="block font-semibold mb-1">Length</label>
+                  <div>{activeInteraction.length}</div>
+                </div>
+              )}
+              {activeInteraction.content && (
+                <div>
+                  <label className="block font-semibold mb-1">Content</label>
+                  <div className="whitespace-pre-line bg-base-200 rounded-lg p-3 mt-1">{activeInteraction.content}</div>
+                </div>
+              )}
+              {activeInteraction.observation && (
+                <div>
+                  <label className="block font-semibold mb-1">Observation</label>
+                  <div className="whitespace-pre-line bg-base-200 rounded-lg p-3 mt-1">{activeInteraction.observation}</div>
+                </div>
+              )}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
-
-      {/* Contact Drawer */}
-      {contactDrawerOpen && (
-        <div className="fixed inset-0 z-50 flex">
+      {contactDrawerOpen && createPortal(
+        <div className="fixed inset-0 z-[999] flex">
           {/* Overlay */}
-          <div
-            className="fixed inset-0 bg-black/30"
-            onClick={closeContactDrawer}
-          />
+          <div className="fixed inset-0 bg-black/30" onClick={closeContactDrawer} />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-bold">Contact Client</h3>
               <button className="btn btn-ghost btn-sm" onClick={closeContactDrawer}>
@@ -1024,7 +1077,94 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
+      )}
+      {isWhatsAppOpen && createPortal(
+        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50">
+          <div className="bg-base-100 rounded-2xl shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden relative animate-fadeInUp">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-4 py-3 bg-primary text-white">
+              <div className="avatar placeholder">
+                <div className="bg-primary text-white rounded-full w-10 h-10 flex items-center justify-center font-bold">
+                  {client.name.split(' ').map(n => n[0]).join('').toUpperCase()}
+                </div>
+              </div>
+              <div className="flex-1">
+                <div className="font-semibold text-lg">{client.name}</div>
+                <div className="text-xs text-primary-content/80">online</div>
+              </div>
+              <button className="btn btn-ghost btn-sm text-white" onClick={() => setIsWhatsAppOpen(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            {/* Chat Area */}
+            <div className="flex-1 overflow-y-auto px-4 py-6 bg-green-50" style={{ background: 'url(https://www.transparenttextures.com/patterns/cubes.png)', backgroundSize: 'auto' }}>
+              <div className="flex flex-col gap-2">
+                {fakeMessages.map((msg, idx) => (
+                  <div key={idx} className={`flex ${msg.from === 'me' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[75%] px-4 py-2 rounded-2xl shadow text-sm relative ${msg.from === 'me' ? 'bg-primary text-white rounded-br-md' : 'bg-white text-gray-900 rounded-bl-md border border-base-200'}`} style={{ wordBreak: 'break-word' }}>
+                      {msg.text}
+                      <div className="flex items-center gap-1 mt-1 text-[10px] opacity-70 justify-end">
+                        <span>{msg.time}</span>
+                        {msg.from === 'me' && (
+                          <span className="inline-block align-middle">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-4 h-4 ${msg.seen ? 'text-blue-400' : 'text-white/70'}`} style={{ display: 'inline' }}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Input Area */}
+            <form className="flex items-center gap-2 px-4 py-3 bg-base-200" onSubmit={e => {
+              e.preventDefault();
+              if (whatsAppInput.trim()) {
+                const now = new Date();
+                const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                setFakeMessages([...fakeMessages, { from: 'me', text: whatsAppInput, time: timeStr, seen: false }]);
+                setWhatsAppInput("");
+                // Add to interactions timeline
+                setInteractions(prev => [
+                  {
+                    id: `whatsapp_${now.getTime()}`,
+                    date: now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+                    time: timeStr,
+                    raw_date: now.toISOString(),
+                    employee: accounts[0]?.name || 'You',
+                    direction: 'out',
+                    kind: 'whatsapp',
+                    length: '',
+                    content: whatsAppInput,
+                    observation: '',
+                    editable: true,
+                  },
+                  ...prev
+                ]);
+              }
+            }}>
+              <button type="button" className="btn btn-ghost btn-circle">
+                <FaceSmileIcon className="w-6 h-6 text-gray-500" />
+              </button>
+              <button type="button" className="btn btn-ghost btn-circle">
+                <PaperClipIcon className="w-6 h-6 text-gray-500" />
+              </button>
+              <input
+                type="text"
+                className="input input-bordered flex-1 rounded-full"
+                placeholder="Type a message"
+                value={whatsAppInput}
+                onChange={e => setWhatsAppInput(e.target.value)}
+              />
+              <button type="submit" className="btn btn-success btn-circle">
+                <PaperAirplaneIcon className="w-6 h-6" />
+              </button>
+            </form>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

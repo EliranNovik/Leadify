@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, forwardRef, useImperativeHandle } from 'react';
 import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, XMarkIcon, FunnelIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 
 interface Suggestion {
@@ -99,7 +99,7 @@ const allSuggestions: Suggestion[] = [
   }
 ];
 
-const AISuggestions: React.FC = () => {
+const AISuggestions = forwardRef((props, ref) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [filterType, setFilterType] = useState<'all' | 'urgent' | 'important' | 'reminder'>('all');
   const [searchTerm, setSearchTerm] = useState('');
@@ -156,8 +156,17 @@ const AISuggestions: React.FC = () => {
     </div>
   );
 
+  useImperativeHandle(ref, () => ({
+    openModal: () => setIsModalOpen(true),
+    scrollIntoView: (options?: ScrollIntoViewOptions) => {
+      containerRef.current?.scrollIntoView(options);
+    }
+  }));
+
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
   return (
-    <>
+    <div ref={containerRef}>
       <div className="bg-base-100 rounded-lg shadow-lg p-4 w-full mb-6">
         <div className="flex items-center justify-between pb-4 border-b border-base-200">
           <div className="flex items-center gap-2">
@@ -173,7 +182,7 @@ const AISuggestions: React.FC = () => {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-          {mockSuggestions.map((suggestion) => (
+          {mockSuggestions.slice(0, 2).map((suggestion) => (
             <SuggestionCard key={suggestion.id} suggestion={suggestion} />
           ))}
         </div>
@@ -236,8 +245,8 @@ const AISuggestions: React.FC = () => {
           </div>
         </div>
       )}
-    </>
+    </div>
   );
-};
+});
 
 export default AISuggestions; 

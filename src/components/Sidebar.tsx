@@ -76,9 +76,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   return (
     <>
       {/* Desktop/Tablet Sidebar */}
-      <div className={`fixed top-0 left-0 h-full flex flex-col items-center ${isSmallGap ? 'gap-1' : 'gap-3'} py-4 z-40 bg-transparent mr-8 pr-2 ml-4 mt-16 hidden md:flex`}>
+      <div className="fixed top-0 left-0 h-full flex flex-col bg-base-100 shadow-lg z-40 w-20 hover:w-64 transition-all duration-300 group/sidebar mt-16">
         {/* Navigation Items */}
-        <nav className={`flex flex-col mt-2 ${isSmallGap ? 'gap-2' : 'gap-6'}`}>
+        <nav className="flex flex-col mt-8 gap-2 flex-1">
           {sidebarItems.map((item, index) => {
             const Icon = item.icon;
             const isActive = location.pathname === item.path;
@@ -86,97 +86,16 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               <Link
                 key={index}
                 to={item.path}
-                className={`sidebar-circle group${isActive ? ' sidebar-active sidebar-active-purple' : ''}`}
+                className={`flex items-center gap-4 px-4 py-3 rounded-lg transition-all duration-200 cursor-pointer group/sidebar-link ${isActive ? 'bg-primary text-white font-bold shadow-lg' : 'hover:bg-base-200 text-base-content'}`}
               >
-                <span className="sidebar-icon-wrapper">
-                  <Icon className={`w-6 h-6 transition-colors duration-200 ${isActive ? 'text-white' : 'text-gray-700'} group-hover:text-gray-900`} />
+                <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-white' : 'text-primary'}`} />
+                <span className="ml-2 text-base font-medium opacity-0 group-hover/sidebar:opacity-100 transition-opacity duration-200 whitespace-nowrap">
+                  {item.label}
                 </span>
-                <span className={`sidebar-label ${isActive ? 'text-white' : 'text-black'}`}>{item.label}</span>
               </Link>
             );
           })}
         </nav>
-        {/* User Profile/Sign Out */}
-        <div className="mt-4 flex flex-col items-center gap-1">
-          {/* Custom styles for sidebar */}
-          <style>{`
-            .sidebar-circle {
-              width: 48px;
-              height: 48px;
-              background: rgba(255,255,255,0.35);
-              border-radius: 9999px;
-              display: flex;
-              align-items: center;
-              justify-content: flex-start;
-              position: relative;
-              transition: width 0.3s cubic-bezier(.4,0,.2,1), background 0.2s;
-              overflow: hidden;
-              box-shadow: 0 4px 24px 0 rgba(0,0,0,0.08), 0 1.5px 8px 0 rgba(0,0,0,0.04);
-              cursor: pointer;
-              border: 1.5px solid rgba(0,0,0,0.08);
-              backdrop-filter: blur(12px);
-              -webkit-backdrop-filter: blur(12px);
-            }
-            .sidebar-icon-wrapper {
-              display: flex;
-              align-items: center;
-              justify-content: center;
-              margin-left: 8px;
-            }
-            .sidebar-circle:hover {
-              width: 220px;
-              /* No background color change on hover */
-            }
-            .sidebar-active,
-            .sidebar-circle.sidebar-active,
-            .sidebar-active-purple {
-              background: #3b28c7 !important; /* Header purple from screenshot */
-              color: #fff !important;
-              box-shadow: 0 4px 24px 0 rgba(59,40,199,0.18), 0 1.5px 8px 0 rgba(59,40,199,0.08);
-              border: 1.5px solid #3b28c7;
-            }
-            .sidebar-circle.sidebar-active .sidebar-icon-wrapper svg,
-            .sidebar-active-purple .sidebar-icon-wrapper svg {
-              color: #fff !important;
-            }
-            .sidebar-circle.sidebar-active .sidebar-label,
-            .sidebar-active-purple .sidebar-label {
-              color: #fff !important;
-            }
-            .sidebar-label {
-              opacity: 0;
-              white-space: nowrap;
-              margin-left: 20px;
-              font-weight: 500;
-              font-size: 1rem;
-              color: #111;
-              transition: opacity 0.2s, color 0.2s;
-            }
-            .sidebar-circle:hover .sidebar-label {
-              opacity: 1;
-            }
-            .sidebar-circle .w-6, .sidebar-circle .w-7 {
-              min-width: 1.5rem;
-              min-height: 1.5rem;
-              width: 1.5rem;
-              height: 1.5rem;
-            }
-            .sidebar-circle-sm {
-              width: 32px !important;
-              height: 32px !important;
-            }
-            .sidebar-icon-wrapper-sm {
-              margin-left: 4px;
-            }
-            .sidebar-noexpand:hover {
-              width: 32px !important;
-            }
-          `}</style>
-          {/*
-            NOTE: To make space for the sidebar, add 'pl-28' or 'pl-32' to your main content container.
-            Example: <div className="pl-32"> ... </div>
-          */}
-        </div>
       </div>
 
       {/* Mobile Sidebar Drawer */}

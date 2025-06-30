@@ -304,7 +304,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </button>
           <div className="h-16 flex items-center">
             <Link to="/">
-              <span className="ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>Leadify</span>
+              <span className="ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>Rainmaker Queen 2.0</span>
             </Link>
           </div>
           {/* Nav Tabs */}
