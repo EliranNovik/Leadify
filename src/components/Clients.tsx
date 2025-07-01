@@ -321,46 +321,7 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   const getStageBadge = (stage: string) => {
-    switch (stage) {
-      case 'created':
-        return <span className="badge badge-primary badge-lg ml-2">Created</span>;
-      case 'scheduler_assigned':
-        return <span className="badge badge-info badge-lg ml-2">Scheduler Assigned</span>;
-      case 'meeting_scheduled':
-        return <span className="badge badge-info badge-lg ml-2">Meeting Scheduled</span>;
-      case 'meeting_paid':
-        return <span className="badge badge-success badge-lg ml-2">Paid Meeting</span>;
-      case 'unactivated':
-        return <span className="badge badge-error badge-lg ml-2">Unactivated</span>;
-      case 'communication_started':
-        return <span className="badge badge-warning badge-lg ml-2">Communication Started</span>;
-      case 'waiting_for_mtng_sum':
-        return <span className="badge badge-info badge-lg ml-2">Waiting for Meeting Summary</span>;
-      case 'another_meeting':
-        return <span className="badge badge-info badge-lg ml-2">Another Meeting</span>;
-      case 'revised_offer':
-        return <span className="badge badge-warning badge-lg ml-2">Revised Offer</span>;
-      case 'offer_sent':
-        return <span className="badge badge-info badge-lg ml-2">Offer Sent</span>;
-      case 'client_signed':
-        return <span className="badge badge-success badge-lg ml-2">Client Signed</span>;
-      case 'Client Signed Agreement':
-        return <span className="badge badge-secondary badge-lg ml-2">Client Signed Agreement</span>;
-      case 'client_declined':
-        return <span className="badge badge-error badge-lg ml-2">Client Declined</span>;
-      case 'lead_summary':
-        return <span className="badge badge-neutral badge-lg ml-2">Lead Summary</span>;
-      case 'meeting_rescheduled':
-        return <span className="badge badge-warning badge-lg ml-2">Meeting Rescheduled</span>;
-      case 'meeting_ended':
-        return <span className="badge badge-success badge-lg ml-2">Meeting Ended</span>;
-      case 'Mtng sum+Agreement sent':
-        return <span className="badge badge-info badge-lg ml-2">Mtng sum+Agreement sent</span>;
-      case 'payment_request_sent':
-        return <span className="badge badge-accent badge-lg ml-2">Payment request sent</span>;
-      default:
-        return <span className="badge badge-neutral badge-lg ml-2">{stage}</span>;
-    }
+    return <span className="badge bg-black text-white badge-lg ml-2">{stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>;
   };
 
   const closeSchedulePanel = () => {
@@ -889,303 +850,114 @@ const Clients: React.FC<ClientsProps> = ({
 
   return (
     <div className="min-h-screen bg-base-200">
-      {/* Lead is cold warning */}
-      {isLeadCold && (
-        <div className="alert alert-warning shadow-lg flex items-center gap-4 text-lg font-semibold mb-4">
-          <ExclamationTriangleIcon className="w-7 h-7 text-warning" />
-          <span>Lead is cold</span>
-          <span className="ml-2">{coldLeadText}</span>
-        </div>
-      )}
+      {/* Vibrant 'Lead is cold' badge, top right, same height as Stages/Actions */}
+      <div className="relative">
+        {isLeadCold && (
+          <div className="absolute right-4 top-0 z-20 flex items-center">
+            <span className="rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20">
+              <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              Lead is cold: {coldLeadText}
+            </span>
+          </div>
+        )}
+      </div>
       {/* Client Details Section */}
       <div className="bg-base-100 rounded-lg shadow-lg w-full">
-        {/* Desktop Stages/Actions Buttons - moved to top under header */}
-        <div className="w-full justify-center items-center mt-6 mb-2 hidden md:flex">
-          <div className="flex gap-3">
-            <div className="dropdown">
-              <label 
-                tabIndex={0} 
-                className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
-              >
-                <span>Stages</span>
-                <ChevronDownIcon className="w-5 h-5" />
-              </label>
-              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                {dropdownItems}
-              </ul>
-            </div>
-            {selectedClient.stage === 'created' && (
-              <div className="dropdown">
-                <label 
-                  tabIndex={0} 
-                  className="btn bg-black text-white hover:bg-gray-800 border-none gap-2 min-w-[160px]"
-                >
-                  <span>Assign to</span>
-                  <ChevronDownIcon className="w-5 h-5" />
-                </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Anna Zh')}
-                    >
-                      Anna Zh
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Mindi')}
-                    >
-                      Mindi
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Sarah L')}
-                    >
-                      Sarah L
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('David K')}
-                    >
-                      David K
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Yael')}
-                    >
-                      Yael
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Michael R')}
-                    >
-                      Michael R
-                    </a>
-                  </li>
-                </ul>
-              </div>
-            )}
-            <div className="dropdown">
-              <label 
-                tabIndex={0} 
-                className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
-              >
-                <span>Actions</span>
-                <ChevronDownIcon className="w-5 h-5" />
-              </label>
-              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                <li>
-                  <a className="flex items-center gap-3 py-3" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
-                    <NoSymbolIcon className="w-5 h-5 text-red-500" />
-                    <span className="text-red-500">Unactivate</span>
-                  </a>
-                </li>
-                <li><a className="flex items-center gap-3 py-3"><StarIcon className="w-5 h-5 text-black" />Ask for recommendation</a></li>
-                <li><a className="flex items-center gap-3 py-3"><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
-                <li><a className="flex items-center gap-3 py-3"><Squares2X2Icon className="w-5 h-5 text-black" />Create Sub-Lead</a></li>
-              </ul>
-            </div>
-          </div>
-        </div>
-        {/* END Desktop Stages/Actions Buttons */}
-        {/* Client Header with Basic Info */}
-        <div className="border-b border-base-200 w-full px-4 pt-4 pb-2">
-          <div className="w-full">
-            {/* Name and Balance Row (mobile: name left, balance right) */}
-            <div className="flex flex-wrap md:flex-nowrap items-start justify-between gap-4">
-              {/* Desktop: name + stage left, balance + lead number right; Mobile: name left, balance right, badge below, lead number below */}
-              {/* Left side (name, stage badge on desktop) */}
-              <div className="flex flex-col gap-2 flex-1 w-full">
-                <div className="flex items-center justify-between w-full">
-                  <div className="flex items-center">
-                    <h2 className="text-2xl font-bold">
-                      {selectedClient.name}
-                    </h2>
-                    {/* Stage badge - desktop only, right of name */}
-                    <span className="hidden md:inline-block ml-3 align-middle">{getStageBadge(selectedClient.stage)}</span>
-                  </div>
-                  {/* Balance badge - mobile only, right of name */}
-                  <div className="md:hidden flex items-center ml-2">
-                    <div className="badge badge-lg badge-success gap-2 p-4">
-                      <span className="text-2xl font-bold">{getCurrencySymbol((selectedClient as any).balance_currency || selectedClient.proposal_currency)}</span>
-                      <span className="text-xl">{(selectedClient as any).balance || '0'}</span>
-                    </div>
-                  </div>
+        {/* Client Header with Basic Info - moved to top */}
+        <div className="border-b border-base-200 w-full px-4 pt-2 pb-2">
+          {/* Top row: client details (with stage badge) and Stages/Actions buttons on the same height */}
+          <div className="w-full relative flex flex-col md:flex-row md:items-start md:gap-8 min-h-[110px]">
+            {/* Center: Stages/Actions buttons and amount badge - absolutely centered */}
+            <div className="hidden md:flex flex-col items-center absolute left-1/2 top-0 -translate-x-1/2 z-10">
+              <div className="flex gap-3 mb-2 mt-2">
+                <div className="dropdown">
+                  <label 
+                    tabIndex={0} 
+                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
+                  >
+                    <span>Stages</span>
+                    <ChevronDownIcon className="w-5 h-5" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
+                    {dropdownItems}
+                  </ul>
                 </div>
-                {/* Stage badge - mobile only, below name (not on desktop) */}
-                <div className="block md:hidden w-full mt-1">
-                  {getStageBadge(selectedClient.stage)}
-                </div>
-                {/* Lead number - always left-aligned, below name and badge on mobile */}
-                <div className="flex items-center gap-2 mt-1">
-                  <HashtagIcon className="w-5 h-5 text-primary" />
-                  <span className="text-lg">{selectedClient.lead_number}</span>
+                {selectedClient.stage === 'created' && (
+                  <div className="dropdown">
+                    <label 
+                      tabIndex={0} 
+                      className="btn bg-black text-white hover:bg-gray-800 border-none gap-2 min-w-[160px]"
+                    >
+                      <span>Assign to</span>
+                      <ChevronDownIcon className="w-5 h-5" />
+                    </label>
+                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
+                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Anna Zh')}>Anna Zh</a></li>
+                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Mindi')}>Mindi</a></li>
+                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Sarah L')}>Sarah L</a></li>
+                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('David K')}>David K</a></li>
+                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Yael')}>Yael</a></li>
+                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Michael R')}>Michael R</a></li>
+                    </ul>
+                  </div>
+                )}
+                <div className="dropdown">
+                  <label 
+                    tabIndex={0} 
+                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
+                  >
+                    <span>Actions</span>
+                    <ChevronDownIcon className="w-5 h-5" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
+                    <li>
+                      <a className="flex items-center gap-3 py-3" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
+                        <NoSymbolIcon className="w-5 h-5 text-red-500" />
+                        <span className="text-red-500">Unactivate</span>
+                      </a>
+                    </li>
+                    <li><a className="flex items-center gap-3 py-3"><StarIcon className="w-5 h-5 text-black" />Ask for recommendation</a></li>
+                    <li><a className="flex items-center gap-3 py-3"><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
+                    <li><a className="flex items-center gap-3 py-3"><Squares2X2Icon className="w-5 h-5 text-black" />Create Sub-Lead</a></li>
+                  </ul>
                 </div>
               </div>
-              {/* Right side (balance badge and lead number on desktop) */}
-              <div className="hidden md:flex flex-col items-end gap-2 md:static md:right-auto">
-                <div className="flex items-center gap-2">
-                  <div className="badge badge-lg badge-success gap-2 p-4">
-                    <span className="text-2xl font-bold">{getCurrencySymbol((selectedClient as any).balance_currency || selectedClient.proposal_currency)}</span>
-                    <span className="text-xl">{(selectedClient as any).balance || '0'}</span>
-                  </div>
+              {/* Amount badge centered under buttons */}
+              <div className="flex flex-col items-center mb-2">
+                <div className="badge badge-lg badge-success gap-2 p-4">
+                  <span className="text-2xl font-bold">{getCurrencySymbol((selectedClient as any).balance_currency || selectedClient.proposal_currency)}</span>
+                  <span className="text-xl">{(selectedClient as any).balance || '0'}</span>
                 </div>
               </div>
             </div>
-            {/* Contact and Category Info */}
-            <div className="flex flex-col md:flex-row md:items-center bg-base-200/50 rounded-lg p-3 mt-4 md:mt-8">
-              {/* Email */}
+            {/* Left: Client details stacked vertically */}
+            <div className="flex flex-col gap-2 w-full md:w-auto md:max-w-xs">
+              <h2 className="text-2xl font-bold">{selectedClient.name}</h2>
+              <div className="flex items-center gap-2">
+                <HashtagIcon className="w-5 h-5 text-primary" />
+                <span className="text-lg">{selectedClient.lead_number}</span>
+                <span className="ml-2">{getStageBadge(selectedClient.stage)}</span>
+              </div>
               <div className="flex items-start gap-2">
                 <EnvelopeIcon className="w-5 h-5 text-primary mt-1" />
-                <div>
-                  <div className="text-sm text-base-content/70">Email Address</div>
-                  <a 
-                    href={`mailto:${selectedClient.email}`} 
-                    className="text-primary hover:underline break-all"
-                  >
-                    {selectedClient.email || '---'}
-                  </a>
-                </div>
+                <a href={`mailto:${selectedClient.email}`} className="text-primary hover:underline break-all">
+                  {selectedClient.email || '---'}
+                </a>
               </div>
-              {/* Separator */}
-              <div className="hidden md:block h-8 w-px bg-base-300 mx-6" />
-              {/* Phone */}
               <div className="flex items-start gap-2">
                 <PhoneIcon className="w-5 h-5 text-primary mt-1" />
-                <div>
-                  <div className="text-sm text-base-content/70">Phone Number</div>
-                  <a 
-                    href={`tel:${selectedClient.phone}`} 
-                    className="text-primary hover:underline"
-                  >
-                    {selectedClient.phone || '---'}
-                  </a>
-                </div>
+                <a href={`tel:${selectedClient.phone}`} className="text-primary hover:underline">
+                  {selectedClient.phone || '---'}
+                </a>
               </div>
-              {/* Separator */}
-              <div className="hidden md:block h-8 w-px bg-base-300 mx-6" />
-              {/* Category and Topic */}
               <div className="flex items-start gap-2">
                 <DocumentTextIcon className="w-5 h-5 text-primary mt-1" />
-                <div>
-                  <div className="text-sm text-base-content/70">Category & Topic</div>
-                  <div className="flex items-center gap-2">
-                    <span>{selectedClient.category || 'Not specified'}</span>
-                    <span className="text-base-content/70">•</span>
-                    <span className="text-primary">{selectedClient.topic || 'German Citizenship'}</span>
-                  </div>
-                </div>
+                <span>{selectedClient.category || 'Not specified'} <span className="text-base-content/70">•</span> <span className="text-primary">{selectedClient.topic || 'German Citizenship'}</span></span>
               </div>
             </div>
           </div>
-        </div>
-        {/* Stages/Actions Buttons - mobile only */}
-        <div className="flex md:hidden w-full justify-center items-center mt-6 mb-6">
-          <div className="flex gap-3">
-            <div className="dropdown">
-              <label 
-                tabIndex={0} 
-                className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
-              >
-                <span>Stages</span>
-                <ChevronDownIcon className="w-5 h-5" />
-              </label>
-              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                {dropdownItems}
-              </ul>
-            </div>
-            {selectedClient.stage === 'created' && (
-              <div className="dropdown">
-                <label 
-                  tabIndex={0} 
-                  className="btn bg-black text-white hover:bg-gray-800 border-none gap-2 min-w-[160px]"
-                >
-                  <span>Assign to</span>
-                  <ChevronDownIcon className="w-5 h-5" />
-                </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Anna Zh')}
-                    >
-                      Anna Zh
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Mindi')}
-                    >
-                      Mindi
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Sarah L')}
-                    >
-                      Sarah L
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('David K')}
-                    >
-                      David K
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Yael')}
-                    >
-                      Yael
-                    </a>
-                  </li>
-                  <li>
-                    <a 
-                      className="flex items-center gap-3 py-3" 
-                      onClick={() => updateScheduler('Michael R')}
-                    >
-                      Michael R
-                    </a>
-                  </li>
-                </ul>
-              </div>
-            )}
-            <div className="dropdown">
-              <label 
-                tabIndex={0} 
-                className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
-              >
-                <span>Actions</span>
-                <ChevronDownIcon className="w-5 h-5" />
-              </label>
-              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                <li>
-                  <a className="flex items-center gap-3 py-3" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
-                    <NoSymbolIcon className="w-5 h-5 text-red-500" />
-                    <span className="text-red-500">Unactivate</span>
-                  </a>
-                </li>
-                <li><a className="flex items-center gap-3 py-3"><StarIcon className="w-5 h-5 text-black" />Ask for recommendation</a></li>
-                <li><a className="flex items-center gap-3 py-3"><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
-                <li><a className="flex items-center gap-3 py-3"><Squares2X2Icon className="w-5 h-5 text-black" />Create Sub-Lead</a></li>
-              </ul>
-            </div>
-          </div>
+          {/* Stage badge - mobile only, below name (not on desktop) */}
+          <div className="block md:hidden w-full mt-1">{getStageBadge(selectedClient.stage)}</div>
         </div>
         {/* Add a bigger gap before the tabs */}
         <div className="mt-10"></div>

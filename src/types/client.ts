@@ -16,6 +16,7 @@ export interface Client extends Lead {
   proposal_text?: string;
   proposal_total?: number;
   proposal_currency?: string;
+  case_manager?: string;
 }
 
 export interface ClientTabProps {

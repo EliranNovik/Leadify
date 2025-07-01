@@ -124,39 +124,53 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       <div className="relative animate-fadeInUp">
         {/* Roles Grid - 2 columns, smaller boxes, no colored line */}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-10 w-full max-w-3xl mx-auto">
-          {roles.map((role) => {
+          {roles.map((role, idx) => {
             const hasAssignee = role.assignee && role.assignee !== '---';
             const initials = hasAssignee
               ? role.assignee.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
               : '';
+            // Assign a unique gradient per role
+            const gradients = [
+              'from-pink-500 via-purple-500 to-purple-600',
+              'from-purple-600 via-blue-600 to-blue-500',
+              'from-blue-500 via-cyan-500 to-teal-400',
+              'from-teal-400 via-green-400 to-green-600',
+              'from-yellow-400 via-orange-400 to-pink-500',
+            ];
+            const gradient = gradients[idx % gradients.length];
             return (
-              <div key={role.id} className="w-full max-w-sm mx-auto bg-white border border-base-200 rounded-xl shadow p-4 flex flex-col items-center justify-center gap-2 min-h-[80px] relative">
+              <div
+                key={role.id}
+                className={`w-full max-w-sm mx-auto rounded-xl shadow-xl p-4 flex flex-col items-center justify-center gap-2 min-h-[80px] relative bg-gradient-to-tr ${gradient} text-white overflow-hidden`}
+              >
                 {/* Role Title */}
-                <div className="absolute top-2 left-3 text-lg font-extrabold uppercase tracking-wider text-primary/80">
+                <div className="absolute top-2 left-3 text-lg font-extrabold uppercase tracking-wider text-white/80">
                   {role.title}
                 </div>
                 {/* Initials or Icon */}
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold shadow mb-1 ${hasAssignee ? 'bg-primary text-white' : 'bg-base-200 text-base-content/40'}`}>
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold shadow mb-1 ${hasAssignee ? 'bg-white/20 text-white' : 'bg-white/10 text-white/60'}`}> 
                   {hasAssignee ? initials : <UserIcon className="w-6 h-6" />}
                 </div>
                 {/* Assignee Name */}
                 {isEditing ? (
                   <select
-                    className="select select-bordered w-full max-w-xs font-semibold text-base bg-base-100/80 hover:bg-primary/10 transition-colors duration-150 shadow-sm"
+                    className="select select-bordered w-full max-w-xs font-semibold text-base bg-white/20 text-white border-white/30 hover:bg-white/30 transition-colors duration-150 shadow-sm"
                     value={role.assignee}
                     onChange={(e) => handleRoleChange(role.id, e.target.value)}
                   >
                     {fakeAssignees.map((assignee) => (
-                      <option key={assignee} value={assignee}>
+                      <option key={assignee} value={assignee} className="text-black">
                         {assignee}
                       </option>
                     ))}
                   </select>
                 ) : (
-                  <span className={`text-base font-bold text-center ${hasAssignee ? 'text-base-content' : 'text-base-content/40 italic'}`}>
+                  <span className={`text-base font-bold text-center ${hasAssignee ? 'text-white' : 'text-white/60 italic'}`}> 
                     {hasAssignee ? role.assignee : 'Unassigned'}
                   </span>
                 )}
+                {/* Optional: SVG icon/decoration in lower right */}
+                <svg className="absolute bottom-2 right-2 w-8 h-4 opacity-30" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 16"><path d="M2 14 Q8 2 16 8 T30 2" /></svg>
               </div>
             );
           })}

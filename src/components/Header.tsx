@@ -96,11 +96,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       icon: CalendarIcon,
     },
     {
-      label: 'Lead Search',
-      path: '/lead-search',
-      icon: MagnifyingGlassIcon,
-    },
-    {
       label: 'Reports',
       path: '/reports',
       icon: DocumentChartBarIcon,
@@ -234,19 +229,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
-  const getSearchIcon = (type: string) => {
-    switch (type) {
-      case 'lead_number':
-        return <HashtagIcon className="w-4 h-4 text-primary" />;
-      case 'email':
-        return <EnvelopeIcon className="w-4 h-4 text-primary" />;
-      case 'phone':
-        return <PhoneIcon className="w-4 h-4 text-primary" />;
-      default:
-        return <UserIcon className="w-4 h-4 text-primary" />;
-    }
-  };
-
   const handleNotificationClick = () => {
     setShowNotifications(!showNotifications);
   };
@@ -304,7 +286,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </button>
           <div className="h-16 flex items-center">
             <Link to="/">
-              <span className="ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>Rainmaker Queen 2.0</span>
+              <span className="ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
           {/* Nav Tabs */}
@@ -336,34 +318,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             onMouseLeave={handleSearchMouseLeave}
           >
             <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-500 ease-out`}>
+              {/* Large search icon (always visible) */}
+              <span className="absolute left-4 flex items-center h-full pointer-events-none">
+                <MagnifyingGlassIcon className="w-8 h-8 text-cyan-900 drop-shadow-md" />
+              </span>
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder="Search leads by number, name, email, or phone..."
+                placeholder="Search for leads..."
                 value={searchValue}
                 onChange={handleSearchChange}
                 onFocus={handleSearchFocus}
                 className={`
-                  input input-bordered w-full
+                  w-full bg-white/10 border border-white/20 shadow-lg text-cyan-800 placeholder-cyan-900 rounded-xl pl-14 pr-10 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-300/40 transition-all duration-300
                   ${isSearchActive ? 'opacity-100 visible' : 'opacity-0 invisible'}
-                  transition-all duration-500 ease-out
-                  pl-10
                   ${searchValue.trim() || searchResults.length > 0 ? 'pr-10' : ''}
                 `}
-              />
-              <MagnifyingGlassIcon 
-                className={`
-                  w-6 h-6 absolute left-2
-                  ${isSearchActive ? 'text-base-content/70' : 'text-base-content cursor-pointer'}
-                  transition-all duration-500 ease-out
-                `}
-                onClick={handleSearchFocus}
+                style={{ height: 44, fontSize: 16, fontWeight: 500, letterSpacing: '-0.01em', boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined }}
               />
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
                   onClick={handleClearSearch}
-                  className="absolute right-2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out"
+                  className="absolute right-2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400"
                   title="Clear search"
+                  style={{ background: 'rgba(255,255,255,0.10)' }}
                 >
                   <XMarkIcon className="w-4 h-4" />
                 </button>
@@ -372,29 +350,32 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
             {/* Search Results Dropdown */}
             {isSearchActive && (searchResults.length > 0 || isSearching) && (
-              <div className="absolute top-full left-0 right-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 max-h-96 overflow-y-auto z-50 transition-all duration-300 ease-out animate-in fade-in slide-in-from-top-2">
+              <div className="absolute top-full left-0 right-0 mt-2 bg-white/80 backdrop-blur-xl rounded-xl shadow-xl border border-white/30 max-h-96 overflow-y-auto z-50 transition-all duration-300 animate-fadeInUp">
                 {isSearching ? (
                   <div className="p-4 text-center text-base-content/70">
                     Searching...
                   </div>
                 ) : (
-                  <div className="divide-y divide-base-200">
-                    {searchResults.map((result) => (
+                  <div className="divide-y divide-white/30">
+                    {searchResults.map((result, idx) => (
                       <button
                         key={result.id}
-                        className="w-full px-4 py-3 hover:bg-base-200 flex items-center gap-3 text-left transition-colors duration-200"
+                        className="w-full px-4 py-3 flex items-center gap-3 text-left transition-colors duration-200 text-white/90 hover:bg-cyan-400/20 focus:bg-cyan-400/30 rounded-xl"
                         onClick={() => handleSearchResultClick(result)}
+                        style={{ fontWeight: 500, fontSize: 16, letterSpacing: '-0.01em' }}
                       >
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="font-medium">{result.name}</span>
-                            <span className="text-sm text-primary">{result.lead_number}</span>
+                            <span className="font-semibold text-cyan-700">{result.name}</span>
+                            <span className="text-sm text-cyan-500 font-bold">{result.lead_number}</span>
                           </div>
                         </div>
                       </button>
                     ))}
                   </div>
                 )}
+                {/* Subtle shadow and border for dropdown */}
+                <style>{`.animate-fadeInUp { animation: fadeInUp 0.3s cubic-bezier(.4,0,.2,1); } @keyframes fadeInUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }`}</style>
               </div>
             )}
           </div>
@@ -403,13 +384,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         {/* Right section with notifications and user */}
         <div className="flex-1 justify-end flex items-center gap-2 md:gap-4">
           {/* Sign out button and Welcome message - desktop only */}
-          <button
+          {/* <button
             className="btn btn-ghost btn-circle btn-sm mr-2 hidden md:inline-flex"
             title="Sign out"
             onClick={handleSignOut}
           >
             <ArrowRightOnRectangleIcon className="w-5 h-5" />
-          </button>
+          </button> */}
           <span className={`text-base font-medium hidden md:inline-block ${appJustLoggedIn ? 'slide-fade-in' : ''}`}>
             Welcome, <span className="font-semibold">{userFullName || 'User'}</span>
           </span>

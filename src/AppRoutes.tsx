@@ -7,6 +7,7 @@ import CreateNewLead from './components/CreateNewLead';
 import CalendarPage from './components/CalendarPage';
 import ExpertPage from './components/ExpertPage';
 import PipelinePage from './components/PipelinePage';
+import AdminPage from './components/admin/AdminPage';
 
 interface AppRoutesProps {
   selectedClient: any;
@@ -29,6 +30,7 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
     <Route path="/expert" element={<ExpertPage />} />
     <Route path="/qa" element={<div>QA</div>} />
     <Route path="/settings" element={<div>Settings</div>} />
+    <Route path="/admin" element={<AdminPage />} />
     {/* Add other routes from your sidebar here */}
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>

@@ -12,6 +12,7 @@ import {
   UserIcon,
   PaperAirplaneIcon,
   FaceSmileIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useMsal } from '@azure/msal-react';
@@ -635,16 +636,27 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
 
   return (
     <div className="p-8">
-      <div className="flex gap-2 mb-2">
-        <button className="btn btn-neutral btn-md gap-2" onClick={() => setIsEmailModalOpen(true)}>
-          <EnvelopeIcon className="w-5 h-5" /> Emails
-        </button>
-        <button className="btn btn-success btn-md gap-2" onClick={() => setIsWhatsAppOpen(true)}>
-          <FaWhatsapp className="w-5 h-5" /> WhatsApp
-        </button>
-        <button className="btn btn-primary btn-md gap-2" onClick={openContactDrawer}>
-          Contact
-        </button>
+      <div className="dropdown mb-2">
+        <label tabIndex={0} className="btn btn-neutral btn-md gap-2 cursor-pointer text-white bg-black border-black hover:bg-black/90 hover:border-black">
+          <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
+        </label>
+        <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
+          <li>
+            <button className="flex gap-2 items-center" onClick={() => setIsEmailModalOpen(true)}>
+              <EnvelopeIcon className="w-5 h-5" /> Email
+            </button>
+          </li>
+          <li>
+            <button className="flex gap-2 items-center" onClick={() => setIsWhatsAppOpen(true)}>
+              <FaWhatsapp className="w-5 h-5" /> WhatsApp
+            </button>
+          </li>
+          <li>
+            <button className="flex gap-2 items-center" onClick={openContactDrawer}>
+              <ChatBubbleLeftRightIcon className="w-5 h-5" /> Contact
+            </button>
+          </li>
+        </ul>
       </div>
       <div className="relative pl-8 mt-8">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -702,14 +714,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     </div>
                     {/* Card (summary only) */}
                     <div className="ml-8 flex-1">
-                      <div className="bg-base-100 border border-primary rounded-2xl shadow-md p-5 min-w-[220px] max-w-xl hover:shadow-lg transition-all duration-150 flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-base-content/80 bg-base-200 text-lg">{initials}</div>
+                      <div className="bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white rounded-2xl shadow-xl p-5 min-w-[220px] max-w-xl hover:shadow-2xl transition-all duration-150 flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold bg-white/20 text-white text-lg">{initials}</div>
                         <div>
-                          <div className="font-semibold text-base text-base-content/90">{row.employee}</div>
+                          <div className="font-semibold text-base text-white">{row.employee}</div>
                           <div className="flex flex-wrap gap-2 mt-1">
-                            <span className="badge badge-outline text-xs">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
-                            {row.status && <span className={`badge badge-outline text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'}`}>{row.status}</span>}
-                            {row.length && row.length !== 'm' && <span className="badge badge-outline text-xs">{row.length}</span>}
+                            <span className="badge badge-outline border-white/40 text-xs text-white/90 bg-white/10">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
+                            {row.status && <span className={`badge badge-outline border-white/40 text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'} bg-white/10 text-white/90`}>{row.status}</span>}
+                            {row.length && row.length !== 'm' && <span className="badge badge-outline border-white/40 text-xs bg-white/10 text-white/90">{row.length}</span>}
                           </div>
                         </div>
                       </div>
@@ -773,14 +785,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     </div>
                     {/* Card (summary only) */}
                     <div className="ml-8 flex-1">
-                      <div className="bg-base-100 border border-green-400 rounded-2xl shadow-md p-5 min-w-[220px] max-w-xl hover:shadow-lg transition-all duration-150 flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-base-content/80 bg-base-200 text-lg">{initials}</div>
+                      <div className="bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white rounded-2xl shadow-xl p-5 min-w-[220px] max-w-xl hover:shadow-2xl transition-all duration-150 flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold bg-white/20 text-white text-lg">{initials}</div>
                         <div>
-                          <div className="font-semibold text-base text-base-content/90">{row.employee}</div>
+                          <div className="font-semibold text-base text-white">{row.employee}</div>
                           <div className="flex flex-wrap gap-2 mt-1">
-                            <span className="badge badge-outline text-xs">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
-                            {row.status && <span className={`badge badge-outline text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'}`}>{row.status}</span>}
-                            {row.length && row.length !== 'm' && <span className="badge badge-outline text-xs">{row.length}</span>}
+                            <span className="badge badge-outline border-white/40 text-xs text-white/90 bg-white/10">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
+                            {row.status && <span className={`badge badge-outline border-white/40 text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'} bg-white/10 text-white/90`}>{row.status}</span>}
+                            {row.length && row.length !== 'm' && <span className="badge badge-outline border-white/40 text-xs bg-white/10 text-white/90">{row.length}</span>}
                           </div>
                         </div>
                       </div>

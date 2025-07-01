@@ -23,6 +23,8 @@ import OutlookCalendarPage from './components/OutlookCalendarPage';
 import PipelinePage from './components/PipelinePage';
 import NewCasesPage from './pages/NewCasesPage';
 import CaseManagerPage from './components/CaseManagerPage';
+import AdminPage from './components/admin/AdminPage';
+
 
 const msalInstance = new PublicClientApplication(msalConfig);
 
@@ -120,7 +122,7 @@ const AppContent: React.FC = () => {
                 isOpen={isSidebarOpen}
                 onClose={() => setIsSidebarOpen(false)}
               />
-              <div className="flex-1 flex flex-col overflow-hidden md:pl-20">
+              <div className="flex-1 flex flex-col overflow-hidden md:pl-24 pl-6">
                 <Header 
                   onMenuClick={() => setIsSidebarOpen(true)} 
                   onSearchClick={() => setIsSearchOpen(prev => !prev)}
@@ -142,6 +144,7 @@ const AppContent: React.FC = () => {
                     <Route path="/pipeline" element={<PipelinePage />} />
                     <Route path="/new-cases" element={<NewCasesPage />} />
                     <Route path="/case-manager" element={<CaseManagerPage />} />
+                    <Route path="/admin" element={<AdminPage />} />
                   </Routes>
                 </main>
               </div>

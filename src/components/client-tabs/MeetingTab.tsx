@@ -316,36 +316,45 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
 
     return (
-      <div key={meeting.id} className="card bg-base-100 shadow-lg mb-6 overflow-hidden">
-        <div className="card-body p-4 md:p-6">
+      <div
+        key={meeting.id}
+        className={`card shadow-xl rounded-2xl hover:shadow-2xl transition-all duration-200 text-white relative overflow-hidden min-h-[220px] bg-gradient-to-tr ${[
+          'from-pink-500 via-purple-500 to-purple-600',
+          'from-purple-600 via-blue-600 to-blue-500',
+          'from-blue-500 via-cyan-500 to-teal-400',
+          'from-teal-400 via-green-400 to-green-600',
+        ][meeting.id % 4]}`}
+      >
+        <div className="card-body p-4">
           {/* Header */}
-          <div className="flex flex-row justify-between items-start mb-4">
+          <div className="flex flex-row justify-between items-start mb-2">
             <div className="flex items-center gap-4">
-              <CalendarIcon className="w-8 h-8 text-primary" />
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/20 shadow">
+                <CalendarIcon className="w-7 h-7 text-white opacity-90" />
+              </div>
               <div>
-                <p className="font-bold text-lg">{formattedDate}</p>
-                <div className="flex items-center gap-2 text-base-content/70">
+                <p className="font-bold text-2xl text-white">{formattedDate}</p>
+                <div className="flex items-center gap-2 text-white/80">
                   <ClockIcon className="w-5 h-5" />
                   <span>{meeting.time}</span>
                 </div>
               </div>
             </div>
-
             {/* Action Buttons */}
             <div className="flex flex-col md:flex-row gap-2">
               <button
-                className="btn btn-outline btn-sm"
+                className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10"
                 onClick={() => handleSendEmail(meeting)}
                 disabled={isSendingEmail}
               >
                 <EnvelopeIcon className="w-4 h-4" />
-                Send Email
+                Notify Client
               </button>
               <a
                 href={meeting.link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="btn btn-primary btn-sm"
+                className="btn btn-white btn-sm bg-white/20 text-white border-none hover:bg-white/30"
               >
                 <LinkIcon className="w-4 h-4" />
                 Join Meeting
@@ -354,33 +363,33 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
 
           {/* Details Section */}
-          <div className="grid grid-cols-3 gap-x-2 gap-y-3 md:grid-cols-3 md:gap-4 mb-4">
+          <div className="grid grid-cols-2 gap-x-2 gap-y-2 md:grid-cols-2 md:gap-3 mb-2">
             <div className="flex items-center gap-2">
-              <MapPinIcon className="w-5 h-5 text-primary" />
-              <span className="text-sm md:text-base">{meeting.location}</span>
+              <MapPinIcon className="w-5 h-5 text-white/80" />
+              <span className="text-sm md:text-base text-white/90">{meeting.location}</span>
             </div>
             <div className="flex items-center gap-2">
-              <UserIcon className="w-5 h-5 text-primary" />
-              <span className="text-sm md:text-base">Manager: {meeting.manager}</span>
+              <UserIcon className="w-5 h-5 text-white/80" />
+              <span className="text-sm md:text-base text-white/90">Manager: {meeting.manager}</span>
             </div>
             <div className="flex items-center gap-2">
-              <UserIcon className="w-5 h-5 text-primary" />
-              <span className="text-sm md:text-base">Expert: {meeting.expert}</span>
+              <UserIcon className="w-5 h-5 text-white/80" />
+              <span className="text-sm md:text-base text-white/90">Expert: {meeting.expert}</span>
             </div>
             <div className="flex items-center gap-2">
-              <UserIcon className="w-5 h-5 text-primary" />
-              <span className="text-sm md:text-base">Helper: {meeting.helper}</span>
+              <UserIcon className="w-5 h-5 text-white/80" />
+              <span className="text-sm md:text-base text-white/90">Helper: {meeting.helper}</span>
             </div>
-            <div className="flex items-center gap-2 col-span-2 md:col-span-1">
-              <span className="font-semibold text-sm md:text-base">{meeting.currency}</span>
-              <span className="text-sm md:text-base">{meeting.amount}</span>
+            <div className="flex items-center gap-2 col-span-2 md:col-span-2">
+              <span className="font-semibold text-sm md:text-base text-white/90">{meeting.currency}</span>
+              <span className="text-sm md:text-base text-white/90">{meeting.amount}</span>
             </div>
           </div>
 
           {/* Brief Section */}
-          <div className="mt-4 pt-4 border-t border-base-200">
+          <div className="mt-2 pt-2 border-t border-white/30">
             <div className="flex justify-between items-center mb-2">
-              <h4 className="font-semibold">Brief</h4>
+              <h4 className="font-semibold text-white">Brief</h4>
               {editingBriefId === meeting.id ? (
                 <div className="flex items-center gap-1">
                   <button className="btn btn-ghost btn-sm btn-circle" onClick={() => handleSaveBrief(meeting.id)}>
@@ -392,26 +401,26 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </div>
               ) : (
                 <button className="btn btn-ghost btn-sm btn-circle" onClick={handleEditBrief}>
-                  <PencilSquareIcon className="w-5 h-5" />
+                  <PencilSquareIcon className="w-5 h-5 text-white" />
                 </button>
               )}
             </div>
             {editingBriefId === meeting.id ? (
               <textarea
-                className="textarea textarea-bordered w-full h-24"
+                className="textarea textarea-bordered w-full h-24 bg-white/20 text-white border-white/30 placeholder-white/60"
                 value={editedBrief}
                 onChange={(e) => setEditedBrief(e.target.value)}
                 placeholder="Add a meeting brief..."
               />
             ) : (
-              <div className="bg-gray-100 border border-gray-200 rounded-xl shadow-sm text-sm md:text-base text-base-content/80 p-4 my-2 min-h-[4rem] whitespace-pre-wrap transition-all">
-                {meeting.brief || <span className="text-base-content/50">No brief provided.</span>}
+              <div className="bg-white/20 rounded-xl shadow-sm text-sm text-white/90 p-2 my-1 min-h-[2.5rem] whitespace-pre-wrap transition-all">
+                {meeting.brief || <span className="text-white/60">No brief provided.</span>}
               </div>
             )}
           </div>
 
           {/* Last Edited Section */}
-          <div className="text-xs text-base-content/70 mt-4 flex flex-col gap-1">
+          <div className="text-xs text-white/80 mt-2 flex flex-col gap-1">
             <div className="flex items-center gap-2">
               <ClockSolidIcon className="w-4 h-4" />
               <span>Last edited: {new Date(meeting.lastEdited.timestamp).toLocaleString()}</span>
@@ -421,28 +430,29 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               <span>by {meeting.lastEdited.user}</span>
             </div>
           </div>
+          {/* SVG Decoration */}
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
         </div>
-        
         {/* Collapsible Section */}
         <div className={`transition-all duration-500 ease-in-out ${isExpanded ? 'max-h-screen' : 'max-h-0'}`}>
-          <div className="bg-base-100/50 p-4 md:p-6 border-t-2 border-dashed">
+          <div className="bg-white/10 p-2 md:p-3 border-t-2 border-dashed border-white/30">
             {expandedData.loading ? (
               <div className="flex justify-center items-center py-8">
                 <span className="loading loading-spinner loading-md"></span>
               </div>
             ) : (
               <div className="flex flex-col md:flex-row gap-4">
-                <div className="flex-1 bg-base-200/50 p-4 rounded-lg">
-                  <h5 className="font-semibold text-base-content/90 mb-1">Expert Notes</h5>
-                  <p className="text-sm text-base-content/70 min-h-[2rem]">
+                <div className="flex-1 bg-white/10 p-4 rounded-lg">
+                  <h5 className="font-semibold text-white mb-1">Expert Notes</h5>
+                  <p className="text-sm text-white/90 min-h-[2rem]">
                     {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0
                       ? expandedData.expert_notes[expandedData.expert_notes.length - 1].content
                       : expandedData.expert_notes || 'No notes yet.'}
                   </p>
                 </div>
-                <div className="flex-1 bg-base-200/50 p-4 rounded-lg">
-                  <h5 className="font-semibold text-base-content/90 mb-1">Handler Notes</h5>
-                  <p className="text-sm text-base-content/70 min-h-[2rem]">
+                <div className="flex-1 bg-white/10 p-4 rounded-lg">
+                  <h5 className="font-semibold text-white mb-1">Handler Notes</h5>
+                  <p className="text-sm text-white/90 min-h-[2rem]">
                     {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0
                       ? expandedData.handler_notes[expandedData.handler_notes.length - 1].content
                       : expandedData.handler_notes || 'No notes yet.'}
@@ -452,15 +462,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             )}
           </div>
         </div>
-
         {/* Expander Toggle */}
         <div
-          className="bg-base-200 hover:bg-base-300 cursor-pointer transition-colors p-2 text-center"
+          className="bg-white/10 hover:bg-white/20 cursor-pointer transition-colors p-1 text-center"
           onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
         >
-          <div className="flex items-center justify-center gap-2 text-sm font-medium text-primary">
+          <div className="flex items-center justify-center gap-2 text-xs font-medium text-white">
             <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
-            <ChevronDownIcon className={`w-5 h-5 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
+            <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
           </div>
         </div>
       </div>
@@ -515,7 +524,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {meetings.length > 0 ? (
-        meetings.map(renderMeetingCard)
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {meetings.map(renderMeetingCard)}
+        </div>
       ) : (
         <div className="text-center py-8 text-base-content/70 bg-base-200 rounded-lg">
           No meetings scheduled yet.

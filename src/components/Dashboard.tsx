@@ -4,8 +4,9 @@ import AISuggestions from './AISuggestions';
 import OverdueFollowups from './OverdueFollowups';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
-import { PieChart } from 'react-minimal-pie-chart';
+import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
+import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
 
 interface CalendarEvent {
   id: string;
@@ -359,130 +360,308 @@ const Dashboard: React.FC = () => {
     { category: 'Austria and Germany', signed: 1505920, due: 950000 },
   ];
 
+  // Custom Tooltip for My Performance chart
+  const PerformanceTooltip = ({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) => {
+    if (!active || !payload || payload.length === 0) return null;
+    // Find the team avg for this date
+    const teamAvgObj = teamAverageData.find(d => d.date === label);
+    const teamAvg = teamAvgObj ? Math.ceil(teamAvgObj.avg) : null;
+    // Find my contracts for this date
+    const myContractsObj = performanceData.find(d => d.date === label);
+    const myContracts = myContractsObj ? myContractsObj.count : null;
+    return (
+      <div style={{ background: 'rgba(0,0,0,0.8)', borderRadius: 12, color: '#fff', padding: 12, minWidth: 120 }}>
+        <div className="font-bold mb-1">{label}</div>
+        {myContracts !== null && (
+          <div>Contracts: {myContracts} contracts</div>
+        )}
+        {teamAvg !== null && (
+          <div>Team Avg: {teamAvg} contracts</div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div className="p-4 md:p-6 space-y-8">
       {/* Top Summary Boxes */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {/* Meetings Today */}
-        <div className="card bg-base-100 shadow-lg cursor-pointer hover:shadow-xl transition-all duration-300 border-t-4" style={{ borderTopColor: '#3b28c7' }} onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}>
-          <div className="card-body p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-3xl font-bold text-primary">{meetingsToday}</h3>
-                <p className="text-base-content/70">Meetings Today</p>
-              </div>
-              <CalendarIcon className="w-8 h-8 text-primary" />
+        <div
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden"
+          onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}
+        >
+          <div className="flex items-center gap-4 p-6">
+            <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+              <CalendarIcon className="w-7 h-7 text-white opacity-90" />
+            </div>
+            <div>
+              <div className="text-4xl font-extrabold text-white leading-tight">{meetingsToday}</div>
+              <div className="text-white/80 text-sm font-medium mt-1">Meetings Today</div>
             </div>
           </div>
+          {/* SVG Graph Placeholder */}
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
         </div>
 
         {/* Overdue Follow-ups */}
-        <div className="card bg-base-100 shadow-lg cursor-pointer hover:shadow-xl transition-all duration-300 border-t-4" style={{ borderTopColor: '#dc2626' }} onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}>
-          <div className="card-body p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-3xl font-bold text-error">{overdueFollowups}</h3>
-                <p className="text-base-content/70">Overdue Follow-ups</p>
-              </div>
-              <ExclamationTriangleIcon className="w-8 h-8 text-error" />
+        <div
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden"
+          onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}
+        >
+          <div className="flex items-center gap-4 p-6">
+            <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+              <ExclamationTriangleIcon className="w-7 h-7 text-white opacity-90" />
+            </div>
+            <div>
+              <div className="text-4xl font-extrabold text-white leading-tight">{overdueFollowups}</div>
+              <div className="text-white/80 text-sm font-medium mt-1">Overdue Follow-ups</div>
             </div>
           </div>
+          {/* SVG Bar Chart Placeholder */}
+          <svg className="absolute bottom-4 right-4 w-12 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
         </div>
 
         {/* New Messages */}
-        <div className="card bg-base-100 shadow-lg cursor-pointer hover:shadow-xl transition-all duration-300 border-t-4" style={{ borderTopColor: '#0891b2' }} onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}>
-          <div className="card-body p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-3xl font-bold text-info">{latestMessages.length}</h3>
-                <p className="text-base-content/70">New Messages</p>
-              </div>
-              <ChatBubbleLeftRightIcon className="w-8 h-8 text-info" />
+        <div
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden"
+          onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}
+        >
+          <div className="flex items-center gap-4 p-6">
+            <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+              <ChatBubbleLeftRightIcon className="w-7 h-7 text-white opacity-90" />
+            </div>
+            <div>
+              <div className="text-4xl font-extrabold text-white leading-tight">{latestMessages.length}</div>
+              <div className="text-white/80 text-sm font-medium mt-1">New Messages</div>
             </div>
           </div>
+          {/* SVG Circle Placeholder */}
+          <svg className="absolute bottom-4 right-4 w-10 h-10 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" /><text x="16" y="21" textAnchor="middle" fontSize="10" fill="white" opacity="0.7">99+</text></svg>
         </div>
 
         {/* Action Required */}
-        <div className="card bg-base-100 shadow-lg cursor-pointer hover:shadow-xl transition-all duration-300 border-t-4" style={{ borderTopColor: '#f59e0b' }}>
-          <div className="card-body p-6">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-3xl font-bold text-warning">3</h3>
-                <p className="text-base-content/70">Action Required</p>
-              </div>
-              <ArrowTrendingUpIcon className="w-8 h-8 text-warning" />
+        <div
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden"
+        >
+          <div className="flex items-center gap-4 p-6">
+            <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+              <ArrowTrendingUpIcon className="w-7 h-7 text-white opacity-90" />
+            </div>
+            <div>
+              <div className="text-4xl font-extrabold text-white leading-tight">3</div>
+              <div className="text-white/80 text-sm font-medium mt-1">Action Required</div>
             </div>
           </div>
+          {/* SVG Line Chart Placeholder */}
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
         </div>
       </div>
 
+      {/* Expanded Content for Top Boxes - now directly under the grid */}
+      {expanded === 'meetings' && (
+        <div className="glass-card mt-4 animate-fade-in">
+          <Meetings />
+        </div>
+      )}
+      {expanded === 'overdue' && (
+        <div className="glass-card mt-4 animate-fade-in">
+          <OverdueFollowups />
+        </div>
+      )}
+      {expanded === 'messages' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
+          {/* Client Emails Card */}
+          <div className="card shadow-xl rounded-2xl relative overflow-hidden bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white">
+            <div className="card-body p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <svg className="w-6 h-6 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8" /><rect x="3" y="6" width="18" height="12" rx="2" /></svg>
+                <span className="text-xl font-bold text-white">Client Emails</span>
+              </div>
+              {/* Email Messages List */}
+              <div className="space-y-6">
+                {/* Example Email Message */}
+                <div className="bg-white/10 rounded-xl p-4 mb-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-white text-lg">John Smith</span>
+                    <span className="text-white/70 text-sm">2 hours ago</span>
+                  </div>
+                  <div className="font-semibold text-white/90 mb-1">Contract Review Request</div>
+                  <div className="text-white/80 text-sm mb-2">Hi, I would like to discuss the contract terms we discussed last week...</div>
+                  <span className="w-2 h-2 bg-cyan-300 rounded-full inline-block" />
+                </div>
+                <div className="p-1" />
+                <div className="flex justify-between items-center mb-1">
+                  <span className="font-bold text-white text-lg">Maria Garcia</span>
+                  <span className="text-white/70 text-sm">4 hours ago</span>
+                </div>
+                <div className="font-semibold text-white/90 mb-1">Meeting Confirmation</div>
+                <div className="text-white/80 text-sm mb-2">Thank you for the meeting yesterday. I have some questions about...</div>
+                <div className="p-1" />
+                <div className="bg-white/10 rounded-xl p-4 mb-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-white text-lg">David Wilson</span>
+                    <span className="text-white/70 text-sm">1 day ago</span>
+                  </div>
+                  <div className="font-semibold text-white/90 mb-1">Document Submission</div>
+                  <div className="text-white/80 text-sm mb-2">I have attached the requested documents for my application...</div>
+                  <span className="w-2 h-2 bg-cyan-300 rounded-full inline-block" />
+                </div>
+              </div>
+              {/* SVG Decoration */}
+              <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
+            </div>
+          </div>
+          {/* WhatsApp Messages Card */}
+          <div className="card shadow-xl rounded-2xl relative overflow-hidden bg-gradient-to-tr from-emerald-500 via-teal-500 to-teal-600 text-white">
+            <div className="card-body p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <svg className="w-6 h-6 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16.72 11.06a6.5 6.5 0 10-11.44 6.1L3 21l3.94-2.28a6.5 6.5 0 009.78-7.66z" /><path d="M8 10h.01" /><path d="M12 14h.01" /><path d="M16 10h.01" /></svg>
+                <span className="text-xl font-bold text-white">WhatsApp Messages</span>
+              </div>
+              {/* WhatsApp Messages List */}
+              <div className="space-y-6">
+                <div className="bg-white/10 rounded-xl p-4 mb-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-white text-lg">Sarah Johnson</span>
+                    <span className="text-white/70 text-sm">30 min ago</span>
+                  </div>
+                  <div className="text-white/80 text-sm mb-2">Hi! I have a quick question about my application status</div>
+                  <span className="w-2 h-2 bg-emerald-300 rounded-full inline-block" />
+                </div>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="font-bold text-white text-lg">Michael Brown</span>
+                  <span className="text-white/70 text-sm">1 hour ago</span>
+                </div>
+                <div className="text-white/80 text-sm mb-2">Thanks for the update. When can we schedule the next meeting?</div>
+                <div className="bg-white/10 rounded-xl p-4 mb-2">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-white text-lg">Emma Wilson</span>
+                    <span className="text-white/70 text-sm">3 hours ago</span>
+                  </div>
+                  <div className="text-white/80 text-sm mb-2">I sent the documents you requested. Please let me know if you need anything else</div>
+                  <span className="w-2 h-2 bg-emerald-300 rounded-full inline-block" />
+                </div>
+                <div className="flex justify-between items-center mb-1">
+                  <span className="font-bold text-white text-lg">Alex Thompson</span>
+                  <span className="text-white/70 text-sm">5 hours ago</span>
+                </div>
+                <div className="text-white/80 text-sm mb-2">Perfect! Looking forward to our meeting tomorrow</div>
+              </div>
+              {/* SVG Decoration */}
+              <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><circle cx="32" cy="16" r="14" /></svg>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* AI Suggestions always visible */}
-      <div className="glass-card mb-8" ref={aiSuggestionsRef}>
-        <AISuggestions ref={aiSuggestionsRef} />
+      <div className="card shadow-xl rounded-2xl mb-8 relative overflow-hidden bg-gradient-to-tr from-emerald-500 via-teal-500 to-teal-600 text-white" ref={aiSuggestionsRef}>
+        <div className="card-body p-6">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/20 shadow">
+              <ChatBubbleLeftRightIcon className="w-6 h-6 text-white opacity-90" />
+            </div>
+            <span className="text-xl font-bold text-white">AI Suggestions</span>
+          </div>
+          <AISuggestions ref={aiSuggestionsRef} />
+          {/* SVG Decoration */}
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
+        </div>
       </div>
 
       {/* Graphs Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         {/* Meetings per Month Donut Chart */}
-        <div className="card bg-base-100 shadow-lg p-6 flex flex-col items-center lg:col-span-1">
+        <div className="card shadow-xl rounded-2xl p-6 flex flex-col items-center lg:col-span-1 relative overflow-hidden bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
           <div className="flex items-center gap-2 mb-4">
-            <CalendarIcon className="w-6 h-6 text-primary" />
-            <span className="text-lg font-bold">Monthly Meeting Statistics</span>
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/20 shadow">
+              <CalendarIcon className="w-6 h-6 text-white opacity-90" />
+            </div>
+            <span className="text-lg font-bold text-white">Monthly Meeting Statistics</span>
           </div>
           <div className="w-full flex flex-col items-center gap-4 mt-2">
-            <PieChart
-              data={meetingsPerMonth.map((month, i) => ({
-                title: month.month,
-                value: month.count,
-                color: ["#3b28c7", "#6366f1", "#a5b4fc"][i % 3],
-              }))}
-              lineWidth={30}
-              paddingAngle={3}
-              rounded
-              animate
-              label={({ dataEntry }) => dataEntry.value}
-              labelStyle={{
-                fontSize: '8px',
-                fontWeight: 'bold',
-                fill: '#fff',
-              }}
-              style={{ height: 180 }}
-            />
-            <div className="flex flex-col gap-2 mt-2">
-              {meetingsPerMonth.map((month, i) => (
-                <div key={month.month} className="flex items-center gap-2 text-sm">
-                  <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: ["#3b28c7", "#6366f1", "#a5b4fc"][i % 3] }}></span>
-                  <span className="font-semibold text-base-content/80">{month.month}:</span>
-                  <span className="text-primary font-bold">{month.count}</span>
+            {/* Professional Donut Progress Ring for Current Month */}
+            {(() => {
+              const currentMonth = meetingsPerMonth[meetingsPerMonth.length - 1];
+              const target = 100; // You can adjust this target as needed
+              const value = currentMonth.count;
+              const percent = Math.min(value / target, 1);
+              const data = [
+                { name: 'Meetings', value },
+                { name: 'Remaining', value: Math.max(target - value, 0) },
+              ];
+              const COLORS = ['#ffffff', 'rgba(255,255,255,0.3)'];
+              return (
+                <div style={{ width: 180, height: 180, position: 'relative' }}>
+                  <RechartsPieChart width={180} height={180}>
+                    <Pie
+                      data={data}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={65}
+                      outerRadius={85}
+                      startAngle={90}
+                      endAngle={-270}
+                      dataKey="value"
+                      stroke="none"
+                      isAnimationActive={true}
+                    >
+                      {data.map((entry, i) => (
+                        <Cell key={`cell-${i}`} fill={COLORS[i]} />
+                      ))}
+                    </Pie>
+                  </RechartsPieChart>
+                  {/* Centered label */}
+                  <div style={{
+                    position: 'absolute',
+                    top: '50%',
+                    left: '50%',
+                    transform: 'translate(-50%, -50%)',
+                    textAlign: 'center',
+                  }}>
+                    <div className="text-3xl font-bold text-white">{value}</div>
+                    <div className="text-base font-semibold text-white/80">{currentMonth.month}</div>
+                    <div className="text-xs text-white/70">{Math.round(percent * 100)}% of target</div>
+                  </div>
                 </div>
-              ))}
+              );
+            })()}
+            {/* Minimal legend below */}
+            <div className="flex flex-col gap-1 mt-2 text-sm text-white/80">
+              <div><span className="inline-block w-3 h-3 rounded-full mr-2 bg-white"></span>Meetings this month</div>
+              <div><span className="inline-block w-3 h-3 rounded-full mr-2 bg-white/30"></span>Target</div>
             </div>
           </div>
+          {/* SVG Decoration */}
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><circle cx="32" cy="16" r="12" /></svg>
         </div>
         {/* Contracts Signed by Category Bar Graph */}
-        <div className="card bg-base-100 shadow-lg p-6 flex flex-col items-center lg:col-span-1">
+        <div className="card shadow-xl rounded-2xl p-6 flex flex-col items-center lg:col-span-1 relative overflow-hidden bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white">
           <div className="flex items-center gap-2 mb-4">
-            <ChartBarIcon className="w-6 h-6 text-primary" />
-            <span className="text-lg font-bold">Contracts & Revenue by Category</span>
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/20 shadow">
+              <ChartBarIcon className="w-6 h-6 text-white opacity-90" />
+            </div>
+            <span className="text-lg font-bold text-white">Contracts & Revenue by Category</span>
           </div>
           <div className="w-full max-w-xl flex flex-col gap-4 mt-2">
             <div className="w-full space-y-3">
               {contractsByCategory.map((cat, i) => (
                 <div key={cat.category} className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="text-base font-semibold text-base-content/80">{cat.category}</span>
+                    <span className="text-base font-semibold text-white/90">{cat.category}</span>
                     <div className="text-right">
-                      <div className="text-sm font-bold text-primary">{cat.count} contracts</div>
-                      <div className="text-xs text-success font-medium">₪{(cat.amount / 1000).toFixed(1)}k</div>
+                      <div className="text-sm font-bold text-white">{cat.count} contracts</div>
+                      <div className="text-xs text-green-300 font-medium">₪{(cat.amount / 1000).toFixed(1)}k</div>
                     </div>
                   </div>
-                  <div className="flex-1 bg-base-200 rounded-full h-6 relative overflow-hidden">
+                  <div className="flex-1 bg-white/20 rounded-full h-6 relative overflow-hidden">
                     <div
                       className="h-6 rounded-full flex items-center justify-end pr-3 text-white font-bold text-sm transition-all relative"
                       style={{
                         width: `${Math.max(10, (cat.count / Math.max(...contractsByCategory.map(c => c.count))) * 100)}%`,
-                        background: '#3b28c7',
-                        boxShadow: '0 2px 8px 0 rgba(59,40,199,0.10)'
+                        background: '#ffffff',
+                        boxShadow: '0 2px 8px 0 rgba(255,255,255,0.2)'
                       }}
                     >
                       {cat.count}
@@ -492,19 +671,23 @@ const Dashboard: React.FC = () => {
               ))}
             </div>
           </div>
+          {/* SVG Decoration */}
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
         </div>
         {/* Compact Calendar Section */}
-        <div className="card shadow-lg p-4 lg:col-span-1" style={{ backgroundColor: '#3b28c7' }}>
+        <div className="card shadow-xl rounded-2xl p-4 lg:col-span-1 relative overflow-hidden bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <CalendarIcon className="w-5 h-5 text-white" />
+              <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-white/20 shadow">
+                <CalendarIcon className="w-5 h-5 text-white opacity-90" />
+              </div>
               <span className="text-base font-bold text-white">Calendar</span>
             </div>
             <div className="flex items-center gap-1">
               <button onClick={goToPreviousMonth} className="btn btn-ghost btn-xs text-white hover:bg-white/20">
                 <ChevronLeftIcon className="w-3 h-3" />
               </button>
-              <button onClick={goToToday} className="btn btn-xs text-xs text-white" style={{ backgroundColor: 'rgba(255,255,255,0.2)' }}>
+              <button onClick={goToToday} className="btn btn-xs text-xs text-white bg-white/20 hover:bg-white/30">
                 Today
               </button>
               <button onClick={goToNextMonth} className="btn btn-ghost btn-xs text-white hover:bg-white/20">
@@ -546,7 +729,7 @@ const Dashboard: React.FC = () => {
                   <div 
                     key={day} 
                     className={`h-8 border border-white/20 p-0.5 text-xs relative cursor-pointer ${
-                      isToday ? 'bg-white text-purple-600 font-bold' : 'hover:bg-white/10 text-white'
+                      isToday ? 'bg-white text-blue-600 font-bold' : 'hover:bg-white/10 text-white'
                     }`}
                     onClick={() => handleDateClick(dateStr)}
                   >
@@ -579,318 +762,108 @@ const Dashboard: React.FC = () => {
           {/* Compact Legend */}
           <div className="flex items-center justify-center gap-3 text-xs text-white">
             <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#ffffff' }}></div>
+              <div className="w-2 h-2 rounded-full bg-white"></div>
               <span>Meetings</span>
             </div>
             <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#e0e7ff' }}></div>
+              <div className="w-2 h-2 rounded-full bg-blue-200"></div>
               <span>Outlook</span>
             </div>
           </div>
+          {/* SVG Decoration */}
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
         </div>
       </div>
 
-      {/* Expandable Sections */}
-      {expanded === 'meetings' && (
-        <div className="glass-card mt-4 animate-fade-in">
-          <Meetings />
-        </div>
-      )}
-      {expanded === 'overdue' && (
-        <div className="glass-card mt-4 animate-fade-in">
-          <OverdueFollowups />
-        </div>
-      )}
-      {expanded === 'messages' && (
-        <div className="card bg-base-100 shadow-lg mt-4 animate-fade-in">
-          <div className="card-body p-6">
-            <div className="flex items-center gap-2 mb-6">
-              <ChatBubbleLeftRightIcon className="w-6 h-6 text-info" />
-              <h3 className="text-xl font-bold">Latest Messages</h3>
-            </div>
-            
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Client Emails */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 mb-4">
-                  <svg className="w-5 h-5 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
-                    <path d="M2.003 5.884L10 9.882l7.997-3.998A2 2 0 0016 4H4a2 2 0 00-1.997 1.884z" />
-                    <path d="M18 8.118l-8 4-8-4V14a2 2 0 002 2h12a2 2 0 002-2V8.118z" />
-                  </svg>
-                  <h4 className="text-lg font-semibold text-blue-600">Client Emails</h4>
-                </div>
-                
-                <div className="space-y-3">
-                  {[
-                    {
-                      client: 'John Smith',
-                      subject: 'Contract Review Request',
-                      preview: 'Hi, I would like to discuss the contract terms we discussed last week...',
-                      time: '2 hours ago',
-                      unread: true
-                    },
-                    {
-                      client: 'Maria Garcia',
-                      subject: 'Meeting Confirmation',
-                      preview: 'Thank you for the meeting yesterday. I have some questions about...',
-                      time: '4 hours ago',
-                      unread: false
-                    },
-                    {
-                      client: 'David Wilson',
-                      subject: 'Document Submission',
-                      preview: 'I have attached the requested documents for my application...',
-                      time: '1 day ago',
-                      unread: true
-                    }
-                  ].map((email, i) => (
-                    <div key={i} className={`card ${email.unread ? 'bg-blue-50 border-l-4 border-blue-500' : 'bg-base-50'} hover:shadow-md transition-all cursor-pointer`}>
-                      <div className="card-body p-4">
-                        <div className="flex items-start justify-between mb-2">
-                          <h5 className="font-semibold text-base">{email.client}</h5>
-                          <span className="text-xs text-base-content/60">{email.time}</span>
-                        </div>
-                        <h6 className="font-medium text-sm text-base-content/80 mb-1">{email.subject}</h6>
-                        <p className="text-sm text-base-content/70 line-clamp-2">{email.preview}</p>
-                        {email.unread && (
-                          <div className="w-2 h-2 bg-blue-500 rounded-full mt-2"></div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* WhatsApp Messages */}
-              <div className="space-y-4">
-                <div className="flex items-center gap-2 mb-4">
-                  <svg className="w-5 h-5 text-green-600" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893A11.821 11.821 0 0020.885 3.488"/>
-                  </svg>
-                  <h4 className="text-lg font-semibold text-green-600">WhatsApp Messages</h4>
-                </div>
-                
-                <div className="space-y-3">
-                  {[
-                    {
-                      client: 'Sarah Johnson',
-                      message: 'Hi! I have a quick question about my application status',
-                      time: '30 min ago',
-                      unread: true
-                    },
-                    {
-                      client: 'Michael Brown',
-                      message: 'Thanks for the update. When can we schedule the next meeting?',
-                      time: '1 hour ago',
-                      unread: false
-                    },
-                    {
-                      client: 'Emma Wilson',
-                      message: 'I sent the documents you requested. Please let me know if you need anything else',
-                      time: '3 hours ago',
-                      unread: true
-                    },
-                    {
-                      client: 'Alex Thompson',
-                      message: 'Perfect! Looking forward to our meeting tomorrow',
-                      time: '5 hours ago',
-                      unread: false
-                    }
-                  ].map((whatsapp, i) => (
-                    <div key={i} className={`card ${whatsapp.unread ? 'bg-green-50 border-l-4 border-green-500' : 'bg-base-50'} hover:shadow-md transition-all cursor-pointer`}>
-                      <div className="card-body p-4">
-                        <div className="flex items-start justify-between mb-2">
-                          <h5 className="font-semibold text-base">{whatsapp.client}</h5>
-                          <span className="text-xs text-base-content/60">{whatsapp.time}</span>
-                        </div>
-                        <p className="text-sm text-base-content/70 line-clamp-2">{whatsapp.message}</p>
-                        {whatsapp.unread && (
-                          <div className="w-2 h-2 bg-green-500 rounded-full mt-2"></div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Calendar Events Drawer */}
-      {isDrawerOpen && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div 
-            className="fixed inset-0 bg-black/50 transition-opacity"
-            onClick={closeDrawer}
-          />
-          
-          {/* Drawer */}
-          <div className="fixed right-0 top-0 h-full w-96 bg-base-100 shadow-2xl transform transition-transform duration-300 ease-out">
-            <div className="flex flex-col h-full">
-              {/* Header */}
-              <div className="flex items-center justify-between p-4 border-b border-base-200">
-                <div className="flex items-center gap-2">
-                  <CalendarIcon className="w-6 h-6 text-primary" />
-                  <span className="text-lg font-bold">
-                    {selectedDate ? new Date(selectedDate).toLocaleDateString('en-US', { 
-                      weekday: 'long', 
-                      year: 'numeric', 
-                      month: 'long', 
-                      day: 'numeric' 
-                    }) : 'Events'}
-                  </span>
-                </div>
-                <button 
-                  onClick={closeDrawer} 
-                  className="btn btn-ghost btn-circle btn-sm"
-                  aria-label="Close drawer"
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
-              </div>
-              
-              {/* Content */}
-              <div className="flex-1 overflow-y-auto p-4">
-                {getEventsForSelectedDate().length === 0 ? (
-                  <div className="text-center py-8">
-                    <CalendarIcon className="w-12 h-12 text-base-content/30 mx-auto mb-4" />
-                    <p className="text-base-content/60">No events scheduled for this date</p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {getEventsForSelectedDate().map((event, index) => (
-                      <div 
-                        key={event.id} 
-                        className="card bg-base-200/50 hover:bg-base-200 transition-colors"
-                      >
-                        <div className="card-body p-4">
-                          <div className="flex items-start gap-3">
-                            <div 
-                              className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
-                              style={{ 
-                                backgroundColor: event.type === 'meeting' ? '#3b28c7' : '#6366f1'
-                              }}
-                            />
-                            <div className="flex-1">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="badge badge-sm">
-                                  {event.type === 'meeting' ? 'Client Meeting' : 'Outlook Event'}
-                                </span>
-                                {event.leadNumber && (
-                                  <span className="text-sm text-base-content/60 font-mono">
-                                    {event.leadNumber}
-                                  </span>
-                                )}
-                              </div>
-                              <h3 className="font-semibold text-base mb-1">{event.title}</h3>
-                              {event.type === 'meeting' && event.leadNumber && (
-                                <p className="text-sm text-base-content/70">
-                                  Lead: {event.leadNumber}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* My Performance Graph (Full Width) */}
       <div className="w-full mt-12">
-        <div className="glass-card p-8 shadow-xl rounded-2xl w-full max-w-full relative">
-          <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
-            <div className="flex items-center gap-2 mb-2">
-              <ChartBarIcon className="w-7 h-7 text-primary" />
-              <span className="text-2xl font-bold">My Performance</span>
-            </div>
-            <div className="flex gap-6 text-sm md:text-base items-center">
-              <div className="flex flex-col items-center">
-                <span className="font-bold text-primary text-xl">{contractsLast30}</span>
-                <span className="text-base-content/60">Last 30 Days</span>
+        <div className="card shadow-xl rounded-2xl w-full max-w-full relative overflow-hidden bg-gradient-to-tr from-yellow-400 via-orange-400 to-pink-500 text-white">
+          <div className="card-body p-8">
+            <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/20 shadow">
+                  <ChartBarIcon className="w-7 h-7 text-white opacity-90" />
+                </div>
+                <span className="text-2xl font-bold text-white">My Performance</span>
               </div>
-              <div className="flex flex-col items-center">
-                <span className="font-bold text-primary text-xl">{contractsToday}</span>
-                <span className="text-base-content/60">Today</span>
+              <div className="flex gap-6 text-sm md:text-base items-center">
+                <div className="flex flex-col items-center">
+                  <span className="font-bold text-white text-xl">{contractsLast30}</span>
+                  <span className="text-white/80">Last 30 Days</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="font-bold text-white text-xl">{contractsToday}</span>
+                  <span className="text-white/80">Today</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="font-bold text-white text-xl">{contractsThisMonth}</span>
+                  <span className="text-white/80">This Month</span>
+                </div>
+                {/* View Leads Button */}
+                <button
+                  className="btn btn-sm btn-outline border-white/40 text-white hover:bg-white/10 ml-2"
+                  onClick={() => setShowLeadsList((v) => !v)}
+                >
+                  {showLeadsList ? 'Hide Leads' : 'View Leads'}
+                </button>
               </div>
-              <div className="flex flex-col items-center">
-                <span className="font-bold text-primary text-xl">{contractsThisMonth}</span>
-                <span className="text-base-content/60">This Month</span>
+            </div>
+            <div className="w-full h-72">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+                  <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#ffffff' }} axisLine={false} tickLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#ffffff' }} axisLine={false} tickLine={false} width={30} />
+                  <Tooltip content={<PerformanceTooltip />} />
+                  <Line
+                    type="monotone"
+                    dataKey="count"
+                    stroke="#ffffff"
+                    strokeWidth={3}
+                    dot={{ r: 5, stroke: '#fff', strokeWidth: 2, fill: '#ffffff' }}
+                    activeDot={{ r: 8, fill: '#ffffff', stroke: '#000', strokeWidth: 3 }}
+                    name="My Contracts"
+                  />
+                  <Line
+                    type="monotone"
+                    data={teamAverageData}
+                    dataKey="avg"
+                    stroke="#fbbf24"
+                    strokeWidth={3}
+                    dot={false}
+                    name="Team Avg"
+                    strokeDasharray="6 6"
+                  />
+                  {/* Highlight today */}
+                  {performanceData.map((d, i) => d.isToday && (
+                    <ReferenceDot key={i} x={d.date} y={d.count} r={10} fill="#ffffff" stroke="#000" strokeWidth={3} />
+                  ))}
+                  {/* Highlight this month */}
+                  {(() => {
+                    const first = performanceData.findIndex(d => d.isThisMonth);
+                    const last = performanceData.map(d => d.isThisMonth).lastIndexOf(true);
+                    if (first !== -1 && last !== -1 && last > first) {
+                      return (
+                        <ReferenceArea x1={performanceData[first].date} x2={performanceData[last].date} fill="#ffffff" fillOpacity={0.1} />
+                      );
+                    }
+                    return null;
+                  })()}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            {/* Legend for My Contracts and Team Avg */}
+            <div className="flex gap-6 mt-4 items-center">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-6 h-2 rounded-full bg-white"></span>
+                <span className="text-base font-semibold text-white">My Contracts</span>
               </div>
-              {/* View Leads Button */}
-              <button
-                className="btn btn-sm btn-outline btn-primary ml-2"
-                onClick={() => setShowLeadsList((v) => !v)}
-              >
-                {showLeadsList ? 'Hide Leads' : 'View Leads'}
-              </button>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-6 h-2 rounded-full bg-yellow-300"></span>
+                <span className="text-base font-semibold text-white">Team Avg</span>
+              </div>
             </div>
-          </div>
-          <div className="w-full h-72">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
-                <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#8884d8' }} axisLine={false} tickLine={false} />
-                <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#8884d8' }} axisLine={false} tickLine={false} width={30} />
-                <Tooltip
-                  contentStyle={{ background: 'rgba(59,40,199,0.95)', borderRadius: 12, color: '#fff', border: 'none' }}
-                  labelStyle={{ color: '#fff', fontWeight: 'bold' }}
-                  itemStyle={{ color: '#fff' }}
-                  formatter={(value, name) => [name === 'avg' ? `${value} (team avg)` : `${value} contracts`, name === 'avg' ? 'Team Avg' : 'Contracts']}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="count"
-                  stroke="#3b28c7"
-                  strokeWidth={3}
-                  dot={{ r: 5, stroke: '#fff', strokeWidth: 2, fill: '#3b28c7' }}
-                  activeDot={{ r: 8, fill: '#6366f1', stroke: '#fff', strokeWidth: 3 }}
-                  name="My Contracts"
-                />
-                <Line
-                  type="monotone"
-                  data={teamAverageData}
-                  dataKey="avg"
-                  stroke="#f59e0b"
-                  strokeWidth={3}
-                  dot={false}
-                  name="Team Avg"
-                  strokeDasharray="6 6"
-                />
-                {/* Highlight today */}
-                {performanceData.map((d, i) => d.isToday && (
-                  <ReferenceDot key={i} x={d.date} y={d.count} r={10} fill="#6366f1" stroke="#fff" strokeWidth={3} />
-                ))}
-                {/* Highlight this month */}
-                {(() => {
-                  const first = performanceData.findIndex(d => d.isThisMonth);
-                  const last = performanceData.map(d => d.isThisMonth).lastIndexOf(true);
-                  if (first !== -1 && last !== -1 && last > first) {
-                    return (
-                      <ReferenceArea x1={performanceData[first].date} x2={performanceData[last].date} fill="#a5b4fc" fillOpacity={0.12} />
-                    );
-                  }
-                  return null;
-                })()}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          {/* Legend for My Contracts and Team Avg */}
-          <div className="flex gap-6 mt-4 items-center">
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-6 h-2 rounded-full" style={{ background: '#3b28c7' }}></span>
-              <span className="text-base font-semibold">My Contracts</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-6 h-2 rounded-full" style={{ background: '#f59e0b' }}></span>
-              <span className="text-base font-semibold">Team Avg</span>
-            </div>
+            {/* SVG Decoration */}
+            <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
           </div>
         </div>
       </div>
@@ -933,127 +906,137 @@ const Dashboard: React.FC = () => {
 
       {/* Score Board Section */}
       <div className="w-full mt-12">
-        <div className="glass-card p-8 shadow-xl rounded-2xl w-full max-w-full">
-          <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
-            <span className="text-2xl font-bold text-base-content">Score Board</span>
-            <div className="tabs tabs-boxed bg-base-200 rounded-xl p-1">
-              {scoreboardTabs.map(tab => (
-                <a
-                  key={tab}
-                  className={`tab text-lg font-semibold px-6 py-2 rounded-lg transition-all ${scoreTab === tab ? 'tab-active bg-primary text-white shadow' : 'text-base-content/70 hover:bg-base-300'}`}
-                  onClick={() => setScoreTab(tab)}
-                >
-                  {tab}
-                </a>
-              ))}
+        <div className="card shadow-xl rounded-2xl w-full max-w-full relative overflow-hidden bg-gradient-to-tr from-indigo-500 via-purple-500 to-purple-600 text-white">
+          <div className="card-body p-8">
+            <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/20 shadow">
+                  <ChartBarIcon className="w-7 h-7 text-white opacity-90" />
+                </div>
+                <span className="text-2xl font-bold text-white">Score Board</span>
+              </div>
+              <div className="tabs tabs-boxed bg-white/20 rounded-xl p-1">
+                {scoreboardTabs.map(tab => (
+                  <a
+                    key={tab}
+                    className={`tab text-lg font-semibold px-6 py-2 rounded-lg transition-all ${scoreTab === tab ? 'tab-active bg-white text-purple-600 shadow' : 'text-white/80 hover:bg-white/20'}`}
+                    onClick={() => setScoreTab(tab)}
+                  >
+                    {tab}
+                  </a>
+                ))}
+              </div>
             </div>
+            {/* Table for Tables tab only */}
+            {scoreTab === 'Tables' && (
+              <div className="overflow-x-auto">
+                <table className="table w-full rounded-xl bg-white/10">
+                  <thead>
+                    <tr>
+                      <th className="text-base font-bold text-white/90 px-4 py-3 bg-white/20 rounded-t-xl whitespace-nowrap"></th>
+                      {scoreboardCategories.map(cat => (
+                        <th key={cat} className="text-base font-bold text-white/90 px-4 py-3 bg-white/20 rounded-t-xl whitespace-nowrap">{cat}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {/* Today row */}
+                    <tr className="hover:bg-white/10 transition-all">
+                      <td className="px-4 py-3 text-left font-bold text-lg text-white/90">Today</td>
+                      {scoreboardData["Today"].map((cell, i) => (
+                        <td key={i} className="px-4 py-3 text-center align-top">
+                          <div className="inline-flex flex-col items-start w-full">
+                            <div className="flex items-start justify-between bg-white/20 rounded-xl px-3 py-2 shadow-sm w-full">
+                              <span className="badge bg-white text-purple-600 font-bold text-lg min-w-[2.5rem] h-10 flex justify-center items-center shadow-md">
+                                {cell.count}
+                              </span>
+                              <span className={`text-lg font-bold leading-tight ${cell.amount < cell.expected ? 'text-red-300' : cell.amount >= cell.expected && cell.expected > 0 ? 'text-green-300' : 'text-white/80'}`}>₪{cell.amount ? cell.amount.toLocaleString() : '0'}</span>
+                            </div>
+                            {cell.expected > 0 && (
+                              <div className="text-xs text-white/70 mt-1 text-right w-full">
+                                <span className="opacity-70">Expected:</span> <span className="font-semibold">{cell.expected.toLocaleString()}</span>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                    {/* Last 30d row */}
+                    <tr className="hover:bg-white/10 transition-all">
+                      <td className="px-4 py-3 text-left font-bold text-lg text-white/90">Last 30 days</td>
+                      {scoreboardData["Last 30d"].map((cell, i) => (
+                        <td key={i} className="px-4 py-3 text-center align-top">
+                          <div className="inline-flex flex-col items-start w-full">
+                            <div className="flex items-start justify-between bg-white/20 rounded-xl px-3 py-2 shadow-sm w-full">
+                              <span className="badge bg-white text-purple-600 font-bold text-lg min-w-[2.5rem] h-10 flex justify-center items-center shadow-md">
+                                {cell.count}
+                              </span>
+                              <span className={`text-lg font-bold leading-tight ${cell.amount < cell.expected ? 'text-red-300' : cell.amount >= cell.expected && cell.expected > 0 ? 'text-green-300' : 'text-white/80'}`}>₪{cell.amount ? cell.amount.toLocaleString() : '0'}</span>
+                            </div>
+                            {cell.expected > 0 && (
+                              <div className="text-xs text-white/70 mt-1 text-right w-full">
+                                <span className="opacity-70">Expected:</span> <span className="font-semibold">{cell.expected.toLocaleString()}</span>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {/* Bar chart for Today, June, and Last 30d tabs */}
+            {(scoreTab === 'Today' || scoreTab === currentMonthName || scoreTab === 'Last 30d') && (
+              <div className="w-full h-[420px] flex flex-col items-center justify-center">
+                {(() => {
+                  const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
+                  console.log('Score Board chart data for tab:', scoreTab, chartData);
+                  return (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart
+                        data={chartData}
+                        barCategoryGap={32}
+                        margin={{ top: 32, right: 32, left: 16, bottom: 32 }}
+                      >
+                        <XAxis dataKey="category" tick={{ fontSize: 16, fill: '#ffffff', fontWeight: 600 }} axisLine={false} tickLine={false} />
+                        <YAxis tick={{ fontSize: 14, fill: '#ffffff' }} axisLine={false} tickLine={false} width={60} />
+                        <CartesianGrid strokeDasharray="3 3" stroke="#ffffff" opacity={0.2} />
+                        <Tooltip
+                          contentStyle={{ background: 'rgba(0,0,0,0.8)', borderRadius: 12, color: '#fff', border: 'none' }}
+                          labelStyle={{ color: '#fff', fontWeight: 'bold' }}
+                          itemStyle={{ color: '#fff' }}
+                          formatter={(value: number, name: string) => {
+                            console.log('Tooltip formatter called with:', { value, name });
+                            if (name === 'signed') return [value.toLocaleString(), 'Signed'];
+                            if (name === 'due') return [value.toLocaleString(), 'Due'];
+                            // Fallback for any unexpected name values
+                            return [value.toLocaleString(), name || 'Unknown'];
+                          }}
+                        />
+                        <Bar dataKey="signed" name="Signed" fill="#ffffff" radius={[8, 8, 0, 0]} barSize={40} />
+                        <Bar dataKey="due" name="Due" fill="#fbbf24" radius={[8, 8, 0, 0]} barSize={40} />
+                        <RechartsLegend
+                          verticalAlign="top"
+                          align="center"
+                          iconType="rect"
+                          height={36}
+                          wrapperStyle={{ fontSize: 18, fontWeight: 600, marginBottom: 16, color: '#ffffff' }}
+                          formatter={(value: string) => {
+                            console.log('Legend formatter called with:', { value });
+                            const item = meetingsPerMonth.find(m => m.month === value);
+                            return value;
+                          }}
+                        />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  );
+                })()}
+              </div>
+            )}
+            {/* SVG Decoration */}
+            <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
           </div>
-          {/* Table for Tables tab only */}
-          {scoreTab === 'Tables' && (
-            <div className="overflow-x-auto">
-              <table className="table w-full rounded-xl bg-base-100">
-                <thead>
-                  <tr>
-                    <th className="text-base font-bold text-base-content/80 px-4 py-3 bg-base-200 rounded-t-xl whitespace-nowrap"></th>
-                    {scoreboardCategories.map(cat => (
-                      <th key={cat} className="text-base font-bold text-base-content/80 px-4 py-3 bg-base-200 rounded-t-xl whitespace-nowrap">{cat}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* Today row */}
-                  <tr className="hover:bg-base-200/40 transition-all">
-                    <td className="px-4 py-3 text-left font-bold text-lg text-base-content/80">Today</td>
-                    {scoreboardData["Today"].map((cell, i) => (
-                      <td key={i} className="px-4 py-3 text-center align-top">
-                        <div className="inline-flex flex-col items-start w-full">
-                          <div className="flex items-start justify-between bg-base-200 rounded-xl px-3 py-2 shadow-sm w-full">
-                            <span className="badge bg-primary text-white font-bold text-lg min-w-[2.5rem] h-10 flex justify-center items-center shadow-md">
-                              {cell.count}
-                            </span>
-                            <span className={`text-lg font-bold leading-tight ${cell.amount < cell.expected ? 'text-error' : cell.amount >= cell.expected && cell.expected > 0 ? 'text-success' : 'text-base-content/80'}`}>₪{cell.amount ? cell.amount.toLocaleString() : '0'}</span>
-                          </div>
-                          {cell.expected > 0 && (
-                            <div className="text-xs text-base-content/60 mt-1 text-right w-full">
-                              <span className="opacity-70">Expected:</span> <span className="font-semibold">{cell.expected.toLocaleString()}</span>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    ))}
-                  </tr>
-                  {/* Last 30d row */}
-                  <tr className="hover:bg-base-200/40 transition-all">
-                    <td className="px-4 py-3 text-left font-bold text-lg text-base-content/80">Last 30 days</td>
-                    {scoreboardData["Last 30d"].map((cell, i) => (
-                      <td key={i} className="px-4 py-3 text-center align-top">
-                        <div className="inline-flex flex-col items-start w-full">
-                          <div className="flex items-start justify-between bg-base-200 rounded-xl px-3 py-2 shadow-sm w-full">
-                            <span className="badge bg-primary text-white font-bold text-lg min-w-[2.5rem] h-10 flex justify-center items-center shadow-md">
-                              {cell.count}
-                            </span>
-                            <span className={`text-lg font-bold leading-tight ${cell.amount < cell.expected ? 'text-error' : cell.amount >= cell.expected && cell.expected > 0 ? 'text-success' : 'text-base-content/80'}`}>₪{cell.amount ? cell.amount.toLocaleString() : '0'}</span>
-                          </div>
-                          {cell.expected > 0 && (
-                            <div className="text-xs text-base-content/60 mt-1 text-right w-full">
-                              <span className="opacity-70">Expected:</span> <span className="font-semibold">{cell.expected.toLocaleString()}</span>
-                            </div>
-                          )}
-                        </div>
-                      </td>
-                    ))}
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          )}
-          {/* Bar chart for Today, June, and Last 30d tabs */}
-          {(scoreTab === 'Today' || scoreTab === currentMonthName || scoreTab === 'Last 30d') && (
-            <div className="w-full h-[420px] flex flex-col items-center justify-center">
-              {(() => {
-                const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
-                console.log('Score Board chart data for tab:', scoreTab, chartData);
-                return (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart
-                      data={chartData}
-                      barCategoryGap={32}
-                      margin={{ top: 32, right: 32, left: 16, bottom: 32 }}
-                    >
-                      <XAxis dataKey="category" tick={{ fontSize: 16, fill: '#3b28c7', fontWeight: 600 }} axisLine={false} tickLine={false} />
-                      <YAxis tick={{ fontSize: 14, fill: '#8884d8' }} axisLine={false} tickLine={false} width={60} />
-                      <CartesianGrid strokeDasharray="3 3" stroke="#d1d5db" opacity={0.5} />
-                      <Tooltip
-                        contentStyle={{ background: 'rgba(59,40,199,0.95)', borderRadius: 12, color: '#fff', border: 'none' }}
-                        labelStyle={{ color: '#fff', fontWeight: 'bold' }}
-                        itemStyle={{ color: '#fff' }}
-                        formatter={(value: number, name: string) => {
-                          console.log('Tooltip formatter called with:', { value, name });
-                          if (name === 'signed') return [value.toLocaleString(), 'Signed'];
-                          if (name === 'due') return [value.toLocaleString(), 'Due'];
-                          // Fallback for any unexpected name values
-                          return [value.toLocaleString(), name || 'Unknown'];
-                        }}
-                      />
-                      <Bar dataKey="signed" name="Signed" fill="#3b28c7" radius={[8, 8, 0, 0]} barSize={40} />
-                      <Bar dataKey="due" name="Due" fill="#f59e0b" radius={[8, 8, 0, 0]} barSize={40} />
-                      <RechartsLegend
-                        verticalAlign="top"
-                        align="center"
-                        iconType="rect"
-                        height={36}
-                        wrapperStyle={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}
-                        formatter={(value, entry) => {
-                          console.log('Legend formatter called with:', { value, entry });
-                          return value;
-                        }}
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                );
-              })()}
-            </div>
-          )}
         </div>
       </div>
     </div>

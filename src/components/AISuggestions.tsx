@@ -125,24 +125,24 @@ const AISuggestions = forwardRef((props, ref) => {
   });
 
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
-    <div className="card bg-base-200/50 hover:bg-base-200 transition-colors">
+    <div className="card bg-white/10 hover:bg-white/20 transition-colors border border-white/20">
       <div className="card-body p-4">
         <div className="flex items-start gap-3">
           {getTypeIcon(suggestion.type)}
           <div className="flex-1">
             <div className="flex items-center justify-between">
-              <span className="badge badge-sm">
+              <span className="badge badge-sm bg-white/20 text-white font-semibold border-none">
                 {suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1)}
               </span>
               {suggestion.dueDate && (
-                <span className="text-sm text-base-content/70">
+                <span className="text-sm text-white/70">
                   Due: {suggestion.dueDate}
                 </span>
               )}
             </div>
-            <p className="mt-2 text-sm">{suggestion.message}</p>
+            <p className="mt-2 text-sm text-white/90">{suggestion.message}</p>
             {suggestion.context && (
-              <p className="mt-1 text-sm text-base-content/70">
+              <p className="mt-1 text-sm text-white/70">
                 {suggestion.context}
               </p>
             )}
@@ -167,14 +167,14 @@ const AISuggestions = forwardRef((props, ref) => {
 
   return (
     <div ref={containerRef}>
-      <div className="bg-base-100 rounded-lg shadow-lg p-4 w-full mb-6">
-        <div className="flex items-center justify-between pb-4 border-b border-base-200">
+      <div className="bg-white/10 rounded-xl shadow-lg p-4 w-full mb-6 border border-white/20">
+        <div className="flex items-center justify-between pb-4 border-b border-white/20">
           <div className="flex items-center gap-2">
-            <SparklesIcon className="w-6 h-6 text-primary" />
-            <h2 className="text-xl font-semibold">AI Assistant Suggestions</h2>
+            <SparklesIcon className="w-6 h-6 text-white/90" />
+            <h2 className="text-xl font-semibold text-white">AI Assistant Suggestions</h2>
           </div>
           <button 
-            className="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-sm text-white hover:bg-white/10"
             onClick={() => setIsModalOpen(true)}
           >
             View All
@@ -191,38 +191,38 @@ const AISuggestions = forwardRef((props, ref) => {
       {/* Modal for View All */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-base-100 rounded-lg shadow-xl w-full max-w-4xl max-h-[80vh] overflow-hidden">
-            <div className="p-4 border-b border-base-200 flex items-center justify-between">
-              <h3 className="text-xl font-semibold flex items-center gap-2">
-                <SparklesIcon className="w-6 h-6 text-primary" />
+          <div className="bg-white/10 backdrop-blur-lg rounded-xl shadow-xl w-full max-w-4xl max-h-[80vh] overflow-hidden border border-white/20">
+            <div className="p-4 border-b border-white/20 flex items-center justify-between">
+              <h3 className="text-xl font-semibold flex items-center gap-2 text-white">
+                <SparklesIcon className="w-6 h-6 text-white/90" />
                 All AI Suggestions
               </h3>
               <button 
-                className="btn btn-ghost btn-sm btn-circle"
+                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/10"
                 onClick={() => setIsModalOpen(false)}
               >
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-4 border-b border-base-200">
+            <div className="p-4 border-b border-white/20">
               <div className="flex gap-4 flex-wrap">
                 <div className="flex-1 min-w-[200px]">
                   <div className="relative">
                     <input
                       type="text"
                       placeholder="Search suggestions..."
-                      className="input input-bordered w-full pl-10"
+                      className="input input-bordered w-full pl-10 bg-white/10 text-white border-white/30 placeholder-white/60"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                     />
-                    <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-base-content/70" />
+                    <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-white/70" />
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <FunnelIcon className="w-5 h-5 text-base-content/70" />
+                  <FunnelIcon className="w-5 h-5 text-white/70" />
                   <select
-                    className="select select-bordered"
+                    className="select select-bordered bg-white/10 text-white border-white/30"
                     value={filterType}
                     onChange={(e) => setFilterType(e.target.value as any)}
                   >

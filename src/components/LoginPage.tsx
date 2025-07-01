@@ -57,17 +57,26 @@ const LoginPage: React.FC = () => {
 
   return (
     <div className={`min-h-screen flex relative overflow-hidden ${showSuccessAnim ? 'bg-gradient-to-br from-blue-600 via-purple-800 to-purple-900 animated-gradient' : 'bg-white'}`}>
-      {/* Logo at top left, tighter to corner */}
-      <div className="absolute top-0 left-0 p-4 z-20">
-        <img src="/Leadify12.png" alt="Leadify Logo" className="h-40 w-auto" />
+      {/* Text logo at top left, tighter to corner */}
+      <div className="absolute top-0 left-0 p-4 z-20 flex items-center gap-2">
+        {/* Modern king's crown SVG icon */}
+        <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="black">
+          <path d="M2 19h20M2 7l5.586 5.586a2 2 0 0 0 2.828 0L12 11l1.586 1.586a2 2 0 0 0 2.828 0L22 7l-3 12H5L2 7z"/>
+          <circle cx="4" cy="4" r="2" fill="black"/>
+          <circle cx="12" cy="4" r="2" fill="black"/>
+          <circle cx="20" cy="4" r="2" fill="black"/>
+        </svg>
+        <span className="text-xl md:text-2xl font-extrabold text-primary tracking-tight" style={{ letterSpacing: '-0.03em' }}>
+          Rainmaker Queen 2.0
+        </span>
       </div>
       {/* Left: Login Form Content (no card) */}
       <div className="flex-1 flex items-center justify-center z-10">
         <form className={`w-full max-w-lg flex flex-col items-start gap-6 px-8 py-12 ${showSuccessAnim ? 'opacity-0 pointer-events-none' : 'opacity-100'}`} onSubmit={handleSignIn}>
           <div>
-            <h1 className="text-4xl font-bold mb-4 text-primary">Welcome to Leadify</h1>
+            <h1 className="text-4xl font-bold mb-4 text-primary">Welcome to RMQ 2.0</h1>
             <p className="text-black font-medium mb-4">
-              Please sign in to access the Leadify CRM.
+              Please sign in to access the System.
             </p>
           </div>
           <div className="w-full mt-2">
@@ -119,7 +128,7 @@ const LoginPage: React.FC = () => {
         <div className="hidden md:flex w-1/2 h-full flex-col items-center justify-center p-8">
           <img src="/DATA_IMAGE.jpg" alt="Leadify Illustration" className="w-full h-[90vh] object-cover rounded-3xl mx-auto my-auto" onError={e => { e.currentTarget.style.display = 'none'; }} />
           <div className="w-full flex justify-center mt-6">
-            <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Leadify CRM {new Date().getFullYear()}</span>
+            <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
           </div>
         </div>
       )}
@@ -132,7 +141,7 @@ const LoginPage: React.FC = () => {
       )}
       {/* Copyright Notice (mobile only) */}
       <div className="md:hidden absolute left-0 right-0 flex justify-center" style={{ bottom: '5vh' }}>
-        <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Leadify CRM {new Date().getFullYear()}</span>
+        <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
       </div>
     </div>
   );
