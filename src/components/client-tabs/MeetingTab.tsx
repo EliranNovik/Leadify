@@ -16,6 +16,7 @@ import {
   UserCircleIcon,
   ChevronDownIcon,
   DocumentTextIcon,
+  AcademicCapIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { useMsal } from '@azure/msal-react';
@@ -279,6 +280,22 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const expandedData = expandedMeetingData[meeting.id] || {};
     const isExpanded = expandedMeetingId === meeting.id;
 
+    // Pick a gradient for this card
+    const gradients = [
+      'from-pink-500 via-purple-500 to-purple-600',
+      'from-purple-600 via-blue-600 to-blue-500',
+      'from-blue-500 via-cyan-500 to-teal-400',
+      'from-teal-400 via-green-400 to-green-600',
+    ];
+    const iconColors = [
+      'text-purple-500',
+      'text-blue-500',
+      'text-cyan-500',
+      'text-green-500',
+    ];
+    const gradient = gradients[meeting.id % 4];
+    const iconColor = iconColors[meeting.id % 4];
+
     const renderEditableSection = (
       title: string,
       field: 'expert_notes' | 'handler_notes',
@@ -316,160 +333,194 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
 
     return (
-      <div
-        key={meeting.id}
-        className={`card shadow-xl rounded-2xl hover:shadow-2xl transition-all duration-200 text-white relative overflow-hidden min-h-[220px] bg-gradient-to-tr ${[
-          'from-pink-500 via-purple-500 to-purple-600',
-          'from-purple-600 via-blue-600 to-blue-500',
-          'from-blue-500 via-cyan-500 to-teal-400',
-          'from-teal-400 via-green-400 to-green-600',
-        ][meeting.id % 4]}`}
-      >
-        <div className="card-body p-4">
-          {/* Header */}
-          <div className="flex flex-row justify-between items-start mb-2">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/20 shadow">
-                <CalendarIcon className="w-7 h-7 text-white opacity-90" />
-              </div>
-              <div>
-                <p className="font-bold text-2xl text-white">{formattedDate}</p>
-                <div className="flex items-center gap-2 text-white/80">
-                  <ClockIcon className="w-5 h-5" />
-                  <span>{meeting.time}</span>
+      <div key={meeting.id} className={`p-[2px] rounded-2xl bg-gradient-to-tr ${gradient} shadow-xl hover:shadow-2xl transition-all duration-200 min-h-[220px]`}>
+        <div className="bg-white rounded-2xl h-full w-full">
+          <div className="card-body p-4">
+            {/* Header */}
+            <div className="flex flex-row justify-between items-start mb-2">
+              <div className="flex items-center gap-4">
+                <div className={`flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr ${gradient} shadow`}>
+                  <CalendarIcon className="w-7 h-7 text-white opacity-90" />
+                </div>
+                <div>
+                  <p className={`font-bold text-2xl bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{formattedDate}</p>
+                  <div className={`flex items-center gap-2 bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>
+                    <ClockIcon className="w-5 h-5 text-transparent" style={{ WebkitTextStroke: '1px #a3a3a3' }} />
+                    <span>{meeting.time}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-            {/* Action Buttons */}
-            <div className="flex flex-col md:flex-row gap-2">
-              <button
-                className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10"
-                onClick={() => handleSendEmail(meeting)}
-                disabled={isSendingEmail}
-              >
-                <EnvelopeIcon className="w-4 h-4" />
-                Notify Client
-              </button>
-              <a
-                href={meeting.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="btn btn-white btn-sm bg-white/20 text-white border-none hover:bg-white/30"
-              >
-                <LinkIcon className="w-4 h-4" />
-                Join Meeting
-              </a>
-            </div>
-          </div>
-
-          {/* Details Section */}
-          <div className="grid grid-cols-2 gap-x-2 gap-y-2 md:grid-cols-2 md:gap-3 mb-2">
-            <div className="flex items-center gap-2">
-              <MapPinIcon className="w-5 h-5 text-white/80" />
-              <span className="text-sm md:text-base text-white/90">{meeting.location}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <UserIcon className="w-5 h-5 text-white/80" />
-              <span className="text-sm md:text-base text-white/90">Manager: {meeting.manager}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <UserIcon className="w-5 h-5 text-white/80" />
-              <span className="text-sm md:text-base text-white/90">Expert: {meeting.expert}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <UserIcon className="w-5 h-5 text-white/80" />
-              <span className="text-sm md:text-base text-white/90">Helper: {meeting.helper}</span>
-            </div>
-            <div className="flex items-center gap-2 col-span-2 md:col-span-2">
-              <span className="font-semibold text-sm md:text-base text-white/90">{meeting.currency}</span>
-              <span className="text-sm md:text-base text-white/90">{meeting.amount}</span>
-            </div>
-          </div>
-
-          {/* Brief Section */}
-          <div className="mt-2 pt-2 border-t border-white/30">
-            <div className="flex justify-between items-center mb-2">
-              <h4 className="font-semibold text-white">Brief</h4>
-              {editingBriefId === meeting.id ? (
-                <div className="flex items-center gap-1">
-                  <button className="btn btn-ghost btn-sm btn-circle" onClick={() => handleSaveBrief(meeting.id)}>
-                    <CheckIcon className="w-5 h-5 text-success" />
-                  </button>
-                  <button className="btn btn-ghost btn-sm btn-circle" onClick={handleCancelEdit}>
-                    <XMarkIcon className="w-5 h-5 text-error" />
-                  </button>
-                </div>
-              ) : (
-                <button className="btn btn-ghost btn-sm btn-circle" onClick={handleEditBrief}>
-                  <PencilSquareIcon className="w-5 h-5 text-white" />
+              {/* Action Buttons */}
+              <div className="flex flex-col md:flex-row gap-2">
+                <button
+                  className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10"
+                  onClick={() => handleSendEmail(meeting)}
+                  disabled={isSendingEmail}
+                >
+                  <EnvelopeIcon className="w-4 h-4" />
+                  Notify Client
                 </button>
+                <a
+                  href={meeting.link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-white btn-sm bg-white/20 text-white border-none hover:bg-white/30"
+                >
+                  <LinkIcon className="w-4 h-4" />
+                  Join Meeting
+                </a>
+              </div>
+            </div>
+
+            {/* Details Section */}
+            <div className="grid grid-cols-2 gap-x-2 gap-y-2 md:grid-cols-2 md:gap-3 mb-2">
+              <div className="flex items-center gap-2">
+                <MapPinIcon className={`w-5 h-5 ${iconColor}`} />
+                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{meeting.location}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <UserIcon className={`w-5 h-5 ${iconColor}`} />
+                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Manager: {meeting.manager}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <AcademicCapIcon className={`w-5 h-5 ${iconColor}`} />
+                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Expert: {meeting.expert}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <UserCircleIcon className={`w-5 h-5 ${iconColor}`} />
+                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Helper: {meeting.helper}</span>
+              </div>
+              <div className="flex items-center gap-2 col-span-2 md:col-span-2">
+                <span className={`font-semibold text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{meeting.currency}</span>
+                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{meeting.amount}</span>
+              </div>
+            </div>
+
+            {/* Brief Section */}
+            <div className="mt-2 pt-2 border-t border-gray-200">
+              <div className="flex justify-between items-center mb-2">
+                <h4 className={`font-semibold bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Brief</h4>
+                {editingBriefId === meeting.id ? (
+                  <div className="flex items-center gap-1">
+                    <button className="btn btn-ghost btn-sm btn-circle" onClick={() => handleSaveBrief(meeting.id)}>
+                      <CheckIcon className="w-5 h-5 text-success" />
+                    </button>
+                    <button className="btn btn-ghost btn-sm btn-circle" onClick={handleCancelEdit}>
+                      <XMarkIcon className="w-5 h-5 text-error" />
+                    </button>
+                  </div>
+                ) : (
+                  <button className={`btn btn-sm btn-circle shadow bg-gradient-to-tr ${gradient} text-white hover:opacity-90`} onClick={handleEditBrief}>
+                    <PencilSquareIcon className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
+              {editingBriefId === meeting.id ? (
+                <textarea
+                  className={`textarea textarea-bordered w-full h-24 border-gray-300 text-gray-700 placeholder-gray-400`}
+                  value={editedBrief}
+                  onChange={(e) => setEditedBrief(e.target.value)}
+                  placeholder="Add a meeting brief..."
+                />
+              ) : (
+                <div className="bg-gray-50 rounded-xl border border-gray-200 p-3 my-1 min-h-[2.5rem] whitespace-pre-wrap transition-all text-gray-800">
+                  {meeting.brief || <span className="text-gray-400">No brief provided.</span>}
+                </div>
               )}
             </div>
-            {editingBriefId === meeting.id ? (
-              <textarea
-                className="textarea textarea-bordered w-full h-24 bg-white/20 text-white border-white/30 placeholder-white/60"
-                value={editedBrief}
-                onChange={(e) => setEditedBrief(e.target.value)}
-                placeholder="Add a meeting brief..."
-              />
-            ) : (
-              <div className="bg-white/20 rounded-xl shadow-sm text-sm text-white/90 p-2 my-1 min-h-[2.5rem] whitespace-pre-wrap transition-all">
-                {meeting.brief || <span className="text-white/60">No brief provided.</span>}
-              </div>
-            )}
-          </div>
 
-          {/* Last Edited Section */}
-          <div className="text-xs text-white/80 mt-2 flex flex-col gap-1">
-            <div className="flex items-center gap-2">
-              <ClockSolidIcon className="w-4 h-4" />
-              <span>Last edited: {new Date(meeting.lastEdited.timestamp).toLocaleString()}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <UserCircleIcon className="w-4 h-4" />
-              <span>by {meeting.lastEdited.user}</span>
+            {/* Last Edited Section */}
+            <div className={`text-xs mt-2 flex flex-col gap-1 bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>
+              <div className="flex items-center gap-2">
+                <ClockSolidIcon className="w-4 h-4" />
+                <span>Last edited: {new Date(meeting.lastEdited.timestamp).toLocaleString()}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <UserCircleIcon className="w-4 h-4" />
+                <span>by {meeting.lastEdited.user}</span>
+              </div>
             </div>
           </div>
-          {/* SVG Decoration */}
-          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
-        </div>
-        {/* Collapsible Section */}
-        <div className={`transition-all duration-500 ease-in-out ${isExpanded ? 'max-h-screen' : 'max-h-0'}`}>
-          <div className="bg-white/10 p-2 md:p-3 border-t-2 border-dashed border-white/30">
-            {expandedData.loading ? (
-              <div className="flex justify-center items-center py-8">
-                <span className="loading loading-spinner loading-md"></span>
-              </div>
-            ) : (
-              <div className="flex flex-col md:flex-row gap-4">
-                <div className="flex-1 bg-white/10 p-4 rounded-lg">
-                  <h5 className="font-semibold text-white mb-1">Expert Notes</h5>
-                  <p className="text-sm text-white/90 min-h-[2rem]">
-                    {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0
-                      ? expandedData.expert_notes[expandedData.expert_notes.length - 1].content
-                      : expandedData.expert_notes || 'No notes yet.'}
-                  </p>
+          {/* Collapsible Section - only render content if expanded */}
+          {isExpanded && (
+            <div className="bg-gray-50 p-2 md:p-3 border-t-2 border-dashed border-gray-200">
+              {expandedData.loading ? (
+                <div className="flex justify-center items-center py-8">
+                  <span className="loading loading-spinner loading-md"></span>
                 </div>
-                <div className="flex-1 bg-white/10 p-4 rounded-lg">
-                  <h5 className="font-semibold text-white mb-1">Handler Notes</h5>
-                  <p className="text-sm text-white/90 min-h-[2rem]">
-                    {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0
-                      ? expandedData.handler_notes[expandedData.handler_notes.length - 1].content
-                      : expandedData.handler_notes || 'No notes yet.'}
-                  </p>
+              ) : (
+                <div className="flex flex-col md:flex-row gap-4">
+                  <div className="flex-1 bg-white p-4 rounded-lg">
+                    <div className="flex justify-between items-center mb-1">
+                      <h5 className={`font-semibold bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Expert Notes</h5>
+                      {editingField?.meetingId === meeting.id && editingField?.field === 'expert_notes' ? (
+                        <div className="flex items-center gap-1">
+                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleSaveField}><CheckIcon className="w-4 h-4 text-success" /></button>
+                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleCancelEditField}><XMarkIcon className="w-4 h-4 text-error" /></button>
+                        </div>
+                      ) : (
+                        <button className={`btn btn-xs btn-circle shadow bg-gradient-to-tr ${gradient} text-white hover:opacity-90`} onClick={() => handleEditField(meeting.id, 'expert_notes', expandedData.expert_notes)}>
+                          <PencilSquareIcon className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                    {editingField?.meetingId === meeting.id && editingField?.field === 'expert_notes' ? (
+                      <textarea
+                        className="textarea textarea-bordered w-full h-24 border-gray-300 text-gray-700 placeholder-gray-400"
+                        value={editedContent}
+                        onChange={e => setEditedContent(e.target.value)}
+                        placeholder="Edit expert notes..."
+                      />
+                    ) : (
+                      <p className={`text-sm bg-gradient-to-tr ${gradient} bg-clip-text text-transparent min-h-[2rem]`}>
+                        {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0
+                          ? expandedData.expert_notes[expandedData.expert_notes.length - 1].content
+                          : expandedData.expert_notes || 'No notes yet.'}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex-1 bg-white p-4 rounded-lg">
+                    <div className="flex justify-between items-center mb-1">
+                      <h5 className={`font-semibold bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Handler Notes</h5>
+                      {editingField?.meetingId === meeting.id && editingField?.field === 'handler_notes' ? (
+                        <div className="flex items-center gap-1">
+                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleSaveField}><CheckIcon className="w-4 h-4 text-success" /></button>
+                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleCancelEditField}><XMarkIcon className="w-4 h-4 text-error" /></button>
+                        </div>
+                      ) : (
+                        <button className={`btn btn-xs btn-circle shadow bg-gradient-to-tr ${gradient} text-white hover:opacity-90`} onClick={() => handleEditField(meeting.id, 'handler_notes', expandedData.handler_notes)}>
+                          <PencilSquareIcon className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                    {editingField?.meetingId === meeting.id && editingField?.field === 'handler_notes' ? (
+                      <textarea
+                        className="textarea textarea-bordered w-full h-24 border-gray-300 text-gray-700 placeholder-gray-400"
+                        value={editedContent}
+                        onChange={e => setEditedContent(e.target.value)}
+                        placeholder="Edit handler notes..."
+                      />
+                    ) : (
+                      <p className={`text-sm bg-gradient-to-tr ${gradient} bg-clip-text text-transparent min-h-[2rem]`}>
+                        {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0
+                          ? expandedData.handler_notes[expandedData.handler_notes.length - 1].content
+                          : expandedData.handler_notes || 'No notes yet.'}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        </div>
-        {/* Expander Toggle */}
-        <div
-          className="bg-white/10 hover:bg-white/20 cursor-pointer transition-colors p-1 text-center"
-          onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
-        >
-          <div className="flex items-center justify-center gap-2 text-xs font-medium text-white">
-            <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
-            <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
+              )}
+            </div>
+          )}
+          {/* Expander Toggle */}
+          <div
+            className={`bg-gradient-to-tr ${gradient} hover:opacity-90 cursor-pointer transition-colors p-1 text-center rounded-b-2xl`}
+            onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
+          >
+            <div className="flex items-center justify-center gap-2 text-xs font-medium text-white">
+              <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
+              <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
+            </div>
           </div>
         </div>
       </div>

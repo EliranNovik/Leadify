@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { SparklesIcon, XMarkIcon, PaperAirplaneIcon } from '@heroicons/react/24/solid';
+import { XMarkIcon, PaperAirplaneIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
+import { FaRobot } from 'react-icons/fa';
 
 interface AIChatWindowProps {
   isOpen: boolean;
@@ -240,6 +241,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [aiIconAnim, setAiIconAnim] = useState(false);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -393,131 +395,201 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     });
   };
 
+  const handleAiIconClick = () => {
+    setAiIconAnim(true);
+    setTimeout(() => setAiIconAnim(false), 600);
+  };
+
   if (!isOpen) return null;
 
   return (
     <div
-      className={`fixed z-50 right-0 top-0 bottom-0 w-full max-w-2xl bg-base-100 shadow-2xl border-l border-base-200 transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} flex flex-col ${isDragActive ? 'ring-4 ring-primary/40' : ''}`}
+      className={`fixed z-50 right-0 top-0 bottom-0 w-full max-w-2xl flex flex-col transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} ${isDragActive ? 'ring-4 ring-primary/40' : ''}`}
       style={{ height: '100vh', minHeight: '100vh', maxHeight: '100vh', borderTopLeftRadius: 0, borderTopRightRadius: 0 }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      {/* Header */}
-      <div className="p-4 border-b border-base-300 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <SparklesIcon className="h-6 w-6 text-primary" />
-          <h3 className="font-bold text-lg">AI Assistant</h3>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => handleQuickAction('create a lead')}
-            className="btn btn-xs btn-primary"
-            disabled={isLoading}
-            title="Create a new lead"
-          >
-            📝 Lead
-          </button>
-          <button
-            onClick={() => handleQuickAction('show me today\'s statistics')}
-            className="btn btn-xs btn-secondary"
-            disabled={isLoading}
-            title="Today's statistics"
-          >
-            📊 Stats
-          </button>
-          <button
-            onClick={() => handleQuickAction('how many leads were created this week?')}
-            className="btn btn-xs btn-accent"
-            disabled={isLoading}
-            title="Weekly leads"
-          >
-            📈 Weekly
-          </button>
-        </div>
-        <button className="btn btn-sm btn-ghost btn-circle" onClick={onClose}>
-          <XMarkIcon className="w-6 h-6" />
-        </button>
-      </div>
-
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.map((msg, idx) => (
-          <div key={idx} className={`chat ${msg.role === 'user' ? 'chat-end' : 'chat-start'}`}> 
-            <div className={`chat-bubble ${msg.role === 'user' ? 'bg-primary text-primary-content' : 'bg-base-200 text-base-content'}`}> 
-              {/* Render message content, supporting OpenAI Vision format */}
-              {Array.isArray(msg.content) ? (
-                msg.content.map((item, i) => {
-                  if (item.type === 'text') {
-                    return <span key={i}>{item.text}</span>;
-                  } else if (item.type === 'image_url') {
-                    return <img key={i} src={item.image_url.url} alt="uploaded" className="max-w-xs my-2 rounded-lg border border-base-300" />;
-                  } else {
-                    return null;
-                  }
-                })
-              ) : (
-                <span>{msg.content}</span>
-              )}
-            </div>
+      <style>{`
+        .ai-glass {
+          background: rgba(255,255,255,0.85);
+          backdrop-filter: blur(18px) saturate(1.2);
+          -webkit-backdrop-filter: blur(18px) saturate(1.2);
+          border-left: 1.5px solid rgba(120,120,180,0.10);
+          box-shadow: 0 8px 32px 0 rgba(31,38,135,0.10);
+          border-top-left-radius: 2rem;
+          border-bottom-left-radius: 2rem;
+        }
+        .ai-header-gradient {
+          background: linear-gradient(90deg, #7c3aed 0%, #38bdf8 100%);
+        }
+        .ai-bubble-user {
+          background: linear-gradient(90deg, #6366f1 0%, #38bdf8 100%);
+          color: #fff;
+          border-bottom-right-radius: 2rem !important;
+          border-top-left-radius: 2rem !important;
+        }
+        .ai-bubble-assistant {
+          background: rgba(255,255,255,0.85);
+          color: #222;
+          border-bottom-left-radius: 2rem !important;
+          border-top-right-radius: 2rem !important;
+          border: 1px solid #e0e7ef;
+        }
+        .ai-quick-btn {
+          border-radius: 9999px;
+          font-weight: 600;
+          padding: 0.25rem 1.1rem;
+          font-size: 0.95rem;
+          transition: background 0.2s, color 0.2s;
+        }
+        .ai-quick-btn-lead { background: #ede9fe; color: #7c3aed; }
+        .ai-quick-btn-lead:hover { background: #c7d2fe; color: #4f46e5; }
+        .ai-quick-btn-stats { background: #cffafe; color: #06b6d4; }
+        .ai-quick-btn-stats:hover { background: #a5f3fc; color: #0e7490; }
+        .ai-quick-btn-weekly { background: #bbf7d0; color: #22c55e; }
+        .ai-quick-btn-weekly:hover { background: #86efac; color: #15803d; }
+        .ai-input-area {
+          background: rgba(255,255,255,0.95);
+          box-shadow: 0 2px 12px 0 rgba(31,38,135,0.07);
+          border-radius: 1.5rem;
+          border: 1px solid #e0e7ef;
+        }
+        @keyframes ai-pulse {
+          0% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 0 #fff); }
+          30% { transform: scale(1.18) rotate(-10deg); filter: drop-shadow(0 0 8px #a5b4fc); }
+          60% { transform: scale(0.95) rotate(8deg); filter: drop-shadow(0 0 12px #38bdf8); }
+          100% { transform: scale(1) rotate(0deg); filter: drop-shadow(0 0 0 #fff); }
+        }
+        .animate-ai-pulse {
+          animation: ai-pulse 0.6s cubic-bezier(.4,0,.2,1);
+        }
+      `}</style>
+      <div className="ai-glass flex flex-col h-full w-full">
+        {/* Header */}
+        <div className="ai-header-gradient sticky top-0 z-20 p-4 flex items-center justify-between rounded-tl-2xl" style={{boxShadow:'0 2px 12px 0 rgba(31,38,135,0.07)'}}>
+          <div className="flex items-center gap-3">
+            <button
+              className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
+              style={{ background: 'none', border: 'none', padding: 0, margin: 0, cursor: 'pointer' }}
+              onClick={handleAiIconClick}
+              tabIndex={0}
+              aria-label="AI Icon"
+            >
+              <FaRobot className="h-9 w-9 text-white drop-shadow" />
+            </button>
+            <h3 className="font-extrabold text-xl text-white tracking-tight drop-shadow">RMQ AI</h3>
           </div>
-        ))}
-        <div ref={messagesEndRef} />
-      </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleQuickAction('create a lead')}
+              className="ai-quick-btn ai-quick-btn-lead"
+              disabled={isLoading}
+              title="Create a new lead"
+            >
+               Lead
+            </button>
+            <button
+              onClick={() => handleQuickAction('show me today\'s statistics')}
+              className="ai-quick-btn ai-quick-btn-stats"
+              disabled={isLoading}
+              title="Today's statistics"
+            >
+               Stats
+            </button>
+            <button
+              onClick={() => handleQuickAction('how many leads were created this week?')}
+              className="ai-quick-btn ai-quick-btn-weekly"
+              disabled={isLoading}
+              title="Weekly leads"
+            >
+               Weekly
+            </button>
+          </div>
+          <button className="btn btn-sm btn-ghost btn-circle hover:bg-white/20 text-white" onClick={onClose}>
+            <XMarkIcon className="w-6 h-6" />
+          </button>
+        </div>
 
-      {/* Image previews above input */}
-      {imagePreviews.length > 0 && (
-        <div className="flex gap-2 px-4 pt-2 pb-1 overflow-x-auto border-t border-base-200 bg-base-100">
-          {imagePreviews.map((preview, idx) => (
-            <div key={idx} className="relative">
-              <img src={preview} alt="preview" className="w-20 h-20 object-cover rounded-lg border border-base-300" />
-              <button onClick={() => handleRemoveImage(idx)} className="absolute top-0 right-0 bg-base-100 rounded-full p-1 shadow hover:bg-error hover:text-white transition-colors">
-                ×
-              </button>
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[70%] px-5 py-3 rounded-2xl shadow ai-bubble-${msg.role} mb-2`} style={{fontSize:'1.05rem', lineHeight:1.6}}>
+                {/* Render message content, supporting OpenAI Vision format */}
+                {Array.isArray(msg.content) ? (
+                  msg.content.map((item, i) => {
+                    if (item.type === 'text') {
+                      return <span key={i}>{item.text}</span>;
+                    } else if (item.type === 'image_url') {
+                      return <img key={i} src={item.image_url.url} alt="uploaded" className="max-w-xs my-2 rounded-lg border border-base-300" />;
+                    } else {
+                      return null;
+                    }
+                  })
+                ) : (
+                  <span>{msg.content}</span>
+                )}
+              </div>
             </div>
           ))}
+          <div ref={messagesEndRef} />
         </div>
-      )}
 
-      {/* Input */}
-      <div className="p-4 border-t border-base-200 flex items-end gap-2">
-        <input
-          type="text"
-          className="input input-bordered flex-1"
-          placeholder="Type your message..."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-        />
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          ref={fileInputRef}
-          onChange={handleImageChange}
-          multiple
-        />
-        <button
-          className="btn btn-ghost btn-circle"
-          onClick={() => fileInputRef.current?.click()}
-          title="Upload images"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5V19a2.003 2.003 0 002 2h14a2.003 2.003 0 002-2v-2.5M16.5 12.5l-4.5 4.5-4.5-4.5M12 3v13.5" />
-          </svg>
-        </button>
-        <button className="btn btn-primary ml-2" onClick={() => handleSend()} disabled={isLoading || (!input.trim() && images.length === 0)}>
-          Send
-        </button>
-      </div>
-
-      {isDragActive && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
-          <div className="bg-primary/80 text-white px-8 py-6 rounded-2xl shadow-xl text-2xl font-bold border-4 border-white/60 animate-pulse">
-            Drop images to upload
+        {/* Image previews above input */}
+        {imagePreviews.length > 0 && (
+          <div className="flex gap-2 px-4 pt-2 pb-1 overflow-x-auto border-t border-base-200 bg-base-100">
+            {imagePreviews.map((preview, idx) => (
+              <div key={idx} className="relative">
+                <img src={preview} alt="preview" className="w-20 h-20 object-cover rounded-lg border border-base-300" />
+                <button onClick={() => handleRemoveImage(idx)} className="absolute top-0 right-0 bg-base-100 rounded-full p-1 shadow hover:bg-error hover:text-white transition-colors">
+                  ×
+                </button>
+              </div>
+            ))}
           </div>
+        )}
+
+        {/* Input */}
+        <div className="ai-input-area p-4 flex items-end gap-2 border-t border-base-200">
+          <input
+            type="text"
+            className="input input-bordered flex-1 bg-white/80 focus:bg-white/95 rounded-full px-5 py-3 text-base shadow-sm border border-base-200"
+            placeholder="Type your message..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+          />
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            ref={fileInputRef}
+            onChange={handleImageChange}
+            multiple
+          />
+          <button
+            className="btn btn-ghost btn-circle hover:bg-primary/10"
+            onClick={() => fileInputRef.current?.click()}
+            title="Upload images"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5V19a2.003 2.003 0 002 2h14a2.003 2.003 0 002-2v-2.5M16.5 12.5l-4.5 4.5-4.5-4.5M12 3v13.5" />
+            </svg>
+          </button>
+          <button className="btn btn-primary ml-2 px-6 py-2 rounded-full shadow-lg text-base font-semibold transition-all duration-150 hover:scale-105 hover:bg-primary/90" onClick={() => handleSend()} disabled={isLoading || (!input.trim() && images.length === 0)}>
+            Send
+          </button>
         </div>
-      )}
+
+        {isDragActive && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center pointer-events-none">
+            <div className="bg-primary/80 text-white px-8 py-6 rounded-2xl shadow-xl text-2xl font-bold border-4 border-white/60 animate-pulse">
+              Drop images to upload
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

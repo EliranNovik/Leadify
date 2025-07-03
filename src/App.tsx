@@ -24,6 +24,7 @@ import PipelinePage from './components/PipelinePage';
 import NewCasesPage from './pages/NewCasesPage';
 import CaseManagerPage from './components/CaseManagerPage';
 import AdminPage from './components/admin/AdminPage';
+import TeamsPage from './pages/TeamsPage';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -145,6 +146,7 @@ const AppContent: React.FC = () => {
                     <Route path="/new-cases" element={<NewCasesPage />} />
                     <Route path="/case-manager" element={<CaseManagerPage />} />
                     <Route path="/admin" element={<AdminPage />} />
+                    <Route path="/teams" element={<TeamsPage />} />
                   </Routes>
                 </main>
               </div>

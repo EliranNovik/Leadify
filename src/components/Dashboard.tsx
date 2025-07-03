@@ -556,29 +556,29 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* AI Suggestions always visible */}
-      <div className="card shadow-xl rounded-2xl mb-8 relative overflow-hidden bg-gradient-to-tr from-emerald-500 via-teal-500 to-teal-600 text-white" ref={aiSuggestionsRef}>
+      <div className="card shadow-xl rounded-2xl mb-8 relative overflow-hidden border-2 border-teal-400 bg-white" ref={aiSuggestionsRef}>
         <div className="card-body p-6">
           <div className="flex items-center gap-2 mb-4">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/20 shadow">
-              <ChatBubbleLeftRightIcon className="w-6 h-6 text-white opacity-90" />
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500 via-teal-500 to-teal-600 text-white shadow">
+              <ChatBubbleLeftRightIcon className="w-6 h-6" />
             </div>
-            <span className="text-xl font-bold text-white">AI Suggestions</span>
+            <span className="text-xl font-bold text-black">AI Suggestions</span>
           </div>
-          <AISuggestions ref={aiSuggestionsRef} />
-          {/* SVG Decoration */}
-          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
+          <div className="text-base text-gray-900">
+            <AISuggestions ref={aiSuggestionsRef} />
+          </div>
         </div>
       </div>
 
       {/* Graphs Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         {/* Meetings per Month Donut Chart */}
-        <div className="card shadow-xl rounded-2xl p-6 flex flex-col items-center lg:col-span-1 relative overflow-hidden bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
+        <div className="card shadow-xl rounded-2xl p-6 flex flex-col items-center lg:col-span-1 relative overflow-hidden border-2 border-purple-500 bg-white text-gray-900">
           <div className="flex items-center gap-2 mb-4">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/20 shadow">
-              <CalendarIcon className="w-6 h-6 text-white opacity-90" />
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-purple-100 shadow">
+              <CalendarIcon className="w-6 h-6 text-purple-600" />
             </div>
-            <span className="text-lg font-bold text-white">Monthly Meeting Statistics</span>
+            <span className="text-lg font-bold text-gray-900">Monthly Meeting Statistics</span>
           </div>
           <div className="w-full flex flex-col items-center gap-4 mt-2">
             {/* Professional Donut Progress Ring for Current Month */}
@@ -591,7 +591,7 @@ const Dashboard: React.FC = () => {
                 { name: 'Meetings', value },
                 { name: 'Remaining', value: Math.max(target - value, 0) },
               ];
-              const COLORS = ['#ffffff', 'rgba(255,255,255,0.3)'];
+              const COLORS = ['#a78bfa', '#ede9fe']; // purple-400, purple-100
               return (
                 <div style={{ width: 180, height: 180, position: 'relative' }}>
                   <RechartsPieChart width={180} height={180}>
@@ -620,48 +620,48 @@ const Dashboard: React.FC = () => {
                     transform: 'translate(-50%, -50%)',
                     textAlign: 'center',
                   }}>
-                    <div className="text-3xl font-bold text-white">{value}</div>
-                    <div className="text-base font-semibold text-white/80">{currentMonth.month}</div>
-                    <div className="text-xs text-white/70">{Math.round(percent * 100)}% of target</div>
+                    <div className="text-3xl font-bold text-purple-700">{value}</div>
+                    <div className="text-base font-semibold text-gray-900">{currentMonth.month}</div>
+                    <div className="text-xs text-gray-600">{Math.round(percent * 100)}% of target</div>
                   </div>
                 </div>
               );
             })()}
             {/* Minimal legend below */}
-            <div className="flex flex-col gap-1 mt-2 text-sm text-white/80">
-              <div><span className="inline-block w-3 h-3 rounded-full mr-2 bg-white"></span>Meetings this month</div>
-              <div><span className="inline-block w-3 h-3 rounded-full mr-2 bg-white/30"></span>Target</div>
+            <div className="flex flex-col gap-1 mt-2 text-sm text-gray-700">
+              <div><span className="inline-block w-3 h-3 rounded-full mr-2 bg-purple-400"></span>Meetings this month</div>
+              <div><span className="inline-block w-3 h-3 rounded-full mr-2 bg-purple-100"></span>Target</div>
             </div>
           </div>
           {/* SVG Decoration */}
           <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><circle cx="32" cy="16" r="12" /></svg>
         </div>
         {/* Contracts Signed by Category Bar Graph */}
-        <div className="card shadow-xl rounded-2xl p-6 flex flex-col items-center lg:col-span-1 relative overflow-hidden bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white">
+        <div className="card shadow-xl rounded-2xl p-6 flex flex-col items-center lg:col-span-1 relative overflow-hidden border-2 border-blue-500 bg-white text-gray-900">
           <div className="flex items-center gap-2 mb-4">
-            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-white/20 shadow">
-              <ChartBarIcon className="w-6 h-6 text-white opacity-90" />
+            <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-blue-100 shadow">
+              <ChartBarIcon className="w-6 h-6 text-blue-600" />
             </div>
-            <span className="text-lg font-bold text-white">Contracts & Revenue by Category</span>
+            <span className="text-lg font-bold text-gray-900">Contracts & Revenue by Category</span>
           </div>
           <div className="w-full max-w-xl flex flex-col gap-4 mt-2">
             <div className="w-full space-y-3">
               {contractsByCategory.map((cat, i) => (
                 <div key={cat.category} className="space-y-1">
                   <div className="flex items-center justify-between">
-                    <span className="text-base font-semibold text-white/90">{cat.category}</span>
+                    <span className="text-base font-semibold text-gray-900">{cat.category}</span>
                     <div className="text-right">
-                      <div className="text-sm font-bold text-white">{cat.count} contracts</div>
-                      <div className="text-xs text-green-300 font-medium">₪{(cat.amount / 1000).toFixed(1)}k</div>
+                      <div className="text-sm font-bold text-blue-700">{cat.count} contracts</div>
+                      <div className="text-xs text-green-600 font-medium">₪{(cat.amount / 1000).toFixed(1)}k</div>
                     </div>
                   </div>
-                  <div className="flex-1 bg-white/20 rounded-full h-6 relative overflow-hidden">
+                  <div className="flex-1 bg-blue-100 rounded-full h-6 relative overflow-hidden">
                     <div
-                      className="h-6 rounded-full flex items-center justify-end pr-3 text-white font-bold text-sm transition-all relative"
+                      className="h-6 rounded-full flex items-center justify-end pr-3 text-blue-700 font-bold text-sm transition-all relative"
                       style={{
                         width: `${Math.max(10, (cat.count / Math.max(...contractsByCategory.map(c => c.count))) * 100)}%`,
-                        background: '#ffffff',
-                        boxShadow: '0 2px 8px 0 rgba(255,255,255,0.2)'
+                        background: '#dbeafe',
+                        boxShadow: '0 2px 8px 0 rgba(59,130,246,0.08)'
                       }}
                     >
                       {cat.count}
@@ -777,31 +777,39 @@ const Dashboard: React.FC = () => {
 
       {/* My Performance Graph (Full Width) */}
       <div className="w-full mt-12">
-        <div className="card shadow-xl rounded-2xl w-full max-w-full relative overflow-hidden bg-gradient-to-tr from-yellow-400 via-orange-400 to-pink-500 text-white">
+        <div className="card shadow rounded-2xl w-full max-w-full relative overflow-hidden bg-white" style={{ border: '2px solid', borderImage: 'linear-gradient(90deg, #a21caf 0%, #06b6d4 100%) 1' }}>
           <div className="card-body p-8">
             <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
               <div className="flex items-center gap-2 mb-2">
-                <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-white/20 shadow">
-                  <ChartBarIcon className="w-7 h-7 text-white opacity-90" />
+                <div className="flex items-center justify-center w-12 h-12 rounded-full shadow bg-white">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                    <defs>
+                      <linearGradient id="perfIconGradient" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+                        <stop stopColor="#a21caf" />
+                        <stop offset="1" stopColor="#06b6d4" />
+                      </linearGradient>
+                    </defs>
+                    <path d="M3 17V21M7 13V21M11 9V21M15 5V21M19 3V21" stroke="url(#perfIconGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
                 </div>
-                <span className="text-2xl font-bold text-white">My Performance</span>
+                <span className="text-2xl font-bold text-gray-900">My Performance</span>
               </div>
               <div className="flex gap-6 text-sm md:text-base items-center">
                 <div className="flex flex-col items-center">
-                  <span className="font-bold text-white text-xl">{contractsLast30}</span>
-                  <span className="text-white/80">Last 30 Days</span>
+                  <span className="font-bold text-gray-900 text-xl">{contractsLast30}</span>
+                  <span className="text-gray-500">Last 30 Days</span>
                 </div>
                 <div className="flex flex-col items-center">
-                  <span className="font-bold text-white text-xl">{contractsToday}</span>
-                  <span className="text-white/80">Today</span>
+                  <span className="font-bold text-gray-900 text-xl">{contractsToday}</span>
+                  <span className="text-gray-500">Today</span>
                 </div>
                 <div className="flex flex-col items-center">
-                  <span className="font-bold text-white text-xl">{contractsThisMonth}</span>
-                  <span className="text-white/80">This Month</span>
+                  <span className="font-bold text-gray-900 text-xl">{contractsThisMonth}</span>
+                  <span className="text-gray-500">This Month</span>
                 </div>
                 {/* View Leads Button */}
                 <button
-                  className="btn btn-sm btn-outline border-white/40 text-white hover:bg-white/10 ml-2"
+                  className="btn btn-sm btn-outline border-gray-300 text-gray-700 hover:bg-gray-100 ml-2"
                   onClick={() => setShowLeadsList((v) => !v)}
                 >
                   {showLeadsList ? 'Hide Leads' : 'View Leads'}
@@ -811,23 +819,23 @@ const Dashboard: React.FC = () => {
             <div className="w-full h-72">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
-                  <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#ffffff' }} axisLine={false} tickLine={false} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#ffffff' }} axisLine={false} tickLine={false} width={30} />
+                  <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} width={30} />
                   <Tooltip content={<PerformanceTooltip />} />
                   <Line
                     type="monotone"
                     dataKey="count"
-                    stroke="#ffffff"
+                    stroke="#3b28c7"
                     strokeWidth={3}
-                    dot={{ r: 5, stroke: '#fff', strokeWidth: 2, fill: '#ffffff' }}
-                    activeDot={{ r: 8, fill: '#ffffff', stroke: '#000', strokeWidth: 3 }}
+                    dot={{ r: 5, stroke: '#3b28c7', strokeWidth: 2, fill: '#fff' }}
+                    activeDot={{ r: 8, fill: '#3b28c7', stroke: '#000', strokeWidth: 3 }}
                     name="My Contracts"
                   />
                   <Line
                     type="monotone"
                     data={teamAverageData}
                     dataKey="avg"
-                    stroke="#fbbf24"
+                    stroke="#06b6d4"
                     strokeWidth={3}
                     dot={false}
                     name="Team Avg"
@@ -835,7 +843,7 @@ const Dashboard: React.FC = () => {
                   />
                   {/* Highlight today */}
                   {performanceData.map((d, i) => d.isToday && (
-                    <ReferenceDot key={i} x={d.date} y={d.count} r={10} fill="#ffffff" stroke="#000" strokeWidth={3} />
+                    <ReferenceDot key={i} x={d.date} y={d.count} r={10} fill="#3b28c7" stroke="#000" strokeWidth={3} />
                   ))}
                   {/* Highlight this month */}
                   {(() => {
@@ -843,7 +851,7 @@ const Dashboard: React.FC = () => {
                     const last = performanceData.map(d => d.isThisMonth).lastIndexOf(true);
                     if (first !== -1 && last !== -1 && last > first) {
                       return (
-                        <ReferenceArea x1={performanceData[first].date} x2={performanceData[last].date} fill="#ffffff" fillOpacity={0.1} />
+                        <ReferenceArea x1={performanceData[first].date} x2={performanceData[last].date} fill="#3b28c7" fillOpacity={0.07} />
                       );
                     }
                     return null;
@@ -854,16 +862,15 @@ const Dashboard: React.FC = () => {
             {/* Legend for My Contracts and Team Avg */}
             <div className="flex gap-6 mt-4 items-center">
               <div className="flex items-center gap-2">
-                <span className="inline-block w-6 h-2 rounded-full bg-white"></span>
-                <span className="text-base font-semibold text-white">My Contracts</span>
+                <span className="inline-block w-6 h-2 rounded-full" style={{background:'#3b28c7'}}></span>
+                <span className="text-base font-semibold text-gray-900">My Contracts</span>
               </div>
               <div className="flex items-center gap-2">
-                <span className="inline-block w-6 h-2 rounded-full bg-yellow-300"></span>
-                <span className="text-base font-semibold text-white">Team Avg</span>
+                <span className="inline-block w-6 h-2 rounded-full" style={{background:'#06b6d4'}}></span>
+                <span className="text-base font-semibold text-gray-900">Team Avg</span>
               </div>
             </div>
-            {/* SVG Decoration */}
-            <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
+            {/* No SVG Decoration */}
           </div>
         </div>
       </div>
@@ -1015,7 +1022,7 @@ const Dashboard: React.FC = () => {
                           }}
                         />
                         <Bar dataKey="signed" name="Signed" fill="#ffffff" radius={[8, 8, 0, 0]} barSize={40} />
-                        <Bar dataKey="due" name="Due" fill="#fbbf24" radius={[8, 8, 0, 0]} barSize={40} />
+                        <Bar dataKey="due" name="Due" fill="#06b6d4" radius={[8, 8, 0, 0]} barSize={40} />
                         <RechartsLegend
                           verticalAlign="top"
                           align="center"

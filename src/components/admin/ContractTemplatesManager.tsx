@@ -1,16 +1,17 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
-import { EditorContent, useEditor, BubbleMenu } from '@tiptap/react';
-import StarterKit from '@tiptap/starter-kit';
-import Placeholder from '@tiptap/extension-placeholder';
-import Underline from '@tiptap/extension-underline';
-import Link from '@tiptap/extension-link';
-import TextAlign from '@tiptap/extension-text-align';
-import Highlight from '@tiptap/extension-highlight';
-import Color from '@tiptap/extension-color';
-import TextStyle from '@tiptap/extension-text-style';
-import FontFamily from '@tiptap/extension-font-family';
-import FontSize from '@tiptap/extension-font-size';
+import { EditorContent, useEditor } from '@tiptap/react';
+import { BubbleMenu } from '@tiptap/react/menus';
+import { StarterKit } from '@tiptap/starter-kit';
+import { Placeholder } from '@tiptap/extension-placeholder';
+import { Underline } from '@tiptap/extension-underline';
+import { Link } from '@tiptap/extension-link';
+import { TextAlign } from '@tiptap/extension-text-align';
+import { Highlight } from '@tiptap/extension-highlight';
+import { Color } from '@tiptap/extension-color';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { FontFamily } from '@tiptap/extension-font-family';
+import { FontSize } from '@tiptap/extension-font-size';
 import { v4 as uuidv4 } from 'uuid';
 import SignatureCanvas from 'react-signature-canvas';
 import { JSONContent } from '@tiptap/core';
@@ -257,8 +258,16 @@ const ContractTemplatesManager: React.FC = () => {
         case 'paragraph':
           return <p key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</p>;
         case 'heading':
-          const H = `h${node.attrs?.level || 1}` as keyof JSX.IntrinsicElements;
-          return <H key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</H>;
+          const level = node.attrs?.level || 1;
+          switch (level) {
+            case 1: return <h1 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h1>;
+            case 2: return <h2 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h2>;
+            case 3: return <h3 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h3>;
+            case 4: return <h4 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h4>;
+            case 5: return <h5 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h5>;
+            case 6: return <h6 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h6>;
+            default: return <h1 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h1>;
+          }
         case 'bulletList':
           return <ul key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</ul>;
         case 'orderedList':

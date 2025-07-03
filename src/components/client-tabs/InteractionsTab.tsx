@@ -21,6 +21,7 @@ import { supabase } from '../../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { InteractionRequiredAuthError, type IPublicClientApplication, type AccountInfo } from '@azure/msal-browser';
 import { createPortal } from 'react-dom';
+import AISummaryPanel from './AISummaryPanel';
 
 interface Attachment {
   id: string;
@@ -252,6 +253,22 @@ const emailTemplates = [
   },
 ];
 
+// Helper to get current user's full name from Supabase
+async function fetchCurrentUserFullName() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (user && user.email) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('full_name')
+      .eq('email', user.email)
+      .single();
+    if (!error && data?.full_name) {
+      return data.full_name;
+    }
+  }
+  return null;
+}
+
 const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [editIndex, setEditIndex] = useState<number|null>(null);
@@ -281,13 +298,73 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [whatsAppInput, setWhatsAppInput] = useState("");
-  const [fakeMessages, setFakeMessages] = useState([
-    { from: 'client', text: 'Hi, I have a question about my documents.', time: '09:15', seen: true },
-    { from: 'me', text: 'Of course! How can I help you?', time: '09:16', seen: true },
-    { from: 'client', text: 'Which documents do I still need to upload?', time: '09:17', seen: true },
-    { from: 'me', text: 'You still need to upload your birth certificate and proof of address.', time: '09:18', seen: true },
-    { from: 'client', text: 'Thank you! I will upload them today.', time: '09:19', seen: false },
-  ]);
+  const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
+
+  // WhatsApp chat messages for the chat box (from manual_interactions)
+  const whatsAppChatMessages = (client.manual_interactions || [])
+    .filter((i: any) => i.kind === 'whatsapp')
+    .sort((a: any, b: any) => new Date(a.raw_date).getTime() - new Date(b.raw_date).getTime());
+
+  // Fetch current user's full name from Supabase on mount
+  useEffect(() => {
+    fetchCurrentUserFullName().then(name => setCurrentUserFullName(name));
+  }, []);
+
+  // Effect to combine and sort interactions whenever client data changes
+  useEffect(() => {
+    let isMounted = true;
+    async function fetchAndCombineInteractions() {
+      // 1. Manual interactions (now includes WhatsApp messages)
+      const manualInteractions = client.manual_interactions || [];
+      // 2. Email interactions
+      const clientEmails = (client as any).emails || [];
+      const emailInteractions = clientEmails.map((e: any) => {
+        const emailDate = new Date(e.sent_at);
+        function stripHtml(html: string) {
+          if (!html) return '';
+          const tmp = document.createElement('div');
+          tmp.innerHTML = html;
+          return tmp.textContent || tmp.innerText || '';
+        }
+        let body = e.body_preview || e.bodyPreview || e.subject || '';
+        body = stripHtml(body);
+        body = stripSignatureAndQuotedText(body);
+        if (body.length > 200) body = body.slice(0, 200) + '...';
+        return {
+          id: e.message_id,
+          date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+          time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+          raw_date: e.sent_at,
+          employee: e.direction === 'outgoing' ? (currentUserFullName || 'You') : client.name,
+          direction: e.direction === 'outgoing' ? 'out' : 'in',
+          kind: 'email',
+          length: '',
+          content: body,
+          observation: e.observation || '',
+          editable: true,
+          status: e.status,
+        };
+      });
+      // Combine all (no direct WhatsApp fetch)
+      const combined = [...manualInteractions, ...emailInteractions];
+      const sorted = combined.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+      if (isMounted) setInteractions(sorted as Interaction[]);
+      // Also update the local emails state for the modal
+      const formattedEmailsForModal = clientEmails.map((e: any) => ({
+        id: e.message_id,
+        subject: e.subject,
+        from: e.sender_email,
+        to: e.recipient_list,
+        date: e.sent_at,
+        bodyPreview: e.body_preview || e.subject,
+        direction: e.direction,
+        attachments: e.attachments,
+      }));
+      if (isMounted) setEmails(formattedEmailsForModal);
+    }
+    fetchAndCombineInteractions();
+    return () => { isMounted = false; };
+  }, [client, currentUserFullName]);
 
   // This function now ONLY syncs with Graph and then triggers a full refresh
   const runGraphSync = useCallback(async () => {
@@ -308,47 +385,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       setEmailsLoading(false);
     }
   }, [client, instance, accounts, onClientUpdate]);
-
-  // Effect to combine and sort interactions whenever client data changes
-  useEffect(() => {
-    const clientEmails = (client as any).emails || [];
-    const emailInteractions = clientEmails.map((e: any) => {
-      const emailDate = new Date(e.sent_at);
-      return {
-        id: e.message_id,
-        date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-        time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-        raw_date: e.sent_at,
-        employee: e.direction === 'outgoing' ? (accounts[0]?.name || 'You') : client.name,
-        direction: e.direction === 'outgoing' ? 'out' : 'in',
-        kind: 'email',
-        length: '',
-        content: e.subject,
-        observation: e.observation || '',
-        editable: true,
-        status: e.status,
-      };
-    });
-
-    const manualInteractions = client.manual_interactions || [];
-    const combined = [...manualInteractions, ...emailInteractions];
-    const sorted = combined.sort((a, b) => new Date((b as any).raw_date).getTime() - new Date((a as any).raw_date).getTime());
-    setInteractions(sorted as Interaction[]);
-    
-    // Also update the local emails state for the modal
-    const formattedEmailsForModal = clientEmails.map((e: any) => ({
-      id: e.message_id,
-      subject: e.subject,
-      from: e.sender_email,
-      to: e.recipient_list,
-      date: e.sent_at,
-      bodyPreview: e.body_preview || e.subject,
-      direction: e.direction,
-      attachments: e.attachments,
-    }));
-    setEmails(formattedEmailsForModal);
-
-  }, [client, accounts]);
 
   // Effect to run the slow sync only once when the component mounts
   useEffect(() => {
@@ -575,7 +611,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       date: newContact.date || now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
       time: newContact.time || now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
       raw_date: now.toISOString(),
-      employee: accounts[0]?.name || 'You',
+      employee: currentUserFullName || 'You',
       direction: 'out',
       kind: newContact.method,
       length: newContact.length ? `${newContact.length}m` : '',
@@ -612,197 +648,169 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   };
 
-  const sendFakeClientMessage = (text: string) => {
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    setFakeMessages(msgs => [...msgs, { from: 'client', text, time: timeStr, seen: true }]);
-    setInteractions(prev => [
-      {
-        id: `whatsapp_client_${now.getTime()}`,
-        date: now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-        time: timeStr,
-        raw_date: now.toISOString(),
-        employee: client.name,
-        direction: 'in',
-        kind: 'whatsapp',
-        length: '',
-        content: text,
-        observation: '',
-        editable: false,
-      },
-      ...prev
-    ]);
-  };
+  // Combine emails and WhatsApp messages for AI summary
+  const aiSummaryMessages = [
+    // Emails
+    ...emails.map(email => ({
+      type: 'email',
+      direction: email.direction === 'outgoing' ? 'out' : 'in',
+      from: email.from,
+      to: email.to,
+      date: email.date,
+      content: email.bodyPreview,
+      subject: email.subject,
+    })),
+    // WhatsApp messages
+    ...whatsAppChatMessages.map(msg => ({
+      type: 'whatsapp',
+      direction: msg.direction === 'out' ? 'out' : 'in',
+      from: msg.employee,
+      to: msg.direction === 'out' ? client.name : msg.employee,
+      date: msg.time,
+      content: msg.content,
+    })),
+  ].sort((a, b) => {
+    // Sort by date descending (emails have full date, WhatsApp only time)
+    const aDate = new Date(a.date);
+    const bDate = new Date(b.date);
+    return bDate.getTime() - aDate.getTime();
+  });
 
   return (
-    <div className="p-8">
-      <div className="dropdown mb-2">
-        <label tabIndex={0} className="btn btn-neutral btn-md gap-2 cursor-pointer text-white bg-black border-black hover:bg-black/90 hover:border-black">
-          <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
-        </label>
-        <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
-          <li>
-            <button className="flex gap-2 items-center" onClick={() => setIsEmailModalOpen(true)}>
-              <EnvelopeIcon className="w-5 h-5" /> Email
-            </button>
-          </li>
-          <li>
-            <button className="flex gap-2 items-center" onClick={() => setIsWhatsAppOpen(true)}>
-              <FaWhatsapp className="w-5 h-5" /> WhatsApp
-            </button>
-          </li>
-          <li>
-            <button className="flex gap-2 items-center" onClick={openContactDrawer}>
-              <ChatBubbleLeftRightIcon className="w-5 h-5" /> Contact
-            </button>
-          </li>
-        </ul>
-      </div>
-      <div className="relative pl-8 mt-8">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-          {/* Employee (Outgoing) Timeline - Left */}
-          <div className="relative">
-            {/* Stylish Title */}
-            <div className="flex items-center gap-2 mb-6">
-              <span className="inline-block w-2 h-6 rounded bg-primary" />
-              <span className="text-xl md:text-2xl font-bold text-primary">Employee Interactions</span>
-            </div>
-            <div className="absolute left-3 top-0 bottom-0 w-1 bg-base-200 rounded-full" style={{ zIndex: 0 }} />
-            <div className="flex flex-col gap-12">
-              {[...interactions].filter(row => row.direction === 'out').sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()).map((row, idx) => {
-                // Date formatting
-                const dateObj = new Date(row.raw_date);
-                const day = dateObj.getDate().toString().padStart(2, '0');
-                const month = dateObj.toLocaleString('en', { month: 'short' });
-                const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-                // Icon and color
-                let icon, iconBg;
-                if (row.kind === 'sms') {
-                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
-                  iconBg = 'bg-purple-300';
-                } else if (row.kind === 'call') {
-                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
-                  iconBg = 'bg-yellow-100';
-                } else if (row.kind === 'whatsapp') {
-                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
-                  iconBg = 'bg-green-100';
-                } else if (row.kind === 'email') {
-                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
-                  iconBg = 'bg-blue-100';
-                } else if (row.kind === 'office') {
-                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
-                  iconBg = 'bg-orange-100';
-                } else {
-                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
-                  iconBg = 'bg-gray-200';
-                }
-                // Initials
-                const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
-                return (
-                  <div key={row.id} className="relative flex items-start group cursor-pointer" onClick={() => {
-                    setActiveInteraction(row);
-                    setDetailsDrawerOpen(true);
-                  }}>
-                    {/* Timeline dot */}
-                    <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
-                      {icon}
-                    </div>
-                    {/* Date/time */}
-                    <div className="w-28 text-right pr-4 pt-1 select-none">
-                      <div className="text-base font-semibold text-base-content/80">{day} {month},</div>
-                      <div className="text-sm text-base-content/60">{time}</div>
-                    </div>
-                    {/* Card (summary only) */}
-                    <div className="ml-8 flex-1">
-                      <div className="bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white rounded-2xl shadow-xl p-5 min-w-[220px] max-w-xl hover:shadow-2xl transition-all duration-150 flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold bg-white/20 text-white text-lg">{initials}</div>
-                        <div>
-                          <div className="font-semibold text-base text-white">{row.employee}</div>
-                          <div className="flex flex-wrap gap-2 mt-1">
-                            <span className="badge badge-outline border-white/40 text-xs text-white/90 bg-white/10">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
-                            {row.status && <span className={`badge badge-outline border-white/40 text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'} bg-white/10 text-white/90`}>{row.status}</span>}
-                            {row.length && row.length !== 'm' && <span className="badge badge-outline border-white/40 text-xs bg-white/10 text-white/90">{row.length}</span>}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-          {/* Client (Ingoing) Timeline - Right */}
-          <div className="relative">
-            {/* Stylish Title */}
-            <div className="flex items-center gap-2 mb-6">
-              <span className="inline-block w-2 h-6 rounded bg-accent" />
-              <span className="text-xl md:text-2xl font-bold text-accent">Client Interactions</span>
-            </div>
-            <div className="absolute left-3 top-0 bottom-0 w-1 bg-base-200 rounded-full" style={{ zIndex: 0 }} />
-            <div className="flex flex-col gap-12">
-              {[...interactions].filter(row => row.direction === 'in').sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()).map((row, idx) => {
-                // Date formatting
-                const dateObj = new Date(row.raw_date);
-                const day = dateObj.getDate().toString().padStart(2, '0');
-                const month = dateObj.toLocaleString('en', { month: 'short' });
-                const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-                // Icon and color
-                let icon, iconBg;
-                if (row.kind === 'sms') {
-                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
-                  iconBg = 'bg-purple-300';
-                } else if (row.kind === 'call') {
-                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
-                  iconBg = 'bg-yellow-100';
-                } else if (row.kind === 'whatsapp') {
-                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
-                  iconBg = 'bg-green-100';
-                } else if (row.kind === 'email') {
-                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
-                  iconBg = 'bg-blue-100';
-                } else if (row.kind === 'office') {
-                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
-                  iconBg = 'bg-orange-100';
-                } else {
-                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
-                  iconBg = 'bg-gray-200';
-                }
-                // Initials
-                const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
-                return (
-                  <div key={row.id} className="relative flex items-start group cursor-pointer" onClick={() => {
-                    setActiveInteraction(row);
-                    setDetailsDrawerOpen(true);
-                  }}>
-                    {/* Timeline dot */}
-                    <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
-                      {icon}
-                    </div>
-                    {/* Date/time */}
-                    <div className="w-28 text-right pr-4 pt-1 select-none">
-                      <div className="text-base font-semibold text-base-content/80">{day} {month},</div>
-                      <div className="text-sm text-base-content/60">{time}</div>
-                    </div>
-                    {/* Card (summary only) */}
-                    <div className="ml-8 flex-1">
-                      <div className="bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white rounded-2xl shadow-xl p-5 min-w-[220px] max-w-xl hover:shadow-2xl transition-all duration-150 flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold bg-white/20 text-white text-lg">{initials}</div>
-                        <div>
-                          <div className="font-semibold text-base text-white">{row.employee}</div>
-                          <div className="flex flex-wrap gap-2 mt-1">
-                            <span className="badge badge-outline border-white/40 text-xs text-white/90 bg-white/10">{row.kind.charAt(0).toUpperCase() + row.kind.slice(1)}</span>
-                            {row.status && <span className={`badge badge-outline border-white/40 text-xs ${row.status.toLowerCase().includes('not') ? 'badge-error' : 'badge-success'} bg-white/10 text-white/90`}>{row.status}</span>}
-                            {row.length && row.length !== 'm' && <span className="badge badge-outline border-white/40 text-xs bg-white/10 text-white/90">{row.length}</span>}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+    <div className="p-8 flex flex-col lg:flex-row gap-8 items-start">
+      <div className="relative pl-8 mt-8 flex-1 min-w-0">
+        {/* Contact Client Dropdown Button */}
+        <div className="w-full flex flex-row items-center gap-4 mb-6">
+          <div className="dropdown">
+            <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer">
+              <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
+            </label>
+            <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
+              <li>
+                <button className="flex gap-2 items-center" onClick={() => { setIsEmailModalOpen(true); }}>
+                  <EnvelopeIcon className="w-5 h-5" /> Email
+                </button>
+              </li>
+              <li>
+                <button className="flex gap-2 items-center" onClick={() => setIsWhatsAppOpen(true)}>
+                  <FaWhatsapp className="w-5 h-5" /> WhatsApp
+                </button>
+              </li>
+              <li>
+                <button className="flex gap-2 items-center" onClick={openContactDrawer}>
+                  <ChatBubbleLeftRightIcon className="w-5 h-5" /> Contact
+                </button>
+              </li>
+            </ul>
           </div>
         </div>
+        {/* Single merged timeline for all interactions */}
+        <div className="absolute left-3 top-0 bottom-0 w-2 rounded-full bg-gradient-to-b from-primary via-accent to-secondary shadow-lg border-2 border-primary/30" style={{ zIndex: 0, boxShadow: '0 0 16px 2px rgba(59,40,199,0.10)' }} />
+        <div className="flex flex-col gap-12">
+          {[...interactions]
+            .sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime())
+            .map((row, idx) => {
+              // Date formatting
+              const dateObj = new Date(row.raw_date);
+              const day = dateObj.getDate().toString().padStart(2, '0');
+              const month = dateObj.toLocaleString('en', { month: 'short' });
+              const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+              // Icon and color
+              let icon, iconBg, cardBg, textGradient, avatarBg;
+              if (row.direction === 'out') {
+                // Employee (Outgoing)
+                if (row.kind === 'sms') {
+                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
+                  iconBg = 'bg-purple-300';
+                } else if (row.kind === 'call') {
+                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
+                  iconBg = 'bg-yellow-100';
+                } else if (row.kind === 'whatsapp') {
+                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
+                  iconBg = 'bg-green-100';
+                } else if (row.kind === 'email') {
+                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
+                  iconBg = 'bg-blue-100';
+                } else if (row.kind === 'office') {
+                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
+                  iconBg = 'bg-orange-100';
+                } else {
+                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
+                  iconBg = 'bg-gray-200';
+                }
+                cardBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600';
+                textGradient = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 bg-clip-text text-transparent';
+                avatarBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white';
+              } else {
+                // Client (Ingoing)
+                if (row.kind === 'sms') {
+                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
+                  iconBg = 'bg-purple-300';
+                } else if (row.kind === 'call') {
+                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
+                  iconBg = 'bg-yellow-100';
+                } else if (row.kind === 'whatsapp') {
+                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
+                  iconBg = 'bg-green-100';
+                } else if (row.kind === 'email') {
+                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
+                  iconBg = 'bg-blue-100';
+                } else if (row.kind === 'office') {
+                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
+                  iconBg = 'bg-orange-100';
+                } else {
+                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
+                  iconBg = 'bg-gray-200';
+                }
+                cardBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400';
+                textGradient = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 bg-clip-text text-transparent';
+                avatarBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white';
+              }
+              // Initials
+              const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
+              return (
+                <div key={row.id} className="relative flex items-start group cursor-pointer" onClick={() => {
+                  setActiveInteraction(row);
+                  setDetailsDrawerOpen(true);
+                }}>
+                  {/* Timeline dot */}
+                  <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
+                    {icon}
+                  </div>
+                  {/* Date/time */}
+                  <div className="w-28 text-right pr-4 pt-1 select-none">
+                    <div className="text-base font-semibold text-base-content/80">{day} {month},</div>
+                    <div className="text-sm text-base-content/60">{time}</div>
+                  </div>
+                  {/* Card (summary only) */}
+                  <div className="ml-8 flex-1">
+                    <div className={`p-[2px] rounded-full ${cardBg} shadow-xl min-w-[220px] max-w-xl hover:shadow-2xl transition-all duration-150`}>
+                      <div className="bg-white rounded-full flex items-center gap-4 p-5">
+                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${avatarBg} text-lg`}>{initials}</div>
+                        <div className="flex-1">
+                          <div className={`font-semibold text-base ${textGradient} mb-1`}>{row.employee}</div>
+                          <div className="flex flex-wrap gap-2 mb-1">
+                            {row.status && <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>{row.status}</span>}
+                            {row.length && row.length !== 'm' && <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white`}>{row.length}</span>}
+                            {row.content && (
+                              <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white max-w-xs truncate`} title={row.content}>{row.content}</span>
+                            )}
+                            {row.observation && (
+                              <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white max-w-xs truncate`} title={row.observation}>{row.observation}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      </div>
+      {/* Right-side AI summary panel (hidden on mobile, sticky on desktop) */}
+      <div className="hidden lg:block w-full max-w-sm">
+        <AISummaryPanel messages={aiSummaryMessages} />
       </div>
       {/* Email Thread Modal */}
       {isEmailModalOpen && createPortal(
@@ -1112,16 +1120,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             </div>
             {/* Chat Area */}
             <div className="flex-1 overflow-y-auto px-4 py-6 bg-green-50" style={{ background: 'url(https://www.transparenttextures.com/patterns/cubes.png)', backgroundSize: 'auto' }}>
-              <div className="flex flex-col gap-2">
-                {fakeMessages.map((msg, idx) => (
-                  <div key={idx} className={`flex ${msg.from === 'me' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[75%] px-4 py-2 rounded-2xl shadow text-sm relative ${msg.from === 'me' ? 'bg-primary text-white rounded-br-md' : 'bg-white text-gray-900 rounded-bl-md border border-base-200'}`} style={{ wordBreak: 'break-word' }}>
-                      {msg.text}
+              <div className="flex flex-col gap-5">
+                {whatsAppChatMessages.map((msg: any, idx: number) => (
+                  <div key={msg.id || idx} className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[75%] px-4 py-2 rounded-2xl shadow text-sm relative ${msg.direction === 'out' ? 'bg-primary text-white rounded-br-md' : 'bg-white text-gray-900 rounded-bl-md border border-base-200'}`} style={{ wordBreak: 'break-word' }}>
+                      {msg.content}
                       <div className="flex items-center gap-1 mt-1 text-[10px] opacity-70 justify-end">
                         <span>{msg.time}</span>
-                        {msg.from === 'me' && (
+                        {msg.direction === 'out' && (
                           <span className="inline-block align-middle">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={`w-4 h-4 ${msg.seen ? 'text-blue-400' : 'text-white/70'}`} style={{ display: 'inline' }}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-blue-400" style={{ display: 'inline' }}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
                           </span>
                         )}
                       </div>
@@ -1131,14 +1139,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               </div>
             </div>
             {/* Input Area */}
-            <form className="flex items-center gap-2 px-4 py-3 bg-base-200" onSubmit={e => {
+            <form className="flex items-center gap-2 px-4 py-3 bg-base-200" onSubmit={async e => {
               e.preventDefault();
               if (whatsAppInput.trim()) {
                 const now = new Date();
                 const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                setFakeMessages([...fakeMessages, { from: 'me', text: whatsAppInput, time: timeStr, seen: false }]);
-                setWhatsAppInput("");
-                // Add to interactions timeline
                 setInteractions(prev => [
                   {
                     id: `whatsapp_${now.getTime()}`,
@@ -1155,6 +1160,49 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   },
                   ...prev
                 ]);
+                // Save WhatsApp message to DB (Supabase)
+                try {
+                  const { data: { user } } = await supabase.auth.getUser();
+                  let senderId = null;
+                  let senderName = 'You';
+                  if (user?.id) {
+                    // Look up the internal user id by auth_id
+                    const { data: userRow, error: userLookupError } = await supabase
+                      .from('users')
+                      .select('id, full_name, email')
+                      .eq('auth_id', user.id)
+                      .single();
+                    if (userLookupError || !userRow) {
+                      toast.error('Could not find your user profile in the database.');
+                      return;
+                    }
+                    senderId = userRow.id;
+                    if (userRow.full_name) senderName = userRow.full_name;
+                    else if (userRow.email) senderName = userRow.email;
+                  }
+                  console.log('[WhatsApp Insert] lead_id:', client.id, 'sender_id:', senderId, 'sender_name:', senderName);
+                  const { error: insertError } = await supabase
+                    .from('whatsapp_messages')
+                    .insert([
+                      {
+                        lead_id: client.id,
+                        sender_id: senderId,
+                        sender_name: senderName,
+                        direction: 'out',
+                        message: whatsAppInput,
+                        sent_at: now.toISOString(),
+                        status: 'sent',
+                      }
+                    ]);
+                  if (insertError) {
+                    console.error('[WhatsApp Insert Error]', insertError);
+                    toast.error('Failed to save WhatsApp message: ' + insertError.message);
+                  }
+                } catch (err) {
+                  // Optionally show error
+                  console.error('Failed to save WhatsApp message to DB', err);
+                  toast.error('Unexpected error saving WhatsApp message.');
+                }
               }
             }}>
               <button type="button" className="btn btn-ghost btn-circle">

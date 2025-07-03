@@ -125,24 +125,24 @@ const AISuggestions = forwardRef((props, ref) => {
   });
 
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
-    <div className="card bg-white/10 hover:bg-white/20 transition-colors border border-white/20">
+    <div className="card bg-white hover:bg-gray-50 transition-colors border border-gray-200">
       <div className="card-body p-4">
         <div className="flex items-start gap-3">
           {getTypeIcon(suggestion.type)}
           <div className="flex-1">
             <div className="flex items-center justify-between">
-              <span className="badge badge-sm bg-white/20 text-white font-semibold border-none">
+              <span className="badge badge-sm bg-gray-100 text-gray-800 font-semibold border-none">
                 {suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1)}
               </span>
               {suggestion.dueDate && (
-                <span className="text-sm text-white/70">
+                <span className="text-sm text-gray-600">
                   Due: {suggestion.dueDate}
                 </span>
               )}
             </div>
-            <p className="mt-2 text-sm text-white/90">{suggestion.message}</p>
+            <p className="mt-2 text-sm text-gray-900 font-semibold">{suggestion.message}</p>
             {suggestion.context && (
-              <p className="mt-1 text-sm text-white/70">
+              <p className="mt-1 text-sm text-gray-700">
                 {suggestion.context}
               </p>
             )}
@@ -167,14 +167,14 @@ const AISuggestions = forwardRef((props, ref) => {
 
   return (
     <div ref={containerRef}>
-      <div className="bg-white/10 rounded-xl shadow-lg p-4 w-full mb-6 border border-white/20">
-        <div className="flex items-center justify-between pb-4 border-b border-white/20">
+      <div className="bg-white rounded-xl shadow-lg p-4 w-full mb-6 border border-gray-200">
+        <div className="flex items-center justify-between pb-4 border-b border-gray-200">
           <div className="flex items-center gap-2">
-            <SparklesIcon className="w-6 h-6 text-white/90" />
-            <h2 className="text-xl font-semibold text-white">AI Assistant Suggestions</h2>
+            <SparklesIcon className="w-6 h-6 text-teal-500" />
+            <h2 className="text-xl font-semibold text-gray-900">AI Assistant Suggestions</h2>
           </div>
           <button 
-            className="btn btn-ghost btn-sm text-white hover:bg-white/10"
+            className="btn btn-outline btn-sm text-gray-800 border-gray-300 bg-white hover:bg-gray-100"
             onClick={() => setIsModalOpen(true)}
           >
             View All

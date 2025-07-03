@@ -12,13 +12,14 @@ import {
   EnvelopeIcon,
   PhoneIcon,
   UserIcon,
-  SparklesIcon,
   DocumentChartBarIcon,
   CalendarIcon,
   ArrowRightOnRectangleIcon,
+  UserGroupIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
+import { FaRobot } from 'react-icons/fa';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -93,12 +94,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     {
       label: 'Calendar',
       path: '/calendar',
-      icon: CalendarIcon,
     },
     {
       label: 'Reports',
       path: '/reports',
-      icon: DocumentChartBarIcon,
+    },
+    {
+      label: 'Teams',
+      path: '/teams',
     },
   ];
 
@@ -299,7 +302,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   to={tab.path}
                   className={`flex items-center px-3 py-2 rounded-lg font-medium transition-colors duration-200 ${isActive ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
                 >
-                  <span>{tab.label}</span>
+                  {tab.icon && <tab.icon className="w-5 h-5 mr-2" />}<span>{tab.label}</span>
                 </Link>
               );
             })}
@@ -401,7 +404,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             title="Open AI Assistant"
             onClick={handleAIClick}
           >
-            <SparklesIcon className="w-6 h-6 text-primary" />
+            <FaRobot className="w-7 h-7 text-primary" />
           </button>
 
           {/* Microsoft sign in button */}

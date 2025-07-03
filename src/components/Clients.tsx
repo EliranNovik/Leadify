@@ -179,6 +179,22 @@ const Clients: React.FC<ClientsProps> = ({
   });
   const [showDeclinedDrawer, setShowDeclinedDrawer] = useState(false);
   const [showLeadSummaryDrawer, setShowLeadSummaryDrawer] = useState(false);
+  const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
+  const [editLeadData, setEditLeadData] = useState({
+    tags: selectedClient?.tags || '',
+    source: selectedClient?.source || '',
+    name: selectedClient?.name || '',
+    language: selectedClient?.language || '',
+    category: selectedClient?.category || '',
+    topic: selectedClient?.topic || '',
+    special_notes: selectedClient?.special_notes || '',
+    probability: selectedClient?.probability || 0,
+    number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
+    potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
+    balance: selectedClient?.balance || '',
+    next_followup: selectedClient?.next_followup || '',
+    balance_currency: selectedClient?.balance_currency || 'NIS',
+  });
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
@@ -321,7 +337,14 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   const getStageBadge = (stage: string) => {
-    return <span className="badge bg-black text-white badge-lg ml-2">{stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>;
+    return (
+      <span
+        className="badge bg-black text-white badge-lg ml-2 px-4 py-2 text-base min-w-fit whitespace-nowrap"
+        style={{ fontSize: '1.1rem', minWidth: 120, maxWidth: '100%', lineHeight: 1.3 }}
+      >
+        {stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+      </span>
+    );
   };
 
   const closeSchedulePanel = () => {
@@ -668,6 +691,60 @@ const Clients: React.FC<ClientsProps> = ({
     setShowDeclinedDrawer(false);
   };
 
+  useEffect(() => {
+    if (selectedClient) {
+      setEditLeadData({
+        tags: selectedClient.tags || '',
+        source: selectedClient.source || '',
+        name: selectedClient.name || '',
+        language: selectedClient.language || '',
+        category: selectedClient.category || '',
+        topic: selectedClient.topic || '',
+        special_notes: selectedClient.special_notes || '',
+        probability: selectedClient.probability || 0,
+        number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || '',
+        potential_applicants_meeting: selectedClient.potential_applicants_meeting || '',
+        balance: selectedClient.balance || '',
+        next_followup: selectedClient.next_followup || '',
+        balance_currency: selectedClient.balance_currency || 'NIS',
+      });
+    }
+  }, [selectedClient]);
+
+  const handleEditLeadChange = (field: string, value: any) => {
+    setEditLeadData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSaveEditLead = async () => {
+    if (!selectedClient) return;
+    const updateData = {
+      tags: editLeadData.tags,
+      source: editLeadData.source,
+      name: editLeadData.name,
+      language: editLeadData.language,
+      category: editLeadData.category,
+      topic: editLeadData.topic,
+      special_notes: editLeadData.special_notes,
+      probability: Number(editLeadData.probability),
+      number_of_applicants_meeting: editLeadData.number_of_applicants_meeting,
+      potential_applicants_meeting: editLeadData.potential_applicants_meeting,
+      balance: editLeadData.balance,
+      next_followup: editLeadData.next_followup,
+      balance_currency: editLeadData.balance_currency,
+    };
+    const { error } = await supabase
+      .from('leads')
+      .update(updateData)
+      .eq('id', selectedClient.id);
+    if (!error) {
+      setShowEditLeadDrawer(false);
+      if (onClientUpdate) await onClientUpdate();
+      toast.success('Lead updated!');
+    } else {
+      toast.error('Failed to update lead.');
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="flex justify-center items-center h-screen">
@@ -839,6 +916,8 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
+        <li>
           <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('revised_offer')}>
             <PencilSquareIcon className="w-5 h-5 text-black" />
             Revised price offer
@@ -917,7 +996,7 @@ const Clients: React.FC<ClientsProps> = ({
                       </a>
                     </li>
                     <li><a className="flex items-center gap-3 py-3"><StarIcon className="w-5 h-5 text-black" />Ask for recommendation</a></li>
-                    <li><a className="flex items-center gap-3 py-3"><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
+                    <li><a className="flex items-center gap-3 py-3" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
                     <li><a className="flex items-center gap-3 py-3"><Squares2X2Icon className="w-5 h-5 text-black" />Create Sub-Lead</a></li>
                   </ul>
                 </div>
@@ -1526,6 +1605,86 @@ const Clients: React.FC<ClientsProps> = ({
                   Yes, decline client
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Lead Drawer */}
+      {showEditLeadDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Overlay */}
+          <div className="fixed inset-0 bg-black/30" onClick={() => setShowEditLeadDrawer(false)} />
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold">Edit Lead</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowEditLeadDrawer(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
+              <div>
+                <label className="block font-semibold mb-1">Tags</label>
+                <input type="text" className="input input-bordered w-full" value={editLeadData.tags} onChange={e => handleEditLeadChange('tags', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Source</label>
+                <input type="text" className="input input-bordered w-full" value={editLeadData.source} onChange={e => handleEditLeadChange('source', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Client Name</label>
+                <input type="text" className="input input-bordered w-full" value={editLeadData.name} onChange={e => handleEditLeadChange('name', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Language</label>
+                <input type="text" className="input input-bordered w-full" value={editLeadData.language} onChange={e => handleEditLeadChange('language', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Category</label>
+                <input type="text" className="input input-bordered w-full" value={editLeadData.category} onChange={e => handleEditLeadChange('category', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Topic</label>
+                <input type="text" className="input input-bordered w-full" value={editLeadData.topic} onChange={e => handleEditLeadChange('topic', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Special Notes</label>
+                <textarea className="textarea textarea-bordered w-full min-h-[60px]" value={editLeadData.special_notes} onChange={e => handleEditLeadChange('special_notes', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Probability</label>
+                <input type="number" min="0" max="100" className="input input-bordered w-full" value={editLeadData.probability} onChange={e => handleEditLeadChange('probability', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Number of Applicants</label>
+                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.number_of_applicants_meeting} onChange={e => handleEditLeadChange('number_of_applicants_meeting', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Potential Applicants</label>
+                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.potential_applicants_meeting} onChange={e => handleEditLeadChange('potential_applicants_meeting', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Balance (Amount)</label>
+                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.balance} onChange={e => handleEditLeadChange('balance', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Follow Up Date</label>
+                <input type="date" className="input input-bordered w-full" value={editLeadData.next_followup} onChange={e => handleEditLeadChange('next_followup', e.target.value)} />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Balance Currency</label>
+                <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
+                  <option value="NIS">NIS</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button className="btn btn-primary px-8" onClick={handleSaveEditLead}>
+                Save
+              </button>
             </div>
           </div>
         </div>
