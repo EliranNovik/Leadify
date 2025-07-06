@@ -22,6 +22,9 @@ import { toast } from 'react-hot-toast';
 import { InteractionRequiredAuthError, type IPublicClientApplication, type AccountInfo } from '@azure/msal-browser';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from './AISummaryPanel';
+import ReactQuill from 'react-quill';
+import 'react-quill/dist/quill.snow.css';
+import { useRef } from 'react';
 
 interface Attachment {
   id: string;
@@ -299,6 +302,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [whatsAppInput, setWhatsAppInput] = useState("");
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
+  const [bodyFocused, setBodyFocused] = useState(false);
+  const [footerHeight, setFooterHeight] = useState(72);
+  const [composeOverlayOpen, setComposeOverlayOpen] = useState(false);
+  const quillRef = useRef<ReactQuill>(null);
+  const [activeWhatsAppId, setActiveWhatsAppId] = useState<string | null>(null);
 
   // WhatsApp chat messages for the chat box (from manual_interactions)
   const whatsAppChatMessages = (client.manual_interactions || [])
@@ -415,6 +423,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       // After sending, trigger a sync to get the new email
       await runGraphSync();
 
+      // Clear the body input after sending
+      setComposeBody('');
+      setComposeAttachments([]);
     } catch (e) {
       console.error("Error in handleSendEmail:", e);
       toast.error(e instanceof Error ? e.message : "Failed to send email.");
@@ -496,13 +507,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   };
 
-  // Set the subject when the compose modal opens
+  // Set the subject when the email modal opens (if not already set by user)
   useEffect(() => {
-    if (showCompose) {
-      const subject = `[${client.lead_number}] - ${client.name} - ${client.topic}`;
-      setComposeSubject(subject);
+    if (isEmailModalOpen) {
+      const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+      setComposeSubject(prev => prev && prev.trim() ? prev : defaultSubject);
     }
-  }, [showCompose, client]);
+  }, [isEmailModalOpen, client]);
 
   const openEditDrawer = (idx: number) => {
     const row = interactions[idx];
@@ -676,6 +687,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     return bDate.getTime() - aDate.getTime();
   });
 
+  useEffect(() => {
+    // Set default font size and family for new content
+    const quillEditor = document.querySelector('.ql-editor');
+    if (quillEditor) {
+      (quillEditor as HTMLElement).style.fontSize = '16px';
+      (quillEditor as HTMLElement).style.fontFamily = 'system-ui, Arial, sans-serif';
+      (quillEditor as HTMLElement).style.lineHeight = '1.7';
+      (quillEditor as HTMLElement).style.padding = '18px 16px';
+    }
+  }, []);
+
   return (
     <div className="p-8 flex flex-col lg:flex-row gap-8 items-start">
       <div className="relative pl-8 mt-8 flex-1 min-w-0">
@@ -770,8 +792,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
               return (
                 <div key={row.id} className="relative flex items-start group cursor-pointer" onClick={() => {
-                  setActiveInteraction(row);
-                  setDetailsDrawerOpen(true);
+                  if (row.kind === 'email') {
+                    setIsEmailModalOpen(true);
+                    setActiveEmailId(row.id.toString());
+                  } else if (row.kind === 'whatsapp') {
+                    setIsWhatsAppOpen(true);
+                    setActiveWhatsAppId(row.id.toString());
+                  } else if (row.kind === 'call') {
+                    setActiveInteraction(row);
+                    setDetailsDrawerOpen(true);
+                  } else {
+                    setActiveInteraction(row);
+                    setDetailsDrawerOpen(true);
+                  }
                 }}>
                   {/* Timeline dot */}
                   <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
@@ -784,7 +817,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   </div>
                   {/* Card (summary only) */}
                   <div className="ml-8 flex-1">
-                    <div className={`p-[2px] rounded-full ${cardBg} shadow-xl min-w-[220px] max-w-xl hover:shadow-2xl transition-all duration-150`}>
+                    <div className={`p-[2px] rounded-full ${cardBg} shadow-xl min-w-[400px] max-w-xl hover:shadow-2xl transition-all duration-150`}>
                       <div className="bg-white rounded-full flex items-center gap-4 p-5">
                         <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${avatarBg} text-lg`}>{initials}</div>
                         <div className="flex-1">
@@ -812,28 +845,53 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       <div className="hidden lg:block w-full max-w-sm">
         <AISummaryPanel messages={aiSummaryMessages} />
       </div>
-      {/* Email Thread Modal */}
+      {/* Email Thread Modal (full screen, messenger-style compose) */}
       {isEmailModalOpen && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-[999] flex items-start justify-center p-4">
-          <div className="bg-base-100 rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden mt-12">
-            {/* Header */}
-            <div className="flex items-center justify-between p-4 border-b border-base-300">
-              <h3 className="text-xl font-bold">Email Thread with {client.name}</h3>
-              <div className="flex items-center gap-2">
-                <button className="btn btn-primary btn-sm" onClick={() => setShowCompose(true)}>
-                  Compose New Email
-                </button>
-                <button className="btn btn-ghost btn-sm btn-circle" onClick={() => setIsEmailModalOpen(false)}>
-                  <XMarkIcon className="w-6 h-6" />
-                </button>
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-start justify-center">
+          <div className="bg-base-100 rounded-none shadow-none w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden">
+            {/* Header: thread title, subject, templates, close */}
+            <div className="flex flex-wrap items-center gap-4 p-4 border-b border-base-300 bg-white">
+              <h3 className="text-xl font-bold whitespace-nowrap">Email Thread with {client.name}</h3>
+              <input
+                type="text"
+                className="input input-bordered flex-1 min-w-[180px] max-w-xs"
+                value={composeSubject}
+                onChange={e => setComposeSubject(e.target.value)}
+                placeholder="Subject"
+                style={{ minWidth: 120 }}
+              />
+              <div className="flex flex-wrap gap-2">
+                {emailTemplates.map(template => (
+                  <button
+                    key={template.name}
+                    className="btn btn-outline btn-xs"
+                    onClick={() => {
+                      const uploadLink = 'https://portal.example.com/upload'; // Placeholder
+                      const processedBody = template.body
+                          .replace(/{client_name}/g, client.name)
+                          .replace(/{upload_link}/g, uploadLink);
+                      const newSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+                      setComposeBody(processedBody);
+                      setComposeSubject(newSubject);
+                    }}
+                  >
+                    {template.name}
+                  </button>
+                ))}
               </div>
+              <div className="flex-1" />
+              <button className="btn btn-ghost btn-sm btn-circle ml-auto" onClick={() => setIsEmailModalOpen(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
             </div>
             {/* Conversation Body */}
             <div ref={(el) => {
               if (el && activeEmailId) {
                 const targetEmail = el.querySelector(`[data-email-id="${activeEmailId}"]`);
                 if (targetEmail) {
+                  targetEmail.classList.add('ring-2', 'ring-primary');
                   targetEmail.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  setTimeout(() => targetEmail.classList.remove('ring-2', 'ring-primary'), 1200);
                 }
                 setActiveEmailId(null); // Reset after scrolling
               }
@@ -843,180 +901,118 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               ) : emails.length === 0 ? (
                 <div className="text-center p-8 text-base-content/70">No emails found for this client.</div>
               ) : (
-                [...emails].reverse().map(email => (
-                  <div 
-                    key={email.id} 
-                    data-email-id={email.id}
-                    className={`flex items-end gap-3 ${email.direction === 'outgoing' ? 'flex-row-reverse' : ''}`}
-                  >
-                    <div className={`avatar placeholder ${email.direction === 'outgoing' ? 'hidden' : ''}`}>
-                      <div className="bg-neutral-focus text-neutral-content rounded-full w-10 h-10">
-                        <span>{client.name.charAt(0)}</span>
-                      </div>
-                    </div>
-                    <div className={`chat-bubble max-w-2xl break-words ${email.direction === 'outgoing' ? 'chat-bubble-primary' : 'bg-base-200'}`}>
-                      <div className="flex justify-between items-center text-xs opacity-70 mb-2">
-                        <span className="font-bold">{email.from}</span>
-                        <span>{new Date(email.date).toLocaleString()}</span>
-                      </div>
-                      <div className="font-bold mb-2">{email.subject}</div>
-                      <div className="prose" dangerouslySetInnerHTML={{ __html: email.bodyPreview }} />
-                      {/* Incoming Attachments */}
-                      {email.attachments && email.attachments.length > 0 && (
-                        <div className="mt-4 pt-2 border-t border-black/10">
-                          <h4 className="font-semibold text-xs mb-2">Attachments:</h4>
-                          <div className="flex flex-wrap gap-2">
-                            {email.attachments.map((att: Attachment) => (
-                              <button 
-                                key={att.id}
-                                className="btn btn-outline btn-xs gap-1"
-                                onClick={() => handleDownloadAttachment(email.id, att)}
-                                disabled={downloadingAttachments[att.id]}
-                              >
-                                {downloadingAttachments[att.id] ? (
-                                  <span className="loading loading-spinner loading-xs" />
-                                ) : (
-                                  <PaperClipIcon className="w-3 h-3" />
-                                )}
-                                {att.name} ({(att.sizeInBytes / 1024).toFixed(1)} KB)
-                              </button>
-                            ))}
-                          </div>
+                [...emails]
+                  .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                  .map(email => (
+                    <div 
+                      key={email.id} 
+                      data-email-id={email.id}
+                      className={`flex items-end gap-3 ${email.direction === 'outgoing' ? 'flex-row-reverse' : ''}`}
+                    >
+                      <div className={`avatar placeholder ${email.direction === 'outgoing' ? 'hidden' : ''}`}>
+                        <div className="bg-neutral-focus text-neutral-content rounded-full w-10 h-10">
+                          <span>{client.name.charAt(0)}</span>
                         </div>
-                      )}
+                      </div>
+                      <div className={`chat-bubble max-w-2xl break-words ${email.direction === 'outgoing' ? 'chat-bubble-primary' : 'bg-base-200'}`}>
+                        <div className="flex justify-between items-center text-xs opacity-70 mb-2">
+                          <span className="font-bold">{email.from}</span>
+                          <span>{new Date(email.date).toLocaleString()}</span>
+                        </div>
+                        <div className="font-bold mb-2">{email.subject}</div>
+                        <div className="prose" dangerouslySetInnerHTML={{ __html: email.bodyPreview }} />
+                        {/* Incoming Attachments */}
+                        {email.attachments && email.attachments.length > 0 && (
+                          <div className="mt-4 pt-2 border-t border-black/10">
+                            <h4 className="font-semibold text-xs mb-2">Attachments:</h4>
+                            <div className="flex flex-wrap gap-2">
+                              {email.attachments.map((att: Attachment) => (
+                                <button 
+                                  key={att.id}
+                                  className="btn btn-outline btn-xs gap-1"
+                                  onClick={() => handleDownloadAttachment(email.id, att)}
+                                  disabled={downloadingAttachments[att.id]}
+                                >
+                                  {downloadingAttachments[att.id] ? (
+                                    <span className="loading loading-spinner loading-xs" />
+                                  ) : (
+                                    <PaperClipIcon className="w-3 h-3" />
+                                  )}
+                                  {att.name} ({(att.sizeInBytes / 1024).toFixed(1)} KB)
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))
+                  ))
               )}
             </div>
-          </div>
-        </div>,
-        document.body
-      )}
-      {/* Compose Email Modal (Drawer style) */}
-      {showCompose && createPortal(
-        <div className="fixed inset-0 z-[999]">
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowCompose(false)} />
-          <div className="fixed inset-y-0 right-0 h-screen w-full max-w-md bg-base-100 shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Compose Email</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1">
-              <div>
-                <label className="block font-semibold mb-1">To</label>
-                <input type="text" className="input input-bordered w-full" value={client.email} disabled />
+            {/* In-place expanding compose bar */}
+            <form
+              className="flex items-end gap-2 p-4 border-t border-gray-200 bg-white"
+              style={{ minHeight: bodyFocused ? 350 : 72, transition: 'min-height 0.2s' }}
+              onSubmit={e => { e.preventDefault(); handleSendEmail(); setBodyFocused(false); }}
+            >
+              <input type="text" className="input input-bordered w-48" value={client.email} disabled style={{ minWidth: 120 }} />
+              <div className="flex-1 flex flex-col">
+                <ReactQuill
+                  ref={quillRef}
+                  value={composeBody}
+                  onChange={setComposeBody}
+                  onFocus={() => setBodyFocused(true)}
+                  onBlur={() => setBodyFocused(false)}
+                  placeholder="Write your email here..."
+                  style={{
+                    minHeight: bodyFocused ? 300 : 60,
+                    maxHeight: 400,
+                    background: 'white',
+                    borderRadius: 12,
+                    border: '1.5px solid #e3dbfa',
+                    boxShadow: bodyFocused ? '0 0 0 2px #a78bfa, 0 2px 16px 0 rgba(59,40,199,0.08)' : 'none',
+                    fontSize: 16,
+                    fontFamily: 'system-ui, Arial, sans-serif',
+                    lineHeight: 1.7,
+                    padding: '18px 16px',
+                  }}
+                  modules={{
+                    toolbar: [
+                      [{ size: [false, 'large', 'huge'] }],
+                      [{ header: [1, 2, false] }],
+                      ['bold', 'italic', 'underline', 'strike'],
+                      [{ list: 'ordered' }, { list: 'bullet' }],
+                      ['link'],
+                      ['clean'],
+                    ],
+                  }}
+                  theme="snow"
+                />
               </div>
-              <div>
-                <label className="block font-semibold mb-1">Subject</label>
-                <input type="text" className="input input-bordered w-full" value={composeSubject} onChange={e => setComposeSubject(e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-2">Templates</label>
-                <div className="flex flex-wrap gap-2">
-                  {emailTemplates.map(template => (
-                    <button
-                      key={template.name}
-                      className="btn btn-outline btn-xs"
-                      onClick={() => {
-                        const uploadLink = 'https://portal.example.com/upload'; // Placeholder
-                        const processedBody = template.body
-                            .replace(/{client_name}/g, client.name)
-                            .replace(/{upload_link}/g, uploadLink);
-                        const newSubject = `[${client.lead_number}] - ${template.subject}`;
-                        setComposeBody(processedBody);
-                        setComposeSubject(newSubject);
-                      }}
-                    >
-                      {template.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Body</label>
-                <textarea className="textarea textarea-bordered w-full min-h-[120px]" value={composeBody} onChange={e => setComposeBody(e.target.value)} />
-              </div>
-              {/* Attachments Section */}
-              <div>
-                <label className="block font-semibold mb-1">Attachments</label>
-                <div className="p-4 bg-base-200 rounded-lg">
-                  <div className="flex flex-col gap-2 mb-2">
+              <div className="flex flex-col gap-1 items-center justify-end">
+                {/* Attachments */}
+                <label htmlFor="file-upload" className="btn btn-outline btn-sm w-10 h-10 flex items-center justify-center p-0">
+                  <PaperClipIcon className="w-5 h-5" />
+                </label>
+                <input id="file-upload" type="file" className="hidden" onChange={e => e.target.files && handleAttachmentUpload(e.target.files)} />
+                {/* Show attached files */}
+                {composeAttachments.length > 0 && (
+                  <div className="flex flex-col gap-1 mt-1">
                     {composeAttachments.map((att, index) => (
-                      <div key={index} className="flex items-center justify-between text-sm">
+                      <div key={index} className="flex items-center gap-1 text-xs bg-base-200 rounded px-2 py-1">
                         <span>{att.name}</span>
-                        <button 
-                          className="btn btn-ghost btn-xs"
-                          onClick={() => setComposeAttachments(prev => prev.filter(a => a.name !== att.name))}
-                        >
-                          <XMarkIcon className="w-4 h-4" />
+                        <button type="button" className="btn btn-ghost btn-xs p-0" onClick={() => setComposeAttachments(prev => prev.filter(a => a.name !== att.name))}>
+                          <XMarkIcon className="w-3 h-3" />
                         </button>
                       </div>
                     ))}
                   </div>
-                  <label htmlFor="file-upload" className="btn btn-outline btn-sm w-full">
-                    <PaperClipIcon className="w-4 h-4" /> Add Attachment
-                  </label>
-                  <input id="file-upload" type="file" className="hidden" onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)} />
-                </div>
+                )}
               </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={handleSendEmail} disabled={sending}>
+              <button type="submit" className="btn btn-primary px-8 h-12" disabled={sending} style={{ minWidth: 80 }}>
                 {sending ? 'Sending...' : 'Send'}
               </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
-      {/* Details Drawer */}
-      {detailsDrawerOpen && activeInteraction && createPortal(
-        <div className="fixed inset-0 z-[999] flex">
-          {/* Overlay */}
-          <div className="fixed inset-0 bg-black/30" onClick={() => setDetailsDrawerOpen(false)} />
-          {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Interaction Details</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setDetailsDrawerOpen(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1">
-              <div>
-                <label className="block font-semibold mb-1">Employee</label>
-                <div className="text-lg font-bold">{activeInteraction.employee}</div>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Type</label>
-                <div className="badge badge-outline text-base">{activeInteraction.kind.charAt(0).toUpperCase() + activeInteraction.kind.slice(1)}</div>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Date & Time</label>
-                <div>{new Date(activeInteraction.raw_date).toLocaleString()}</div>
-              </div>
-              {activeInteraction.length && (
-                <div>
-                  <label className="block font-semibold mb-1">Length</label>
-                  <div>{activeInteraction.length}</div>
-                </div>
-              )}
-              {activeInteraction.content && (
-                <div>
-                  <label className="block font-semibold mb-1">Content</label>
-                  <div className="whitespace-pre-line bg-base-200 rounded-lg p-3 mt-1">{activeInteraction.content}</div>
-                </div>
-              )}
-              {activeInteraction.observation && (
-                <div>
-                  <label className="block font-semibold mb-1">Observation</label>
-                  <div className="whitespace-pre-line bg-base-200 rounded-lg p-3 mt-1">{activeInteraction.observation}</div>
-                </div>
-              )}
-            </div>
+            </form>
           </div>
         </div>,
         document.body
@@ -1102,7 +1098,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       )}
       {isWhatsAppOpen && createPortal(
         <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50">
-          <div className="bg-base-100 rounded-2xl shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden relative animate-fadeInUp">
+          <div className="bg-base-100 rounded-none shadow-none w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden relative animate-fadeInUp">
             {/* Header */}
             <div className="flex items-center gap-3 px-4 py-3 bg-primary text-white">
               <div className="avatar placeholder">
@@ -1222,6 +1218,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 <PaperAirplaneIcon className="w-6 h-6" />
               </button>
             </form>
+          </div>
+        </div>,
+        document.body
+      )}
+      {/* Details Drawer for Interactions */}
+      {detailsDrawerOpen && activeInteraction && createPortal(
+        <div className="fixed inset-0 z-[999] flex">
+          {/* Overlay */}
+          <div className="fixed inset-0 bg-black/30" onClick={() => setDetailsDrawerOpen(false)} />
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold">Interaction Details</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setDetailsDrawerOpen(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-4 flex-1">
+              <div><span className="font-semibold">Type:</span> {activeInteraction.kind}</div>
+              <div><span className="font-semibold">Employee:</span> {activeInteraction.employee}</div>
+              <div><span className="font-semibold">Date:</span> {activeInteraction.date}</div>
+              <div><span className="font-semibold">Time:</span> {activeInteraction.time}</div>
+              {activeInteraction.length && <div><span className="font-semibold">Length:</span> {activeInteraction.length}</div>}
+              {activeInteraction.status && <div><span className="font-semibold">Status:</span> {activeInteraction.status}</div>}
+              {activeInteraction.content && <div><span className="font-semibold">Content:</span> <div className="bg-base-200 rounded p-2 mt-1 whitespace-pre-line">{activeInteraction.content}</div></div>}
+              {activeInteraction.observation && <div><span className="font-semibold">Observation:</span> <div className="bg-base-200 rounded p-2 mt-1 whitespace-pre-line">{activeInteraction.observation}</div></div>}
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button className="btn btn-primary px-8" onClick={() => setDetailsDrawerOpen(false)}>
+                Close
+              </button>
+            </div>
           </div>
         </div>,
         document.body

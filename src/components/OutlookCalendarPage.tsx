@@ -193,7 +193,10 @@ const OutlookCalendarPage: React.FC = () => {
 
   // Custom event component for agenda view: modern card style
   const AgendaEventComponent = ({ event }: { event: CalendarEvent }) => {
-    const teamsLink = event.resource?.onlineMeeting?.joinUrl || event.resource?.teamsMeetingUrl;
+    const joinUrl = event.resource?.onlineMeeting?.joinUrl
+      || event.resource?.teamsMeetingUrl
+      || event.resource?.webLink
+      || event.resource?.location?.uri;
     return (
       <div className="bg-base-100 rounded-lg shadow p-4 mb-4 flex flex-col md:flex-row md:items-center gap-4 border border-base-200">
         <div className="flex-1 min-w-0">
@@ -235,9 +238,9 @@ const OutlookCalendarPage: React.FC = () => {
             </div>
           )}
         </div>
-        {teamsLink && (
+        {joinUrl && (
           <a
-            href={teamsLink}
+            href={joinUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-primary flex items-center gap-2 self-start md:self-center"
@@ -353,8 +356,12 @@ const OutlookCalendarPage: React.FC = () => {
             <button 
               className="btn btn-primary btn-sm gap-2"
               onClick={() => {
-                if (event.resource?.teamsMeetingUrl) {
-                  window.open(event.resource.teamsMeetingUrl, '_blank');
+                const joinUrl = event.resource?.onlineMeeting?.joinUrl
+                  || event.resource?.teamsMeetingUrl
+                  || event.resource?.webLink
+                  || event.resource?.location?.uri;
+                if (joinUrl) {
+                  window.open(joinUrl, '_blank');
                 } else {
                   alert('No meeting URL available');
                 }
@@ -518,7 +525,10 @@ const OutlookCalendarPage: React.FC = () => {
                         <span className="font-semibold">{ev.title}</span>
                       </div>
                       <div className="text-xs text-base-content/70">
-                        {ev.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {ev.end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {ev.allDay 
+                          ? 'All Day'
+                          : `${ev.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - ${ev.end.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                        }
                       </div>
                       <div className="text-xs text-base-content/60">{ev.group} • {ev.mailbox}</div>
                       {ev.location && (
@@ -528,7 +538,17 @@ const OutlookCalendarPage: React.FC = () => {
                         <span className="font-medium">Description:</span> {ev.description ? stripHtml(ev.description) : 'No description'}
                       </div>
                       <div className="flex gap-2 mt-1">
-                        <button className="btn btn-xs btn-outline btn-primary" onClick={() => window.open(ev.resource?.teamsMeetingUrl, '_blank')}>Join</button>
+                        <button className="btn btn-xs btn-outline btn-primary" onClick={() => {
+                          const joinUrl = ev.resource?.onlineMeeting?.joinUrl
+                            || ev.resource?.teamsMeetingUrl
+                            || ev.resource?.webLink
+                            || ev.resource?.location?.uri;
+                          if (joinUrl) {
+                            window.open(joinUrl, '_blank');
+                          } else {
+                            alert('No meeting URL available');
+                          }
+                        }}>Join</button>
                         <button className="btn btn-xs btn-outline" onClick={() => setSelectedEvent(ev)}>Details</button>
                       </div>
                     </div>

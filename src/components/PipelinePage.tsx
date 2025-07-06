@@ -549,7 +549,7 @@ const PipelinePage: React.FC = () => {
   useEffect(() => {
     if (showCompose && selectedLead) {
       const defaultSubject = `[${selectedLead.lead_number}] - ${selectedLead.name} - ${selectedLead.topic || ''}`;
-      if (!composeSubject) setComposeSubject(defaultSubject);
+      setComposeSubject(defaultSubject);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showCompose, selectedLead]);
@@ -1511,7 +1511,7 @@ const PipelinePage: React.FC = () => {
                         const processedBody = template.body
                             .replace(/{client_name}/g, selectedLead.name)
                             .replace(/{upload_link}/g, uploadLink);
-                        const newSubject = `[${selectedLead.lead_number}] - ${template.subject}`;
+                        const newSubject = `[${selectedLead.lead_number}] - ${selectedLead.name} - ${selectedLead.topic || ''}`;
                         setComposeBody(processedBody);
                         setComposeSubject(newSubject);
                       }}
@@ -1568,33 +1568,6 @@ const PipelinePage: React.FC = () => {
                       composeAttachments
                     );
                     toast.success('Email sent and saved!');
-                    // Save to manual_interactions for InteractionsTab
-                    const now = new Date();
-                    const pad = (n: number) => n.toString().padStart(2, '0');
-                    const date = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear().toString().slice(-2)}`;
-                    const time = `${pad(now.getHours())}:${pad(now.getMinutes())}`;
-                    const currentUserName = await fetchCurrentUserName() || accounts[0]?.name || 'You';
-                    const newInteraction = {
-                      id: `email_${now.getTime()}`,
-                      date,
-                      time,
-                      raw_date: now.toISOString(),
-                      employee: currentUserName,
-                      direction: 'out',
-                      kind: 'email',
-                      length: '',
-                      content: composeSubject,
-                      observation: '',
-                      editable: true,
-                    };
-                    const existingInteractions = selectedLead.manual_interactions || [];
-                    const updatedInteractions = [...existingInteractions, newInteraction];
-                    await supabase
-                      .from('leads')
-                      .update({ manual_interactions: updatedInteractions })
-                      .eq('id', selectedLead.id);
-                    setSelectedLead({ ...selectedLead, manual_interactions: updatedInteractions });
-                    setShowCompose(false);
                     // Refresh emails after sending
                     setEmailsLoading(true);
                     await syncClientEmails(tokenResponse.accessToken, selectedLead);

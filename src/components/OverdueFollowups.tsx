@@ -5,12 +5,15 @@ import { BellAlertIcon } from '@heroicons/react/24/outline';
 
 const getStageBadge = (stage: string) => {
     const style = {
-        backgroundColor: '#3b28c7',
-        color: '#fff',
+        backgroundColor: '#edeafd',
+        color: '#4638e2',
         border: 'none',
+        fontWeight: 600,
+        fontSize: '0.95em',
+        letterSpacing: '0.01em',
     };
     return (
-        <span className="badge badge-md ml-2 font-semibold" style={style}>
+        <span className="badge badge-md ml-2" style={style}>
             {stage && typeof stage === 'string' && stage.trim() ? stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'No Stage'}
         </span>
     );
@@ -50,7 +53,7 @@ const OverdueFollowups: React.FC = () => {
     return (
         <div>
             <h2 className="text-2xl font-bold mb-4 flex items-center gap-2">
-                <BellAlertIcon className="w-6 h-6 text-error" />
+                <BellAlertIcon className="w-6 h-6" style={{ color: '#4638e2' }} />
                 <span>Overdue Follow-ups</span>
             </h2>
             <div className="bg-base-100 rounded-lg shadow-md overflow-x-auto">
@@ -71,9 +74,9 @@ const OverdueFollowups: React.FC = () => {
                         ) : overdueLeads.map(lead => {
                             const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
                             return (
-                                <tr key={lead.id} className="hover">
+                                <tr key={lead.id} className="transition-all duration-150 hover:bg-[#f7f6fd] border-b border-base-200 last:border-0">
                                     <td>
-                                        <Link to={`/clients/${lead.lead_number}`} className="font-bold" style={{ color: '#3b28c7' }}>
+                                        <Link to={`/clients/${lead.lead_number}`} className="font-bold" style={{ color: '#4638e2', fontWeight: 700, fontSize: '1.05em' }}>
                                             {lead.lead_number}
                                         </Link>
                                     </td>
@@ -81,18 +84,27 @@ const OverdueFollowups: React.FC = () => {
                                         {getStageBadge(lead.stage)}
                                     </td>
                                     <td>
-                                        <Link to={`/clients/${lead.lead_number}`} className="font-bold hover:underline">
+                                        <Link to={`/clients/${lead.lead_number}`} className="font-bold hover:underline" style={{ color: '#222', fontWeight: 700, fontSize: '1.05em' }}>
                                             {lead.name}
                                         </Link>
                                     </td>
-                                    <td>{lead.topic}</td>
+                                    <td style={{ color: '#666', fontWeight: 500 }}>{lead.topic}</td>
                                     <td>
-                                        <span className="font-medium text-error">
+                                        <span className="font-medium" style={{ color: '#888' }}>
                                             {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}
                                         </span>
                                     </td>
                                     <td>
-                                        <span className="badge badge-error text-white">{daysOverdue} days</span>
+                                        <span style={{
+                                            background: '#edeafd',
+                                            color: '#4638e2',
+                                            borderRadius: '999px',
+                                            padding: '0.35em 1em',
+                                            fontWeight: 700,
+                                            fontSize: '0.98em',
+                                            letterSpacing: '0.01em',
+                                            display: 'inline-block',
+                                        }}>{daysOverdue} days</span>
                                     </td>
                                 </tr>
                             );

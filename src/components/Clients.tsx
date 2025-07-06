@@ -101,8 +101,6 @@ const tabColors = [
 interface ClientsProps {
   selectedClient: any;
   setSelectedClient: React.Dispatch<any>;
-  isLoading: boolean;
-  setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
   refreshClientData: (clientId: number) => Promise<void>;
 }
 
@@ -122,8 +120,6 @@ const getCurrencySymbol = (currencyCode?: string) => {
 const Clients: React.FC<ClientsProps> = ({
   selectedClient,
   setSelectedClient,
-  isLoading,
-  setIsLoading,
   refreshClientData,
 }) => {
   const { lead_number } = useParams<{ lead_number: string }>();
@@ -201,6 +197,9 @@ const Clients: React.FC<ClientsProps> = ({
   // Remove tabScales and wave zoom effect
   // ---
 
+  // Local loading state for client data
+  const [localLoading, setLocalLoading] = useState(true);
+
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
 
@@ -219,8 +218,9 @@ const Clients: React.FC<ClientsProps> = ({
   }, [selectedClient?.id, setSelectedClient]);
 
   useEffect(() => {
+    let isMounted = true;
     const fetchClient = async () => {
-      setIsLoading(true);
+      setLocalLoading(true);
       if (lead_number) {
         const { data, error } = await supabase
           .from('leads')
@@ -231,7 +231,7 @@ const Clients: React.FC<ClientsProps> = ({
         if (error) {
           console.error('Error fetching client', error);
           navigate('/clients');
-        } else {
+        } else if (isMounted) {
           setSelectedClient(data);
         }
       } else {
@@ -243,25 +243,17 @@ const Clients: React.FC<ClientsProps> = ({
           .single();
         if (error) {
           console.error('Error fetching latest client', error);
-        } else {
+        } else if (isMounted) {
           navigate(`/clients/${data.lead_number}`);
           setSelectedClient(data);
         }
       }
-      setIsLoading(false);
+      if (isMounted) setLocalLoading(false);
     };
 
-    if (lead_number) {
-      // Only fetch if the selected client isn't already the one from the URL
-      if (selectedClient?.lead_number !== lead_number) {
-        fetchClient();
-      } else {
-        setIsLoading(false);
-      }
-    } else {
-        fetchClient(); // Fetch latest if no lead_number
-    }
-  }, [lead_number, navigate, setIsLoading, setSelectedClient]);
+    fetchClient();
+    return () => { isMounted = false; };
+  }, [lead_number, navigate, setSelectedClient]);
 
   // Handle tab switching from URL
   useEffect(() => {
@@ -337,12 +329,16 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   const getStageBadge = (stage: string) => {
+    // Format stage: remove underscores, capitalize each word
+    const formatted = (stage || 'No Stage')
+      .replace(/_/g, ' ')
+      .replace(/\b\w/g, l => l.toUpperCase());
     return (
       <span
-        className="badge bg-black text-white badge-lg ml-2 px-4 py-2 text-base min-w-fit whitespace-nowrap"
-        style={{ fontSize: '1.1rem', minWidth: 120, maxWidth: '100%', lineHeight: 1.3 }}
+        className="badge badge-lg ml-2 px-6 py-3 min-w-max whitespace-nowrap"
+        style={{ background: '#4638e2', color: '#fff', fontSize: '1.15rem', borderRadius: '0.75rem', minHeight: '2.5rem' }}
       >
-        {stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
+        {formatted}
       </span>
     );
   };
@@ -745,15 +741,7 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex justify-center items-center h-screen">
-        <span className="loading loading-spinner loading-lg text-primary"></span>
-      </div>
-    );
-  }
-
-  if (!selectedClient) {
+  if (!localLoading && !selectedClient) {
     return (
       <div className="p-6">
         <h1 className="text-2xl font-bold mb-4">Clients</h1>
@@ -767,7 +755,7 @@ const Clients: React.FC<ClientsProps> = ({
   // Lead is cold logic (must be after null check)
   let isLeadCold = false;
   let coldLeadText = '';
-  if (selectedClient.next_followup) {
+  if (selectedClient && selectedClient.next_followup) {
     const today = new Date();
     const followupDate = new Date(selectedClient.next_followup);
     const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
@@ -775,7 +763,7 @@ const Clients: React.FC<ClientsProps> = ({
     const diffDays = Math.floor((todayMidnight.getTime() - followupMidnight.getTime()) / (1000 * 60 * 60 * 24));
     if (diffDays >= 7) {
       isLeadCold = true;
-      coldLeadText = 'Please follow up with client as soon as possible.';
+      coldLeadText = 'Follow up with client!';
     }
   }
 
@@ -783,7 +771,7 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Before the return statement, add:
   let dropdownItems = null;
-  if (selectedClient.stage === 'Client signed agreement') {
+  if (selectedClient && selectedClient.stage === 'Client signed agreement') {
     dropdownItems = (
       <>
         <li>
@@ -818,7 +806,7 @@ const Clients: React.FC<ClientsProps> = ({
         </li>
       </>
     );
-  } else if (selectedClient.stage === 'payment_request_sent') {
+  } else if (selectedClient && selectedClient.stage === 'payment_request_sent') {
     dropdownItems = (
       <>
         <li>
@@ -847,7 +835,7 @@ const Clients: React.FC<ClientsProps> = ({
         </li>
       </>
     );
-  } else if (!['unactivated', 'client_signed', 'client_declined', 'Mtng sum+Agreement sent'].includes(selectedClient.stage)) {
+  } else if (selectedClient && !['unactivated', 'client_signed', 'client_declined', 'Mtng sum+Agreement sent'].includes(selectedClient.stage)) {
     dropdownItems = (
       <>
         <li>
@@ -888,7 +876,7 @@ const Clients: React.FC<ClientsProps> = ({
         </li>
       </>
     );
-  } else if (selectedClient.stage === 'Mtng sum+Agreement sent') {
+  } else if (selectedClient && selectedClient.stage === 'Mtng sum+Agreement sent') {
     dropdownItems = (
       <>
         <li>
@@ -961,7 +949,7 @@ const Clients: React.FC<ClientsProps> = ({
                     {dropdownItems}
                   </ul>
                 </div>
-                {selectedClient.stage === 'created' && (
+                {selectedClient && selectedClient.stage === 'created' && (
                   <div className="dropdown">
                     <label 
                       tabIndex={0} 
@@ -1003,40 +991,42 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
               {/* Amount badge centered under buttons */}
               <div className="flex flex-col items-center mb-2">
-                <div className="badge badge-lg badge-success gap-2 p-4">
-                  <span className="text-2xl font-bold">{getCurrencySymbol((selectedClient as any).balance_currency || selectedClient.proposal_currency)}</span>
-                  <span className="text-xl">{(selectedClient as any).balance || '0'}</span>
-                </div>
+                {selectedClient && (
+                  <div className="badge badge-lg badge-success gap-2 p-4">
+                    <span className="text-2xl font-bold">{getCurrencySymbol(selectedClient.balance_currency || selectedClient.proposal_currency)}</span>
+                    <span className="text-xl">{selectedClient.balance || '0'}</span>
+                  </div>
+                )}
               </div>
             </div>
             {/* Left: Client details stacked vertically */}
-            <div className="flex flex-col gap-2 w-full md:w-auto md:max-w-xs">
-              <h2 className="text-2xl font-bold">{selectedClient.name}</h2>
+            <div className="flex flex-col gap-2 w-full md:w-auto md:max-w-xs pl-6">
+              <h2 className="text-2xl font-bold">{selectedClient ? selectedClient.name : ''}</h2>
               <div className="flex items-center gap-2">
                 <HashtagIcon className="w-5 h-5 text-primary" />
-                <span className="text-lg">{selectedClient.lead_number}</span>
-                <span className="ml-2">{getStageBadge(selectedClient.stage)}</span>
+                <span className="text-lg">{selectedClient ? selectedClient.lead_number : ''}</span>
+                <span className="ml-2">{selectedClient ? getStageBadge(selectedClient.stage) : ''}</span>
               </div>
               <div className="flex items-start gap-2">
                 <EnvelopeIcon className="w-5 h-5 text-primary mt-1" />
-                <a href={`mailto:${selectedClient.email}`} className="text-primary hover:underline break-all">
-                  {selectedClient.email || '---'}
+                <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="text-primary hover:underline break-all">
+                  {selectedClient ? selectedClient.email : '---'}
                 </a>
               </div>
               <div className="flex items-start gap-2">
                 <PhoneIcon className="w-5 h-5 text-primary mt-1" />
-                <a href={`tel:${selectedClient.phone}`} className="text-primary hover:underline">
-                  {selectedClient.phone || '---'}
+                <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="text-primary hover:underline">
+                  {selectedClient ? selectedClient.phone : '---'}
                 </a>
               </div>
               <div className="flex items-start gap-2">
                 <DocumentTextIcon className="w-5 h-5 text-primary mt-1" />
-                <span>{selectedClient.category || 'Not specified'} <span className="text-base-content/70">•</span> <span className="text-primary">{selectedClient.topic || 'German Citizenship'}</span></span>
+                <span>{selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'} <span className="text-base-content/70">•</span> <span className="text-primary">{selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}</span></span>
               </div>
             </div>
           </div>
           {/* Stage badge - mobile only, below name (not on desktop) */}
-          <div className="block md:hidden w-full mt-1">{getStageBadge(selectedClient.stage)}</div>
+          <div className="block md:hidden w-full mt-1">{selectedClient ? getStageBadge(selectedClient.stage) : ''}</div>
         </div>
         {/* Add a bigger gap before the tabs */}
         <div className="mt-10"></div>
@@ -1691,6 +1681,13 @@ const Clients: React.FC<ClientsProps> = ({
       )}
 
       <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
+
+      {/* Loading overlay spinner */}
+      {localLoading && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
+          <span className="loading loading-spinner loading-lg text-primary"></span>
+        </div>
+      )}
     </div>
   );
 };

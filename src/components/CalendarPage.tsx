@@ -170,6 +170,24 @@ const CalendarPage: React.FC = () => {
     }
   };
 
+  // Helper to extract a valid Teams join link from various formats
+  const getValidTeamsLink = (link: string | undefined) => {
+    if (!link) return '';
+    try {
+      if (link.startsWith('http')) return link;
+      const obj = JSON.parse(link);
+      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
+        return obj.joinUrl;
+      }
+      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
+        return obj.joinWebUrl;
+      }
+    } catch (e) {
+      if (typeof link === 'string' && link.startsWith('http')) return link;
+    }
+    return '';
+  };
+
   const renderMeetingRow = (meeting: any) => {
     const isExpanded = expandedMeetingId === meeting.id;
     const expandedData = expandedMeetingData[meeting.id] || {};
@@ -191,8 +209,9 @@ const CalendarPage: React.FC = () => {
             <button 
               className="btn btn-primary btn-sm gap-2"
               onClick={() => {
-                if (meeting.teams_meeting_url) {
-                  window.open(meeting.teams_meeting_url, '_blank');
+                const url = getValidTeamsLink(meeting.teams_meeting_url);
+                if (url) {
+                  window.open(url, '_blank');
                 } else {
                   alert('No meeting URL available');
                 }

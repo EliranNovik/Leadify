@@ -25,6 +25,7 @@ import NewCasesPage from './pages/NewCasesPage';
 import CaseManagerPage from './components/CaseManagerPage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
+import CollectionPage from './pages/CollectionPage';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -135,8 +136,8 @@ const AppContent: React.FC = () => {
                 <main className="flex-1 overflow-x-hidden overflow-y-auto">
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
-                    <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} isLoading={isLoading} setIsLoading={setIsLoading} refreshClientData={refreshClientData} />} />
-                    <Route path="/clients/:lead_number" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} isLoading={isLoading} setIsLoading={setIsLoading} refreshClientData={refreshClientData} />} />
+                    <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
+                    <Route path="/clients/:lead_number" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
                     <Route path="/calendar" element={<CalendarPage />} />
                     <Route path="/outlook-calendar" element={<OutlookCalendarPage />} />
                     <Route path="/expert" element={<ExpertPage />} />
@@ -147,6 +148,7 @@ const AppContent: React.FC = () => {
                     <Route path="/case-manager" element={<CaseManagerPage />} />
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />
+                    <Route path="/collection" element={<CollectionPage />} />
                   </Routes>
                 </main>
               </div>

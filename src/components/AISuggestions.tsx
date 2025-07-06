@@ -191,38 +191,38 @@ const AISuggestions = forwardRef((props, ref) => {
       {/* Modal for View All */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white/10 backdrop-blur-lg rounded-xl shadow-xl w-full max-w-4xl max-h-[80vh] overflow-hidden border border-white/20">
-            <div className="p-4 border-b border-white/20 flex items-center justify-between">
-              <h3 className="text-xl font-semibold flex items-center gap-2 text-white">
-                <SparklesIcon className="w-6 h-6 text-white/90" />
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[80vh] overflow-hidden border border-gray-200">
+            <div className="p-4 border-b border-gray-200 flex items-center justify-between bg-white">
+              <h3 className="text-xl font-semibold flex items-center gap-2 text-gray-900">
+                <SparklesIcon className="w-6 h-6" style={{ color: '#3b28c7' }} />
                 All AI Suggestions
               </h3>
               <button 
-                className="btn btn-ghost btn-sm btn-circle text-white hover:bg-white/10"
+                className="btn btn-ghost btn-sm btn-circle text-gray-700 hover:bg-gray-100"
                 onClick={() => setIsModalOpen(false)}
               >
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-4 border-b border-white/20">
+            <div className="p-4 border-b border-gray-200 bg-white">
               <div className="flex gap-4 flex-wrap">
                 <div className="flex-1 min-w-[200px]">
                   <div className="relative">
                     <input
                       type="text"
                       placeholder="Search suggestions..."
-                      className="input input-bordered w-full pl-10 bg-white/10 text-white border-white/30 placeholder-white/60"
+                      className="input input-bordered w-full pl-10 bg-white text-gray-900 border-gray-300 placeholder-gray-400"
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                     />
-                    <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-white/70" />
+                    <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <FunnelIcon className="w-5 h-5 text-white/70" />
+                  <FunnelIcon className="w-5 h-5 text-gray-700" />
                   <select
-                    className="select select-bordered bg-white/10 text-white border-white/30"
+                    className="select select-bordered bg-white text-gray-900 border-gray-300"
                     value={filterType}
                     onChange={(e) => setFilterType(e.target.value as any)}
                   >
@@ -235,7 +235,7 @@ const AISuggestions = forwardRef((props, ref) => {
               </div>
             </div>
 
-            <div className="p-4 overflow-y-auto max-h-[calc(80vh-200px)]">
+            <div className="p-4 overflow-y-auto max-h-[calc(80vh-200px)] bg-white">
               <div className="grid grid-cols-1 gap-4">
                 {filteredSuggestions.map((suggestion) => (
                   <SuggestionCard key={suggestion.id} suggestion={suggestion} />

@@ -4,6 +4,10 @@ import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XM
 import { supabase } from '../../lib/supabase';
 
 const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+  if (!client) {
+    return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
+  }
+
   const [probability, setProbability] = useState(client.probability || 50);
   const [isEditingSpecialNotes, setIsEditingSpecialNotes] = useState(false);
   const [isEditingGeneralNotes, setIsEditingGeneralNotes] = useState(false);

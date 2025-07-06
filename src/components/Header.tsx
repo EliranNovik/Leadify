@@ -16,10 +16,12 @@ import {
   CalendarIcon,
   ArrowRightOnRectangleIcon,
   UserGroupIcon,
+  FunnelIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaRobot } from 'react-icons/fa';
+import { createPortal } from 'react-dom';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -81,12 +83,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
+  const searchDropdownRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const { instance } = useMsal();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
   const [isMsalInitialized, setIsMsalInitialized] = useState(false);
   const [userFullName, setUserFullName] = useState<string | null>(null);
+  const [showFilterDropdown, setShowFilterDropdown] = useState(false);
+  const [advancedFilters, setAdvancedFilters] = useState({
+    fromDate: '',
+    toDate: '',
+    category: '',
+    language: '',
+    reason: '',
+    tags: '',
+    fileId: '',
+    status: '',
+    source: '',
+    eligibilityDeterminedOnly: false,
+    stage: '',
+    topic: '',
+    content: '',
+  });
+  const [isAdvancedSearching, setIsAdvancedSearching] = useState(false);
+  const [searchDropdownStyle, setSearchDropdownStyle] = useState({ top: 0, left: 0, width: 0 });
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -109,11 +130,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const handleClickOutside = (event: MouseEvent) => {
       if (
         searchContainerRef.current &&
-        !searchContainerRef.current.contains(event.target as Node)
+        !searchContainerRef.current.contains(event.target as Node) &&
+        searchDropdownRef.current &&
+        !searchDropdownRef.current.contains(event.target as Node)
       ) {
-        setIsSearchActive(false);
-        setSearchResults([]);
-        setSearchValue('');
+        if (!showFilterDropdown) {
+          setIsSearchActive(false);
+          setSearchResults([]);
+          setSearchValue('');
+        }
       }
       if (
         notificationsRef.current &&
@@ -127,7 +152,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, []);
+  }, [showFilterDropdown]);
 
   useEffect(() => {
     if (searchTimeoutRef.current) {
@@ -195,6 +220,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
     fetchUserFullName();
   }, []);
+
+  useEffect(() => {
+    if (isSearchActive && searchContainerRef.current) {
+      const rect = searchContainerRef.current.getBoundingClientRect();
+      setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: rect.left + window.scrollX, width: rect.width });
+    }
+  }, [isSearchActive, showFilterDropdown, searchResults.length, searchValue]);
 
   const handleSearchFocus = () => {
     setIsSearchActive(true);
@@ -279,6 +311,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     window.location.reload();
   };
 
+  // Add missing dropdown options and fields for advanced filters
+  const categoryOptions = ["German Citizenship", "Austrian Citizenship", "Inquiry", "Consultation", "Other"];
+  const languageOptions = ["English", "Hebrew", "German", "French", "Russian", "Other"];
+  const reasonOptions = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
+  const tagOptions = ["VIP", "Urgent", "Family", "Business", "Other"];
+  const statusOptions = ["new", "in_progress", "qualified", "not_qualified"];
+  const sourceOptions = ["Manual", "AI Assistant", "Referral", "Website", "Other"];
+  const stageOptions = [
+    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated", "communication_started", "another_meeting", "revised_offer", "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary", "meeting_rescheduled", "meeting_ended"
+  ];
+  const topicOptions = ["German Citizenship", "Austrian Citizenship", "Inquiry", "Consultation", "Other"];
+
   return (
     <>
       <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
@@ -302,7 +346,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   to={tab.path}
                   className={`flex items-center px-3 py-2 rounded-lg font-medium transition-colors duration-200 ${isActive ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
                 >
-                  {tab.icon && <tab.icon className="w-5 h-5 mr-2" />}<span>{tab.label}</span>
+                  <span>{tab.label}</span>
                 </Link>
               );
             })}
@@ -318,7 +362,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               setIsSearchActive(true);
               setTimeout(() => searchInputRef.current?.focus(), 100);
             }}
-            onMouseLeave={handleSearchMouseLeave}
           >
             <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-500 ease-out`}>
               {/* Large search icon (always visible) */}
@@ -333,12 +376,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 onChange={handleSearchChange}
                 onFocus={handleSearchFocus}
                 className={`
-                  w-full bg-white/10 border border-white/20 shadow-lg text-cyan-800 placeholder-cyan-900 rounded-xl pl-14 pr-10 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-300/40 transition-all duration-300
+                  w-full bg-white/10 border border-white/20 shadow-lg text-cyan-800 placeholder-cyan-900 rounded-xl pl-14 pr-16 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-300/40 transition-all duration-300
                   ${isSearchActive ? 'opacity-100 visible' : 'opacity-0 invisible'}
-                  ${searchValue.trim() || searchResults.length > 0 ? 'pr-10' : ''}
+                  ${searchValue.trim() || searchResults.length > 0 ? 'pr-16' : ''}
                 `}
                 style={{ height: 44, fontSize: 16, fontWeight: 500, letterSpacing: '-0.01em', boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined }}
               />
+              {/* Filter button inside input */}
+              {isSearchActive && (
+                <button
+                  type="button"
+                  className="absolute right-10 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm"
+                  onClick={() => setShowFilterDropdown(v => !v)}
+                  tabIndex={0}
+                  title="Advanced Filters"
+                >
+                  <FunnelIcon className="w-6 h-6 text-cyan-900" />
+                </button>
+              )}
+              {/* Clear search button (unchanged) */}
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
                   onClick={handleClearSearch}
@@ -349,40 +405,184 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   <XMarkIcon className="w-4 h-4" />
                 </button>
               )}
+              {/* Advanced filter dropdown */}
+              {showFilterDropdown && (
+                <div
+                  className="fixed bg-white rounded-xl shadow-xl border border-white/30 z-60 p-6 animate-fadeInUp"
+                  style={{
+                    minWidth: 320,
+                    top: searchDropdownStyle.top,
+                    left: searchDropdownStyle.left + searchDropdownStyle.width + 16, // 16px margin to the right of search bar
+                  }}
+                >
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">From date</label>
+                      <input type="date" className="input input-bordered w-full" value={advancedFilters.fromDate} onChange={e => setAdvancedFilters(f => ({ ...f, fromDate: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">To date</label>
+                      <input type="date" className="input input-bordered w-full" value={advancedFilters.toDate} onChange={e => setAdvancedFilters(f => ({ ...f, toDate: e.target.value }))} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Category</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.category} onChange={e => setAdvancedFilters(f => ({ ...f, category: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {categoryOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Language</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.language} onChange={e => setAdvancedFilters(f => ({ ...f, language: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {languageOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Reason</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.reason} onChange={e => setAdvancedFilters(f => ({ ...f, reason: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {reasonOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Tags</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.tags} onChange={e => setAdvancedFilters(f => ({ ...f, tags: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {tagOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Status</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.status} onChange={e => setAdvancedFilters(f => ({ ...f, status: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {statusOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Source</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.source} onChange={e => setAdvancedFilters(f => ({ ...f, source: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {sourceOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Stage</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.stage} onChange={e => setAdvancedFilters(f => ({ ...f, stage: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {stageOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold mb-1">Topic</label>
+                      <select className="select select-bordered w-full" value={advancedFilters.topic} onChange={e => setAdvancedFilters(f => ({ ...f, topic: e.target.value }))}>
+                        <option value="">Please choose</option>
+                        {topicOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex justify-end gap-2">
+                    <button className="btn btn-outline btn-sm" onClick={() => {
+                      setShowFilterDropdown(false);
+                      setIsSearchActive(false);
+                      setSearchResults([]);
+                      setSearchValue('');
+                    }}>Cancel</button>
+                    <button className="btn btn-primary btn-sm" onClick={async () => {
+                      setIsAdvancedSearching(true);
+                      try {
+                        let query = supabase.from('leads').select('*');
+                        console.log('[Filter] Applying filters:', advancedFilters);
+                        
+                        // Build the query based on selected filters
+                        if (advancedFilters.category) {
+                          query = query.eq('topic', advancedFilters.category);
+                        }
+                        if (advancedFilters.stage) {
+                          query = query.eq('stage', advancedFilters.stage);
+                        }
+                        if (advancedFilters.status) {
+                          query = query.eq('status', advancedFilters.status);
+                        }
+                        if (advancedFilters.fromDate) {
+                          query = query.gte('created_at', advancedFilters.fromDate);
+                        }
+                        if (advancedFilters.toDate) {
+                          query = query.lte('created_at', advancedFilters.toDate);
+                        }
+                        if (advancedFilters.fileId) {
+                          query = query.ilike('lead_number', `%${advancedFilters.fileId}%`);
+                        }
+                        
+                        const { data, error } = await query.order('created_at', { ascending: false });
+                        console.log('[Filter] Query result:', { data, error, count: data?.length });
+                        
+                        if (error) throw error;
+                        
+                        setSearchResults(data || []);
+                        setIsSearchActive(true);
+                        setShowFilterDropdown(false);
+                        
+                        console.log('[Filter] Set search results:', data?.length || 0);
+                      } catch (error) {
+                        console.error('[Filter] Error applying filters:', error);
+                        setSearchResults([]);
+                        setShowFilterDropdown(false);
+                      } finally {
+                        setIsAdvancedSearching(false);
+                      }
+                    }}>Apply Filters</button>
+                  </div>
+                </div>
+              )}
             </div>
+          </div>
+        </div>
 
-            {/* Search Results Dropdown */}
-            {isSearchActive && (searchResults.length > 0 || isSearching) && (
-              <div className="absolute top-full left-0 right-0 mt-2 bg-white/80 backdrop-blur-xl rounded-xl shadow-xl border border-white/30 max-h-96 overflow-y-auto z-50 transition-all duration-300 animate-fadeInUp">
-                {isSearching ? (
-                  <div className="p-4 text-center text-base-content/70">
-                    Searching...
-                  </div>
-                ) : (
-                  <div className="divide-y divide-white/30">
-                    {searchResults.map((result, idx) => (
-                      <button
-                        key={result.id}
-                        className="w-full px-4 py-3 flex items-center gap-3 text-left transition-colors duration-200 text-white/90 hover:bg-cyan-400/20 focus:bg-cyan-400/30 rounded-xl"
-                        onClick={() => handleSearchResultClick(result)}
-                        style={{ fontWeight: 500, fontSize: 16, letterSpacing: '-0.01em' }}
-                      >
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold text-cyan-700">{result.name}</span>
-                            <span className="text-sm text-cyan-500 font-bold">{result.lead_number}</span>
-                          </div>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {/* Subtle shadow and border for dropdown */}
-                <style>{`.animate-fadeInUp { animation: fadeInUp 0.3s cubic-bezier(.4,0,.2,1); } @keyframes fadeInUp { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }`}</style>
+        {/* End of search bar container */}
+        {isSearchActive && (searchValue.trim() || (searchResults.length > 0 && !isAdvancedSearching)) && (
+          <div
+            ref={searchDropdownRef}
+            className="fixed bg-white rounded-xl shadow-xl border border-gray-200 max-h-96 overflow-y-auto z-50"
+            style={{
+              top: searchDropdownStyle.top,
+              left: searchDropdownStyle.left,
+              width: searchDropdownStyle.width,
+              pointerEvents: showFilterDropdown ? 'none' : 'auto',
+            }}
+          >
+            {isSearching || isAdvancedSearching ? (
+              <div className="p-4 text-center text-gray-500">
+                <div className="loading loading-spinner loading-sm"></div>
+                <span className="ml-2">Searching...</span>
+              </div>
+            ) : searchResults.length > 0 ? (
+              <div className="divide-y divide-gray-100">
+                {searchResults.map((result) => (
+                  <button
+                    key={result.id}
+                    className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors duration-200"
+                    onClick={() => handleSearchResultClick(result)}
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-gray-900">{result.name}</span>
+                        <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
+                      </div>
+                      {result.topic && (
+                        <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="p-4 text-center text-gray-500">
+                {searchValue.trim() ? `No leads found for "${searchValue}"` : 'No results found'}
               </div>
             )}
           </div>
-        </div>
+        )}
 
         {/* Right section with notifications and user */}
         <div className="flex-1 justify-end flex items-center gap-2 md:gap-4">

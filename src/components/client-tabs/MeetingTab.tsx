@@ -97,6 +97,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     followup?: string;
   }>({});
 
+  const [creatingTeamsMeetingId, setCreatingTeamsMeetingId] = useState<number | null>(null);
+
   useEffect(() => {
     const fetchMeetings = async () => {
       if (!client.id) return;
@@ -253,6 +255,56 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setIsSendingEmail(false);
   };
 
+  const handleCreateTeamsMeeting = async (meeting: Meeting) => {
+    setCreatingTeamsMeetingId(meeting.id);
+    try {
+      if (!instance) throw new Error('MSAL instance not available');
+      const accounts = instance.getAllAccounts();
+      if (!accounts.length) throw new Error('No Microsoft account found');
+      const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+      const startDateTime = new Date(`${meeting.date}T${meeting.time || '09:00'}`).toISOString();
+      const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
+      const teamsData = await createTeamsMeeting(tokenResponse.accessToken, {
+        subject: `Meeting with ${client.name}`,
+        startDateTime,
+        endDateTime,
+        attendees: client.email ? [{ email: client.email }] : [],
+      });
+      const joinUrl = teamsData.joinUrl;
+      if (!joinUrl) throw new Error('No joinUrl returned from Teams API');
+      // Save to Supabase
+      const { error } = await supabase.from('meetings').update({ teams_meeting_url: joinUrl }).eq('id', meeting.id);
+      if (error) throw error;
+      toast.success('Teams meeting created and saved!');
+      if (onClientUpdate) await onClientUpdate();
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to create Teams meeting');
+    } finally {
+      setCreatingTeamsMeetingId(null);
+    }
+  };
+
+  const getValidTeamsLink = (link: string | undefined) => {
+    if (!link) return '';
+    try {
+      // If it's a plain URL, return as is
+      if (link.startsWith('http')) return link;
+      // If it's a stringified object, parse and extract joinUrl
+      const obj = JSON.parse(link);
+      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
+        return obj.joinUrl;
+      }
+      // Some Graph API responses use joinWebUrl
+      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
+        return obj.joinWebUrl;
+      }
+    } catch (e) {
+      // Not JSON, just return as is
+      if (typeof link === 'string' && link.startsWith('http')) return link;
+    }
+    return '';
+  };
+
   const renderMeetingCard = (meeting: Meeting) => {
     const formattedDate = new Date(meeting.date).toLocaleDateString('en-GB');
 
@@ -353,22 +405,41 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               {/* Action Buttons */}
               <div className="flex flex-col md:flex-row gap-2">
                 <button
-                  className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10"
+                  className="btn btn-primary btn-sm text-white border-none shadow-md hover:bg-purple-700"
                   onClick={() => handleSendEmail(meeting)}
                   disabled={isSendingEmail}
+                  style={{ minWidth: 120 }}
                 >
                   <EnvelopeIcon className="w-4 h-4" />
                   Notify Client
                 </button>
-                <a
-                  href={meeting.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-white btn-sm bg-white/20 text-white border-none hover:bg-white/30"
-                >
-                  <LinkIcon className="w-4 h-4" />
-                  Join Meeting
-                </a>
+                {meeting.location === 'Teams' && !meeting.link && (
+                  <button
+                    className="btn btn-accent btn-sm text-white border-none shadow-md hover:bg-accent-focus"
+                    onClick={() => handleCreateTeamsMeeting(meeting)}
+                    disabled={creatingTeamsMeetingId === meeting.id}
+                    style={{ minWidth: 120 }}
+                  >
+                    {creatingTeamsMeetingId === meeting.id ? (
+                      <span className="loading loading-spinner loading-xs mr-2"></span>
+                    ) : (
+                      <VideoCameraIcon className="w-4 h-4 mr-1" />
+                    )}
+                    Create Teams Link
+                  </button>
+                )}
+                {meeting.link && getValidTeamsLink(meeting.link) && (
+                  <a
+                    href={getValidTeamsLink(meeting.link)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-primary btn-sm text-white border-none shadow-md hover:bg-purple-700"
+                    style={{ minWidth: 120 }}
+                  >
+                    <LinkIcon className="w-4 h-4" />
+                    Join Meeting
+                  </a>
+                )}
               </div>
             </div>
 
