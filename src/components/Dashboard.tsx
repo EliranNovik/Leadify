@@ -25,6 +25,7 @@ interface CalendarEvent {
   description?: string;
   startTimeZone?: string;
   endTimeZone?: string;
+  manager?: string;
 }
 
 function getDateString(year: number, month: number, day: number) {
@@ -274,7 +275,7 @@ const Dashboard: React.FC = () => {
     try {
       const { data: meetingsData, error: meetingsError } = await supabase
         .from('meetings')
-        .select('id, meeting_date, client_id, meeting_brief, meeting_time, leads!client_id(id, lead_number, name)')
+        .select('id, meeting_date, client_id, meeting_brief, meeting_time, leads!client_id(id, lead_number, name, manager)')
         .not('meeting_date', 'is', null);
 
       console.log('Fetched ALL meetings for dashboard calendar:', meetingsData);
@@ -297,6 +298,9 @@ const Dashboard: React.FC = () => {
           ? (meeting.leads[0] as any).name
           : (meeting.leads && typeof meeting.leads === 'object' && 'name' in meeting.leads ? (meeting.leads as any).name : 'N/A'),
         meetingTime: meeting.meeting_time || 'N/A',
+        manager: Array.isArray(meeting.leads) && meeting.leads.length > 0 && typeof meeting.leads[0] === 'object' && meeting.leads[0] !== null && 'manager' in meeting.leads[0]
+          ? (meeting.leads[0] as any).manager
+          : (meeting.leads && typeof meeting.leads === 'object' && 'manager' in meeting.leads ? (meeting.leads as any).manager : 'N/A'),
       })) || [];
 
       const allEvents = [...formattedMeetings, ...outlookEvents];
@@ -1486,11 +1490,6 @@ const Dashboard: React.FC = () => {
                               Lead: {event.leadNumber} - {event.clientName}
                             </p>
                           )}
-                          {event.type === 'meeting' && event.meetingTime && (
-                            <p className="text-sm font-medium mb-2" style={{ color: '#4638e2' }}>
-                              Time: {event.meetingTime}
-                            </p>
-                          )}
                           <div className="flex items-center gap-4 text-sm text-gray-600">
                             <div className="flex items-center gap-1">
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
@@ -1502,7 +1501,11 @@ const Dashboard: React.FC = () => {
                               <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
                               </svg>
-                              <span>{event.type === 'meeting' ? 'Client Meeting' : 'Outlook Calendar'}</span>
+                              <span>
+                                {event.type === 'meeting'
+                                  ? `Manager: ${event.manager || 'N/A'}`
+                                  : 'Outlook Calendar'}
+                              </span>
                             </div>
                           </div>
                         </div>

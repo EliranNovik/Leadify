@@ -46,7 +46,7 @@ const CalendarPage: React.FC = () => {
       // Fetch all meetings
       const { data: meetingsData, error: meetingsError } = await supabase
         .from('meetings')
-        .select('*, lead:leads(id, name, lead_number, onedrive_folder_link, stage)')
+        .select('*, lead:leads(id, name, lead_number, onedrive_folder_link, stage, manager, category, balance)')
         .order('meeting_date', { ascending: false });
       
       if (meetingsError) {
@@ -119,55 +119,24 @@ const CalendarPage: React.FC = () => {
 
     setFilteredMeetings(filtered);
 
-    const total = filtered.reduce((acc, meeting) => acc + (meeting.meeting_amount || 0), 0);
+    // Calculate total balance for the day
+    const total = filtered.reduce((acc, meeting) => {
+      if (typeof meeting.lead?.balance === 'number') {
+        return acc + meeting.lead.balance;
+      } else if (typeof meeting.meeting_amount === 'number') {
+        return acc + meeting.meeting_amount;
+      }
+      return acc;
+    }, 0);
     setTotalAmount(total);
 
   }, [selectedDate, selectedStaff, meetings]);
 
   const getStageBadge = (stage: string) => {
     if (!stage || typeof stage !== 'string' || !stage.trim()) {
-      return <span className="badge badge-neutral badge-md ml-2">No Stage</span>;
+      return <span className="badge bg-black text-white badge-md ml-2">No Stage</span>;
     }
-    switch (stage) {
-      case 'created':
-        return <span className="badge badge-primary badge-md ml-2">Created</span>;
-      case 'scheduler_assigned':
-        return <span className="badge badge-info badge-md ml-2">Scheduler Assigned</span>;
-      case 'meeting_scheduled':
-        return <span className="badge badge-info badge-md ml-2">Meeting Scheduled</span>;
-      case 'meeting_paid':
-        return <span className="badge badge-success badge-md ml-2">Paid Meeting</span>;
-      case 'unactivated':
-        return <span className="badge badge-error badge-md ml-2">Unactivated</span>;
-      case 'communication_started':
-        return <span className="badge badge-warning badge-md ml-2">Communication Started</span>;
-      case 'waiting_for_mtng_sum':
-        return <span className="badge badge-info badge-md ml-2">Waiting for Meeting Summary</span>;
-      case 'another_meeting':
-        return <span className="badge badge-info badge-md ml-2">Another Meeting</span>;
-      case 'revised_offer':
-        return <span className="badge badge-warning badge-md ml-2">Revised Offer</span>;
-      case 'offer_sent':
-        return <span className="badge badge-info badge-md ml-2">Offer Sent</span>;
-      case 'client_signed':
-        return <span className="badge badge-success badge-md ml-2">Client Signed</span>;
-      case 'Client Signed Agreement':
-        return <span className="badge badge-secondary badge-md ml-2">Client Signed Agreement</span>;
-      case 'client_declined':
-        return <span className="badge badge-error badge-md ml-2">Client Declined</span>;
-      case 'lead_summary':
-        return <span className="badge badge-neutral badge-md ml-2">Lead Summary</span>;
-      case 'meeting_rescheduled':
-        return <span className="badge badge-warning badge-md ml-2">Meeting Rescheduled</span>;
-      case 'meeting_ended':
-        return <span className="badge badge-success badge-md ml-2">Meeting Ended</span>;
-      case 'Mtng sum+Agreement sent':
-        return <span className="badge badge-info badge-md ml-2">Mtng sum+Agreement sent</span>;
-      case 'payment_request_sent':
-        return <span className="badge badge-accent badge-md ml-2">Payment request sent</span>;
-      default:
-        return <span className="badge badge-neutral badge-md ml-2">{stage || 'No Stage'}</span>;
-    }
+    return <span className="badge bg-black text-white badge-md ml-2">{stage.replace(/_/g, ' ')}</span>;
   };
 
   // Helper to extract a valid Teams join link from various formats
@@ -200,10 +169,10 @@ const CalendarPage: React.FC = () => {
               {meeting.lead.name} ({meeting.lead.lead_number})
             </Link>
           </td>
-          <td>{new Date(meeting.meeting_date).toLocaleDateString()} at {meeting.meeting_time}</td>
-          <td>{meeting.meeting_manager}</td>
-          <td>{meeting.category || 'N/A'}</td>
-          <td>${meeting.meeting_amount?.toLocaleString() || '0'}</td>
+          <td>{new Date(meeting.meeting_date).toLocaleDateString()} at {meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
+          <td>{meeting.lead.manager || meeting.meeting_manager}</td>
+          <td>{meeting.lead.category || 'N/A'}</td>
+          <td>${typeof meeting.lead.balance === 'number' ? meeting.lead.balance.toLocaleString() : (meeting.meeting_amount?.toLocaleString() || '0')}</td>
           <td>{getStageBadge(meeting.lead.stage)}</td>
           <td>
             <button 
