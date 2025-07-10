@@ -103,8 +103,14 @@ const renderTiptapContent = (content: any, keyPrefix = '', asClient = false, sig
     case 'paragraph':
       return <p key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-p', asClient, signaturePads)}</p>;
     case 'heading':
-      const H = `h${content.attrs?.level || 1}` as keyof JSX.IntrinsicElements;
-      return <H key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads)}</H>;
+      const level = content.attrs?.level || 1;
+      const headingTags = ['h1','h2','h3','h4','h5','h6'];
+      const HeadingTag = headingTags[Math.max(0, Math.min(5, level-1))] || 'h1';
+      return React.createElement(
+        HeadingTag,
+        { key: keyPrefix },
+        renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads)
+      );
     case 'bulletList':
       return <ul key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-ul', asClient, signaturePads)}</ul>;
     case 'orderedList':
@@ -346,162 +352,163 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-12 w-full items-start pb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-8 gap-y-12 w-full items-start pb-6">
             {contacts.map((contact, index) => {
               // Assign a unique gradient per contact
               const gradients = [
                 'from-pink-500 via-purple-500 to-purple-600',
                 'from-purple-600 via-blue-600 to-blue-500',
                 'from-blue-500 via-cyan-500 to-teal-400',
-                'from-teal-400 via-green-400 to-green-600',
                 'from-yellow-400 via-orange-400 to-pink-500',
               ];
               const gradient = gradients[index % gradients.length];
               return (
                 <div
                   key={contact.id}
-                  className={`flex flex-col w-full h-full min-h-[420px] items-start bg-gradient-to-tr ${gradient} text-white rounded-2xl shadow-xl p-6 relative overflow-hidden`}
+                  className="flex flex-col w-full h-full min-h-[440px] items-start bg-white border border-base-200 text-black rounded-xl shadow px-6 py-8 pt-12 relative"
                 >
                   {/* Main badge */}
                   {contact.isMain && (
                     <span className="badge badge-primary absolute top-4 right-4 text-white text-sm font-bold shadow-lg">Main Contact</span>
                   )}
-                  {/* Name */}
-                  <div className="mb-2">
-                    <span className="text-lg font-bold uppercase tracking-wide" style={{letterSpacing: '0.08em', display: 'inline-block', marginBottom: 4}}>Name</span>
-                  </div>
-                  {contact.isMain && isEditingMainContact ? (
-                    <input
-                      type="text"
-                      placeholder="Enter name"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={editedMainContact.name}
-                      onChange={(e) => setEditedMainContact({ ...editedMainContact, name: e.target.value })}
-                    />
-                  ) : contact.isEditing ? (
-                    <input
-                      type="text"
-                      placeholder="Enter name"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={contact.name}
-                      onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, name: e.target.value } : c))}
-                    />
-                  ) : (
-                    <span className="text-2xl font-semibold mb-2 text-white">{contact.name}</span>
-                  )}
-                  {/* Mobile */}
-                  <div className="mt-2 mb-1">
-                    <span className="text-base font-bold uppercase tracking-wide" style={{letterSpacing: '0.08em', display: 'inline-block', marginBottom: 4}}>Mobile</span>
-                  </div>
-                  {contact.isMain && isEditingMainContact ? (
-                    <input
-                      type="tel"
-                      placeholder="Enter mobile"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={editedMainContact.mobile}
-                      onChange={(e) => setEditedMainContact({ ...editedMainContact, mobile: e.target.value })}
-                    />
-                  ) : contact.isEditing ? (
-                    <input
-                      type="tel"
-                      placeholder="Enter mobile"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={contact.mobile}
-                      onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, mobile: e.target.value } : c))}
-                    />
-                  ) : (
-                    <span className="text-lg mb-2 flex items-center gap-2 bg-white/20 px-3 py-1 rounded-md" style={{display: 'inline-flex'}}>
-                      <PhoneIcon className="w-5 h-5 text-white/80" />
-                      {contact.mobile}
-                    </span>
-                  )}
-                  {/* Phone */}
-                  <div className="mt-2 mb-1">
-                    <span className="text-base font-bold uppercase tracking-wide" style={{letterSpacing: '0.08em', display: 'inline-block', marginBottom: 4}}>Phone</span>
-                  </div>
-                  {contact.isMain && isEditingMainContact ? (
-                    <input
-                      type="tel"
-                      placeholder="Enter phone"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={editedMainContact.phone}
-                      onChange={(e) => setEditedMainContact({ ...editedMainContact, phone: e.target.value })}
-                    />
-                  ) : contact.isEditing ? (
-                    <input
-                      type="tel"
-                      placeholder="Enter phone"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={contact.phone}
-                      onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, phone: e.target.value } : c))}
-                    />
-                  ) : contact.phone && contact.phone !== '---' ? (
-                    <a href={`tel:${contact.phone}`} className="text-lg text-white hover:underline flex items-center gap-2 mb-2 bg-white/20 px-3 py-1 rounded-md" style={{display: 'inline-flex'}}>
-                      <PhoneIcon className="w-5 h-5 text-white/80" />
-                      {contact.phone}
-                    </a>
-                  ) : (
-                    <span className="text-lg mb-2 flex items-center gap-2 bg-white/20 px-3 py-1 rounded-md" style={{display: 'inline-flex'}}>
-                      <PhoneIcon className="w-5 h-5 text-white/80" />
-                      {contact.phone}
-                    </span>
-                  )}
-                  {/* Email */}
-                  <div className="mt-2 mb-1">
-                    <span className="text-base font-bold uppercase tracking-wide" style={{letterSpacing: '0.08em', display: 'inline-block', marginBottom: 4}}>Email</span>
-                  </div>
-                  {contact.isMain && isEditingMainContact ? (
-                    <input
-                      type="email"
-                      placeholder="Enter email"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={editedMainContact.email}
-                      onChange={(e) => setEditedMainContact({ ...editedMainContact, email: e.target.value })}
-                    />
-                  ) : contact.isEditing ? (
-                    <input
-                      type="email"
-                      placeholder="Enter email"
-                      className="input input-bordered w-full bg-white/20 text-white border-white/30 placeholder-white/60 mb-2"
-                      value={contact.email}
-                      onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, email: e.target.value } : c))}
-                    />
-                  ) : contact.email && contact.email !== '---' ? (
-                    <a href={`mailto:${contact.email}`} className="text-lg text-white hover:underline flex items-center gap-2 break-all mb-2 bg-white/20 px-3 py-1 rounded-md" style={{display: 'inline-flex'}}>
-                      <EnvelopeIcon className="w-5 h-5 text-white/80 flex-shrink-0" />
-                      {contact.email}
-                    </a>
-                  ) : (
-                    <span className="text-lg mb-2 flex items-center gap-2 bg-white/20 px-3 py-1 rounded-md" style={{display: 'inline-flex'}}>
-                      <EnvelopeIcon className="w-5 h-5 text-white/80 flex-shrink-0" />
-                      {contact.email}
-                    </span>
-                  )}
-                  {/* Contract */}
-                  <div className="mt-2 mb-1">
-                    <span className="text-base font-bold uppercase tracking-wide" style={{letterSpacing: '0.08em', display: 'inline-block', marginBottom: 4}}>Contract</span>
-                  </div>
-                  {contactContracts[contact.id] ? (
-                    <div className="flex items-center gap-2 mt-2">
-                      <button className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10" onClick={() => {
-                        const template = contractTemplates.find(t => t.id === contactContracts[contact.id]?.id);
-                        if (template) setViewingContract({ name: template.name, content: template.content });
-                      }}>View Contract</button>
-                      <button className="btn btn-outline btn-xs border-white/40 text-white hover:bg-white/10 ml-2" onClick={() => openContractDrawer(contact.id)}>
-                        Edit Contract
-                      </button>
+                  <div className="flex flex-col w-full divide-y divide-base-200 gap-y-10">
+                    {/* Name */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-base font-bold uppercase tracking-wide text-black">Name</span>
+                      {contact.isMain && isEditingMainContact ? (
+                        <input
+                          type="text"
+                          placeholder="Enter name"
+                          className="input input-bordered w-48 text-right"
+                          value={editedMainContact.name}
+                          onChange={(e) => setEditedMainContact({ ...editedMainContact, name: e.target.value })}
+                        />
+                      ) : contact.isEditing ? (
+                        <input
+                          type="text"
+                          placeholder="Enter name"
+                          className="input input-bordered w-48 text-right"
+                          value={contact.name}
+                          onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, name: e.target.value } : c))}
+                        />
+                      ) : (
+                        <span className="text-lg font-semibold text-black text-right min-w-[120px]">{contact.name}</span>
+                      )}
                     </div>
-                  ) : (
-                    <button className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10 gap-2 mt-2" onClick={() => openContractDrawer(contact.id)}>
-                      {/* <PlusIcon className="w-5 h-5" /> */}
-                      Add Contract
-                    </button>
-                  )}
+                    {/* Mobile */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-base font-bold uppercase tracking-wide text-black">Mobile</span>
+                      {contact.isMain && isEditingMainContact ? (
+                        <input
+                          type="tel"
+                          placeholder="Enter mobile"
+                          className="input input-bordered w-48 text-right"
+                          value={editedMainContact.mobile}
+                          onChange={(e) => setEditedMainContact({ ...editedMainContact, mobile: e.target.value })}
+                        />
+                      ) : contact.isEditing ? (
+                        <input
+                          type="tel"
+                          placeholder="Enter mobile"
+                          className="input input-bordered w-48 text-right"
+                          value={contact.mobile}
+                          onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, mobile: e.target.value } : c))}
+                        />
+                      ) : (
+                        <span className="text-lg flex items-center gap-2 text-black text-right min-w-[120px]">
+                          <PhoneIcon className="w-5 h-5 text-primary" />
+                          {contact.mobile}
+                        </span>
+                      )}
+                    </div>
+                    {/* Phone */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-base font-bold uppercase tracking-wide text-black">Phone</span>
+                      {contact.isMain && isEditingMainContact ? (
+                        <input
+                          type="tel"
+                          placeholder="Enter phone"
+                          className="input input-bordered w-48 text-right"
+                          value={editedMainContact.phone}
+                          onChange={(e) => setEditedMainContact({ ...editedMainContact, phone: e.target.value })}
+                        />
+                      ) : contact.isEditing ? (
+                        <input
+                          type="tel"
+                          placeholder="Enter phone"
+                          className="input input-bordered w-48 text-right"
+                          value={contact.phone}
+                          onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, phone: e.target.value } : c))}
+                        />
+                      ) : contact.phone && contact.phone !== '---' ? (
+                        <a href={`tel:${contact.phone}`} className="text-lg text-black hover:underline flex items-center gap-2 text-right min-w-[120px]">
+                          <PhoneIcon className="w-5 h-5 text-primary" />
+                          {contact.phone}
+                        </a>
+                      ) : (
+                        <span className="text-lg flex items-center gap-2 text-black text-right min-w-[120px]">
+                          <PhoneIcon className="w-5 h-5 text-primary" />
+                          {contact.phone}
+                        </span>
+                      )}
+                    </div>
+                    {/* Email */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-base font-bold uppercase tracking-wide text-black">Email</span>
+                      {contact.isMain && isEditingMainContact ? (
+                        <input
+                          type="email"
+                          placeholder="Enter email"
+                          className="input input-bordered w-48 text-right"
+                          value={editedMainContact.email}
+                          onChange={(e) => setEditedMainContact({ ...editedMainContact, email: e.target.value })}
+                        />
+                      ) : contact.isEditing ? (
+                        <input
+                          type="email"
+                          placeholder="Enter email"
+                          className="input input-bordered w-48 text-right"
+                          value={contact.email}
+                          onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, email: e.target.value } : c))}
+                        />
+                      ) : contact.email && contact.email !== '---' ? (
+                        <a href={`mailto:${contact.email}`} className="text-lg text-black hover:underline flex items-center gap-2 text-right min-w-[120px]">
+                          <EnvelopeIcon className="w-5 h-5 text-primary flex-shrink-0" />
+                          {contact.email}
+                        </a>
+                      ) : (
+                        <span className="text-lg flex items-center gap-2 text-black text-right min-w-[120px]">
+                          <EnvelopeIcon className="w-5 h-5 text-primary flex-shrink-0" />
+                          {contact.email}
+                        </span>
+                      )}
+                    </div>
+                    {/* Contract */}
+                    <div className="flex items-center justify-between">
+                      <span className="text-base font-bold uppercase tracking-wide text-black">Contract</span>
+                      {contactContracts[contact.id] ? (
+                        <div className="flex items-center gap-2">
+                          <button className="btn btn-outline btn-primary btn-sm" onClick={() => {
+                            const template = contractTemplates.find(t => t.id === contactContracts[contact.id]?.id);
+                            if (template) setViewingContract({ name: template.name, content: template.content });
+                          }}>View Contract</button>
+                          <button className="btn btn-outline btn-primary btn-sm ml-2" onClick={() => openContractDrawer(contact.id)}>
+                            Edit Contract
+                          </button>
+                        </div>
+                      ) : (
+                        <button className="btn btn-outline btn-primary btn-sm gap-2" onClick={() => openContractDrawer(contact.id)}>
+                          {/* <PlusIcon className="w-5 h-5" /> */}
+                          Add Contract
+                        </button>
+                      )}
+                    </div>
+                  </div>
                   {/* Edit/Delete Controls */}
                   <div className="flex flex-row gap-2 mt-6">
                     {(contact.isMain && !isEditingMainContact) || (!contact.isMain && !contact.isEditing) ? (
                       <button
-                        className="btn btn-ghost btn-sm text-white hover:bg-white/10"
+                        className="btn btn-ghost btn-sm text-primary hover:bg-primary/10"
                         onClick={() => contact.isMain ? setIsEditingMainContact(true) : setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: true } : c))}
                       >
                         {/* <PencilSquareIcon className="w-4 h-4" /> */}
@@ -511,14 +518,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     {((contact.isMain && isEditingMainContact) || contact.isEditing) && (
                       <>
                         <button
-                          className="btn btn-success btn-sm"
+                          className="btn btn-primary btn-sm"
                           onClick={() => contact.isMain ? handleSaveMainContact() : handleSaveContact(contact.id, contact)}
                         >
                           {/* <CheckIcon className="w-4 h-4" /> */}
                           Save
                         </button>
                         <button
-                          className="btn btn-error btn-sm"
+                          className="btn btn-outline btn-sm text-primary border-primary"
                           onClick={() => contact.isMain ? handleCancelMainContact() : setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: false } : c))}
                         >
                           {/* <XMarkIcon className="w-4 h-4" /> */}
@@ -528,7 +535,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     )}
                     {!contact.isMain && (
                       <button
-                        className="btn btn-ghost btn-sm text-white hover:bg-white/10"
+                        className="btn btn-ghost btn-sm text-error hover:bg-error/10"
                         onClick={() => {
                           if (window.confirm('Are you sure you want to delete this contact?')) {
                             handleDeleteContact(contact.id);
@@ -540,8 +547,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </button>
                     )}
                   </div>
-                  {/* Optional: SVG decoration */}
-                  <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-30" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
+                  {/* No SVG decoration */}
                 </div>
               );
             })}

@@ -17,6 +17,16 @@ export interface Client extends Lead {
   proposal_total?: number;
   proposal_currency?: string;
   case_manager?: string;
+  special_notes_last_edited_by?: string;
+  special_notes_last_edited_at?: string;
+  general_notes_last_edited_by?: string;
+  general_notes_last_edited_at?: string;
+  tags_last_edited_by?: string;
+  tags_last_edited_at?: string;
+  anchor_last_edited_by?: string;
+  anchor_last_edited_at?: string;
+  facts_last_edited_by?: string;
+  facts_last_edited_at?: string;
 }
 
 export interface ClientTabProps {

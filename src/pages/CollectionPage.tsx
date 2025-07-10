@@ -2,12 +2,22 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { ExclamationTriangleIcon, CurrencyDollarIcon, CalendarIcon, DocumentTextIcon, Squares2X2Icon, Bars3Icon, PrinterIcon, EnvelopeIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
+import { useNavigate } from 'react-router-dom';
+
+const COLLECTION_LABEL_OPTIONS = [
+  { value: 'Important' },
+  { value: 'Follow up' },
+  { value: 'No answer' },
+  { value: 'Due' },
+  { value: 'Overdue' },
+];
 
 const CollectionPage: React.FC = () => {
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<'no_payment' | 'awaiting' | 'paid'>('no_payment');
   const [viewMode, setViewMode] = useState<'list' | 'cards'>('cards');
+  const navigate = useNavigate();
 
   // --- Summary values (mock logic for now) ---
   const [totalPaid, setTotalPaid] = useState(0);
@@ -24,56 +34,7 @@ const CollectionPage: React.FC = () => {
   const [selectedProforma, setSelectedProforma] = useState<any>(null);
 
   // Add state for mock data arrays for all tabs
-  const [awaitingPayments, setAwaitingPayments] = useState<any[]>([
-    {
-      id: 1,
-      lead_number: 'L12345',
-      name: 'David Lee',
-      date: '2024-07-01',
-      total_amount: 12000,
-      proforma: 'PR-2024-001',
-    },
-    {
-      id: 2,
-      lead_number: 'L12346',
-      name: 'Emma Wilson',
-      date: '2024-07-02',
-      total_amount: 8000,
-      proforma: 'PR-2024-002',
-    },
-    {
-      id: 3,
-      lead_number: 'L12347',
-      name: 'Liam Katz',
-      date: '2024-07-03',
-      total_amount: 9500,
-      proforma: 'PR-2024-003',
-    },
-    {
-      id: 4,
-      lead_number: 'L12348',
-      name: 'Maya Gold',
-      date: '2024-07-04',
-      total_amount: 11000,
-      proforma: 'PR-2024-004',
-    },
-    {
-      id: 5,
-      lead_number: 'L12349',
-      name: 'Ethan Weiss',
-      date: '2024-07-05',
-      total_amount: 10500,
-      proforma: 'PR-2024-005',
-    },
-    {
-      id: 6,
-      lead_number: 'L12350',
-      name: 'Sophie Adler',
-      date: '2024-07-06',
-      total_amount: 9900,
-      proforma: 'PR-2024-006',
-    },
-  ]);
+  const [awaitingPayments, setAwaitingPayments] = useState<any[]>([]);
 
   const [paidMeetings, setPaidMeetings] = useState<any[]>([
     {
@@ -198,14 +159,23 @@ const CollectionPage: React.FC = () => {
     alert(`Proforma ${selectedProforma?.number} sent to ${selectedProforma?.client.email}`);
   };
 
+  // 1. Add state for collection comments and label
+  const [collectionLabelInput, setCollectionLabelInput] = useState('');
+  const [collectionComments, setCollectionComments] = useState<any[]>([]);
+  const [newCollectionComment, setNewCollectionComment] = useState('');
+  const [savingCollection, setSavingCollection] = useState(false);
+
+  // Add state for current user
+  const [currentUserName, setCurrentUserName] = useState<string>('');
+
   useEffect(() => {
     if (tab === 'no_payment') {
       const fetchLeads = async () => {
         setLoading(true);
         const { data, error } = await supabase
           .from('leads')
-          .select('id, lead_number, name, date_signed, balance, stage')
-          .eq('stage', 'Client Signed Agreement');
+          .select('id, lead_number, name, date_signed, balance, stage, collection_label, collection_comments')
+          .in('stage', ['Client Signed Agreement', 'Client signed agreement']);
         if (!error && data) {
           setLeads(data);
         } else {
@@ -232,13 +202,72 @@ const CollectionPage: React.FC = () => {
 
     // Overdue: count of leads with next_followup in the past (mock: 1)
     setOverdue(1);
+
+    // Fetch current user info on mount
+    const fetchUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && user.email) {
+        // Try to get full_name from users table
+        const { data, error } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', user.email)
+          .single();
+        if (!error && data?.full_name) {
+          setCurrentUserName(data.full_name);
+        } else {
+          setCurrentUserName(user.email);
+        }
+      }
+    };
+    fetchUser();
   }, [tab, paidMeetings, awaitingPayments]);
+
+  useEffect(() => {
+    const fetchAwaitingPayments = async () => {
+      setLoading(true);
+      // Fetch all payment_plans with a proforma, join to leads for lead_number and name
+      const { data, error } = await supabase
+        .from('payment_plans')
+        .select('id, lead_id, due_date, value, value_vat, proforma, payment_order, leads:lead_id(lead_number, name)')
+        .not('proforma', 'is', null)
+        .order('due_date', { ascending: true });
+      if (error) {
+        setAwaitingPayments([]);
+        setLoading(false);
+        return;
+      }
+      // Map to display format
+      const mapped = (data || []).map((row: any) => {
+        let proformaName = 'Proforma';
+        if (row.proforma) {
+          try {
+            const parsed = JSON.parse(row.proforma);
+            proformaName = parsed.proformaName || 'Proforma';
+          } catch {}
+        }
+        return {
+          id: row.id,
+          lead_number: row.leads?.lead_number || '',
+          name: row.leads?.name || '',
+          date: row.due_date,
+          total_amount: Number(row.value) + Number(row.value_vat),
+          proformaName,
+          order: row.payment_order || '',
+        };
+      });
+      setAwaitingPayments(mapped);
+      setLoading(false);
+    };
+    fetchAwaitingPayments();
+  }, []);
 
   // Helper to open drawer for a lead/meeting
   const handleOpenDrawer = (item: any) => {
     setSelectedItem(item);
-    setLabelInput(item.label || '');
-    setCommentInput(item.comment || '');
+    setCollectionLabelInput(item.collection_label || '');
+    setCollectionComments(item.collection_comments || []);
+    setNewCollectionComment('');
     setDrawerOpen(true);
   };
   const handleCloseDrawer = () => {
@@ -257,8 +286,29 @@ const CollectionPage: React.FC = () => {
     handleCloseDrawer();
   };
 
+  // 4. Add handler to save label
+  const handleSaveCollectionLabel = async () => {
+    if (!selectedItem) return;
+    setSavingCollection(true);
+    await supabase.from('leads').update({ collection_label: collectionLabelInput }).eq('id', selectedItem.id);
+    setLeads(leads => leads.map(l => l.id === selectedItem.id ? { ...l, collection_label: collectionLabelInput } : l));
+    setSavingCollection(false);
+  };
+  // 5. Add handler to add a comment
+  const handleAddCollectionComment = async () => {
+    if (!selectedItem || !newCollectionComment.trim()) return;
+    setSavingCollection(true);
+    const commentObj = { text: newCollectionComment.trim(), timestamp: new Date().toISOString(), user: currentUserName || 'User' };
+    const updatedComments = [...collectionComments, commentObj];
+    await supabase.from('leads').update({ collection_comments: updatedComments }).eq('id', selectedItem.id);
+    setCollectionComments(updatedComments);
+    setLeads(leads => leads.map(l => l.id === selectedItem.id ? { ...l, collection_comments: updatedComments } : l));
+    setNewCollectionComment('');
+    setSavingCollection(false);
+  };
+
   return (
-    <div className="px-4 md:px-8 lg:px-16 xl:px-32 py-8 w-full">
+    <div className="p-4 md:p-6 lg:p-8 w-full">
       {/* Summary Boxes */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8 w-full">
         {/* Total Paid (this month) */}
@@ -323,33 +373,24 @@ const CollectionPage: React.FC = () => {
       )}
       <div className="flex gap-4 mb-10 mt-2">
         <button
-          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40 border-2 border-transparent
-            ${tab === 'no_payment'
-              ? 'bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white shadow-lg scale-105 border-primary'
-              : 'bg-white text-primary/90 hover:bg-primary/10 border-primary/10'}
-          `}
+          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
+            ${tab === 'no_payment' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
           onClick={() => setTab('no_payment')}
           aria-current={tab === 'no_payment' ? 'page' : undefined}
         >
           No Payment Plan
         </button>
         <button
-          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40 border-2 border-transparent
-            ${tab === 'awaiting'
-              ? 'bg-gradient-to-tr from-green-400 via-teal-400 to-blue-400 text-white shadow-lg scale-105 border-primary'
-              : 'bg-white text-primary/90 hover:bg-primary/10 border-primary/10'}
-          `}
+          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
+            ${tab === 'awaiting' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
           onClick={() => setTab('awaiting')}
           aria-current={tab === 'awaiting' ? 'page' : undefined}
         >
           Awaiting Payment
         </button>
         <button
-          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40 border-2 border-transparent
-            ${tab === 'paid'
-              ? 'bg-gradient-to-tr from-blue-500 via-purple-500 to-pink-400 text-white shadow-lg scale-105 border-primary'
-              : 'bg-white text-primary/90 hover:bg-primary/10 border-primary/10'}
-          `}
+          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
+            ${tab === 'paid' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
           onClick={() => setTab('paid')}
           aria-current={tab === 'paid' ? 'page' : undefined}
         >
@@ -388,7 +429,8 @@ const CollectionPage: React.FC = () => {
                   <th className="text-lg font-bold">Client Name</th>
                   <th className="text-lg font-bold">Date Signed</th>
                   <th className="text-lg font-bold">Total Amount</th>
-                  <th className="text-lg font-bold">Details</th>
+                  <th className="text-lg font-bold">Label</th>
+                  <th className="text-lg font-bold">Comments</th>
                 </tr>
               </thead>
               <tbody className="text-base">
@@ -398,21 +440,29 @@ const CollectionPage: React.FC = () => {
                     <td className="font-bold text-primary">{lead.lead_number}</td>
                     <td>{lead.name}</td>
                     <td>{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : '-'}</td>
-                    <td>{lead.total_amount ? `₪${lead.total_amount.toLocaleString()}` : '-'}</td>
-                    <td className="flex items-center gap-2">Client signed contract <ExclamationTriangleIcon className="w-5 h-5 text-primary" /></td>
+                    <td>{lead.balance ? `₪${lead.balance.toLocaleString()}` : '-'}</td>
+                    <td>{lead.collection_label || '-'}</td>
+                    <td>{Array.isArray(lead.collection_comments) && lead.collection_comments.length > 0 ? lead.collection_comments[lead.collection_comments.length - 1].text : '-'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
             {leads.map((lead) => (
               <div 
                 key={lead.id} 
-                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[260px] relative pb-8 cursor-pointer"
+                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
                 onClick={() => handleOpenDrawer(lead)}
               >
+                {lead.collection_label && (
+                  <div className="flex justify-end">
+                    <span className="mt-[-18px] mb-2 px-3 py-1 rounded-full font-bold text-xs shadow bg-white border-2 border-[#3b28c7] text-[#3b28c7]">
+                      {lead.collection_label}
+                    </span>
+                  </div>
+                )}
                 <div className="flex-1 flex flex-col">
                   {/* Lead Number and Name */}
                   <div className="mb-3 flex items-center gap-2">
@@ -452,95 +502,130 @@ const CollectionPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
+                {lead.collection_comments && lead.collection_comments.length > 0 && (
+                  <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
+                    <div className="flex items-start gap-2">
+                      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
+                      </div>
+                      <div className="relative bg-white border border-base-200 rounded-2xl px-4 py-2 shadow-md text-sm text-base-content/90" style={{minWidth: '120px'}}>
+                        <div className="font-medium leading-snug max-w-xs truncate" title={lead.collection_comments[lead.collection_comments.length - 1].text}>{lead.collection_comments[lead.collection_comments.length - 1].text}</div>
+                        <div className="text-[11px] text-base-content/50 text-right mt-1">
+                          {lead.collection_comments[lead.collection_comments.length - 1].user} · {new Date(lead.collection_comments[lead.collection_comments.length - 1].timestamp).toLocaleString()}
+                        </div>
+                        <div className="absolute left-[-10px] bottom-2 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-white border-l-0"></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
         )
       )}
+      {/* Awaiting Payment Tab */}
       {tab === 'awaiting' && (
-        awaitingPayments.length === 0 ? (
-          <div className="text-center text-gray-500 mt-12">No payments awaiting.</div>
-        ) : viewMode === 'list' ? (
-          <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
-            <table className="table w-full">
-              <thead>
-                <tr>
-                  <th className="text-lg font-bold">&nbsp;</th>
-                  <th className="text-lg font-bold">Lead</th>
-                  <th className="text-lg font-bold">Client Name</th>
-                  <th className="text-lg font-bold">Date</th>
-                  <th className="text-lg font-bold">Total Amount</th>
-                  <th className="text-lg font-bold">Proforma</th>
-                </tr>
-              </thead>
-              <tbody className="text-base">
-                {awaitingPayments.map((row) => (
-                  <tr key={row.id}>
-                    <td>
+        <>
+          {loading ? (
+            <div className="text-center text-gray-500 mt-12">Loading...</div>
+          ) : awaitingPayments.length === 0 ? (
+            <div className="text-center text-gray-500 mt-12">No payments awaiting.</div>
+          ) : viewMode === 'list' ? (
+            <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
+              <table className="table w-full">
+                <thead>
+                  <tr>
+                    <th className="text-lg font-bold">&nbsp;</th>
+                    <th className="text-lg font-bold">Lead</th>
+                    <th className="text-lg font-bold">Client Name</th>
+                    <th className="text-lg font-bold">Date</th>
+                    <th className="text-lg font-bold">Total Amount</th>
+                    <th className="text-lg font-bold">Order</th>
+                    <th className="text-lg font-bold">Proforma</th>
+                  </tr>
+                </thead>
+                <tbody className="text-base">
+                  {awaitingPayments.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white shadow">
+                          <ExclamationTriangleIcon className="w-4 h-4 text-white" /> Due
+                        </span>
+                      </td>
+                      <td className="font-bold text-primary">{row.lead_number}</td>
+                      <td>{row.name}</td>
+                      <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
+                      <td>{row.total_amount ? `₪${row.total_amount.toLocaleString()}` : '-'}</td>
+                      <td>{row.order || '-'}</td>
+                      <td>
+                        <button
+                          className="btn btn-sm btn-outline btn-primary"
+                          onClick={() => navigate(`/proforma/${row.id}`)}
+                        >
+                          {row.proformaName}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
+              {awaitingPayments.map((row) => (
+                <div 
+                  key={row.id} 
+                  className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
+                  onClick={() => handleOpenDrawer(row)}
+                >
+                  <div className="flex-1 flex flex-col">
+                    {/* Lead Number and Name */}
+                    <div className="mb-3 flex items-center gap-2">
                       <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white shadow">
                         <ExclamationTriangleIcon className="w-4 h-4 text-white" /> Due
                       </span>
-                    </td>
-                    <td className="font-bold text-primary">{row.lead_number}</td>
-                    <td>{row.name}</td>
-                    <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
-                    <td>{row.total_amount ? `₪${row.total_amount.toLocaleString()}` : '-'}</td>
-                    <td>{row.proforma}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
-            {awaitingPayments.map((row) => (
-              <div 
-                key={row.id} 
-                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[260px] relative pb-8 cursor-pointer"
-                onClick={() => handleOpenDrawer(row)}
-              >
-                <div className="flex-1 flex flex-col">
-                  {/* Lead Number and Name */}
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white shadow">
-                      <ExclamationTriangleIcon className="w-4 h-4 text-white" /> Due
-                    </span>
-                    <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.lead_number}</span>
-                    <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                    <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{row.name}</span>
-                  </div>
-                  <div className="space-y-2 divide-y divide-gray-100">
-                    {/* Date */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Date</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">{row.date ? new Date(row.date).toLocaleDateString() : '-'}</span>
+                      <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.lead_number}</span>
+                      <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                      <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{row.name}</span>
                     </div>
-                    {/* Total Amount */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Total Amount</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">
-                        {row.total_amount ? `${getCurrencySymbol()}${row.total_amount.toLocaleString()}` : 'N/A'}
-                      </span>
-                    </div>
-                    {/* Proforma */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Proforma</span>
-                      <span 
-                        className="text-sm font-bold text-blue-600 hover:text-blue-800 cursor-pointer underline ml-2"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleProformaClick(row.proforma);
-                        }}
-                      >
-                        {row.proforma}
-                      </span>
+                    <div className="space-y-2 divide-y divide-gray-100">
+                      {/* Date */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Date</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">{row.date ? new Date(row.date).toLocaleDateString() : '-'}</span>
+                      </div>
+                      {/* Total Amount */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Total Amount</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">
+                          {row.total_amount ? `₪${row.total_amount.toLocaleString()}` : 'N/A'}
+                        </span>
+                      </div>
+                      {/* Order */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Order</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">{row.order || '-'}</span>
+                      </div>
+                      {/* Proforma */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Proforma</span>
+                        <button 
+                          className="text-sm font-bold text-blue-600 hover:text-blue-800 cursor-pointer underline ml-2"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/proforma/${row.id}`);
+                          }}
+                        >
+                          {row.proformaName}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        )
+              ))}
+            </div>
+          )}
+        </>
       )}
       {tab === 'paid' && (
         paidMeetings.length === 0 ? (
@@ -582,9 +667,16 @@ const CollectionPage: React.FC = () => {
             {paidMeetings.map((row) => (
               <div 
                 key={row.id} 
-                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[260px] relative pb-8 cursor-pointer"
+                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
                 onClick={() => handleOpenDrawer(row)}
               >
+                {row.collection_label && (
+                  <div className="flex justify-end">
+                    <span className="mt-[-18px] mb-2 px-3 py-1 rounded-full font-bold text-xs shadow bg-white border-2 border-[#3b28c7] text-[#3b28c7]">
+                      {row.collection_label}
+                    </span>
+                  </div>
+                )}
                 <div className="flex-1 flex flex-col">
                   {/* Lead Number and Name */}
                   <div className="mb-3 flex items-center gap-2">
@@ -616,6 +708,22 @@ const CollectionPage: React.FC = () => {
                     </div>
                   </div>
                 </div>
+                {row.collection_comments && row.collection_comments.length > 0 && (
+                  <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
+                    <div className="flex items-start gap-2">
+                      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
+                      </div>
+                      <div className="relative bg-white border border-base-200 rounded-2xl px-4 py-2 shadow-md text-sm text-base-content/90" style={{minWidth: '120px'}}>
+                        <div className="font-medium leading-snug max-w-xs truncate" title={row.collection_comments[row.collection_comments.length - 1].text}>{row.collection_comments[row.collection_comments.length - 1].text}</div>
+                        <div className="text-[11px] text-base-content/50 text-right mt-1">
+                          {row.collection_comments[row.collection_comments.length - 1].user} · {new Date(row.collection_comments[row.collection_comments.length - 1].timestamp).toLocaleString()}
+                        </div>
+                        <div className="absolute left-[-10px] bottom-2 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-white border-l-0"></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -625,31 +733,53 @@ const CollectionPage: React.FC = () => {
         <div className="fixed inset-0 z-50 flex">
           <div className="fixed inset-0 bg-black/30" onClick={handleCloseDrawer}></div>
           <div className="relative bg-white w-full max-w-md ml-auto h-full shadow-2xl p-8 flex flex-col">
-            <h2 className="text-2xl font-bold mb-4">Edit Label & Comment</h2>
+            <h2 className="text-2xl font-bold mb-4">Collection Label & Comments</h2>
             <label className="font-semibold mb-1">Label</label>
-            <input
-              className="input input-bordered w-full mb-4"
-              value={labelInput}
-              onChange={e => setLabelInput(e.target.value)}
-              placeholder="Enter label"
-            />
-            <label className="font-semibold mb-1">Comment</label>
-            <textarea
-              className="textarea textarea-bordered w-full mb-4"
-              value={commentInput}
-              onChange={e => setCommentInput(e.target.value)}
-              placeholder="Add a comment"
-              rows={4}
-            />
+            <div className="flex gap-2 mb-4">
+              <select
+                className="select select-bordered w-full"
+                value={collectionLabelInput}
+                onChange={e => setCollectionLabelInput(e.target.value)}
+                disabled={savingCollection}
+              >
+                <option value="">Choose label...</option>
+                {COLLECTION_LABEL_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.value}</option>
+                ))}
+              </select>
+              <button className="btn btn-primary" onClick={handleSaveCollectionLabel} disabled={savingCollection}>Save</button>
+            </div>
+            <label className="font-semibold mb-1">Comments</label>
+            <div className="mb-2 max-h-40 overflow-y-auto space-y-2">
+              {collectionComments.length === 0 ? (
+                <div className="text-base-content/40">No comments yet.</div>
+              ) : (
+                collectionComments.slice().reverse().map((c, idx) => (
+                  <div key={idx} className="bg-base-200 rounded-lg p-3 flex flex-col">
+                    <span className="text-base-content/90">{c.text}</span>
+                    <span className="text-xs text-base-content/50 mt-1">{c.user} · {new Date(c.timestamp).toLocaleString()}</span>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex gap-2 mt-2">
+              <input
+                className="input input-bordered flex-1"
+                placeholder="Add a comment..."
+                value={newCollectionComment}
+                onChange={e => setNewCollectionComment(e.target.value)}
+                disabled={savingCollection}
+              />
+              <button className="btn btn-primary" onClick={handleAddCollectionComment} disabled={savingCollection || !newCollectionComment.trim()}>Add</button>
+            </div>
             <button
-              className="btn btn-primary mb-4"
+              className="btn btn-primary mb-4 mt-6"
               onClick={() => setShowContractModal(true)}
             >
               View Contract
             </button>
             <div className="flex gap-2 mt-auto">
               <button className="btn btn-outline flex-1" onClick={handleCloseDrawer}>Cancel</button>
-              <button className="btn btn-primary flex-1" onClick={handleSaveDrawer}>Save</button>
             </div>
           </div>
         </div>

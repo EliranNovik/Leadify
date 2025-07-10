@@ -4,6 +4,7 @@ import { useMsal } from '@azure/msal-react';
 import moment from 'moment';
 import { PlusIcon, TrashIcon, PencilIcon, CheckIcon, XMarkIcon, ClockIcon, UserIcon, MapPinIcon, VideoCameraIcon, CalendarIcon, FunnelIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
+import { supabase } from '../lib/supabase';
 
 const localizer = momentLocalizer(moment);
 
@@ -29,11 +30,58 @@ interface CalendarEvent {
   description?: string;
 }
 
+// Calendar event interface for the dashboard-style calendar
+interface DashboardCalendarEvent {
+  id: string;
+  title: string;
+  date: string;
+  type: 'meeting' | 'outlook';
+  leadNumber?: string;
+  clientName?: string;
+  meetingTime?: string;
+  allDay?: boolean;
+  start?: Date | null;
+  end?: Date | null;
+  resource?: any;
+  description?: string;
+  startTimeZone?: string;
+  endTimeZone?: string;
+  manager?: string;
+}
+
 const DEFAULT_MAILBOXES: SharedMailbox[] = [
   { id: '1', email: 'shared-staffcalendar@lawoffice.org.il', color: '#6366f1', label: 'Staff' },
   { id: '2', email: 'shared-newclients@lawoffice.org.il', color: '#10b981', label: 'New Clients' },
   { id: '3', email: 'shared-potentialclients@lawoffice.org.il', color: '#f59e42', label: 'Potential Clients' },
 ];
+
+// Helper: Map Windows time zone to IANA (expanded)
+function windowsToIana(windowsTz: string | undefined): string | undefined {
+  if (!windowsTz) return undefined;
+  const map: Record<string, string> = {
+    'Israel Standard Time': 'Asia/Jerusalem',
+    'Pacific Standard Time': 'America/Los_Angeles',
+    'Eastern Standard Time': 'America/New_York',
+    'Central Europe Standard Time': 'Europe/Berlin',
+    'GMT Standard Time': 'Europe/London',
+    'W. Europe Standard Time': 'Europe/Berlin',
+    'Romance Standard Time': 'Europe/Paris',
+    'Central Standard Time': 'America/Chicago',
+    'Mountain Standard Time': 'America/Denver',
+    'China Standard Time': 'Asia/Shanghai',
+    'Tokyo Standard Time': 'Asia/Tokyo',
+    // Add more as needed
+  };
+  return map[windowsTz] || undefined;
+}
+
+function getDateString(year: number, month: number, day: number) {
+  return [
+    year,
+    String(month + 1).padStart(2, '0'),
+    String(day).padStart(2, '0')
+  ].join('-');
+}
 
 const OutlookCalendarPage: React.FC = () => {
   const { instance, accounts } = useMsal();
@@ -51,6 +99,191 @@ const OutlookCalendarPage: React.FC = () => {
   const [viewMode, setViewMode] = useState<'list' | 'month'>('list');
   const [monthModalDay, setMonthModalDay] = useState<Date | null>(null);
   const [monthModalEvents, setMonthModalEvents] = useState<CalendarEvent[]>([]);
+
+  // Calendar state for dashboard-style calendar
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [calendarEvents, setCalendarEvents] = useState<DashboardCalendarEvent[]>([]);
+  const [isCalendarLoading, setIsCalendarLoading] = useState(false);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+
+  // Calendar helper functions
+  const getDaysInMonth = (date: Date) => {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const firstDayOfMonth = new Date(year, month, 1).getDay();
+    return { daysInMonth, firstDayOfMonth };
+  };
+
+  const getEventsForDate = (date: string): DashboardCalendarEvent[] => {
+    return calendarEvents.filter(event => event.date === date);
+  };
+
+  const formatDate = (date: Date) => {
+    return date.toISOString().split('T')[0];
+  };
+
+  const goToPreviousMonthCalendar = () => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
+  };
+
+  const goToNextMonthCalendar = () => {
+    setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
+  };
+
+  const goToTodayCalendar = () => {
+    setCurrentDate(new Date());
+  };
+
+  const handleDateClick = (date: string) => {
+    setSelectedCalendarDate(date);
+    setIsDrawerOpen(true);
+  };
+
+  const closeDrawer = () => {
+    setIsDrawerOpen(false);
+    setSelectedCalendarDate(null);
+  };
+
+  const getEventsForSelectedDate = () => {
+    if (!selectedCalendarDate) return [];
+    return calendarEvents.filter(event => event.date === selectedCalendarDate);
+  };
+
+  // Fetch Outlook events for dashboard calendar
+  const fetchOutlookEvents = async (): Promise<DashboardCalendarEvent[]> => {
+    if (!accounts[0] || sharedMailboxes.length === 0) return [];
+    try {
+      const account = accounts[0];
+      const tokenResponse = await instance.acquireTokenSilent({
+        scopes: [
+          'Calendars.Read',
+          'Calendars.Read.Shared',
+          'Calendars.ReadWrite',
+          'Calendars.ReadWrite.Shared'
+        ],
+        account,
+      });
+      let allEvents: DashboardCalendarEvent[] = [];
+      for (const mailbox of sharedMailboxes) {
+        try {
+          console.log('[Outlook Fetch] Fetching events for mailbox:', mailbox.email);
+          const res = await fetch(
+            `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox.email)}/calendar/events?$top=100&$orderby=start/dateTime&$select=id,subject,start,end,isAllDay,location,attendees,body,organizer,onlineMeeting,webLink`,
+            {
+              headers: {
+                Authorization: `Bearer ${tokenResponse.accessToken}`,
+                'Content-Type': 'application/json',
+              },
+            }
+          );
+          console.log('[Outlook Fetch] Response status for', mailbox.email, ':', res.status);
+          if (!res.ok) {
+            const errorText = await res.text();
+            console.error('[Outlook Fetch] Error for', mailbox.email, ':', errorText);
+            continue;
+          }
+          const data = await res.json();
+          console.log('[Outlook Fetch] Events fetched for', mailbox.email, ':', data.value?.length || 0);
+          if (data.value) {
+            const mailboxEvents: DashboardCalendarEvent[] = data.value.map((event: any) => ({
+              id: `outlook-${event.id}`,
+              title:
+                mailbox.email === 'shared-staffcalendar@lawoffice.org.il' ? 'Staff Meeting' :
+                mailbox.email === 'shared-newclients@lawoffice.org.il' ? 'Existing Client Meeting' :
+                mailbox.email === 'shared-potentialclients@lawoffice.org.il' ? 'Potential Client Meeting' :
+                event.subject || 'No Subject',
+              date: event.start?.dateTime
+                ? event.start.dateTime.split('T')[0]
+                : event.start?.date
+                  ? event.start.date
+                  : '',
+              type: 'outlook',
+              color: mailbox.color,
+              group: mailbox.label,
+              mailbox: mailbox.email,
+              start: event.start?.dateTime
+                ? event.start.dateTime
+                : event.start?.date
+                  ? event.start.date
+                  : null,
+              end: event.end?.dateTime
+                ? event.end.dateTime
+                : event.end?.date
+                  ? event.end.date
+                  : null,
+              startTimeZone: event.start?.timeZone,
+              endTimeZone: event.end?.timeZone,
+              allDay: event.isAllDay || false,
+              location: event.location?.displayName,
+              attendees: event.attendees,
+              description: event.body?.content,
+              resource: event,
+            }));
+            console.log('[Outlook Fetch] Parsed events for', mailbox.email, ':', mailboxEvents);
+            allEvents = allEvents.concat(mailboxEvents);
+          }
+        } catch (error) {
+          console.error('[Outlook Fetch] Exception for', mailbox.email, ':', error);
+          // skip mailbox on error
+        }
+      }
+      console.log('[Outlook Fetch] Final allEvents array:', allEvents);
+      return allEvents;
+    } catch (err) {
+      return [];
+    }
+  };
+
+  // Fetch calendar events
+  const fetchCalendarEvents = async () => {
+    setIsCalendarLoading(true);
+    try {
+      const { data: meetingsData, error: meetingsError } = await supabase
+        .from('meetings')
+        .select('id, meeting_date, client_id, meeting_brief, meeting_time, leads!client_id(id, lead_number, name, manager)')
+        .not('meeting_date', 'is', null);
+
+      console.log('Fetched ALL meetings for dashboard calendar:', meetingsData);
+
+      if (meetingsError) throw meetingsError;
+
+      const outlookEvents = await fetchOutlookEvents();
+      console.log('[Outlook Fetch] outlookEvents returned:', outlookEvents);
+
+      // Combine and format events
+      const formattedMeetings = meetingsData?.map(meeting => ({
+        id: `meeting-${meeting.id}`,
+        title: meeting.meeting_brief || 'Meeting',
+        date: typeof meeting.meeting_date === 'string' ? meeting.meeting_date.split('T')[0] : '',
+        type: 'meeting' as const,
+        leadNumber: Array.isArray(meeting.leads) && meeting.leads.length > 0 && typeof meeting.leads[0] === 'object' && meeting.leads[0] !== null && 'lead_number' in meeting.leads[0]
+          ? (meeting.leads[0] as any).lead_number
+          : (meeting.leads && typeof meeting.leads === 'object' && 'lead_number' in meeting.leads ? (meeting.leads as any).lead_number : 'N/A'),
+        clientName: Array.isArray(meeting.leads) && meeting.leads.length > 0 && typeof meeting.leads[0] === 'object' && meeting.leads[0] !== null && 'name' in meeting.leads[0]
+          ? (meeting.leads[0] as any).name
+          : (meeting.leads && typeof meeting.leads === 'object' && 'name' in meeting.leads ? (meeting.leads as any).name : 'N/A'),
+        meetingTime: meeting.meeting_time || 'N/A',
+        manager: Array.isArray(meeting.leads) && meeting.leads.length > 0 && typeof meeting.leads[0] === 'object' && meeting.leads[0] !== null && 'manager' in meeting.leads[0]
+          ? (meeting.leads[0] as any).manager
+          : (meeting.leads && typeof meeting.leads === 'object' && 'manager' in meeting.leads ? (meeting.leads as any).manager : 'N/A'),
+      })) || [];
+
+      const allEvents = [...formattedMeetings, ...outlookEvents];
+      console.log('Setting calendarEvents:', allEvents);
+      setCalendarEvents(allEvents);
+    } catch (error) {
+      console.error('Error fetching calendar events:', error);
+    } finally {
+      setIsCalendarLoading(false);
+    }
+  };
+
+  // Fetch calendar events when date changes
+  useEffect(() => {
+    fetchCalendarEvents();
+  }, [currentDate, accounts, instance]);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -572,8 +805,6 @@ const OutlookCalendarPage: React.FC = () => {
 
   return (
     <div className="p-4 md:p-6 lg:p-8">
-      {/* Removed Outlook Calendar title */}
-
       {/* Date Navigation */}
       <div className="mb-6 flex items-center justify-center gap-4">
         <button
@@ -757,6 +988,156 @@ const OutlookCalendarPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Calendar Box */}
+      <div className="w-full mt-12">
+        <div className="w-full bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center justify-center w-8 h-8 rounded-lg" style={{ background: '#edeafd', border: '1px solid #4638e2' }}>
+                <CalendarIcon className="w-5 h-5" style={{ color: '#4638e2' }} />
+              </div>
+              <span className="text-lg font-bold" style={{ color: '#4638e2' }}>Calendar</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <button onClick={goToPreviousMonthCalendar} className="btn btn-ghost btn-xs" style={{ color: '#4638e2' }}>
+                <ChevronLeftIcon className="w-3 h-3" />
+              </button>
+              <button onClick={goToTodayCalendar} className="btn btn-xs text-xs" style={{ color: '#fff', background: '#4638e2' }}>
+                Today
+              </button>
+              <button onClick={goToNextMonthCalendar} className="btn btn-ghost btn-xs" style={{ color: '#4638e2' }}>
+                <ChevronRightIcon className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+          <div className="text-center mb-4">
+            <span className="text-base font-semibold" style={{ color: '#4638e2' }}>
+              {currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+            </span>
+          </div>
+          {/* Calendar Grid */}
+          <div className="grid grid-cols-7 gap-1 mb-4">
+            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(day => (
+              <div key={day} className="text-center text-sm font-semibold p-1" style={{ color: '#4638e2', opacity: 0.8 }}>
+                {day}
+              </div>
+            ))}
+            {(() => {
+              const { daysInMonth, firstDayOfMonth } = getDaysInMonth(currentDate);
+              const days = [];
+              for (let i = 0; i < firstDayOfMonth; i++) {
+                days.push(<div key={`empty-${i}`} className="h-10"></div>);
+              }
+              for (let day = 1; day <= daysInMonth; day++) {
+                const dateStr = getDateString(currentDate.getFullYear(), currentDate.getMonth(), day);
+                const events = getEventsForDate(dateStr);
+                const isToday = dateStr === getDateString(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+                days.push(
+                  <div
+                    key={day}
+                    className={`h-10 border p-1 text-sm relative cursor-pointer rounded-lg transition-colors duration-150 ${isToday ? 'bg-[#edeafd] text-[#4638e2] font-bold' : 'hover:bg-[#edeafd] text-black'}`}
+                    style={{ borderColor: '#4638e2' }}
+                    onClick={() => handleDateClick(dateStr)}
+                  >
+                    <div className="text-right leading-none">{day}</div>
+                    <div className="flex flex-col gap-0.5 mt-0.5">
+                      {events.slice(0, 2).map(event => (
+                        <div key={event.id} className="flex items-center gap-1">
+                          <div
+                            className="w-2 h-2 rounded-full mx-auto"
+                            style={{ backgroundColor: event.type === 'meeting' ? '#4638e2' : '#b3aaf7' }}
+                            title={event.type === 'meeting' ? (event.clientName || '') : event.title}
+                          />
+                        </div>
+                      ))}
+                      {events.length > 2 && (
+                        <div className="text-xs text-gray-400 text-center">+{events.length - 2}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+              return days;
+            })()}
+          </div>
+          {/* Legend */}
+          <div className="flex items-center justify-center gap-4 text-sm mt-2">
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-full" style={{ background: '#4638e2' }}></div>
+              <span style={{ color: '#4638e2', fontWeight: 600 }}>Meetings</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-2 h-2 rounded-full" style={{ background: '#b3aaf7' }}></div>
+              <span style={{ color: '#4638e2', fontWeight: 600 }}>Outlook</span>
+            </div>
+          </div>
+        </div>
+        {/* Calendar Event Details Modal */}
+        {isDrawerOpen && selectedCalendarDate && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6 relative border border-gray-200">
+              <button
+                className="absolute top-4 right-4 btn btn-ghost btn-sm btn-circle"
+                onClick={closeDrawer}
+                aria-label="Close"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+              <div className="mb-4 flex items-center gap-2">
+                <CalendarIcon className="w-6 h-6 text-primary" />
+                <span className="text-xl font-bold text-primary">Events for {selectedCalendarDate}</span>
+              </div>
+              <div className="space-y-4 max-h-[60vh] overflow-y-auto">
+                {getEventsForSelectedDate().length === 0 ? (
+                  <div className="text-gray-500 text-center py-8">No events for this day.</div>
+                ) : (
+                  getEventsForSelectedDate().map(event => (
+                    <div key={event.id} className="border border-gray-200 rounded-xl p-4 flex flex-col gap-2 bg-gray-50">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-block w-2 h-2 rounded-full ${event.type === 'meeting' ? 'bg-[#4638e2]' : 'bg-[#b3aaf7]'}`}></span>
+                        <span className="font-semibold text-lg text-gray-900">{event.title}</span>
+                        {event.type === 'meeting' && event.leadNumber && (
+                          <span className="ml-2 text-xs text-gray-500">Lead: {event.leadNumber}</span>
+                        )}
+                        {event.type === 'meeting' && event.clientName && (
+                          <span className="ml-2 text-xs text-gray-500">Client: {event.clientName}</span>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-4 items-center text-sm text-gray-700">
+                        {event.meetingTime && <span>Time: {event.meetingTime}</span>}
+                        {event.manager && <span>Manager: {event.manager}</span>}
+                        {((event.resource && event.resource.location && (typeof event.resource.location === 'string' ? event.resource.location : event.resource.location.displayName)) || null) && (
+                          <span>Location: {typeof event.resource.location === 'string' ? event.resource.location : event.resource.location?.displayName || 'N/A'}</span>
+                        )}
+                        {event.description && <span>Description: {event.description}</span>}
+                      </div>
+                      {event.type === 'meeting' && event.resource && event.resource.teams_meeting_url && (
+                        <button
+                          className="btn btn-primary btn-sm mt-2 w-fit"
+                          onClick={() => window.open(event.resource.teams_meeting_url, '_blank')}
+                        >
+                          Join Meeting
+                        </button>
+                      )}
+                      {event.type === 'outlook' && event.resource && event.resource.webLink && (
+                        <a
+                          className="btn btn-outline btn-sm mt-2 w-fit"
+                          href={event.resource.webLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          Open in Outlook
+                        </a>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 };

@@ -115,14 +115,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     {
       label: 'Calendar',
       path: '/calendar',
+      icon: CalendarIcon,
     },
     {
       label: 'Reports',
       path: '/reports',
+      icon: DocumentChartBarIcon,
     },
     {
       label: 'Teams',
       path: '/teams',
+      icon: UserGroupIcon,
     },
   ];
 
@@ -333,20 +336,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </button>
           <div className="h-16 flex items-center">
             <Link to="/">
-              <span className="ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+              <span className="md:ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
           {/* Nav Tabs */}
           <nav className="flex gap-2 ml-4">
             {navTabs.map(tab => {
               const isActive = location.pathname === tab.path;
+              const Icon = tab.icon;
               return (
                 <Link
                   key={tab.path}
                   to={tab.path}
-                  className={`flex items-center px-3 py-2 rounded-lg font-medium transition-colors duration-200 ${isActive ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
+                  className={`flex items-center justify-center px-3 py-2 rounded-lg font-medium transition-colors duration-200 ${isActive ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
+                  title={tab.label}
                 >
-                  <span>{tab.label}</span>
+                  <Icon className={`w-6 h-6 ${isActive ? 'text-white' : ''}`} style={!isActive ? { color: '#3b28c7' } : {}} />
                 </Link>
               );
             })}

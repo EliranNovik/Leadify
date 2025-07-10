@@ -44,6 +44,28 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setEditedFacts(client.facts || '');
   }, [client]);
 
+  // State to hold current user's display name
+  const [currentUserName, setCurrentUserName] = useState<string>('Unknown');
+
+  useEffect(() => {
+    async function fetchUserName() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && user.email) {
+        const { data: userProfile } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', user.email)
+          .single();
+        if (userProfile && userProfile.full_name) {
+          setCurrentUserName(userProfile.full_name);
+        } else {
+          setCurrentUserName(user.email || 'Unknown');
+        }
+      }
+    }
+    fetchUserName();
+  }, []);
+
   const handleProbabilityChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const newProbability = Number(event.target.value);
     setProbability(newProbability);
@@ -139,7 +161,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   return (
     <div className="p-6 space-y-8">
       {/* Probability Section */}
-      <div className="bg-base-200 p-4 rounded-lg">
+      <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4 p-6">
         <div className="space-y-2">
           <div className="flex justify-between items-center">
             <label className="text-lg font-medium">Probability: {probability}%</label>
@@ -171,9 +193,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {/* Left Column */}
         <div className="space-y-6">
           {/* Followup */}
-          <div className="card bg-base-200">
-            <div className="card-body p-4">
-              <div className="flex justify-between items-center">
+          <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center border-b border-base-200 pb-3 mb-4">
                 <h3 className="text-lg font-medium">Followup</h3>
                 <div className="flex items-center gap-2">
                   {followupStatus === 'Missed!' && (
@@ -200,9 +222,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
 
           {/* Eligibility */}
-          <div className="card bg-base-200">
-            <div className="card-body p-4">
-              <div className="flex justify-between items-center">
+          <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center border-b border-base-200 pb-3 mb-4">
                 <h3 className="text-lg font-medium">Eligibility</h3>
                 <div className={`badge ${eligibilityDisplay.className}`}>{eligibilityDisplay.text}</div>
               </div>
@@ -210,9 +232,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
 
           {/* Special Notes */}
-          <div className="card bg-base-200">
-            <div className="card-body p-4">
-              <div className="flex justify-between items-center mb-3">
+          <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center border-b border-base-200 pb-3 mb-4">
                 <h3 className="text-lg font-medium">Special Notes</h3>
                 <EditButtons
                   isEditing={isEditingSpecialNotes}
@@ -222,9 +244,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   }}
                   onSave={async () => {
                     try {
+                      const userName = currentUserName;
                       const { error } = await supabase
                         .from('leads')
-                        .update({ special_notes: editedSpecialNotes })
+                        .update({
+                          special_notes: editedSpecialNotes,
+                          special_notes_last_edited_by: userName,
+                          special_notes_last_edited_at: new Date().toISOString(),
+                        })
                         .eq('id', client.id);
                       
                       if (error) throw error;
@@ -252,19 +279,23 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   dir="rtl"
                 />
               ) : (
-                <div className="bg-success/20 p-3 rounded-lg text-left">
+                <div className="bg-base-200 rounded-lg p-4 text-black text-left">
                   {specialNotes.map((note, index) => (
                     <p key={index}>{note}</p>
                   ))}
+                  <div className="mt-3 text-xs text-gray-500 text-right">
+                    Last edited by {client.special_notes_last_edited_by || 'Unknown'}<br/>
+                    {client.special_notes_last_edited_at ? new Date(client.special_notes_last_edited_at).toLocaleString() : ''}
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
           {/* General Notes */}
-          <div className="card bg-base-200">
-            <div className="card-body p-4">
-              <div className="flex justify-between items-center mb-3">
+          <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center border-b border-base-200 pb-3 mb-4">
                 <h3 className="text-lg font-medium">General Notes</h3>
                 <EditButtons
                   isEditing={isEditingGeneralNotes}
@@ -274,9 +305,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   }}
                   onSave={async () => {
                     try {
+                      const userName = currentUserName;
                       const { error } = await supabase
                         .from('leads')
-                        .update({ general_notes: editedGeneralNotes })
+                        .update({
+                          general_notes: editedGeneralNotes,
+                          general_notes_last_edited_by: userName,
+                          general_notes_last_edited_at: new Date().toISOString(),
+                        })
                         .eq('id', client.id);
                       
                       if (error) throw error;
@@ -304,8 +340,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   placeholder="Add general notes here..."
                 />
               ) : (
-                <div className="p-3 rounded-lg">
+                <div className="bg-base-200 rounded-lg p-4 text-black">
                   {generalNotes || <span className="text-base-content/50">No general notes added</span>}
+                  <div className="mt-3 text-xs text-gray-500 text-right">
+                    Last edited by {client.general_notes_last_edited_by || 'Unknown'}<br/>
+                    {client.general_notes_last_edited_at ? new Date(client.general_notes_last_edited_at).toLocaleString() : ''}
+                  </div>
                 </div>
               )}
             </div>
@@ -315,9 +355,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {/* Right Column */}
         <div className="space-y-6">
           {/* Tags */}
-          <div className="card bg-base-200">
-            <div className="card-body p-4">
-              <div className="flex justify-between items-center mb-3">
+          <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center border-b border-base-200 pb-3 mb-4">
                 <h3 className="text-lg font-medium">Tags</h3>
                 <EditButtons
                   isEditing={isEditingTags}
@@ -327,9 +367,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   }}
                   onSave={async () => {
                     try {
+                      const userName = currentUserName;
                       const { error } = await supabase
                         .from('leads')
-                        .update({ tags: editedTags })
+                        .update({
+                          tags: editedTags,
+                          tags_last_edited_by: userName,
+                          tags_last_edited_at: new Date().toISOString(),
+                        })
                         .eq('id', client.id);
                       
                       if (error) throw error;
@@ -357,17 +402,21 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   placeholder="Add tags here..."
                 />
               ) : (
-                <div className="text-base-content/70">
+                <div className="bg-base-200 rounded-lg p-4 text-black">
                   {tags || '---'}
+                  <div className="mt-3 text-xs text-gray-500 text-right">
+                    Last edited by {client.tags_last_edited_by || 'Unknown'}<br/>
+                    {client.tags_last_edited_at ? new Date(client.tags_last_edited_at).toLocaleString() : ''}
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
           {/* Anchor */}
-          <div className="card bg-base-200">
-            <div className="card-body p-4">
-              <div className="flex justify-between items-center mb-3">
+          <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center border-b border-base-200 pb-3 mb-4">
                 <h3 className="text-lg font-medium">Anchor</h3>
                 <EditButtons
                   isEditing={isEditingAnchor}
@@ -377,9 +426,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   }}
                   onSave={async () => {
                     try {
+                      const userName = currentUserName;
                       const { error } = await supabase
                         .from('leads')
-                        .update({ anchor: editedAnchor })
+                        .update({
+                          anchor: editedAnchor,
+                          anchor_last_edited_by: userName,
+                          anchor_last_edited_at: new Date().toISOString(),
+                        })
                         .eq('id', client.id);
                       
                       if (error) throw error;
@@ -407,17 +461,21 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   placeholder="Add anchor information..."
                 />
               ) : (
-                <div className="text-base-content/70">
+                <div className="bg-base-200 rounded-lg p-4 text-black">
                   {anchor || 'No anchor information'}
+                  <div className="mt-3 text-xs text-gray-500 text-right">
+                    Last edited by {client.anchor_last_edited_by || 'Unknown'}<br/>
+                    {client.anchor_last_edited_at ? new Date(client.anchor_last_edited_at).toLocaleString() : ''}
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
           {/* Facts of Case */}
-          <div className="card bg-base-200">
-            <div className="card-body p-4">
-              <div className="flex justify-between items-center mb-3">
+          <div className="bg-white border border-base-200 rounded-xl shadow-xl mb-4">
+            <div className="p-6">
+              <div className="flex justify-between items-center border-b border-base-200 pb-3 mb-4">
                 <h3 className="text-lg font-medium">Facts of Case</h3>
                 <EditButtons
                   isEditing={isEditingFacts}
@@ -427,9 +485,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   }}
                   onSave={async () => {
                     try {
+                      const userName = currentUserName;
                       const { error } = await supabase
                         .from('leads')
-                        .update({ facts: editedFacts })
+                        .update({
+                          facts: editedFacts,
+                          facts_last_edited_by: userName,
+                          facts_last_edited_at: new Date().toISOString(),
+                        })
                         .eq('id', client.id);
                       
                       if (error) throw error;
@@ -457,10 +520,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   dir="rtl"
                 />
               ) : (
-                <div className="space-y-4 text-left">
+                <div className="bg-base-200 rounded-lg p-4 text-black space-y-4 text-left">
                   {factsOfCase.map((fact, index) => (
                     <p key={index} className="font-medium">{fact}</p>
                   ))}
+                  <div className="mt-3 text-xs text-gray-500 text-right">
+                    Last edited by {client.facts_last_edited_by || 'Unknown'}<br/>
+                    {client.facts_last_edited_at ? new Date(client.facts_last_edited_at).toLocaleString() : ''}
+                  </div>
                 </div>
               )}
             </div>

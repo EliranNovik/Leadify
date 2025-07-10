@@ -305,6 +305,25 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return '';
   };
 
+  // Helper to determine if a meeting is in the past
+  const isPastMeeting = (meeting: Meeting) => {
+    const meetingDateTime = new Date(`${meeting.date}T${meeting.time || '00:00'}`);
+    return meetingDateTime < new Date();
+  };
+
+  // Helper to determine if a past meeting is within 1 day
+  const isRecentPastMeeting = (meeting: Meeting) => {
+    if (!isPastMeeting(meeting)) return false;
+    const meetingDateTime = new Date(`${meeting.date}T${meeting.time || '00:00'}`);
+    const now = new Date();
+    const diffMs = now.getTime() - meetingDateTime.getTime();
+    return diffMs <= 24 * 60 * 60 * 1000; // 1 day in ms
+  };
+
+  // Split meetings into upcoming and past
+  const upcomingMeetings = meetings.filter(m => !isPastMeeting(m));
+  const pastMeetings = meetings.filter(m => isPastMeeting(m));
+
   const renderMeetingCard = (meeting: Meeting) => {
     const formattedDate = new Date(meeting.date).toLocaleDateString('en-GB');
 
@@ -339,14 +358,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       'from-blue-500 via-cyan-500 to-teal-400',
       'from-teal-400 via-green-400 to-green-600',
     ];
-    const iconColors = [
-      'text-purple-500',
-      'text-blue-500',
-      'text-cyan-500',
-      'text-green-500',
-    ];
     const gradient = gradients[meeting.id % 4];
-    const iconColor = iconColors[meeting.id % 4];
+    const iconColor = 'text-primary';
 
     const renderEditableSection = (
       title: string,
@@ -384,8 +397,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       );
     };
 
+    const past = isPastMeeting(meeting);
+    const showPastActions = past && isRecentPastMeeting(meeting);
+
     return (
-      <div key={meeting.id} className={`p-[2px] rounded-2xl bg-gradient-to-tr ${gradient} shadow-xl hover:shadow-2xl transition-all duration-200 min-h-[220px]`}>
+      <div key={meeting.id} className="rounded-2xl border border-base-300 bg-white shadow transition-all duration-200 min-h-[220px]">
         <div className="bg-white rounded-2xl h-full w-full">
           <div className="card-body p-4">
             {/* Header */}
@@ -404,21 +420,22 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
               {/* Action Buttons */}
               <div className="flex flex-col md:flex-row gap-2">
-                <button
-                  className="btn btn-primary btn-sm text-white border-none shadow-md hover:bg-purple-700"
-                  onClick={() => handleSendEmail(meeting)}
-                  disabled={isSendingEmail}
-                  style={{ minWidth: 120 }}
-                >
-                  <EnvelopeIcon className="w-4 h-4" />
-                  Notify Client
-                </button>
+                {(!past || showPastActions) && (
+                  <button
+                    className={`btn ${past ? 'btn-xs w-28' : 'btn-sm'} text-white border-none shadow-md hover:opacity-90 bg-gradient-to-tr ${gradient}`}
+                    onClick={() => handleSendEmail(meeting)}
+                    disabled={isSendingEmail}
+                    style={past ? undefined : { minWidth: 120 }}
+                  >
+                    Notify Client
+                  </button>
+                )}
                 {meeting.location === 'Teams' && !meeting.link && (
                   <button
-                    className="btn btn-accent btn-sm text-white border-none shadow-md hover:bg-accent-focus"
+                    className={`btn ${past ? 'btn-xs w-20' : 'btn-sm'} text-white border-none shadow-md hover:opacity-90 bg-gradient-to-tr ${gradient}`}
                     onClick={() => handleCreateTeamsMeeting(meeting)}
                     disabled={creatingTeamsMeetingId === meeting.id}
-                    style={{ minWidth: 120 }}
+                    style={past ? undefined : { minWidth: 120 }}
                   >
                     {creatingTeamsMeetingId === meeting.id ? (
                       <span className="loading loading-spinner loading-xs mr-2"></span>
@@ -428,15 +445,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     Create Teams Link
                   </button>
                 )}
-                {meeting.link && getValidTeamsLink(meeting.link) && (
+                {meeting.link && getValidTeamsLink(meeting.link) && (!past || showPastActions) && (
                   <a
                     href={getValidTeamsLink(meeting.link)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="btn btn-primary btn-sm text-white border-none shadow-md hover:bg-purple-700"
-                    style={{ minWidth: 120 }}
+                    className={`btn ${past ? 'btn-xs w-28' : 'btn-sm'} text-white border-none shadow-md hover:opacity-90 bg-gradient-to-tr ${gradient}`}
+                    style={past ? undefined : { minWidth: 120 }}
                   >
-                    <LinkIcon className="w-4 h-4" />
                     Join Meeting
                   </a>
                 )}
@@ -445,32 +461,36 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
             {/* Details Section */}
             <div className="grid grid-cols-2 gap-x-2 gap-y-2 md:grid-cols-2 md:gap-3 mb-2">
+              <div className="flex items-center gap-2 col-span-2">
+                <UserIcon className={`w-5 h-5 ${iconColor}`} />
+                <span className="text-sm md:text-base text-gray-900">Scheduler: {meeting.scheduler || '---'}</span>
+              </div>
               <div className="flex items-center gap-2">
                 <MapPinIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{meeting.location}</span>
+                <span className="text-sm md:text-base text-gray-900">{meeting.location}</span>
               </div>
               <div className="flex items-center gap-2">
                 <UserIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Manager: {meeting.manager}</span>
+                <span className="text-sm md:text-base text-gray-900">Manager: {meeting.manager}</span>
               </div>
               <div className="flex items-center gap-2">
                 <AcademicCapIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Expert: {meeting.expert}</span>
+                <span className="text-sm md:text-base text-gray-900">Expert: {meeting.expert}</span>
               </div>
               <div className="flex items-center gap-2">
                 <UserCircleIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Helper: {meeting.helper}</span>
+                <span className="text-sm md:text-base text-gray-900">Helper: {meeting.helper}</span>
               </div>
               <div className="flex items-center gap-2 col-span-2 md:col-span-2">
-                <span className={`font-semibold text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{meeting.currency}</span>
-                <span className={`text-sm md:text-base bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{meeting.amount}</span>
+                <span className="font-semibold text-sm md:text-base text-gray-900">{meeting.currency}</span>
+                <span className="text-sm md:text-base text-gray-900">{meeting.amount}</span>
               </div>
             </div>
 
             {/* Brief Section */}
             <div className="mt-2 pt-2 border-t border-gray-200">
               <div className="flex justify-between items-center mb-2">
-                <h4 className={`font-semibold bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Brief</h4>
+                <h4 className="font-semibold text-gray-900">Brief</h4>
                 {editingBriefId === meeting.id ? (
                   <div className="flex items-center gap-1">
                     <button className="btn btn-ghost btn-sm btn-circle" onClick={() => handleSaveBrief(meeting.id)}>
@@ -501,7 +521,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
 
             {/* Last Edited Section */}
-            <div className={`text-xs mt-2 flex flex-col gap-1 bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>
+            <div className="text-xs mt-2 flex flex-col gap-1 text-gray-600">
               <div className="flex items-center gap-2">
                 <ClockSolidIcon className="w-4 h-4" />
                 <span>Last edited: {new Date(meeting.lastEdited.timestamp).toLocaleString()}</span>
@@ -523,17 +543,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="flex flex-col md:flex-row gap-4">
                   <div className="flex-1 bg-white p-4 rounded-lg">
                     <div className="flex justify-between items-center mb-1">
-                      <h5 className={`font-semibold bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Expert Notes</h5>
-                      {editingField?.meetingId === meeting.id && editingField?.field === 'expert_notes' ? (
-                        <div className="flex items-center gap-1">
-                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleSaveField}><CheckIcon className="w-4 h-4 text-success" /></button>
-                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleCancelEditField}><XMarkIcon className="w-4 h-4 text-error" /></button>
-                        </div>
-                      ) : (
-                        <button className={`btn btn-xs btn-circle shadow bg-gradient-to-tr ${gradient} text-white hover:opacity-90`} onClick={() => handleEditField(meeting.id, 'expert_notes', expandedData.expert_notes)}>
-                          <PencilSquareIcon className="w-4 h-4" />
-                        </button>
-                      )}
+                      <h5 className="font-semibold text-gray-900">Expert Notes</h5>
                     </div>
                     {editingField?.meetingId === meeting.id && editingField?.field === 'expert_notes' ? (
                       <textarea
@@ -543,7 +553,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         placeholder="Edit expert notes..."
                       />
                     ) : (
-                      <p className={`text-sm bg-gradient-to-tr ${gradient} bg-clip-text text-transparent min-h-[2rem]`}>
+                      <p className="text-sm text-gray-700 min-h-[2rem]">
                         {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0
                           ? expandedData.expert_notes[expandedData.expert_notes.length - 1].content
                           : expandedData.expert_notes || 'No notes yet.'}
@@ -552,17 +562,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </div>
                   <div className="flex-1 bg-white p-4 rounded-lg">
                     <div className="flex justify-between items-center mb-1">
-                      <h5 className={`font-semibold bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>Handler Notes</h5>
-                      {editingField?.meetingId === meeting.id && editingField?.field === 'handler_notes' ? (
-                        <div className="flex items-center gap-1">
-                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleSaveField}><CheckIcon className="w-4 h-4 text-success" /></button>
-                          <button className="btn btn-ghost btn-xs btn-circle" onClick={handleCancelEditField}><XMarkIcon className="w-4 h-4 text-error" /></button>
-                        </div>
-                      ) : (
-                        <button className={`btn btn-xs btn-circle shadow bg-gradient-to-tr ${gradient} text-white hover:opacity-90`} onClick={() => handleEditField(meeting.id, 'handler_notes', expandedData.handler_notes)}>
-                          <PencilSquareIcon className="w-4 h-4" />
-                        </button>
-                      )}
+                      <h5 className="font-semibold text-gray-900">Handler Notes</h5>
                     </div>
                     {editingField?.meetingId === meeting.id && editingField?.field === 'handler_notes' ? (
                       <textarea
@@ -572,7 +572,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         placeholder="Edit handler notes..."
                       />
                     ) : (
-                      <p className={`text-sm bg-gradient-to-tr ${gradient} bg-clip-text text-transparent min-h-[2rem]`}>
+                      <p className="text-sm text-gray-700 min-h-[2rem]">
                         {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0
                           ? expandedData.handler_notes[expandedData.handler_notes.length - 1].content
                           : expandedData.handler_notes || 'No notes yet.'}
@@ -640,14 +640,41 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       <div className="flex justify-between items-center mb-6">
         <div className="flex items-center gap-2">
-          <CalendarIcon className="w-6 h-6 text-primary" />
-          <h3 className="text-lg font-semibold">Meetings</h3>
         </div>
       </div>
 
       {meetings.length > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {meetings.map(renderMeetingCard)}
+        <div className="flex flex-col md:flex-row gap-8 w-full">
+          {/* Current Meetings (left column) in white container */}
+          <div className="md:max-w-2xl w-full">
+            <div className="bg-white rounded-2xl shadow-xl p-6">
+              <div className="mb-3 font-semibold text-base-content/80 text-lg">Upcoming Meetings</div>
+              <div className="flex flex-col gap-6">
+                {upcomingMeetings.length > 0 ? (
+                  upcomingMeetings.map(renderMeetingCard)
+                ) : (
+                  <div className="text-center py-8 text-base-content/70 bg-base-200 rounded-lg">
+                    No upcoming meetings scheduled.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          {/* Past Meetings (right column) in white container */}
+          <div className="flex-1 md:max-w-lg">
+            <div className="bg-white rounded-2xl shadow-xl p-6">
+              <div className="mb-3 font-semibold text-base-content/80 text-lg">Past Meetings</div>
+              <div className="flex flex-col gap-6">
+                {pastMeetings.length > 0 ? (
+                  pastMeetings.map(renderMeetingCard)
+                ) : (
+                  <div className="text-center py-8 text-base-content/70 bg-base-200 rounded-lg">
+                    No past meetings.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       ) : (
         <div className="text-center py-8 text-base-content/70 bg-base-200 rounded-lg">

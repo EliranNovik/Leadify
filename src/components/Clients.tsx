@@ -54,6 +54,7 @@ import ExpertTab from './client-tabs/ExpertTab';
 import MeetingTab from './client-tabs/MeetingTab';
 import PriceOfferTab from './client-tabs/PriceOfferTab';
 import InteractionsTab from './client-tabs/InteractionsTab';
+import FinancesTab from './client-tabs/FinancesTab';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { createTeamsMeeting, sendEmail } from '../lib/graph';
@@ -116,6 +117,45 @@ const getCurrencySymbol = (currencyCode?: string) => {
       return '$';
   }
 };
+
+// Add currency options at the top of the component
+const currencyOptions = [
+  { value: 'NIS', label: 'NIS' },
+  { value: 'USD', label: 'USD' },
+  { value: 'EUR', label: 'EUR' },
+];
+
+// Add getValidTeamsLink helper (copied from MeetingTab)
+function getValidTeamsLink(link: string | undefined): string {
+  if (!link) return '';
+  try {
+    if (link.startsWith('http')) return link;
+    const obj = JSON.parse(link);
+    if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
+      return obj.joinUrl;
+    }
+    if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
+      return obj.joinWebUrl;
+    }
+  } catch (e) {
+    if (typeof link === 'string' && link.startsWith('http')) return link;
+  }
+  return '';
+}
+
+// Helper to fetch Outlook signature if not present
+async function fetchOutlookSignature(accessToken: string): Promise<string | null> {
+  try {
+    const res = await fetch('https://graph.microsoft.com/v1.0/me/mailboxSettings', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.mailSignature || null;
+  } catch {
+    return null;
+  }
+}
 
 const Clients: React.FC<ClientsProps> = ({
   selectedClient,
@@ -200,6 +240,59 @@ const Clients: React.FC<ClientsProps> = ({
   // Local loading state for client data
   const [localLoading, setLocalLoading] = useState(true);
 
+  // 1. Add state for the rescheduling drawer and meetings list
+  const [showRescheduleDrawer, setShowRescheduleDrawer] = useState(false);
+  const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
+  const [rescheduleFormData, setRescheduleFormData] = useState<any>({
+    date: '',
+    time: '09:00',
+    location: 'Teams',
+    manager: '',
+    helper: '',
+    amount: '',
+    currency: 'NIS',
+  });
+  const [meetingToDelete, setMeetingToDelete] = useState(null);
+
+  // 1. Add state for the payments plan drawer
+  const [showPaymentsPlanDrawer, setShowPaymentsPlanDrawer] = useState(false);
+  const [editingBalance, setEditingBalance] = useState(false);
+  const [editedBalance, setEditedBalance] = useState(selectedClient?.balance || 0);
+  const [autoPlan, setAutoPlan] = useState('40/30/30');
+  const autoPlanOptions = [
+    '40/30/30',
+    '50/30/20',
+    '34/33/33',
+    '60/20/20',
+    '70/20/10',
+  ];
+  const [payments, setPayments] = useState<any[]>([]);
+  const [showAddPayment, setShowAddPayment] = useState(false);
+  const [newPayment, setNewPayment] = useState({
+    client: '',
+    order: 'Intermediate Payment',
+    date: '',
+    currency: '₪',
+    value: 0.0,
+    applicants: '',
+    notes: '',
+  });
+
+  // Add useEffect to fetch meetings when reschedule drawer opens
+  useEffect(() => {
+    const fetchMeetings = async () => {
+      if (!selectedClient?.id || !showRescheduleDrawer) return;
+      const { data, error } = await supabase
+        .from('meetings')
+        .select('*')
+        .eq('client_id', selectedClient.id)
+        .order('meeting_date', { ascending: false });
+      if (!error && data) setRescheduleMeetings(data);
+      else setRescheduleMeetings([]);
+    };
+    fetchMeetings();
+  }, [selectedClient, showRescheduleDrawer]);
+
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
 
@@ -262,6 +355,8 @@ const Clients: React.FC<ClientsProps> = ({
       setActiveTab(tabFromUrl);
     }
   }, [location.search]);
+
+  
 
   const handleStageUpdate = async (newStage: string) => {
     if (!selectedClient) return;
@@ -335,8 +430,8 @@ const Clients: React.FC<ClientsProps> = ({
       .replace(/\b\w/g, l => l.toUpperCase());
     return (
       <span
-        className="badge badge-lg ml-2 px-6 py-3 min-w-max whitespace-nowrap"
-        style={{ background: '#4638e2', color: '#fff', fontSize: '1.15rem', borderRadius: '0.75rem', minHeight: '2.5rem' }}
+        className="badge badge-sm ml-2 px-3 py-1 min-w-max whitespace-nowrap"
+        style={{ background: '#4638e2', color: '#fff', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem' }}
       >
         {formatted}
       </span>
@@ -741,6 +836,449 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
+  // Add the reschedule save handler
+  const handleRescheduleMeeting = async () => {
+    if (!selectedClient || !meetingToDelete || !rescheduleFormData.date || !rescheduleFormData.time) return;
+    try {
+      // 1. Delete the selected meeting
+      await supabase.from('meetings').delete().eq('id', meetingToDelete);
+
+      // 2. Create the new meeting
+      const account = instance.getAllAccounts()[0];
+      let teamsMeetingUrl = '';
+      if (rescheduleFormData.location === 'Teams') {
+        let accessToken;
+        try {
+          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
+          accessToken = response.accessToken;
+        } catch (error) {
+          if (error instanceof InteractionRequiredAuthError) {
+            const response = await instance.loginPopup(loginRequest);
+            accessToken = response.accessToken;
+          } else {
+            throw error;
+          }
+        }
+        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
+        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
+        const start = new Date(year, month - 1, day, hours, minutes);
+        const end = new Date(start.getTime() + 30 * 60000);
+        teamsMeetingUrl = await createTeamsMeeting(accessToken, {
+          subject: `Meeting with ${selectedClient.name}`,
+          startDateTime: start.toISOString(),
+          endDateTime: end.toISOString(),
+          attendees: selectedClient.email ? [{ email: selectedClient.email }] : [],
+        });
+      }
+      const { error: meetingError } = await supabase
+        .from('meetings')
+        .insert([{
+          client_id: selectedClient.id,
+          meeting_date: rescheduleFormData.date,
+          meeting_time: rescheduleFormData.time,
+          meeting_location: rescheduleFormData.location,
+          meeting_manager: rescheduleFormData.manager, // do not default to account.name
+          meeting_currency: rescheduleFormData.currency,
+          meeting_amount: rescheduleFormData.amount ? parseFloat(rescheduleFormData.amount) : 0,
+          expert: selectedClient.expert || '---',
+          helper: rescheduleFormData.helper || '---',
+          teams_meeting_url: teamsMeetingUrl,
+          meeting_brief: '',
+          last_edited_timestamp: new Date().toISOString(),
+          last_edited_by: account?.name,
+        }]);
+      if (meetingError) throw meetingError;
+
+      // 3. Send notification email to client
+      if (selectedClient.email) {
+        let accessToken;
+        try {
+          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
+          accessToken = response.accessToken;
+        } catch (error) {
+          if (error instanceof InteractionRequiredAuthError) {
+            const response = await instance.loginPopup(loginRequest);
+            accessToken = response.accessToken;
+          } else {
+            throw error;
+          }
+        }
+        // Compose the new template
+        const userName = account?.name || 'Staff';
+        let signature = (account && (account as any).signature) ? (account as any).signature : null;
+        if (!signature) {
+          signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+        }
+        // Fetch the latest meeting for the client to get the correct teams_meeting_url
+        const { data: latestMeetings, error: fetchMeetingError } = await supabase
+          .from('meetings')
+          .select('*')
+          .eq('client_id', selectedClient.id)
+          .order('meeting_date', { ascending: false })
+          .order('meeting_time', { ascending: false })
+          .limit(1);
+        if (fetchMeetingError) throw fetchMeetingError;
+        const latestMeeting = latestMeetings && latestMeetings.length > 0 ? latestMeetings[0] : null;
+        const meetingLink = getValidTeamsLink(latestMeeting?.teams_meeting_url);
+        const joinButton = meetingLink
+          ? `<div style='margin:24px 0;'>
+              <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
+            </div>`
+          : '';
+        const emailBody = `
+          <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+            <p>Dear ${selectedClient.name},</p>
+            <p>Your previous meeting has been canceled as per your request. Please find below the details for your new meeting:</p>
+            <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+              <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
+              <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
+              <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
+            </ul>
+            ${joinButton}
+            <p>If you have any questions or need to reschedule again, please let us know.</p>
+            <div style='margin-top:32px;'>${signature}</div>
+          </div>
+        `;
+        const subject = `[${selectedClient.lead_number}] - ${selectedClient.name} - ${rescheduleFormData.date} ${rescheduleFormData.time} ${rescheduleFormData.location} - Your meeting has been rescheduled`;
+        await sendEmail(accessToken, {
+          to: selectedClient.email,
+          subject,
+          body: emailBody,
+        });
+      }
+      // 4. Show toast and close drawer
+      toast.success('The new meeting was scheduled and the client was notified.');
+      setShowRescheduleDrawer(false);
+      setMeetingToDelete(null);
+      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: 'NIS' });
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      toast.error('Failed to reschedule meeting.');
+      console.error(error);
+    }
+  };
+
+
+
+
+
+  // Tabs array with Finances tab
+  const tabs = [
+    { id: 'info', label: 'Info', icon: InformationCircleIcon, component: InfoTab },
+    { id: 'roles', label: 'Roles', icon: UserGroupIcon, component: RolesTab },
+    { id: 'contact', label: 'Contact info', icon: UserIcon, component: ContactInfoTab },
+    { id: 'marketing', label: 'Marketing', icon: MegaphoneIcon, component: MarketingTab },
+    { id: 'expert', label: 'Expert', icon: UserIcon, component: ExpertTab },
+    { id: 'meeting', label: 'Meeting', icon: CalendarIcon, component: MeetingTab },
+    { id: 'price', label: 'Price Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
+    { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: 31, component: InteractionsTab },
+    { id: 'finances', label: 'Finances', icon: BanknotesIcon, component: FinancesTab },
+  ];
+
+  // Handle save payments plan
+  const handleSavePaymentsPlan = async () => {
+    if (!selectedClient?.id) return;
+    
+    setIsSavingPaymentPlan(true);
+    const balance = selectedClient?.balance || 0;
+    const vat = balance * 0.18;
+    const total = balance + vat;
+    
+    // Create payments based on auto plan
+    const payments: Array<{
+      duePercent: string;
+      dueDate: string;
+      value: number;
+      valueVat: number;
+      client: string;
+      order: string;
+      proforma?: string;
+      notes: string;
+    }> = [];
+    const planParts = autoPlan.split('/').map(Number);
+    const totalAmount = total;
+    
+    let remainingAmount = totalAmount;
+    for (let i = 0; i < planParts.length; i++) {
+      const percentage = planParts[i];
+      const amount = (totalAmount * percentage) / 100;
+      const vatAmount = (amount * 0.18);
+      
+      payments.push({
+        duePercent: `${percentage}%`,
+        dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000).toLocaleDateString(),
+        value: Math.round(amount * 100) / 100,
+        valueVat: Math.round(vatAmount * 100) / 100,
+        client: selectedClient?.name || '',
+        order: i === 0 ? 'First Payment' : i === planParts.length - 1 ? 'Final Payment' : 'Intermediate Payment',
+        notes: '',
+      });
+      
+      remainingAmount -= amount;
+    }
+    
+    const newFinancePlan = {
+      total: Math.round(totalAmount * 100) / 100,
+      vat: Math.round(vat * 100) / 100,
+      payments: payments,
+    };
+    
+    try {
+      // First, delete any existing payment plans for this lead
+      const { error: deleteError } = await supabase
+        .from('payment_plans')
+        .delete()
+        .eq('lead_id', selectedClient.id);
+      
+      if (deleteError) throw deleteError;
+      
+      // Insert new payment plans
+      const paymentPlansToInsert = payments.map(payment => ({
+        lead_id: selectedClient.id,
+        due_percent: parseFloat(payment.duePercent.replace('%', '')),
+        due_date: new Date(Date.now() + (payments.indexOf(payment) + 1) * 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+        value: payment.value,
+        value_vat: payment.valueVat,
+        client_name: payment.client,
+        payment_order: payment.order,
+        notes: payment.notes,
+      }));
+      
+      const { error: insertError } = await supabase
+        .from('payment_plans')
+        .insert(paymentPlansToInsert);
+      
+      if (insertError) throw insertError;
+      
+      setShowPaymentsPlanDrawer(false);
+      setActiveTab('finances');
+      toast.success('Payment plan saved successfully!');
+    } catch (error) {
+      console.error('Error saving payment plan:', error);
+      toast.error('Failed to save payment plan. Please try again.');
+    } finally {
+      setIsSavingPaymentPlan(false);
+    }
+  };
+
+  // Proforma drawer state
+  const [showProformaDrawer, setShowProformaDrawer] = useState(false);
+  const [proformaData, setProformaData] = useState<any>(null);
+  const [isSavingPaymentPlan, setIsSavingPaymentPlan] = useState(false);
+  const [generatedProformaName, setGeneratedProformaName] = useState<string>('');
+
+  // Handler to open proforma drawer
+  const handleOpenProforma = async (payment: any) => {
+    const proformaName = await generateProformaName(selectedClient?.id);
+    setGeneratedProformaName(proformaName);
+    
+    setProformaData({
+      client: selectedClient?.name,
+      clientId: selectedClient?.id,
+      paymentRowId: payment.id, // Add the payment row ID
+      payment: payment.value + payment.valueVat,
+      base: payment.value,
+      vat: payment.valueVat,
+      language: 'EN',
+      rows: [
+        { description: payment.order, qty: 1, rate: payment.value, total: payment.value },
+      ],
+      addVat: true,
+      currency: '₪',
+      bankAccount: '',
+      notes: '',
+    });
+    setShowProformaDrawer(true);
+  };
+
+  // Handler for proforma row changes
+  const handleProformaRowChange = (idx: number, field: string, value: any) => {
+    setProformaData((prev: any) => {
+      const rows = prev.rows.map((row: any, i: number) =>
+        i === idx ? { ...row, [field]: value, total: field === 'qty' || field === 'rate' ? value * (field === 'qty' ? row.rate : row.qty) : row.total } : row
+      );
+      return { ...prev, rows };
+    });
+  };
+
+  // Handler to add row
+  const handleAddProformaRow = () => {
+    setProformaData((prev: any) => ({
+      ...prev,
+      rows: [...prev.rows, { description: '', qty: 1, rate: 0, total: 0 }],
+    }));
+  };
+
+  // Handler to delete row
+  const handleDeleteProformaRow = (idx: number) => {
+    setProformaData((prev: any) => ({
+      ...prev,
+      rows: prev.rows.filter((_: any, i: number) => i !== idx),
+    }));
+  };
+
+  // Function to generate sequential proforma name
+  const generateProformaName = async (clientId: number) => {
+    if (!clientId) {
+      const year = new Date().getFullYear();
+      const timestamp = Date.now().toString().slice(-4);
+      return `${year}-${timestamp} Proforma`;
+    }
+    
+    try {
+      // Get all existing proformas for this client
+      const { data, error } = await supabase
+        .from('payment_plans')
+        .select('proforma')
+        .eq('lead_id', clientId)
+        .not('proforma', 'is', null);
+
+      if (error) throw error;
+
+      // Extract proforma names and find the highest number
+      const existingNames = data
+        .map(row => row.proforma)
+        .filter(proforma => proforma && typeof proforma === 'string')
+        .map(proforma => {
+          try {
+            const parsed = JSON.parse(proforma);
+            return parsed.proformaName || '';
+          } catch {
+            return '';
+          }
+        })
+        .filter(name => name.startsWith(`${new Date().getFullYear()}-`));
+
+      // Find the highest number
+      let maxNumber = 0;
+      existingNames.forEach(name => {
+        const match = name.match(/\d+$/);
+        if (match) {
+          const num = parseInt(match[0]);
+          if (num > maxNumber) maxNumber = num;
+        }
+      });
+
+      // Generate next number
+      const nextNumber = maxNumber + 1;
+      const year = new Date().getFullYear();
+      return `${year}-${nextNumber.toString().padStart(2, '0')} Proforma`;
+    } catch (error) {
+      console.error('Error generating proforma name:', error);
+      // Fallback to current timestamp
+      const year = new Date().getFullYear();
+      const timestamp = Date.now().toString().slice(-4);
+      return `${year}-${timestamp} Proforma`;
+    }
+  };
+
+  // Generate proforma content as a structured object
+  const generateProformaContent = async (data: any, createdBy: string) => {
+    const total = data.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
+    const totalWithVat = data.addVat ? Math.round(total * 1.18 * 100) / 100 : total;
+    
+    // Generate proforma name
+    const proformaName = await generateProformaName(data.clientId);
+    
+    return JSON.stringify({
+      client: data.client,
+      clientId: data.clientId,
+      proformaName: proformaName, // Add the generated name
+      payment: data.payment,
+      base: data.base,
+      vat: data.vat,
+      language: data.language,
+      rows: data.rows,
+      total: total,
+      totalWithVat: totalWithVat,
+      addVat: data.addVat,
+      currency: data.currency,
+      bankAccount: data.bankAccount,
+      notes: data.notes,
+      createdAt: new Date().toISOString(),
+      createdBy: createdBy,
+    });
+  };
+
+  // Handler for create proforma
+  const handleCreateProforma = async () => {
+    if (!proformaData) return;
+    try {
+      // Get current user (example for MSAL)
+      let createdBy = 'Unknown';
+      if (instance && typeof instance.getAllAccounts === 'function') {
+        const account = instance.getAllAccounts()[0];
+        if (account && account.name) createdBy = account.name;
+      }
+      // Generate proforma content with name and createdBy
+      const proformaContent = await generateProformaContent(proformaData, createdBy);
+      // Save proforma to the database for the specific payment row
+      const { error } = await supabase
+        .from('payment_plans')
+        .update({ proforma: proformaContent })
+        .eq('id', proformaData.paymentRowId);
+      if (error) throw error;
+      toast.success('Proforma created and saved successfully!');
+      setShowProformaDrawer(false);
+      setProformaData(null);
+    } catch (error) {
+      console.error('Error saving proforma:', error);
+      toast.error('Failed to save proforma. Please try again.');
+    }
+  };
+
+  // Function to save proforma content to database
+  const saveProformaToDatabase = async (rowId: string | number, proformaContent: string) => {
+    try {
+      const { error } = await supabase
+        .from('payment_plans')
+        .update({ proforma: proformaContent })
+        .eq('id', rowId);
+      
+      if (error) throw error;
+      
+      toast.success('Proforma saved successfully!');
+      return true;
+    } catch (error) {
+      console.error('Error saving proforma:', error);
+      toast.error('Failed to save proforma.');
+      return false;
+    }
+  };
+
+  // Function to view existing proforma
+  const handleViewProforma = (payment: any) => {
+    if (!payment.proforma || payment.proforma.trim() === '') return;
+    
+    try {
+      const proformaData = JSON.parse(payment.proforma);
+      setGeneratedProformaName(proformaData.proformaName || 'Proforma');
+      setProformaData({
+        ...proformaData,
+        paymentRowId: payment.id,
+        isViewMode: true, // Flag to indicate view-only mode
+      });
+      setShowProformaDrawer(true);
+    } catch (error) {
+      console.error('Error parsing proforma data:', error);
+      toast.error('Failed to load proforma data.');
+    }
+  };
+
+  // Function to get proforma name from stored data
+  const getProformaName = (proformaData: string) => {
+    if (!proformaData || proformaData.trim() === '') {
+      return 'Proforma';
+    }
+    
+    try {
+      const parsed = JSON.parse(proformaData);
+      return parsed.proformaName || 'Proforma';
+    } catch {
+      return 'Proforma';
+    }
+  };
+
   if (!localLoading && !selectedClient) {
     return (
       <div className="p-6">
@@ -771,9 +1309,15 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Before the return statement, add:
   let dropdownItems = null;
-  if (selectedClient && selectedClient.stage === 'Client signed agreement') {
+  if (selectedClient && selectedClient.stage === 'Client signed agreement')
     dropdownItems = (
       <>
+        <li>
+          <a className="flex items-center gap-3 py-3" onClick={() => setShowPaymentsPlanDrawer(true)}>
+            <BanknotesIcon className="w-5 h-5 text-black" />
+            Payments plan
+          </a>
+        </li>
         <li>
           <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
@@ -793,12 +1337,6 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('finances_and_payments_plan')}>
-            <BanknotesIcon className="w-5 h-5 text-black" />
-            Finances & Payments plan
-          </a>
-        </li>
-        <li>
           <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Unactivate/Spam')}>
             <NoSymbolIcon className="w-5 h-5 text-red-500" />
             <span className="text-red-500">Unactivate/Spam</span>
@@ -806,7 +1344,7 @@ const Clients: React.FC<ClientsProps> = ({
         </li>
       </>
     );
-  } else if (selectedClient && selectedClient.stage === 'payment_request_sent') {
+  else if (selectedClient && selectedClient.stage === 'payment_request_sent') {
     dropdownItems = (
       <>
         <li>
@@ -838,17 +1376,32 @@ const Clients: React.FC<ClientsProps> = ({
   } else if (selectedClient && !['unactivated', 'client_signed', 'client_declined', 'Mtng sum+Agreement sent'].includes(selectedClient.stage)) {
     dropdownItems = (
       <>
-        <li>
-          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
-            <CalendarDaysIcon className="w-5 h-5 text-black" />
-            Schedule Meeting
-          </a>
-        </li>
-        {selectedClient.stage === 'meeting_scheduled' && (
+        {selectedClient.stage === 'meeting_scheduled' ? (
+          <>
+            <li>
+              <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+                <CalendarDaysIcon className="w-5 h-5 text-black" />
+                Schedule Meeting
+              </a>
+            </li>
+            <li>
+              <a className="flex items-center gap-3 py-3" onClick={() => setShowRescheduleDrawer(true)}>
+                <ArrowPathIcon className="w-5 h-5 text-black" />
+                Meeting ReScheduling
+              </a>
+            </li>
+            <li>
+              <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Meeting Ended')}>
+                <CheckCircleIcon className="w-5 h-5 text-black" />
+                Meeting Ended
+              </a>
+            </li>
+          </>
+        ) : (
           <li>
-            <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Meeting Ended')}>
-              <CheckCircleIcon className="w-5 h-5 text-black" />
-              Meeting Ended
+            <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+              <CalendarDaysIcon className="w-5 h-5 text-black" />
+              Schedule Meeting
             </a>
           </li>
         )}
@@ -930,17 +1483,29 @@ const Clients: React.FC<ClientsProps> = ({
       </div>
       {/* Client Details Section */}
       <div className="bg-base-100 rounded-lg shadow-lg w-full">
-        {/* Client Header with Basic Info - moved to top */}
-        <div className="border-b border-base-200 w-full px-4 pt-2 pb-2">
-          {/* Top row: client details (with stage badge) and Stages/Actions buttons on the same height */}
-          <div className="w-full relative flex flex-col md:flex-row md:items-start md:gap-8 min-h-[110px]">
-            {/* Center: Stages/Actions buttons and amount badge - absolutely centered */}
-            <div className="hidden md:flex flex-col items-center absolute left-1/2 top-0 -translate-x-1/2 z-10">
-              <div className="flex gap-3 mb-2 mt-2">
+        {/* NEW: Two-row client info header above tabs */}
+        <div className="w-full pt-6 pb-2 pl-12 flex flex-col gap-1 border-b border-base-200">
+          <div className="flex flex-wrap items-start justify-between gap-6 w-full">
+            {/* Left: Top row - Name, lead number, badge */}
+            <div className="flex flex-wrap items-center gap-4 min-w-0">
+              <h2 className="text-2xl font-bold flex items-center gap-3 mb-0 truncate text-black">{selectedClient ? selectedClient.name : ''}</h2>
+              <span className="text-lg font-semibold text-black">{selectedClient ? selectedClient.lead_number : ''}</span>
+              <span>{selectedClient ? getStageBadge(selectedClient.stage) : ''}</span>
+            </div>
+            {/* Right: Controls */}
+            <div className="flex flex-col md:flex-row items-end md:items-center gap-3 md:gap-4 mt-4 md:mt-0 pr-12">
+              <div className="flex gap-2 items-center">
+                {/* Balance badge first */}
+                {selectedClient && (
+                  <div className="badge badge-lg badge-success gap-2 p-4 text-lg">
+                    <span className="font-bold text-2xl">{getCurrencySymbol(selectedClient.balance_currency || selectedClient.proposal_currency)}</span>
+                    <span className="font-bold text-xl">{selectedClient.balance || '0'}</span>
+                  </div>
+                )}
                 <div className="dropdown">
                   <label 
                     tabIndex={0} 
-                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
+                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[120px]"
                   >
                     <span>Stages</span>
                     <ChevronDownIcon className="w-5 h-5" />
@@ -949,84 +1514,50 @@ const Clients: React.FC<ClientsProps> = ({
                     {dropdownItems}
                   </ul>
                 </div>
-                {selectedClient && selectedClient.stage === 'created' && (
-                  <div className="dropdown">
+                <div className="relative">
+                  <div className="dropdown dropdown-end">
                     <label 
                       tabIndex={0} 
-                      className="btn bg-black text-white hover:bg-gray-800 border-none gap-2 min-w-[160px]"
+                      className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[120px]"
                     >
-                      <span>Assign to</span>
+                      <span>Actions</span>
                       <ChevronDownIcon className="w-5 h-5" />
                     </label>
-                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Anna Zh')}>Anna Zh</a></li>
-                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Mindi')}>Mindi</a></li>
-                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Sarah L')}>Sarah L</a></li>
-                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('David K')}>David K</a></li>
-                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Yael')}>Yael</a></li>
-                      <li><a className="flex items-center gap-3 py-3" onClick={() => updateScheduler('Michael R')}>Michael R</a></li>
+                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60 right-0">
+                      <li>
+                        <a className="flex items-center gap-3 py-3" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
+                          <NoSymbolIcon className="w-5 h-5 text-red-500" />
+                          <span className="text-red-500">Unactivate</span>
+                        </a>
+                      </li>
+                      <li><a className="flex items-center gap-3 py-3"><StarIcon className="w-5 h-5 text-black" />Ask for recommendation</a></li>
+                      <li><a className="flex items-center gap-3 py-3" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
+                      <li><a className="flex items-center gap-3 py-3"><Squares2X2Icon className="w-5 h-5 text-black" />Create Sub-Lead</a></li>
                     </ul>
                   </div>
-                )}
-                <div className="dropdown">
-                  <label 
-                    tabIndex={0} 
-                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[160px]"
-                  >
-                    <span>Actions</span>
-                    <ChevronDownIcon className="w-5 h-5" />
-                  </label>
-                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                    <li>
-                      <a className="flex items-center gap-3 py-3" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
-                        <NoSymbolIcon className="w-5 h-5 text-red-500" />
-                        <span className="text-red-500">Unactivate</span>
-                      </a>
-                    </li>
-                    <li><a className="flex items-center gap-3 py-3"><StarIcon className="w-5 h-5 text-black" />Ask for recommendation</a></li>
-                    <li><a className="flex items-center gap-3 py-3" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
-                    <li><a className="flex items-center gap-3 py-3"><Squares2X2Icon className="w-5 h-5 text-black" />Create Sub-Lead</a></li>
-                  </ul>
                 </div>
-              </div>
-              {/* Amount badge centered under buttons */}
-              <div className="flex flex-col items-center mb-2">
-                {selectedClient && (
-                  <div className="badge badge-lg badge-success gap-2 p-4">
-                    <span className="text-2xl font-bold">{getCurrencySymbol(selectedClient.balance_currency || selectedClient.proposal_currency)}</span>
-                    <span className="text-xl">{selectedClient.balance || '0'}</span>
-                  </div>
-                )}
-              </div>
-            </div>
-            {/* Left: Client details stacked vertically */}
-            <div className="flex flex-col gap-2 w-full md:w-auto md:max-w-xs pl-6">
-              <h2 className="text-2xl font-bold">{selectedClient ? selectedClient.name : ''}</h2>
-              <div className="flex items-center gap-2">
-                <HashtagIcon className="w-5 h-5 text-primary" />
-                <span className="text-lg">{selectedClient ? selectedClient.lead_number : ''}</span>
-                <span className="ml-2">{selectedClient ? getStageBadge(selectedClient.stage) : ''}</span>
-              </div>
-              <div className="flex items-start gap-2">
-                <EnvelopeIcon className="w-5 h-5 text-primary mt-1" />
-                <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="text-primary hover:underline break-all">
-                  {selectedClient ? selectedClient.email : '---'}
-                </a>
-              </div>
-              <div className="flex items-start gap-2">
-                <PhoneIcon className="w-5 h-5 text-primary mt-1" />
-                <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="text-primary hover:underline">
-                  {selectedClient ? selectedClient.phone : '---'}
-                </a>
-              </div>
-              <div className="flex items-start gap-2">
-                <DocumentTextIcon className="w-5 h-5 text-primary mt-1" />
-                <span>{selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'} <span className="text-base-content/70">•</span> <span className="text-primary">{selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}</span></span>
               </div>
             </div>
           </div>
-          {/* Stage badge - mobile only, below name (not on desktop) */}
-          <div className="block md:hidden w-full mt-1">{selectedClient ? getStageBadge(selectedClient.stage) : ''}</div>
+          {/* Second row: Email, phone, category/topic */}
+          <div className="flex flex-wrap items-center gap-6 mt-2 text-base text-gray-700">
+            <div className="flex items-center gap-2">
+              <EnvelopeIcon className="w-5 h-5 text-primary" />
+              <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="text-black hover:underline break-all">
+                {selectedClient ? selectedClient.email : '---'}
+              </a>
+            </div>
+            <div className="flex items-center gap-2">
+              <PhoneIcon className="w-5 h-5 text-primary" />
+              <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="text-black hover:underline">
+                {selectedClient ? selectedClient.phone : '---'}
+              </a>
+            </div>
+            <div className="flex items-center gap-2">
+              <DocumentTextIcon className="w-5 h-5 text-primary" />
+              <span className="text-black">{selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'} <span className="text-base-content/70">•</span> <span className="text-black">{selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}</span></span>
+            </div>
+          </div>
         </div>
         {/* Add a bigger gap before the tabs */}
         <div className="mt-10"></div>
@@ -1686,6 +2217,423 @@ const Clients: React.FC<ClientsProps> = ({
       {localLoading && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
           <span className="loading loading-spinner loading-lg text-primary"></span>
+        </div>
+      )}
+
+      {/* 3. Add the rescheduling drawer skeleton after the Schedule Meeting drawer */}
+      {showRescheduleDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Overlay */}
+          <div className="fixed inset-0 bg-black/30" onClick={() => setShowRescheduleDrawer(false)} />
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowRescheduleDrawer(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
+              <div>
+                <label className="block font-semibold mb-2">Select a meeting to cancel:</label>
+                {rescheduleMeetings.length === 0 ? (
+                  <div className="text-base-content/60">No meetings scheduled for this client.</div>
+                ) : (
+                  <ul className="space-y-2">
+                    {rescheduleMeetings.map((meeting) => (
+                      <li key={meeting.id} className="flex items-center gap-3 p-2 rounded-lg border border-base-200">
+                        <input
+                          type="radio"
+                          name="meetingToDelete"
+                          checked={meetingToDelete === meeting.id}
+                          onChange={() => setMeetingToDelete(meeting.id)}
+                        />
+                        <span className="font-medium">{meeting.meeting_date} {meeting.meeting_time} ({meeting.meeting_location})</span>
+                        <span className="text-xs text-base-content/60 ml-2">Manager: {meeting.meeting_manager}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="divider">New Meeting Details</div>
+              <div className="flex flex-col gap-3">
+                <label className="block font-semibold mb-1">Location</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={rescheduleFormData.location}
+                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
+                >
+                  <option value="Teams">Teams</option>
+                  <option value="Jerusalem Office">Jerusalem Office</option>
+                  <option value="Tel Aviv Office">Tel Aviv Office</option>
+                  <option value="Phone Call">Phone Call</option>
+                  <option value="WhatsApp">WhatsApp</option>
+                </select>
+                <label className="block font-semibold mb-1">Date</label>
+                <input
+                  type="date"
+                  className="input input-bordered w-full"
+                  value={rescheduleFormData.date}
+                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }))}
+                  min={new Date().toISOString().split('T')[0]}
+                />
+                <label className="block font-semibold mb-1">Time</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={rescheduleFormData.time}
+                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, time: e.target.value }))}
+                >
+                  {Array.from({ length: 32 }, (_, i) => {
+                    const hour = Math.floor(i / 2) + 8;
+                    const minute = i % 2 === 0 ? '00' : '30';
+                    const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
+                    return (
+                      <option key={timeOption} value={timeOption}>{timeOption}</option>
+                    );
+                  })}
+                </select>
+                <label className="block font-semibold mb-1">Manager (Optional)</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={rescheduleFormData.manager}
+                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))}
+                >
+                  <option value="">Select a manager...</option>
+                  {['Anna Zh', 'Mindi', 'Sarah L', 'David K'].map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+                <label className="block font-semibold mb-1">Helper (Optional)</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={rescheduleFormData.helper}
+                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))}
+                >
+                  <option value="">Select a helper...</option>
+                  {['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'].map((h) => (
+                    <option key={h} value={h}>{h}</option>
+                  ))}
+                </select>
+                <label className="block font-semibold mb-1">Amount (Optional)</label>
+                <input
+                  type="number"
+                  className="input input-bordered w-full"
+                  value={rescheduleFormData.amount}
+                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, amount: e.target.value }))}
+                  min={0}
+                  placeholder="Enter amount..."
+                />
+                <label className="block font-semibold mb-1">Currency</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={rescheduleFormData.currency}
+                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, currency: e.target.value }))}
+                >
+                  {currencyOptions.map((opt: any) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="mt-6 flex justify-end">
+                <button
+                  className="btn btn-primary px-8"
+                  onClick={handleRescheduleMeeting}
+                  disabled={
+                    !meetingToDelete ||
+                    !rescheduleFormData.date ||
+                    !rescheduleFormData.time
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payments Plan Drawer */}
+      {showPaymentsPlanDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Overlay */}
+          <div className="fixed inset-0 bg-black/30" onClick={() => setShowPaymentsPlanDrawer(false)} />
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-xl bg-white h-full shadow-2xl p-0 flex flex-col animate-slideInRight z-50 overflow-y-auto border-l border-gray-200">
+            {/* Header */}
+            <div className="flex items-center justify-between px-8 pt-8 pb-4 border-b border-gray-100">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">{selectedClient?.lead_number} - {selectedClient?.name}</h3>
+                <div className="text-base font-medium text-gray-500 mt-1">Payments plan</div>
+              </div>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowPaymentsPlanDrawer(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            {/* Summary Section */}
+            <div className="px-8 pt-6 pb-4 border-b border-gray-100 bg-gray-50">
+              <div className="space-y-2">
+                {/* Edit button above total balance */}
+                <div className="flex justify-end mb-1">
+                  {!editingBalance && (
+                    <button className="btn btn-xs btn-link text-gray-500 hover:text-primary px-0" onClick={() => setEditingBalance(true)}>
+                      Edit
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-base text-gray-600">Total balance</span>
+                  {editingBalance ? (
+                    <input
+                      type="number"
+                      className="input input-bordered w-32 text-right"
+                      value={editedBalance}
+                      onChange={e => setEditedBalance(Number(e.target.value))}
+                      onBlur={() => { setEditingBalance(false); /* Optionally save */ }}
+                      autoFocus
+                    />
+                  ) : (
+                    <span className="text-xl font-bold text-gray-900">₪{(selectedClient?.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-base text-gray-600">VAT (18%)</span>
+                  <span className="text-base font-semibold text-gray-900">₪{((selectedClient?.balance || 0) * 0.18).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-base text-gray-600">Total incl. VAT</span>
+                  <span className="text-lg font-bold text-primary">₪{((selectedClient?.balance || 0) * 1.18).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                </div>
+              </div>
+            </div>
+            {/* Auto plan dropdown */}
+            <div className="px-8 pt-6 pb-2">
+              <label className="block font-semibold mb-1 text-gray-700">Auto plan</label>
+              <select
+                className="select select-bordered w-full max-w-xs"
+                value={autoPlan}
+                onChange={e => setAutoPlan(e.target.value)}
+              >
+                {autoPlanOptions.map(opt => (
+                  <option key={opt} value={opt}>{opt}</option>
+                ))}
+              </select>
+            </div>
+            {/* Add new payment button */}
+            <div className="px-8 pb-2">
+              <button className="btn btn-outline w-full" onClick={() => setShowAddPayment(true)}>
+                Add new payment
+              </button>
+            </div>
+            {/* Add Payment Form */}
+            {showAddPayment && (
+              <div className="bg-white rounded-xl shadow p-6 border border-gray-200 mb-6 mx-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
+                  <div>
+                    <label className="block font-semibold mb-1">Client:</label>
+                    <select className="select select-bordered w-full" value={newPayment.client} onChange={e => setNewPayment({ ...newPayment, client: e.target.value })}>
+                      <option>----------</option>
+                      <option>{selectedClient?.name}</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Order:</label>
+                    <select className="select select-bordered w-full" value={newPayment.order} onChange={e => setNewPayment({ ...newPayment, order: e.target.value })}>
+                      <option>Intermediate Payment</option>
+                      <option>First Payment</option>
+                      <option>Final Payment</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Date:</label>
+                    <input type="date" className="input input-bordered w-full" value={newPayment.date} onChange={e => setNewPayment({ ...newPayment, date: e.target.value })} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Currency:</label>
+                    <select className="select select-bordered w-full" value={newPayment.currency} onChange={e => setNewPayment({ ...newPayment, currency: e.target.value })}>
+                      <option>₪</option>
+                      <option>$</option>
+                      <option>€</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Value:</label>
+                    <input type="number" className="input input-bordered w-full text-right" value={newPayment.value} onChange={e => setNewPayment({ ...newPayment, value: parseFloat(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Applicants:</label>
+                    <input type="text" className="input input-bordered w-full" value={newPayment.applicants} onChange={e => setNewPayment({ ...newPayment, applicants: e.target.value })} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <label className="block font-semibold mb-1">Notes:</label>
+                    <textarea className="textarea textarea-bordered w-full min-h-[100px]" value={newPayment.notes} onChange={e => setNewPayment({ ...newPayment, notes: e.target.value })} />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button className="btn btn-primary px-8" onClick={() => { setPayments([...payments, newPayment]); setShowAddPayment(false); }}>
+                    Save
+                  </button>
+                </div>
+              </div>
+            )}
+            {/* Save Plan Button */}
+            <div className="mt-8 flex justify-end px-8 pb-8">
+              <button 
+                className="btn btn-primary btn-lg px-8 shadow-lg hover:scale-105 transition-transform"
+                onClick={handleSavePaymentsPlan}
+                disabled={isSavingPaymentPlan}
+              >
+                {isSavingPaymentPlan ? (
+                  <>
+                    <span className="loading loading-spinner loading-sm"></span>
+                    Saving...
+                  </>
+                ) : (
+                  'Save Plan'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProformaDrawer && proformaData && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Overlay */}
+          <div className="fixed inset-0 bg-black/30" onClick={() => setShowProformaDrawer(false)} />
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-2xl bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50 overflow-y-auto">
+            {/* Header */}
+            <div className="mb-6 p-4 rounded-lg bg-blue-100 border border-blue-200">
+              <div className="text-lg font-semibold mb-1">
+                Client: <span className="text-blue-700 font-bold">{proformaData.client}</span> <span className="inline-block text-blue-700 ml-2"><svg className="w-5 h-5 inline" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 8v4l3 3" /></svg></span> <span className="text-blue-900 font-bold">Missing Tax ID!</span>
+              </div>
+              <div className="text-md font-medium">Payment: <span className="text-blue-900 font-bold">₪ {proformaData.payment.toLocaleString()}</span></div>
+              <div className="text-md">Language: {proformaData.language}</div>
+              <div className="text-md mt-2">
+                <span className="text-blue-900 font-bold">Proforma Name: </span>
+                <span className="text-blue-700">{generatedProformaName}</span>
+              </div>
+            </div>
+            <div className="mb-4 text-xl font-bold">Language: {proformaData.language}</div>
+            {/* Editable table */}
+            <table className="table w-full mb-4">
+              <thead>
+                <tr>
+                  <th>Description</th>
+                  <th>Qty</th>
+                  <th>Rate</th>
+                  <th>Total</th>
+                  {!proformaData?.isViewMode && <th>Delete</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {proformaData.rows.map((row: any, idx: number) => (
+                  <tr key={idx}>
+                    <td>
+                      <input 
+                        className="input input-bordered w-full" 
+                        value={row.description} 
+                        onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
+                        readOnly={proformaData?.isViewMode}
+                      />
+                    </td>
+                    <td>
+                      <input 
+                        className="input input-bordered w-16" 
+                        type="number" 
+                        value={row.qty} 
+                        onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
+                        readOnly={proformaData?.isViewMode}
+                      />
+                    </td>
+                    <td>
+                      <input 
+                        className="input input-bordered w-24" 
+                        type="number" 
+                        value={row.rate} 
+                        onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
+                        readOnly={proformaData?.isViewMode}
+                      />
+                    </td>
+                    <td><input className="input input-bordered w-24" type="number" value={row.total} readOnly /></td>
+                    {!proformaData?.isViewMode && (
+                      <td><a className="text-blue-600 hover:underline cursor-pointer" onClick={() => handleDeleteProformaRow(idx)}>delete</a></td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {!proformaData?.isViewMode && (
+              <a className="text-blue-600 hover:underline cursor-pointer mb-2" onClick={handleAddProformaRow}>add row</a>
+            )}
+            {/* Totals */}
+            <div className="mb-2 flex gap-4 items-center">
+              <div>Total:</div>
+              <input className="input input-bordered w-32" type="number" value={proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)} readOnly />
+            </div>
+            <div className="mb-4 flex gap-4 items-center">
+              <div>Total with VAT:</div>
+              <input className="input input-bordered w-32" type="number" value={proformaData.addVat ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)} readOnly />
+            </div>
+            {/* VAT, currency, bank, notes */}
+            <div className="mb-4 flex items-center gap-4">
+              <label className="flex items-center gap-2">
+                <input 
+                  type="checkbox" 
+                  checked={proformaData.addVat} 
+                  onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
+                  disabled={proformaData?.isViewMode}
+                /> Add vat
+              </label>
+              <label>Currency:
+                <select 
+                  className="select select-bordered ml-2" 
+                  value={proformaData.currency} 
+                  onChange={e => setProformaData((prev: any) => ({ ...prev, currency: e.target.value }))}
+                  disabled={proformaData?.isViewMode}
+                >
+                  <option value="₪">₪</option>
+                  <option value="$">$</option>
+                  <option value="€">€</option>
+                </select>
+              </label>
+              <label>Bank account:
+                <select 
+                  className="select select-bordered ml-2" 
+                  value={proformaData.bankAccount} 
+                  onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
+                  disabled={proformaData?.isViewMode}
+                >
+                  <option value="">---------</option>
+                  <option value="1">Account 1</option>
+                  <option value="2">Account 2</option>
+                </select>
+              </label>
+            </div>
+            <div className="mb-4">
+              <label>Notes:</label>
+              <textarea 
+                className="textarea textarea-bordered w-full min-h-[100px]" 
+                value={proformaData.notes} 
+                onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
+                readOnly={proformaData?.isViewMode}
+              />
+            </div>
+            {proformaData?.isViewMode ? (
+              <div className="flex gap-2">
+                <button className="btn btn-primary w-32" onClick={() => setShowProformaDrawer(false)}>Close</button>
+                <button className="btn btn-outline w-32" onClick={() => {
+                  // Remove view mode flag to allow editing
+                  setProformaData((prev: any) => ({ ...prev, isViewMode: false }));
+                }}>Edit</button>
+              </div>
+            ) : (
+              <>
+                <button className="btn btn-primary w-32" onClick={handleCreateProforma}>Create</button>
+                <div className="mt-2 text-xs text-gray-500">* Once you create, CHANGES CANNOT be made!</div>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

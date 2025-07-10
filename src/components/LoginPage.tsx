@@ -56,79 +56,77 @@ const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className={`min-h-screen flex relative overflow-hidden ${showSuccessAnim ? 'bg-gradient-to-br from-blue-600 via-purple-800 to-purple-900 animated-gradient' : 'bg-white'}`}>
-      {/* Text logo at top left, tighter to corner */}
-      <div className="absolute top-0 left-0 p-4 z-20 flex items-center gap-2">
-        {/* Modern king's crown SVG icon */}
-        <svg xmlns="http://www.w3.org/2000/svg" className="w-7 h-7" viewBox="0 0 24 24" fill="black">
+    <div className={`min-h-screen w-full flex items-center justify-center relative overflow-hidden ${showSuccessAnim ? 'bg-gradient-to-br from-blue-600 via-purple-800 to-purple-900 animated-gradient' : ''}`}>
+      {/* Full background image */}
+      {!showSuccessAnim && (
+        <img src="/DATA_IMAGE.jpg" alt="Leadify Illustration" className="absolute inset-0 w-full h-full object-cover z-0" style={{ objectFit: 'cover', objectPosition: 'center', minHeight: '100vh', minWidth: '100vw' }} onError={e => { e.currentTarget.style.display = 'none'; }} />
+      )}
+      {/* Logo at the top left */}
+      <div className="absolute top-0 left-0 z-30 flex items-center gap-3 pt-4 pl-6">
+        <svg xmlns="http://www.w3.org/2000/svg" className="w-10 h-10" viewBox="0 0 24 24" fill="white">
           <path d="M2 19h20M2 7l5.586 5.586a2 2 0 0 0 2.828 0L12 11l1.586 1.586a2 2 0 0 0 2.828 0L22 7l-3 12H5L2 7z"/>
-          <circle cx="4" cy="4" r="2" fill="black"/>
-          <circle cx="12" cy="4" r="2" fill="black"/>
-          <circle cx="20" cy="4" r="2" fill="black"/>
+          <circle cx="4" cy="4" r="2" fill="white"/>
+          <circle cx="12" cy="4" r="2" fill="white"/>
+          <circle cx="20" cy="4" r="2" fill="white"/>
         </svg>
-        <span className="text-xl md:text-2xl font-extrabold text-primary tracking-tight" style={{ letterSpacing: '-0.03em' }}>
+        <span className="text-3xl font-extrabold text-white tracking-tight" style={{ letterSpacing: '-0.03em' }}>
           Rainmaker Queen 2.0
         </span>
       </div>
-      {/* Left: Login Form Content (no card) */}
-      <div className="flex-1 flex items-center justify-center z-10">
-        <form className={`w-full max-w-lg flex flex-col items-start gap-6 px-8 py-12 ${showSuccessAnim ? 'opacity-0 pointer-events-none' : 'opacity-100'}`} onSubmit={handleSignIn}>
-          <div>
-            <h1 className="text-4xl font-bold mb-4 text-primary">Welcome to RMQ 2.0</h1>
-            <p className="text-black font-medium mb-4">
-              Please sign in to access the System.
-            </p>
-          </div>
-          <div className="w-full mt-2">
-            <label className="block font-semibold mb-1 text-black">Email</label>
-            <div className="relative">
-              <input
-                type="email"
-                className="input input-bordered w-full pl-10 bg-white text-black placeholder-gray-500 border-gray-300 focus:border-primary"
-                placeholder="you@email.com"
-                value={email}
-                onChange={e => setEmail(e.target.value)}
-                required
-                autoFocus
-              />
-              <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            </div>
-          </div>
-          <div className="w-full">
-            <label className="block font-semibold mb-1 text-black">Password</label>
-            <input
-              type="password"
-              className="input input-bordered w-full bg-white text-black placeholder-gray-500 border-gray-300 focus:border-primary"
-              placeholder="Password"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              required
-            />
-          </div>
-          <button
-            type="submit"
-            className="btn btn-primary w-full mb-2 flex items-center justify-center gap-2 text-lg font-semibold"
-            disabled={loading}
-          >
-            {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
-            Sign in
-          </button>
-          <button
-            type="button"
-            className="btn btn-outline w-full"
-            onClick={handleMagicLink}
-            disabled={loading || !email}
-          >
-            Send Magic Link
-          </button>
-        </form>
-      </div>
-      {/* Right: Large Image (hidden on mobile) */}
+      {/* Glassy login box (only show when not in welcome animation) */}
       {!showSuccessAnim && (
-        <div className="hidden md:flex w-1/2 h-full flex-col items-center justify-center p-8">
-          <img src="/DATA_IMAGE.jpg" alt="Leadify Illustration" className="w-full h-[90vh] object-cover rounded-3xl mx-auto my-auto" onError={e => { e.currentTarget.style.display = 'none'; }} />
-          <div className="w-full flex justify-center mt-6">
-            <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
+        <div className="absolute inset-0 flex items-center justify-center z-10">
+          <div className="backdrop-blur-xl bg-black/40 border border-white/20 rounded-3xl shadow-2xl p-10 w-full max-w-md flex flex-col items-center" style={{ boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.5)' }}>
+            <form className="w-full flex flex-col items-start gap-6" onSubmit={handleSignIn}>
+              <div>
+                <h2 className="text-3xl font-extrabold mb-2 text-white text-center w-full" style={{ letterSpacing: '-0.03em' }}>
+                  Welcome to RMQ 2.0
+                </h2>
+                <p className="text-base text-white mb-6 text-center w-full">Please sign in.</p>
+              </div>
+              <div className="w-full mt-2">
+                <label className="block font-semibold mb-1 text-white">Email</label>
+                <div className="relative">
+                  <input
+                    type="email"
+                    className="input input-bordered w-full pl-10 bg-white/20 text-white placeholder-white/60 border-white/30 focus:border-primary"
+                    placeholder="you@email.com"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                  <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-white/60" />
+                </div>
+              </div>
+              <div className="w-full">
+                <label className="block font-semibold mb-1 text-white">Password</label>
+                <input
+                  type="password"
+                  className="input input-bordered w-full bg-white/20 text-white placeholder-white/60 border-white/30 focus:border-primary"
+                  placeholder="Password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                className="btn bg-white/20 hover:bg-white/30 text-white border-white/30 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform"
+                disabled={loading}
+              >
+                {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
+                Sign in
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline border-white/30 text-white hover:bg-white/20 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform"
+                onClick={handleMagicLink}
+                disabled={loading || !email}
+              >
+                Send Magic Link
+              </button>
+            </form>
           </div>
         </div>
       )}
@@ -139,9 +137,9 @@ const LoginPage: React.FC = () => {
           <div className="text-3xl font-bold text-white slide-fade-in">Welcome, {welcomeName}!</div>
         </div>
       )}
-      {/* Copyright Notice (mobile only) */}
-      <div className="md:hidden absolute left-0 right-0 flex justify-center" style={{ bottom: '5vh' }}>
-        <span className="text-primary text-lg font-semibold text-center drop-shadow-lg">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
+      {/* Copyright at bottom left */}
+      <div className="absolute left-0 bottom-0 z-20 pb-6 pl-6">
+        <span className="text-white text-lg font-semibold drop-shadow-lg">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
       </div>
     </div>
   );

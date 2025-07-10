@@ -25,6 +25,7 @@ import AISummaryPanel from './AISummaryPanel';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 interface Attachment {
   id: string;
@@ -273,6 +274,9 @@ async function fetchCurrentUserFullName() {
 }
 
 const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+  if (!client) {
+    return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
+  }
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [editIndex, setEditIndex] = useState<number|null>(null);
   const [editData, setEditData] = useState({ date: '', time: '', content: '', observation: '', length: '' });
@@ -307,23 +311,186 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [composeOverlayOpen, setComposeOverlayOpen] = useState(false);
   const quillRef = useRef<ReactQuill>(null);
   const [activeWhatsAppId, setActiveWhatsAppId] = useState<string | null>(null);
+  const location = useLocation();
+  const lastEmailRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+  // 1. Add state for WhatsApp messages from DB
+  const [whatsAppMessages, setWhatsAppMessages] = useState<any[]>([]);
 
-  // WhatsApp chat messages for the chat box (from manual_interactions)
-  const whatsAppChatMessages = (client.manual_interactions || [])
-    .filter((i: any) => i.kind === 'whatsapp')
-    .sort((a: any, b: any) => new Date(a.raw_date).getTime() - new Date(b.raw_date).getTime());
+  // Find the index of the last email in the sorted interactions
+  const sortedInteractions = [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+  const lastEmailIdx = sortedInteractions.map(row => row.kind).lastIndexOf('email');
 
-  // Fetch current user's full name from Supabase on mount
   useEffect(() => {
-    fetchCurrentUserFullName().then(name => setCurrentUserFullName(name));
-  }, []);
+    const params = new URLSearchParams(location.search);
+    if (params.get('focus') === 'email' && lastEmailIdx !== -1) {
+      // Open the email modal for the last email
+      setIsEmailModalOpen(true);
+      setActiveEmailId(sortedInteractions[lastEmailIdx].id.toString());
+      // Scroll to the last email
+      setTimeout(() => {
+        lastEmailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    }
+  }, [location.search, interactions.length]);
 
-  // Effect to combine and sort interactions whenever client data changes
+  useEffect(() => {
+    if (localStorage.getItem('openEmailModal') === 'true') {
+      // Wait for interactions to be loaded and emails to be available
+      if (interactions.length > 0 && emails.length > 0) {
+        if (lastEmailIdx !== -1) {
+          setIsEmailModalOpen(true);
+          setActiveEmailId(sortedInteractions[lastEmailIdx].id.toString());
+          setTimeout(() => {
+            lastEmailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 100);
+        }
+        localStorage.removeItem('openEmailModal');
+      } else {
+        // If emails aren't loaded yet, wait a bit and try again
+        const timeoutId = setTimeout(() => {
+          if (localStorage.getItem('openEmailModal') === 'true') {
+            if (interactions.length > 0 && emails.length > 0 && lastEmailIdx !== -1) {
+              setIsEmailModalOpen(true);
+              setActiveEmailId(sortedInteractions[lastEmailIdx].id.toString());
+              setTimeout(() => {
+                lastEmailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 100);
+            }
+            localStorage.removeItem('openEmailModal');
+          }
+        }, 2000); // Wait 2 seconds for emails to load
+        
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [interactions.length, emails.length, lastEmailIdx, sortedInteractions]);
+
+  // Handle WhatsApp modal opening from localStorage flag
+  useEffect(() => {
+    if (localStorage.getItem('openWhatsAppModal') === 'true') {
+      // Wait for interactions to be loaded
+      if (interactions.length > 0) {
+        setIsWhatsAppOpen(true);
+        localStorage.removeItem('openWhatsAppModal');
+      } else {
+        // If interactions aren't loaded yet, wait a bit and try again
+        const timeoutId = setTimeout(() => {
+          if (localStorage.getItem('openWhatsAppModal') === 'true') {
+            if (interactions.length > 0) {
+              setIsWhatsAppOpen(true);
+            }
+            localStorage.removeItem('openWhatsAppModal');
+          }
+        }, 2000); // Wait 2 seconds for interactions to load
+        
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [interactions.length, client.id]); // Add client.id dependency
+
+  // Close WhatsApp modal when client changes
+  useEffect(() => {
+    setIsWhatsAppOpen(false);
+    // Clear any stale flags when client changes
+    localStorage.removeItem('openWhatsAppModal');
+    localStorage.removeItem('whatsAppFromCalendar');
+  }, [client.id]);
+
+  // Handle WhatsApp modal close and navigation back to Calendar
+  const handleWhatsAppClose = () => {
+    setIsWhatsAppOpen(false);
+    
+    // Check if WhatsApp was opened from Calendar
+    if (localStorage.getItem('whatsAppFromCalendar') === 'true') {
+      localStorage.removeItem('whatsAppFromCalendar');
+      navigate('/calendar');
+    }
+  };
+
+  // 2. Fetch WhatsApp messages from DB when WhatsApp modal opens or client changes
+  useEffect(() => {
+    async function fetchWhatsAppMessages() {
+      if (!client?.id) return;
+      const { data, error } = await supabase
+        .from('whatsapp_messages')
+        .select('*')
+        .eq('lead_id', client.id)
+        .order('sent_at', { ascending: true });
+      if (!error && data) {
+        setWhatsAppMessages(data);
+      } else {
+        setWhatsAppMessages([]);
+      }
+    }
+    if (isWhatsAppOpen) {
+      fetchWhatsAppMessages();
+    }
+  }, [isWhatsAppOpen, client.id]);
+
+  // 3. On send, save to DB and refetch messages
+  const handleSendWhatsApp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!whatsAppInput.trim()) return;
+    const now = new Date();
+    let senderId = null;
+    let senderName = 'You';
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.id) {
+        const { data: userRow, error: userLookupError } = await supabase
+          .from('users')
+          .select('id, full_name, email')
+          .eq('auth_id', user.id)
+          .single();
+        if (!userLookupError && userRow) {
+          senderId = userRow.id;
+          senderName = userRow.full_name || userRow.email || 'You';
+        }
+      }
+      const { error: insertError } = await supabase
+        .from('whatsapp_messages')
+        .insert([
+          {
+            lead_id: client.id,
+            sender_id: senderId,
+            sender_name: senderName,
+            direction: 'out',
+            message: whatsAppInput,
+            sent_at: now.toISOString(),
+            status: 'sent',
+          }
+        ]);
+      if (insertError) {
+        toast.error('Failed to save WhatsApp message: ' + insertError.message);
+        return;
+      }
+      setWhatsAppInput('');
+      // Refetch messages
+      const { data, error } = await supabase
+        .from('whatsapp_messages')
+        .select('*')
+        .eq('lead_id', client.id)
+        .order('sent_at', { ascending: true });
+      if (!error && data) {
+        setWhatsAppMessages(data);
+      }
+      // Optionally, update interactions timeline
+      if (onClientUpdate) await onClientUpdate();
+    } catch (err) {
+      toast.error('Unexpected error saving WhatsApp message.');
+    }
+  };
+
+  // 4. Use whatsAppMessages for chat display
+  // Replace whatsAppChatMessages with whatsAppMessages in the modal rendering
+  // 5. In the timeline, merge WhatsApp messages from DB with other interactions
+  // In fetchAndCombineInteractions, fetch WhatsApp messages from DB and merge with manual_interactions and emails
   useEffect(() => {
     let isMounted = true;
     async function fetchAndCombineInteractions() {
-      // 1. Manual interactions (now includes WhatsApp messages)
-      const manualInteractions = client.manual_interactions || [];
+      // 1. Manual interactions (excluding WhatsApp)
+      const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp');
       // 2. Email interactions
       const clientEmails = (client as any).emails || [];
       const emailInteractions = clientEmails.map((e: any) => {
@@ -353,8 +520,32 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           status: e.status,
         };
       });
-      // Combine all (no direct WhatsApp fetch)
-      const combined = [...manualInteractions, ...emailInteractions];
+      // 3. WhatsApp messages from DB
+      let whatsAppDbMessages: any[] = [];
+      if (client?.id) {
+        const { data, error } = await supabase
+          .from('whatsapp_messages')
+          .select('*')
+          .eq('lead_id', client.id)
+          .order('sent_at', { ascending: true });
+        if (!error && data) {
+          whatsAppDbMessages = data.map((msg: any) => ({
+            id: msg.id,
+            date: new Date(msg.sent_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+            time: new Date(msg.sent_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+            raw_date: msg.sent_at,
+            employee: msg.sender_name || 'You',
+            direction: msg.direction,
+            kind: 'whatsapp',
+            length: '',
+            content: msg.message,
+            observation: '',
+            editable: false,
+          }));
+        }
+      }
+      // Combine all
+      const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages];
       const sorted = combined.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
       if (isMounted) setInteractions(sorted as Interaction[]);
       // Also update the local emails state for the modal
@@ -372,7 +563,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
     fetchAndCombineInteractions();
     return () => { isMounted = false; };
-  }, [client, currentUserFullName]);
+  }, [client, currentUserFullName, whatsAppMessages.length]);
 
   // This function now ONLY syncs with Graph and then triggers a full refresh
   const runGraphSync = useCallback(async () => {
@@ -672,12 +863,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       subject: email.subject,
     })),
     // WhatsApp messages
-    ...whatsAppChatMessages.map(msg => ({
+    ...whatsAppMessages.map(msg => ({
       type: 'whatsapp',
       direction: msg.direction === 'out' ? 'out' : 'in',
-      from: msg.employee,
-      to: msg.direction === 'out' ? client.name : msg.employee,
-      date: msg.time,
+      from: msg.sender_name || 'You',
+      to: client.name,
+      date: msg.date,
       content: msg.content,
     })),
   ].sort((a, b) => {
@@ -697,6 +888,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       (quillEditor as HTMLElement).style.padding = '18px 16px';
     }
   }, []);
+
+  useEffect(() => {
+    if (isWhatsAppOpen) {
+      console.log('WhatsApp client.id:', client.id);
+      console.log('WhatsApp messages:', whatsAppMessages);
+    }
+  }, [isWhatsAppOpen, whatsAppMessages, client.id]);
+
 
   return (
     <div className="p-8 flex flex-col lg:flex-row gap-8 items-start">
@@ -729,9 +928,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         {/* Single merged timeline for all interactions */}
         <div className="absolute left-3 top-0 bottom-0 w-2 rounded-full bg-gradient-to-b from-primary via-accent to-secondary shadow-lg border-2 border-primary/30" style={{ zIndex: 0, boxShadow: '0 0 16px 2px rgba(59,40,199,0.10)' }} />
         <div className="flex flex-col gap-12">
-          {[...interactions]
-            .sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime())
-            .map((row, idx) => {
+          {sortedInteractions.map((row, idx) => {
               // Date formatting
               const dateObj = new Date(row.raw_date);
               const day = dateObj.getDate().toString().padStart(2, '0');
@@ -791,7 +988,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               // Initials
               const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
               return (
-                <div key={row.id} className="relative flex items-start group cursor-pointer" onClick={() => {
+                <div
+                  key={row.id}
+                  ref={idx === lastEmailIdx ? lastEmailRef : null}
+                  className="relative flex items-start group cursor-pointer"
+                  onClick={() => {
                   if (row.kind === 'email') {
                     setIsEmailModalOpen(true);
                     setActiveEmailId(row.id.toString());
@@ -805,7 +1006,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     setActiveInteraction(row);
                     setDetailsDrawerOpen(true);
                   }
-                }}>
+                }}
+              >
                   {/* Timeline dot */}
                   <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
                     {icon}
@@ -1097,128 +1299,63 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         document.body
       )}
       {isWhatsAppOpen && createPortal(
-        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50">
-          <div className="bg-base-100 rounded-none shadow-none w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden relative animate-fadeInUp">
-            {/* Header */}
-            <div className="flex items-center gap-3 px-4 py-3 bg-primary text-white">
-              <div className="avatar placeholder">
-                <div className="bg-primary text-white rounded-full w-10 h-10 flex items-center justify-center font-bold">
-                  {client.name.split(' ').map(n => n[0]).join('').toUpperCase()}
-                </div>
+        <div className="fixed inset-0 z-[999] flex flex-col bg-white w-full h-full max-w-none max-h-none">
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-base-200 bg-white">
+            <h3 className="text-xl font-bold">WhatsApp Chat with {client.name}</h3>
+            <button className="btn btn-ghost btn-sm" onClick={handleWhatsAppClose}>
+              <XMarkIcon className="w-6 h-6" />
+            </button>
+          </div>
+          {/* Chat Messages */}
+          <div className="flex-1 overflow-y-auto flex flex-col w-full min-h-20 p-8">
+            {whatsAppMessages.length === 0 ? (
+              <div className="text-center p-8 text-base-content/70">
+                No WhatsApp messages found for this client.<br/>
+                <span className="text-xs text-error">(Debug: client.id = {client.id})</span>
               </div>
-              <div className="flex-1">
-                <div className="font-semibold text-lg">{client.name}</div>
-                <div className="text-xs text-primary-content/80">online</div>
-              </div>
-              <button className="btn btn-ghost btn-sm text-white" onClick={() => setIsWhatsAppOpen(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            {/* Chat Area */}
-            <div className="flex-1 overflow-y-auto px-4 py-6 bg-green-50" style={{ background: 'url(https://www.transparenttextures.com/patterns/cubes.png)', backgroundSize: 'auto' }}>
-              <div className="flex flex-col gap-5">
-                {whatsAppChatMessages.map((msg: any, idx: number) => (
-                  <div key={msg.id || idx} className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[75%] px-4 py-2 rounded-2xl shadow text-sm relative ${msg.direction === 'out' ? 'bg-primary text-white rounded-br-md' : 'bg-white text-gray-900 rounded-bl-md border border-base-200'}`} style={{ wordBreak: 'break-word' }}>
-                      {msg.content}
-                      <div className="flex items-center gap-1 mt-1 text-[10px] opacity-70 justify-end">
-                        <span>{msg.time}</span>
-                        {msg.direction === 'out' && (
-                          <span className="inline-block align-middle">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-blue-400" style={{ display: 'inline' }}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                          </span>
-                        )}
-                      </div>
+            ) : (
+              whatsAppMessages.map((msg: any, idx: number) => (
+                <div key={msg.id || idx} className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'} w-full mb-2`}>
+                  <div className={
+                    `rounded-2xl px-6 py-3 shadow text-base max-w-[70%] break-words ` +
+                    (msg.direction === 'out'
+                      ? 'bg-primary text-white self-end'
+                      : 'bg-base-200 text-black self-start border border-base-200')
+                  }>
+                    {msg.message}
+                    <div className="flex items-center gap-1 mt-2 text-xs opacity-70 justify-end">
+                      <span>{msg.time || (msg.sent_at ? new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')}</span>
+                      {msg.direction === 'out' && (
+                        <span className="inline-block align-middle">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-blue-200" style={{ display: 'inline' }}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                        </span>
+                      )}
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
-            {/* Input Area */}
-            <form className="flex items-center gap-2 px-4 py-3 bg-base-200" onSubmit={async e => {
-              e.preventDefault();
-              if (whatsAppInput.trim()) {
-                const now = new Date();
-                const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                setInteractions(prev => [
-                  {
-                    id: `whatsapp_${now.getTime()}`,
-                    date: now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-                    time: timeStr,
-                    raw_date: now.toISOString(),
-                    employee: accounts[0]?.name || 'You',
-                    direction: 'out',
-                    kind: 'whatsapp',
-                    length: '',
-                    content: whatsAppInput,
-                    observation: '',
-                    editable: true,
-                  },
-                  ...prev
-                ]);
-                // Save WhatsApp message to DB (Supabase)
-                try {
-                  const { data: { user } } = await supabase.auth.getUser();
-                  let senderId = null;
-                  let senderName = 'You';
-                  if (user?.id) {
-                    // Look up the internal user id by auth_id
-                    const { data: userRow, error: userLookupError } = await supabase
-                      .from('users')
-                      .select('id, full_name, email')
-                      .eq('auth_id', user.id)
-                      .single();
-                    if (userLookupError || !userRow) {
-                      toast.error('Could not find your user profile in the database.');
-                      return;
-                    }
-                    senderId = userRow.id;
-                    if (userRow.full_name) senderName = userRow.full_name;
-                    else if (userRow.email) senderName = userRow.email;
-                  }
-                  console.log('[WhatsApp Insert] lead_id:', client.id, 'sender_id:', senderId, 'sender_name:', senderName);
-                  const { error: insertError } = await supabase
-                    .from('whatsapp_messages')
-                    .insert([
-                      {
-                        lead_id: client.id,
-                        sender_id: senderId,
-                        sender_name: senderName,
-                        direction: 'out',
-                        message: whatsAppInput,
-                        sent_at: now.toISOString(),
-                        status: 'sent',
-                      }
-                    ]);
-                  if (insertError) {
-                    console.error('[WhatsApp Insert Error]', insertError);
-                    toast.error('Failed to save WhatsApp message: ' + insertError.message);
-                  }
-                } catch (err) {
-                  // Optionally show error
-                  console.error('Failed to save WhatsApp message to DB', err);
-                  toast.error('Unexpected error saving WhatsApp message.');
-                }
-              }
-            }}>
-              <button type="button" className="btn btn-ghost btn-circle">
-                <FaceSmileIcon className="w-6 h-6 text-gray-500" />
-              </button>
-              <button type="button" className="btn btn-ghost btn-circle">
-                <PaperClipIcon className="w-6 h-6 text-gray-500" />
-              </button>
-              <input
-                type="text"
-                className="input input-bordered flex-1 rounded-full"
-                placeholder="Type a message"
-                value={whatsAppInput}
-                onChange={e => setWhatsAppInput(e.target.value)}
-              />
-              <button type="submit" className="btn btn-success btn-circle">
-                <PaperAirplaneIcon className="w-6 h-6" />
-              </button>
-            </form>
+                </div>
+              ))
+            )}
           </div>
+          {/* Input Area */}
+          <form className="flex items-center gap-2 px-6 py-4 border-t border-base-200 bg-white" style={{ minHeight: 72 }} onSubmit={handleSendWhatsApp}>
+            <button type="button" className="btn btn-ghost btn-circle">
+              <FaceSmileIcon className="w-6 h-6 text-gray-500" />
+            </button>
+            <button type="button" className="btn btn-ghost btn-circle">
+              <PaperClipIcon className="w-6 h-6 text-gray-500" />
+            </button>
+            <input
+              type="text"
+              className="input input-bordered flex-1 rounded-full"
+              placeholder="Type your message..."
+              value={whatsAppInput}
+              onChange={e => setWhatsAppInput(e.target.value)}
+            />
+            <button type="submit" className="btn btn-primary btn-circle">
+              <PaperAirplaneIcon className="w-6 h-6" />
+            </button>
+          </form>
         </div>,
         document.body
       )}

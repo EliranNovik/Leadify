@@ -76,6 +76,40 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const documentLink = client.onedrive_folder_link || '#';
   const hasDocumentLink = !!client.onedrive_folder_link;
 
+  // I need an expert feature
+  const [isAssigningExpert, setIsAssigningExpert] = useState(false);
+  const handleAssignRandomExpert = async () => {
+    setIsAssigningExpert(true);
+    // Fetch all available experts from leads with a non-empty expert field
+    const { data, error } = await supabase
+      .from('leads')
+      .select('expert')
+      .not('expert', 'is', null)
+      .neq('expert', '')
+      .limit(100);
+    if (error || !data || data.length === 0) {
+      setIsAssigningExpert(false);
+      alert('No available experts found.');
+      return;
+    }
+    // Get unique expert names
+    const experts = Array.from(new Set(data.map((row: any) => row.expert).filter(Boolean)));
+    if (experts.length === 0) {
+      setIsAssigningExpert(false);
+      alert('No available experts found.');
+      return;
+    }
+    // Pick one at random
+    const randomExpert = experts[Math.floor(Math.random() * experts.length)];
+    // Save to DB
+    await supabase
+      .from('leads')
+      .update({ expert: randomExpert })
+      .eq('id', client.id);
+    setIsAssigningExpert(false);
+    if (onClientUpdate) await onClientUpdate();
+  };
+
   // Save section/eligibility to DB
   const handleSectionChange = async (value: string) => {
     setSelectedSection(value);
@@ -306,7 +340,18 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       <div className="card bg-base-100 shadow-lg p-6">
         <div className="flex flex-col md:flex-row md:items-center md:gap-8 gap-4">
           <div className="flex-1">
-            <div className="text-2xl font-bold mb-1">Expert: <span className="text-primary">{expertName}</span></div>
+            <div className="flex items-center gap-3 text-2xl font-bold mb-1">
+              <span>Expert: <span className="text-primary">{expertName}</span></span>
+              {(!client.expert || client.expert === '---' || client.expert === 'Not assigned') && (
+                <button
+                  className="btn btn-primary btn-sm ml-2"
+                  onClick={handleAssignRandomExpert}
+                  disabled={isAssigningExpert}
+                >
+                  {isAssigningExpert ? 'Assigning...' : 'I need an expert'}
+                </button>
+              )}
+            </div>
             <div className="flex items-center gap-2 mt-2 mb-2">
               <span className="text-lg font-medium">status:</span>
               <span className={`rounded-full px-5 py-2 text-white font-bold text-lg shadow-md transition-colors duration-200

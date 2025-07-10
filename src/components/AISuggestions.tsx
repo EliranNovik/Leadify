@@ -43,6 +43,51 @@ const mockSuggestions: Suggestion[] = [
     action: 'Update Profile',
     dueDate: 'Today',
     context: 'Meeting notes available'
+  },
+  // New reminder card
+  {
+    id: '11',
+    type: 'reminder',
+    message: 'Do an archival research for client David Lee (L122325) as the meeting is tomorrow',
+    action: 'Start Research',
+    dueDate: 'Today',
+    context: 'Meeting scheduled for tomorrow'
+  },
+  // New urgent card
+  {
+    id: '12',
+    type: 'urgent',
+    message: 'Archival research done for client Emma Wilson (L122326). Contact client today',
+    action: 'Contact Client',
+    dueDate: 'Today',
+    context: 'Update client with research results'
+  },
+  // Extra card 1
+  {
+    id: '13',
+    type: 'important',
+    message: 'Send onboarding documents to new client Michael Green (L122329)',
+    action: 'Send Documents',
+    dueDate: 'Tomorrow',
+    context: 'Client signed agreement today'
+  },
+  // Extra card 2
+  {
+    id: '14',
+    type: 'reminder',
+    message: 'Schedule follow-up call with Sarah Cohen (L122330)',
+    action: 'Schedule Call',
+    dueDate: 'This week',
+    context: 'Initial consultation completed'
+  },
+  // Extra card 3
+  {
+    id: '15',
+    type: 'urgent',
+    message: 'Review payment status for Tom Anderson (L122331)',
+    action: 'Check Payment',
+    dueDate: 'Today',
+    context: 'Payment overdue by 2 days'
   }
 ];
 
@@ -124,34 +169,48 @@ const AISuggestions = forwardRef((props, ref) => {
     return matchesType && matchesSearch;
   });
 
+  const getTypeColor = (type: Suggestion['type']) => {
+    switch (type) {
+      case 'urgent': return 'border-red-500';
+      case 'important': return 'border-yellow-500';
+      case 'reminder': return 'border-green-500';
+      default: return 'border-gray-300';
+    }
+  };
+  const getDueColor = (type: Suggestion['type']) => {
+    switch (type) {
+      case 'urgent': return 'bg-red-100 text-red-700';
+      case 'important': return 'bg-yellow-100 text-yellow-800';
+      case 'reminder': return 'bg-green-100 text-green-700';
+      default: return 'bg-gray-100 text-gray-700';
+    }
+  };
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
-    <div className="card bg-white hover:bg-gray-50 transition-colors border border-gray-200">
-      <div className="card-body p-4">
-        <div className="flex items-start gap-3">
+    <div
+      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 min-h-[180px]"
+    >
+      <div className="flex items-start justify-between mb-2">
+        <div className="flex items-center gap-2">
           {getTypeIcon(suggestion.type)}
-          <div className="flex-1">
-            <div className="flex items-center justify-between">
-              <span className="badge badge-sm bg-gray-100 text-gray-800 font-semibold border-none">
-                {suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1)}
-              </span>
-              {suggestion.dueDate && (
-                <span className="text-sm text-gray-600">
-                  Due: {suggestion.dueDate}
-                </span>
-              )}
-            </div>
-            <p className="mt-2 text-sm text-gray-900 font-semibold">{suggestion.message}</p>
-            {suggestion.context && (
-              <p className="mt-1 text-sm text-gray-700">
-                {suggestion.context}
-              </p>
-            )}
-            <button className="btn btn-primary btn-sm mt-3 gap-2">
-              {suggestion.action}
-              <ArrowRightIcon className="w-4 h-4" />
-            </button>
-          </div>
+          <span className="font-semibold text-sm capitalize text-gray-700">{suggestion.type}</span>
         </div>
+        {suggestion.dueDate && (
+          <span className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold ${getDueColor(suggestion.type)}`}>
+            <ClockIcon className="w-4 h-4" /> Due: {suggestion.dueDate}
+          </span>
+        )}
+      </div>
+      <div className="flex-1">
+        <div className="font-bold text-lg text-gray-900 mb-1 leading-snug">{suggestion.message}</div>
+        {suggestion.context && (
+          <div className="text-sm text-gray-500 mb-2">{suggestion.context}</div>
+        )}
+      </div>
+      <div className="flex justify-start mt-2">
+        <button className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all">
+          {suggestion.action}
+          <ArrowRightIcon className="w-4 h-4 ml-1" />
+        </button>
       </div>
     </div>
   );
@@ -167,25 +226,24 @@ const AISuggestions = forwardRef((props, ref) => {
 
   return (
     <div ref={containerRef}>
-      <div className="bg-white rounded-xl shadow-lg p-4 w-full mb-6 border border-gray-200">
-        <div className="flex items-center justify-between pb-4 border-b border-gray-200">
-          <div className="flex items-center gap-2">
-            <SparklesIcon className="w-6 h-6 text-teal-500" />
-            <h2 className="text-xl font-semibold text-gray-900">AI Assistant Suggestions</h2>
-          </div>
-          <button 
-            className="btn btn-outline btn-sm text-gray-800 border-gray-300 bg-white hover:bg-gray-100"
-            onClick={() => setIsModalOpen(true)}
-          >
-            View All
-          </button>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <SparklesIcon className="w-6 h-6" style={{ color: '#3b28c7' }} />
+          <div className="text-2xl font-bold">RMQ AI NOTICE</div>
         </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
-          {mockSuggestions.slice(0, 2).map((suggestion) => (
-            <SuggestionCard key={suggestion.id} suggestion={suggestion} />
-          ))}
-        </div>
+        <button className="btn btn-sm btn-outline" style={{ borderColor: '#3b28c7', color: '#3b28c7' }} onClick={() => setIsModalOpen(true)}>View All</button>
+      </div>
+      <div
+        className="overflow-y-auto grid grid-cols-1 gap-4 mt-0 scrollbar-none"
+        style={{ maxHeight: '572px', scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+      >
+        {/* Hide scrollbar for Webkit browsers */}
+        <style>{`
+          .scrollbar-none::-webkit-scrollbar { display: none; }
+        `}</style>
+        {mockSuggestions.map((suggestion) => (
+          <SuggestionCard key={suggestion.id} suggestion={suggestion} />
+        ))}
       </div>
 
       {/* Modal for View All */}

@@ -10,27 +10,22 @@ interface Role {
   fieldName: string;
 }
 
-const fakeAssignees = [
-  '---',
-  'David',
-  'Sarah',
-  'Michael',
-  'Rachel',
-  'Daniel',
-  'Leah',
-  'Jonathan',
-  'Miriam',
-  'Jacob',
-  'Esther'
-];
+// Will be replaced by real users from DB
+const defaultAssignees = ['---'];
 
 const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+  const [allUsers, setAllUsers] = useState<{ full_name: string; role: string }[]>([]);
+  const [expertOptions, setExpertOptions] = useState<string[]>(defaultAssignees);
+  const [schedulerOptions, setSchedulerOptions] = useState<string[]>(defaultAssignees);
+  const [handlerOptions, setHandlerOptions] = useState<string[]>(defaultAssignees);
+  const [allUserOptions, setAllUserOptions] = useState<string[]>(defaultAssignees);
   const [roles, setRoles] = useState<Role[]>([
     { id: 'scheduler', title: 'Scheduler', assignee: '---', fieldName: 'scheduler' },
     { id: 'manager', title: 'Manager', assignee: '---', fieldName: 'manager' },
     { id: 'helper', title: 'Helper', assignee: '---', fieldName: 'helper' },
     { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert' },
     { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer' },
+    { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler' },
   ]);
 
   const [isEditing, setIsEditing] = useState(false);
@@ -44,10 +39,29 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       { id: 'helper', title: 'Helper', assignee: client.helper || '---', fieldName: 'helper' },
       { id: 'expert', title: 'Expert', assignee: client.expert || '---', fieldName: 'expert' },
       { id: 'closer', title: 'Closer', assignee: client.closer || '---', fieldName: 'closer' },
+      { id: 'handler', title: 'Handler', assignee: client.handler || '---', fieldName: 'handler' },
     ];
     setRoles(updatedRoles);
     setOriginalRoles(updatedRoles);
   }, [client]);
+
+  // Fetch all users from DB for dropdowns
+  useEffect(() => {
+    const fetchUsers = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('full_name, role')
+        .order('full_name', { ascending: true });
+      if (!error && data) {
+        setAllUsers(data);
+        setExpertOptions(['---', ...data.filter((u: any) => u.role === 'expert').map((u: any) => u.full_name)]);
+        setSchedulerOptions(['---', ...data.filter((u: any) => u.role === 'scheduler').map((u: any) => u.full_name)]);
+        setHandlerOptions(['---', ...data.filter((u: any) => u.role === 'handler').map((u: any) => u.full_name)]);
+        setAllUserOptions(['---', ...data.map((u: any) => u.full_name)]);
+      }
+    };
+    fetchUsers();
+  }, []);
 
   const handleRoleChange = (roleId: string, newAssignee: string) => {
     setRoles(roles.map(role => 
@@ -158,7 +172,14 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     value={role.assignee}
                     onChange={(e) => handleRoleChange(role.id, e.target.value)}
                   >
-                    {fakeAssignees.map((assignee) => (
+                    {(role.id === 'expert'
+                      ? expertOptions
+                      : role.id === 'scheduler'
+                        ? schedulerOptions
+                        : role.id === 'handler'
+                          ? handlerOptions
+                          : allUserOptions
+                    ).map((assignee) => (
                       <option key={assignee} value={assignee} className="text-black">
                         {assignee}
                       </option>

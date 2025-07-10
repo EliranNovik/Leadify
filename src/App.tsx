@@ -26,6 +26,8 @@ import CaseManagerPage from './components/CaseManagerPage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
 import CollectionPage from './pages/CollectionPage';
+import MyPerformancePage from './pages/MyPerformancePage';
+import ProformaViewPage from './pages/ProformaViewPage';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -124,7 +126,7 @@ const AppContent: React.FC = () => {
                 isOpen={isSidebarOpen}
                 onClose={() => setIsSidebarOpen(false)}
               />
-              <div className="flex-1 flex flex-col overflow-hidden md:pl-24 pl-6">
+              <div className="flex-1 flex flex-col overflow-hidden md:pl-24">
                 <Header 
                   onMenuClick={() => setIsSidebarOpen(true)} 
                   onSearchClick={() => setIsSearchOpen(prev => !prev)}
@@ -149,6 +151,8 @@ const AppContent: React.FC = () => {
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />
                     <Route path="/collection" element={<CollectionPage />} />
+                    <Route path="/performance" element={<MyPerformancePage />} />
+                    <Route path="/proforma/:id" element={<ProformaViewPage />} />
                   </Routes>
                 </main>
               </div>
