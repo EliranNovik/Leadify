@@ -112,6 +112,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   const navTabs = [
     {
       label: 'Calendar',
@@ -131,7 +143,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   ];
 
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
+    const handleClickOutside = (event: Event) => {
       if (
         searchContainerRef.current &&
         !searchContainerRef.current.contains(event.target as Node) &&
@@ -152,9 +164,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
 
+    // Add both mouse and touch events for better mobile support
     document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('touchstart', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('touchstart', handleClickOutside);
     };
   }, [showFilterDropdown]);
 
@@ -339,13 +354,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               <Bars3Icon className="w-6 h-6" />
             )}
           </button>
+          
+          {/* Calendar icon - Mobile only, positioned near hamburger */}
+          <Link
+            to="/calendar"
+            className={`md:hidden flex items-center justify-center p-2 rounded-lg font-medium transition-colors duration-200 ${location.pathname === '/calendar' ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
+            title="Calendar"
+          >
+            <CalendarIcon className={`w-6 h-6 ${location.pathname === '/calendar' ? 'text-white' : ''}`} style={location.pathname !== '/calendar' ? { color: '#3b28c7' } : {}} />
+          </Link>
+          
           <div className="h-16 flex items-center">
-            <Link to="/">
+            <Link to="/" className="hidden md:block">
               <span className="md:ml-4 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
-          {/* Nav Tabs */}
-          <nav className="flex gap-2 ml-4">
+          {/* Nav Tabs - Desktop only, filtered for mobile */}
+          <nav className="hidden md:flex gap-2 ml-4">
             {navTabs.map(tab => {
               const isActive = location.pathname === tab.path;
               const Icon = tab.icon;
@@ -364,20 +389,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         </div>
         
         {/* Search bar */}
-        <div className="flex-1 justify-center flex relative ml-[-32px] md:ml-[-48px]">
+        <div className="flex-1 justify-center flex relative ml-0 md:ml-[-48px]">
           <div 
             ref={searchContainerRef}
-            className={`relative ${isSearchActive ? 'w-full max-w-sm' : 'w-1'} transition-all duration-500 ease-out`}
-            onMouseEnter={() => {
+            className={`relative ${isSearchActive ? 'w-full max-w-2xl md:max-w-sm' : 'w-1'} transition-all duration-500 ease-out`}
+            onMouseEnter={!isMobile ? () => {
               setIsSearchActive(true);
               setTimeout(() => searchInputRef.current?.focus(), 100);
-            }}
+            } : undefined}
           >
             <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-500 ease-out`}>
               {/* Large search icon (always visible) */}
-              <span className="absolute left-4 flex items-center h-full pointer-events-none">
-                <MagnifyingGlassIcon className="w-8 h-8 text-cyan-900 drop-shadow-md" />
-              </span>
+              <button 
+                className={`absolute left-3 flex items-center h-full z-10 transition-opacity duration-300 ${isSearchActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+                onClick={() => {
+                  if (isMobile && !isSearchActive) {
+                    setIsSearchActive(true);
+                    setTimeout(() => searchInputRef.current?.focus(), 100);
+                  }
+                }}
+              >
+                <MagnifyingGlassIcon className={`${isMobile ? 'w-9 h-9' : 'w-8 h-8'} text-cyan-900 drop-shadow-md`} />
+              </button>
               <input
                 ref={searchInputRef}
                 type="text"
@@ -385,34 +418,46 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 value={searchValue}
                 onChange={handleSearchChange}
                 onFocus={handleSearchFocus}
+                onBlur={isMobile ? () => {
+                  // On mobile, close search if no value and no results
+                  if (!searchValue.trim() && searchResults.length === 0) {
+                    setTimeout(() => setIsSearchActive(false), 150);
+                  }
+                } : undefined}
                 className={`
-                  w-full bg-white/10 border border-white/20 shadow-lg text-cyan-800 placeholder-cyan-900 rounded-xl pl-14 pr-16 focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-300/40 transition-all duration-300
-                  ${isSearchActive ? 'opacity-100 visible' : 'opacity-0 invisible'}
-                  ${searchValue.trim() || searchResults.length > 0 ? 'pr-16' : ''}
+                  w-full bg-white/10 border border-white/20 shadow-lg text-cyan-800 placeholder-cyan-900 rounded-xl focus:outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-300/40 transition-all duration-300 search-input-placeholder
+                  ${isSearchActive ? 'opacity-100 visible pl-4' : 'opacity-0 invisible pl-14'}
+                  ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : 'pr-4'}
                 `}
-                style={{ height: 44, fontSize: 16, fontWeight: 500, letterSpacing: '-0.01em', boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined }}
+                style={{ 
+                  height: isMobile ? 36 : 32, 
+                  fontSize: isMobile ? 16 : 14, 
+                  fontWeight: 500, 
+                  letterSpacing: '-0.01em', 
+                  boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined 
+                }}
               />
               {/* Filter button inside input */}
               {isSearchActive && (
                 <button
                   type="button"
-                  className="absolute right-10 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm hidden md:block"
+                  className="absolute right-8 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm hidden md:block"
                   onClick={() => setShowFilterDropdown(v => !v)}
                   tabIndex={0}
                   title="Advanced Filters"
                 >
-                  <FunnelIcon className="w-6 h-6 text-cyan-900" />
+                  <FunnelIcon className="w-5 h-5 text-cyan-900" />
                 </button>
               )}
               {/* Clear search button (unchanged) */}
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
                   onClick={handleClearSearch}
-                  className="absolute right-2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400"
+                  className="absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400 hidden md:flex"
                   title="Clear search"
                   style={{ background: 'rgba(255,255,255,0.10)' }}
                 >
-                  <XMarkIcon className="w-4 h-4" />
+                  <XMarkIcon className="w-3 h-3" />
                 </button>
               )}
               {/* Advanced filter dropdown */}
@@ -696,6 +741,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           backdrop-filter: blur(16px);
           -webkit-backdrop-filter: blur(16px);
           border-radius: 1rem;
+        }
+        .search-input-placeholder::placeholder {
+          font-size: 14px !important;
+        }
+        @media (min-width: 768px) {
+          .search-input-placeholder::placeholder {
+            font-size: 12px !important;
+          }
         }
       `}</style>
     </>

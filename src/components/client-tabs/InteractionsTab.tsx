@@ -13,6 +13,7 @@ import {
   PaperAirplaneIcon,
   FaceSmileIcon,
   ChevronDownIcon,
+  SparklesIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useMsal } from '@azure/msal-react';
@@ -61,32 +62,147 @@ const contactMethods = [
 
 const stripSignatureAndQuotedText = (html: string): string => {
   if (!html) return '';
-  // This function looks for common markers of a reply/forward and truncates the email body there.
+  
+  // Convert HTML to plain text first for better processing
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = html;
+  let text = tempDiv.textContent || tempDiv.innerText || '';
+  
+  // Enhanced markers for Outlook signatures, timestamps, and quoted text
   const markers = [
+    // Outlook/Exchange specific
     '<div id="divRplyFwdMsg"',
     'class="gmail_quote"',
+    '<div class="WordSection1"',
+    '<div class="OutlookMessageHeader"',
+    'x-apple-data-detectors',
+    'class="Apple-interchange-newline"',
+    
+    // Reply/Forward indicators
     '<hr',
+    '-------- Original Message --------',
+    '________________________________',
+    '-----Original Message-----',
+    
+    // Headers
     '<strong>From:</strong>',
     '<b>From:</b>',
     'From:',
     'Sent:',
+    'Date:',
     'To:',
     'Cc:',
     'Subject:',
+    'Reply-To:',
+    
+    // Signatures and footers
     'Best regards,',
+    'Kind regards,',
+    'Sincerely,',
+    'Thank you,',
+    'Thanks,',
     'Decker Pex Levi Law Offices',
+    'Law Office',
+    'Attorney',
+    'Confidentiality Notice',
+    'This email is confidential',
+    'Please consider the environment',
+    
+    // Outlook automatic additions
+    'Sent from my iPhone',
+    'Sent from my iPad',
+    'Sent from Outlook',
+    'Get Outlook for',
+    
+    // Time-based patterns (regex-like matching for common timestamp formats)
   ];
 
+  // First pass: Find the earliest marker position in HTML
   let earliestPos = -1;
-
   for (const marker of markers) {
-    const pos = html.indexOf(marker);
+    const pos = html.toLowerCase().indexOf(marker.toLowerCase());
     if (pos !== -1 && (earliestPos === -1 || pos < earliestPos)) {
       earliestPos = pos;
     }
   }
 
-  return earliestPos !== -1 ? html.substring(0, earliestPos).trim() : html;
+  let cleanedHtml = earliestPos !== -1 ? html.substring(0, earliestPos).trim() : html;
+  
+  // Second pass: Remove common timestamp patterns from text
+  const timestampPatterns = [
+    // English patterns
+    /On\s+\w{3},?\s+\w{3}\s+\d{1,2},?\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*(AM|PM)/gi,
+    /On\s+\w+\s+\d{1,2},?\s+\d{4},?\s+at\s+\d{1,2}:\d{2}\s*(AM|PM)/gi,
+    /Sent:\s*\w+,?\s+\w+\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(AM|PM)/gi,
+    
+    // German Outlook patterns - "Am Fr., 11. Juli 2025 um 18:24 Uhr schrieb"
+    /Am\s+\w{2,3}\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}\s+Uhr\s+schrieb/gi,
+    // "Am Freitag, 11. Juli 2025 um 18:24 schrieb"
+    /Am\s+\w+,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}\s*(Uhr\s+)?schrieb/gi,
+    // Generic German date patterns
+    /\d{1,2}\.\s*\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}/gi,
+    
+    // French patterns - "Le ven. 11 juil. 2025 à 18:24"
+    /Le\s+\w{3}\.?\s+\d{1,2}\s+\w{4}\.?\s+\d{4}\s+à\s+\d{1,2}:\d{2}/gi,
+    
+    // Spanish patterns - "El vie, 11 jul 2025 a las 18:24"
+    /El\s+\w{3},?\s+\d{1,2}\s+\w{3}\s+\d{4}\s+a\s+las\s+\d{1,2}:\d{2}/gi,
+    
+    // Generic date-time patterns
+    /\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(AM|PM)?/gi,
+    /\d{1,2}-\d{1,2}-\d{4}\s+\d{1,2}:\d{2}/gi,
+    /\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}/gi,
+    
+    // "wrote:" patterns in multiple languages
+    /.*wrote:\s*$/gmi,
+    /.*schrieb:\s*$/gmi,
+    /.*écrit\s*:\s*$/gmi,
+    /.*escribió:\s*$/gmi,
+    
+    // Email signature indicators with Unicode characters
+    /‪.*?‬/g,  // Remove Unicode directional markers
+    /[\u200E\u200F\u202A-\u202E]/g,  // Remove other Unicode direction markers
+  ];
+
+  // Apply timestamp pattern removal
+  for (const pattern of timestampPatterns) {
+    cleanedHtml = cleanedHtml.replace(pattern, '');
+  }
+
+  // Additional cleaning for specific cases like your example
+  cleanedHtml = cleanedHtml
+    // Remove quoted email content that starts with email addresses
+    .replace(/<[^@\s]+@[^@\s>]+\.[^@\s>]+>/g, '')
+    // Remove everything after email addresses in angle brackets followed by text
+    .replace(/<.*?@.*?>/g, '')
+    // Remove lines that start with common quote indicators
+    .replace(/^[\s]*[>|]+.*$/gm, '')
+    // Remove "Von:" (German) / "From:" patterns
+    .replace(/Von:\s*.*$/gmi, '')
+    // Remove "Gesendet:" (German) / "Sent:" patterns  
+    .replace(/Gesendet:\s*.*$/gmi, '')
+    // Remove "An:" (German) / "To:" patterns
+    .replace(/An:\s*.*$/gmi, '')
+    // Remove "Betreff:" (German) / "Subject:" patterns
+    .replace(/Betreff:\s*.*$/gmi, '')
+    // Remove anything that looks like quoted email headers
+    .replace(/^\s*(Von|From|Gesendet|Sent|An|To|Betreff|Subject):\s*.*$/gmi, '')
+    // Remove Unicode directional text markers more aggressively
+    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')
+    // Remove the specific pattern from your example more aggressively
+    .replace(/Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}.*?schrieb\s*‫.*?‬\s*<.*?>/gi, '')
+    // Remove everything after patterns that indicate quoted content
+    .split(/(?:Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}|On\s+\w+,?\s+\w+\s+\d{1,2})/i)[0]
+    // Remove empty paragraphs and divs
+    .replace(/<p[^>]*>\s*<\/p>/gi, '')
+    .replace(/<div[^>]*>\s*<\/div>/gi, '')
+    .replace(/<br\s*\/?>\s*<br\s*\/?>/gi, '<br>')
+    // Clean up multiple spaces and newlines
+    .replace(/\s+/g, ' ')
+    .replace(/\n\s*\n/g, '\n')
+    .trim();
+
+  return cleanedHtml;
 };
 
 // Helper to acquire token, falling back to popup if needed
@@ -282,6 +398,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [editData, setEditData] = useState({ date: '', time: '', content: '', observation: '', length: '' });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [contactDrawerOpen, setContactDrawerOpen] = useState(false);
+  const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [newContact, setNewContact] = useState({
     method: 'email',
     date: '',
@@ -495,16 +612,75 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       const clientEmails = (client as any).emails || [];
       const emailInteractions = clientEmails.map((e: any) => {
         const emailDate = new Date(e.sent_at);
-        function stripHtml(html: string) {
-          if (!html) return '';
-          const tmp = document.createElement('div');
-          tmp.innerHTML = html;
-          return tmp.textContent || tmp.innerText || '';
+        
+        // Enhanced email body processing
+        function cleanEmailBody(htmlContent: string): string {
+          if (!htmlContent) return '';
+          
+          // First apply the signature and quoted text removal
+          let cleanedHtml = stripSignatureAndQuotedText(htmlContent);
+          
+          // Additional aggressive cleaning for timeline
+          cleanedHtml = cleanedHtml
+            // Split at common quoted content indicators and take only the first part
+            .split(/(?:Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4})/i)[0]
+            .split(/(?:On\s+\w+,?\s+\w+\s+\d{1,2})/i)[0]
+            .split(/(?:‪Am\s+)/i)[0]  // Handle Unicode marker
+            .split(/(?:Von:|From:|Gesendet:|Sent:)/i)[0]
+            // Remove any remaining quoted indicators
+            .replace(/‪.*?‬/g, '')  // Unicode directional markers
+            .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')  // All Unicode direction markers
+            .replace(/<.*?@.*?>/g, '')  // Email addresses in brackets
+            .trim();
+          
+          // Convert to plain text for timeline display
+          const tempDiv = document.createElement('div');
+          tempDiv.innerHTML = cleanedHtml;
+          let text = tempDiv.textContent || tempDiv.innerText || '';
+          
+          // Additional cleaning for timeline display
+          text = text
+            // Remove excessive whitespace
+            .replace(/\s+/g, ' ')
+            // Remove common Outlook artifacts
+            .replace(/\[cid:.*?\]/g, '')
+            // Remove email addresses that might still be there
+            .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '')
+            // Remove URLs for cleaner timeline view
+            .replace(/https?:\/\/[^\s]+/g, '[link]')
+            // Remove phone numbers in common formats
+            .replace(/\+?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '[phone]')
+            // Remove German/international artifacts
+            .replace(/Von:\s*/gi, '')
+            .replace(/Gesendet:\s*/gi, '')
+            .replace(/An:\s*/gi, '')
+            .replace(/Betreff:\s*/gi, '')
+            // Clean up punctuation
+            .replace(/[.]{3,}/g, '...')
+            // Remove standalone punctuation
+            .replace(/^\s*[.,;:]\s*/g, '')
+            .trim();
+          
+          return text;
         }
-        let body = e.body_preview || e.bodyPreview || e.subject || '';
-        body = stripHtml(body);
-        body = stripSignatureAndQuotedText(body);
-        if (body.length > 200) body = body.slice(0, 200) + '...';
+        
+        let body = e.body_preview || e.bodyPreview || '';
+        
+        // If we have HTML content, clean it properly
+        if (body) {
+          body = cleanEmailBody(body);
+        }
+        
+        // Fallback to subject if no body content
+        if (!body || body.trim().length === 0) {
+          body = e.subject || 'Email received';
+        }
+        
+        // Truncate for timeline display
+        if (body.length > 150) {
+          body = body.slice(0, 150) + '...';
+        }
+        
         return {
           id: e.message_id,
           date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
@@ -898,12 +1074,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
 
 
   return (
-    <div className="p-8 flex flex-col lg:flex-row gap-8 items-start">
-      <div className="relative pl-8 mt-8 flex-1 min-w-0">
-        {/* Contact Client Dropdown Button */}
-        <div className="w-full flex flex-row items-center gap-4 mb-6">
+    <div className="p-3 md:p-8 flex flex-col lg:flex-row gap-4 md:gap-8 items-start min-h-screen">
+      <div className="relative w-full flex-1 min-w-0">
+        {/* Header with Contact Client Dropdown and AI Smart Recap */}
+        <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-8">
           <div className="dropdown">
-            <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer">
+            <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center">
               <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
             </label>
             <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
@@ -924,37 +1100,63 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               </li>
             </ul>
           </div>
+          
+          {/* AI Smart Recap Button */}
+          <button 
+            className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto justify-center"
+            onClick={() => {
+              // Toggle AI summary panel on mobile, or scroll to it on desktop
+              if (window.innerWidth < 1024) {
+                // Mobile: show drawer with AI summary
+                setAiDrawerOpen(true);
+              } else {
+                // Desktop: scroll to AI panel
+                const aiPanel = document.querySelector('.ai-summary-panel');
+                if (aiPanel) {
+                  aiPanel.scrollIntoView({ behavior: 'smooth' });
+                }
+              }
+            }}
+          >
+            <SparklesIcon className="w-5 h-5" />
+            AI Smart Recap
+          </button>
         </div>
-        {/* Single merged timeline for all interactions */}
-        <div className="absolute left-3 top-0 bottom-0 w-2 rounded-full bg-gradient-to-b from-primary via-accent to-secondary shadow-lg border-2 border-primary/30" style={{ zIndex: 0, boxShadow: '0 0 16px 2px rgba(59,40,199,0.10)' }} />
-        <div className="flex flex-col gap-12">
-          {sortedInteractions.map((row, idx) => {
+        
+        {/* Timeline container with proper mobile layout */}
+        <div className="relative">
+          {/* Timeline line */}
+          <div className="absolute left-6 md:left-8 top-0 bottom-0 w-0.5 md:w-1 bg-gradient-to-b from-primary via-accent to-secondary" style={{ zIndex: 0 }} />
+          
+          <div className="space-y-8 md:space-y-12">
+            {sortedInteractions.map((row, idx) => {
               // Date formatting
               const dateObj = new Date(row.raw_date);
               const day = dateObj.getDate().toString().padStart(2, '0');
               const month = dateObj.toLocaleString('en', { month: 'short' });
               const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+              
               // Icon and color
               let icon, iconBg, cardBg, textGradient, avatarBg;
               if (row.direction === 'out') {
                 // Employee (Outgoing)
                 if (row.kind === 'sms') {
-                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
+                  icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 text-white" />;
                   iconBg = 'bg-purple-300';
                 } else if (row.kind === 'call') {
-                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
+                  icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 text-yellow-700" />;
                   iconBg = 'bg-yellow-100';
                 } else if (row.kind === 'whatsapp') {
-                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
+                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 text-green-700" />;
                   iconBg = 'bg-green-100';
                 } else if (row.kind === 'email') {
-                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
+                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 text-blue-700" />;
                   iconBg = 'bg-blue-100';
                 } else if (row.kind === 'office') {
-                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-orange-700" />;
                   iconBg = 'bg-orange-100';
                 } else {
-                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-gray-500" />;
                   iconBg = 'bg-gray-200';
                 }
                 cardBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600';
@@ -963,110 +1165,141 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               } else {
                 // Client (Ingoing)
                 if (row.kind === 'sms') {
-                  icon = <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />;
+                  icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 text-white" />;
                   iconBg = 'bg-purple-300';
                 } else if (row.kind === 'call') {
-                  icon = <PhoneIcon className="w-6 h-6 text-yellow-700" />;
+                  icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 text-yellow-700" />;
                   iconBg = 'bg-yellow-100';
                 } else if (row.kind === 'whatsapp') {
-                  icon = <FaWhatsapp className="w-6 h-6 text-green-700" />;
+                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 text-green-700" />;
                   iconBg = 'bg-green-100';
                 } else if (row.kind === 'email') {
-                  icon = <EnvelopeIcon className="w-6 h-6 text-blue-700" />;
+                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 text-blue-700" />;
                   iconBg = 'bg-blue-100';
                 } else if (row.kind === 'office') {
-                  icon = <UserIcon className="w-6 h-6 text-orange-700" />;
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-orange-700" />;
                   iconBg = 'bg-orange-100';
                 } else {
-                  icon = <UserIcon className="w-6 h-6 text-gray-500" />;
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-gray-500" />;
                   iconBg = 'bg-gray-200';
                 }
                 cardBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400';
                 textGradient = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 bg-clip-text text-transparent';
                 avatarBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white';
               }
+              
               // Initials
               const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
+              
               return (
                 <div
                   key={row.id}
                   ref={idx === lastEmailIdx ? lastEmailRef : null}
-                  className="relative flex items-start group cursor-pointer"
+                  className="relative pl-12 md:pl-16 cursor-pointer group"
                   onClick={() => {
-                  if (row.kind === 'email') {
-                    setIsEmailModalOpen(true);
-                    setActiveEmailId(row.id.toString());
-                  } else if (row.kind === 'whatsapp') {
-                    setIsWhatsAppOpen(true);
-                    setActiveWhatsAppId(row.id.toString());
-                  } else if (row.kind === 'call') {
-                    setActiveInteraction(row);
-                    setDetailsDrawerOpen(true);
-                  } else {
-                    setActiveInteraction(row);
-                    setDetailsDrawerOpen(true);
-                  }
-                }}
-              >
+                    if (row.kind === 'email') {
+                      setIsEmailModalOpen(true);
+                      setActiveEmailId(row.id.toString());
+                    } else if (row.kind === 'whatsapp') {
+                      setIsWhatsAppOpen(true);
+                      setActiveWhatsAppId(row.id.toString());
+                    } else if (row.kind === 'call') {
+                      setActiveInteraction(row);
+                      setDetailsDrawerOpen(true);
+                    } else {
+                      setActiveInteraction(row);
+                      setDetailsDrawerOpen(true);
+                    }
+                  }}
+                >
                   {/* Timeline dot */}
-                  <div className={`absolute left-0 top-2 w-8 h-8 rounded-full flex items-center justify-center shadow-md ring-4 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
+                  <div className={`absolute -left-3 md:-left-4 top-2 w-6 h-6 md:w-8 md:h-8 rounded-full flex items-center justify-center shadow-lg ring-2 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
                     {icon}
                   </div>
+                  
                   {/* Date/time */}
-                  <div className="w-28 text-right pr-4 pt-1 select-none">
-                    <div className="text-base font-semibold text-base-content/80">{day} {month},</div>
-                    <div className="text-sm text-base-content/60">{time}</div>
+                  <div className="mb-3">
+                    <div className="text-xs md:text-sm font-semibold text-gray-600">{day} {month}, {time}</div>
                   </div>
-                  {/* Card (summary only) */}
-                  <div className="ml-8 flex-1">
-                    <div className={`p-[2px] rounded-full ${cardBg} shadow-xl min-w-[400px] max-w-xl hover:shadow-2xl transition-all duration-150`}>
-                      <div className="bg-white rounded-full flex items-center gap-4 p-5">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${avatarBg} text-lg`}>{initials}</div>
-                        <div className="flex-1">
-                          <div className={`font-semibold text-base ${textGradient} mb-1`}>{row.employee}</div>
-                          <div className="flex flex-wrap gap-2 mb-1">
-                            {row.status && <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>{row.status}</span>}
-                            {row.length && row.length !== 'm' && <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white`}>{row.length}</span>}
-                            {row.content && (
-                              <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white max-w-xs truncate`} title={row.content}>{row.content}</span>
-                            )}
-                            {row.observation && (
-                              <span className={`px-3 py-2 rounded-full font-semibold shadow-sm text-xs ${cardBg.replace('bg-gradient-to-tr', 'bg-gradient-to-tr')} text-white max-w-xs truncate`} title={row.observation}>{row.observation}</span>
-                            )}
+                  
+                  {/* Card - Mobile optimized */}
+                  <div className="w-full pr-3 md:pr-6">
+                    <div className={`p-[1px] rounded-xl ${cardBg} shadow-lg hover:shadow-xl transition-all duration-200`}>
+                      <div className="bg-white rounded-xl p-3 md:p-4">
+                        <div className="flex items-center gap-3 mb-2">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${avatarBg} text-sm`}>
+                            {initials}
+                          </div>
+                          <div className={`font-semibold text-sm md:text-base ${textGradient} truncate`}>
+                            {row.employee}
                           </div>
                         </div>
+                        
+                        <div className="flex flex-wrap gap-1 text-xs mb-2">
+                          {row.status && (
+                            <span className={`px-2 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>
+                              {row.status}
+                            </span>
+                          )}
+                          {row.length && row.length !== 'm' && (
+                            <span className={`px-2 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white`}>
+                              {row.length}
+                            </span>
+                          )}
+                        </div>
+                        
+                        {row.content && (
+                          <div className="text-xs md:text-sm text-gray-700 break-words overflow-hidden">
+                            <div className="line-clamp-2">{row.content}</div>
+                          </div>
+                        )}
+                        
+                        {row.observation && (
+                          <div className="mt-2 text-xs text-gray-500 break-words overflow-hidden">
+                            <span className="font-medium">Note:</span> <span className="line-clamp-1">{row.observation}</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
                 </div>
               );
             })}
+          </div>
         </div>
       </div>
       {/* Right-side AI summary panel (hidden on mobile, sticky on desktop) */}
-      <div className="hidden lg:block w-full max-w-sm">
+      <div className="hidden lg:block w-full max-w-sm ai-summary-panel">
         <AISummaryPanel messages={aiSummaryMessages} />
       </div>
-      {/* Email Thread Modal (full screen, messenger-style compose) */}
+      {/* Email Thread Modal (mobile-friendly) */}
       {isEmailModalOpen && createPortal(
         <div className="fixed inset-0 bg-black/50 z-[999] flex items-start justify-center">
-          <div className="bg-base-100 rounded-none shadow-none w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden">
-            {/* Header: thread title, subject, templates, close */}
-            <div className="flex flex-wrap items-center gap-4 p-4 border-b border-base-300 bg-white">
-              <h3 className="text-xl font-bold whitespace-nowrap">Email Thread with {client.name}</h3>
+          <div className="bg-base-100 w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden">
+            {/* Header - Mobile optimized */}
+            <div className="flex flex-col gap-3 p-3 md:p-4 border-b border-base-300 bg-white">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg md:text-xl font-bold truncate">Email Thread with {client.name}</h3>
+                <button className="btn btn-ghost btn-sm btn-circle" onClick={() => setIsEmailModalOpen(false)}>
+                  <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+                </button>
+              </div>
+              
+              {/* Subject input - Full width on mobile */}
               <input
                 type="text"
-                className="input input-bordered flex-1 min-w-[180px] max-w-xs"
+                className="input input-bordered w-full text-sm md:text-base"
                 value={composeSubject}
                 onChange={e => setComposeSubject(e.target.value)}
                 placeholder="Subject"
-                style={{ minWidth: 120 }}
               />
-              <div className="flex flex-wrap gap-2">
+              
+              {/* Templates - Scrollable on mobile */}
+              <div className="flex gap-2 overflow-x-auto pb-1">
                 {emailTemplates.map(template => (
                   <button
                     key={template.name}
-                    className="btn btn-outline btn-xs"
+                    className="btn btn-outline btn-xs md:btn-sm whitespace-nowrap flex-shrink-0"
                     onClick={() => {
                       const uploadLink = 'https://portal.example.com/upload'; // Placeholder
                       const processedBody = template.body
@@ -1081,12 +1314,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   </button>
                 ))}
               </div>
-              <div className="flex-1" />
-              <button className="btn btn-ghost btn-sm btn-circle ml-auto" onClick={() => setIsEmailModalOpen(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
             </div>
-            {/* Conversation Body */}
+            {/* Conversation Body - Mobile optimized */}
             <div ref={(el) => {
               if (el && activeEmailId) {
                 const targetEmail = el.querySelector(`[data-email-id="${activeEmailId}"]`);
@@ -1097,7 +1326,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 }
                 setActiveEmailId(null); // Reset after scrolling
               }
-            }} className="flex-1 overflow-y-auto p-6 space-y-6">
+            }} className="flex-1 overflow-y-auto p-3 md:p-6 space-y-4 md:space-y-6">
               {emailsLoading ? (
                 <div className="text-center p-8">Loading email history...</div>
               ) : emails.length === 0 ? (
@@ -1109,29 +1338,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     <div 
                       key={email.id} 
                       data-email-id={email.id}
-                      className={`flex items-end gap-3 ${email.direction === 'outgoing' ? 'flex-row-reverse' : ''}`}
+                      className={`flex items-end gap-2 md:gap-3 ${email.direction === 'outgoing' ? 'flex-row-reverse' : ''}`}
                     >
                       <div className={`avatar placeholder ${email.direction === 'outgoing' ? 'hidden' : ''}`}>
-                        <div className="bg-neutral-focus text-neutral-content rounded-full w-10 h-10">
-                          <span>{client.name.charAt(0)}</span>
+                        <div className="bg-neutral-focus text-neutral-content rounded-full w-8 h-8 md:w-10 md:h-10">
+                          <span className="text-xs md:text-sm">{client.name.charAt(0)}</span>
                         </div>
                       </div>
-                      <div className={`chat-bubble max-w-2xl break-words ${email.direction === 'outgoing' ? 'chat-bubble-primary' : 'bg-base-200'}`}>
-                        <div className="flex justify-between items-center text-xs opacity-70 mb-2">
-                          <span className="font-bold">{email.from}</span>
-                          <span>{new Date(email.date).toLocaleString()}</span>
+                      <div className={`max-w-[85%] md:max-w-2xl break-words rounded-2xl p-3 md:p-4 ${email.direction === 'outgoing' ? 'bg-primary text-white' : 'bg-base-200'}`}>
+                        <div className="flex flex-col md:flex-row md:justify-between md:items-center text-xs opacity-70 mb-2 gap-1">
+                          <span className="font-bold truncate">{email.from}</span>
+                          <span className="text-xs">{new Date(email.date).toLocaleDateString()} {new Date(email.date).toLocaleTimeString()}</span>
                         </div>
-                        <div className="font-bold mb-2">{email.subject}</div>
-                        <div className="prose" dangerouslySetInnerHTML={{ __html: email.bodyPreview }} />
-                        {/* Incoming Attachments */}
+                        <div className="font-bold mb-2 text-sm md:text-base">{email.subject}</div>
+                        <div className="prose prose-sm md:prose max-w-none text-xs md:text-sm" dangerouslySetInnerHTML={{ 
+                          __html: stripSignatureAndQuotedText(email.bodyPreview || '') 
+                        }} />
+                        {/* Attachments */}
                         {email.attachments && email.attachments.length > 0 && (
-                          <div className="mt-4 pt-2 border-t border-black/10">
+                          <div className="mt-3 pt-2 border-t border-black/10">
                             <h4 className="font-semibold text-xs mb-2">Attachments:</h4>
-                            <div className="flex flex-wrap gap-2">
+                            <div className="flex flex-wrap gap-1 md:gap-2">
                               {email.attachments.map((att: Attachment) => (
                                 <button 
                                   key={att.id}
-                                  className="btn btn-outline btn-xs gap-1"
+                                  className="btn btn-outline btn-xs gap-1 text-xs"
                                   onClick={() => handleDownloadAttachment(email.id, att)}
                                   disabled={downloadingAttachments[att.id]}
                                 >
@@ -1140,7 +1371,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                                   ) : (
                                     <PaperClipIcon className="w-3 h-3" />
                                   )}
-                                  {att.name} ({(att.sizeInBytes / 1024).toFixed(1)} KB)
+                                  <span className="truncate max-w-[100px]">{att.name}</span>
                                 </button>
                               ))}
                             </div>
@@ -1151,14 +1382,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   ))
               )}
             </div>
-            {/* In-place expanding compose bar */}
+            
+            {/* Mobile-friendly compose form */}
             <form
-              className="flex items-end gap-2 p-4 border-t border-gray-200 bg-white"
-              style={{ minHeight: bodyFocused ? 350 : 72, transition: 'min-height 0.2s' }}
+              className="flex flex-col gap-3 p-3 md:p-4 border-t border-gray-200 bg-white"
               onSubmit={e => { e.preventDefault(); handleSendEmail(); setBodyFocused(false); }}
             >
-              <input type="text" className="input input-bordered w-48" value={client.email} disabled style={{ minWidth: 120 }} />
-              <div className="flex-1 flex flex-col">
+              {/* To field - hidden on mobile, visible on desktop */}
+              <div className="hidden md:block">
+                <input type="text" className="input input-bordered w-full" value={client.email} disabled />
+              </div>
+              
+              {/* Compose editor */}
+              <div className="flex-1">
                 <ReactQuill
                   ref={quillRef}
                   value={composeBody}
@@ -1167,22 +1403,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   onBlur={() => setBodyFocused(false)}
                   placeholder="Write your email here..."
                   style={{
-                    minHeight: bodyFocused ? 300 : 60,
-                    maxHeight: 400,
+                    minHeight: bodyFocused ? 200 : 100,
+                    maxHeight: 300,
                     background: 'white',
                     borderRadius: 12,
                     border: '1.5px solid #e3dbfa',
                     boxShadow: bodyFocused ? '0 0 0 2px #a78bfa, 0 2px 16px 0 rgba(59,40,199,0.08)' : 'none',
-                    fontSize: 16,
+                    fontSize: 14,
                     fontFamily: 'system-ui, Arial, sans-serif',
-                    lineHeight: 1.7,
-                    padding: '18px 16px',
+                    lineHeight: 1.6,
                   }}
                   modules={{
                     toolbar: [
-                      [{ size: [false, 'large', 'huge'] }],
-                      [{ header: [1, 2, false] }],
-                      ['bold', 'italic', 'underline', 'strike'],
+                      ['bold', 'italic', 'underline'],
                       [{ list: 'ordered' }, { list: 'bullet' }],
                       ['link'],
                       ['clean'],
@@ -1191,29 +1424,52 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   theme="snow"
                 />
               </div>
-              <div className="flex flex-col gap-1 items-center justify-end">
-                {/* Attachments */}
-                <label htmlFor="file-upload" className="btn btn-outline btn-sm w-10 h-10 flex items-center justify-center p-0">
-                  <PaperClipIcon className="w-5 h-5" />
-                </label>
-                <input id="file-upload" type="file" className="hidden" onChange={e => e.target.files && handleAttachmentUpload(e.target.files)} />
-                {/* Show attached files */}
-                {composeAttachments.length > 0 && (
-                  <div className="flex flex-col gap-1 mt-1">
-                    {composeAttachments.map((att, index) => (
-                      <div key={index} className="flex items-center gap-1 text-xs bg-base-200 rounded px-2 py-1">
-                        <span>{att.name}</span>
-                        <button type="button" className="btn btn-ghost btn-xs p-0" onClick={() => setComposeAttachments(prev => prev.filter(a => a.name !== att.name))}>
-                          <XMarkIcon className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
+              
+              {/* Attachments and send */}
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <label htmlFor="file-upload" className="btn btn-outline btn-sm">
+                    <PaperClipIcon className="w-4 h-4" />
+                    <span className="hidden md:inline ml-1">Attach</span>
+                  </label>
+                  <input id="file-upload" type="file" className="hidden" onChange={e => e.target.files && handleAttachmentUpload(e.target.files)} />
+                  
+                  {/* Show attached files count on mobile */}
+                  {composeAttachments.length > 0 && (
+                    <span className="text-xs text-gray-500">
+                      {composeAttachments.length} file{composeAttachments.length > 1 ? 's' : ''} attached
+                    </span>
+                  )}
+                </div>
+                
+                <button type="submit" className="btn btn-primary" disabled={sending}>
+                  {sending ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      <span className="hidden md:inline ml-2">Sending...</span>
+                    </>
+                  ) : (
+                    <>
+                      <PaperAirplaneIcon className="w-4 h-4" />
+                      <span className="hidden md:inline ml-2">Send</span>
+                    </>
+                  )}
+                </button>
               </div>
-              <button type="submit" className="btn btn-primary px-8 h-12" disabled={sending} style={{ minWidth: 80 }}>
-                {sending ? 'Sending...' : 'Send'}
-              </button>
+              
+              {/* Show attached files on desktop */}
+              {composeAttachments.length > 0 && (
+                <div className="hidden md:flex flex-wrap gap-2">
+                  {composeAttachments.map((att, index) => (
+                    <div key={index} className="flex items-center gap-2 text-xs bg-base-200 rounded-lg px-3 py-2">
+                      <span className="truncate max-w-[200px]">{att.name}</span>
+                      <button type="button" className="btn btn-ghost btn-xs p-0" onClick={() => setComposeAttachments(prev => prev.filter(a => a.name !== att.name))}>
+                        <XMarkIcon className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </form>
           </div>
         </div>,
@@ -1386,6 +1642,30 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               <button className="btn btn-primary px-8" onClick={() => setDetailsDrawerOpen(false)}>
                 Close
               </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      
+      {/* AI Smart Recap Drawer for Mobile */}
+      {aiDrawerOpen && createPortal(
+        <div className="fixed inset-0 z-[999] flex lg:hidden">
+          {/* Overlay */}
+          <div className="fixed inset-0 bg-black/50" onClick={() => setAiDrawerOpen(false)} />
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-[999]">
+            <div className="flex items-center justify-between p-6 border-b border-base-300 bg-gradient-to-r from-purple-600 to-indigo-600">
+              <div className="flex items-center gap-3">
+                <SparklesIcon className="w-6 h-6 text-white" />
+                <h3 className="text-xl font-bold text-white">AI Smart Recap</h3>
+              </div>
+              <button className="btn btn-ghost btn-sm text-white hover:bg-white/20" onClick={() => setAiDrawerOpen(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-hidden">
+              <AISummaryPanel messages={aiSummaryMessages} />
             </div>
           </div>
         </div>,

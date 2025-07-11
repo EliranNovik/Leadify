@@ -228,7 +228,7 @@ const Dashboard: React.FC = () => {
     ],
   };
   // Score Board state
-  const [scoreTab, setScoreTab] = React.useState("Today");
+  const [scoreTab, setScoreTab] = React.useState("Tables");
   const [flippedCards, setFlippedCards] = React.useState<Set<string>>(new Set());
 
   // Get the current month name
