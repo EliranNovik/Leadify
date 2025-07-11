@@ -125,15 +125,17 @@ const AppContent: React.FC = () => {
                 userInitials={userInitials}
                 isOpen={isSidebarOpen}
                 onClose={() => setIsSidebarOpen(false)}
+                onOpenAIChat={() => setIsAiChatOpen(true)}
               />
               <div className="flex-1 flex flex-col overflow-hidden md:pl-24">
                 <Header 
-                  onMenuClick={() => setIsSidebarOpen(true)} 
+                  onMenuClick={() => setIsSidebarOpen(prev => !prev)} 
                   onSearchClick={() => setIsSearchOpen(prev => !prev)}
                   isSearchOpen={isSearchOpen}
                   setIsSearchOpen={setIsSearchOpen}
                   appJustLoggedIn={appJustLoggedIn}
                   onOpenAIChat={() => setIsAiChatOpen(true)}
+                  isMenuOpen={isSidebarOpen}
                 />
                 <main className="flex-1 overflow-x-hidden overflow-y-auto">
                   <Routes>

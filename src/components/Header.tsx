@@ -30,6 +30,7 @@ interface HeaderProps {
   setIsSearchOpen: (isOpen: boolean) => void;
   appJustLoggedIn?: boolean;
   onOpenAIChat?: () => void;
+  isMenuOpen?: boolean;
 }
 
 interface Notification {
@@ -71,7 +72,7 @@ const mockNotifications: Notification[] = [
   }
 ];
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -331,12 +332,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
         {/* Left section with menu and logo */}
         <div className="flex-1 justify-start flex items-center gap-4 overflow-hidden">
-          <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label="Open menu">
-            <Bars3Icon className="w-6 h-6" />
+          <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
+            {isMenuOpen ? (
+              <XMarkIcon className="w-6 h-6" />
+            ) : (
+              <Bars3Icon className="w-6 h-6" />
+            )}
           </button>
           <div className="h-16 flex items-center">
             <Link to="/">
-              <span className="md:ml-4 text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+              <span className="md:ml-4 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
           {/* Nav Tabs */}
@@ -391,7 +396,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               {isSearchActive && (
                 <button
                   type="button"
-                  className="absolute right-10 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm"
+                  className="absolute right-10 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm hidden md:block"
                   onClick={() => setShowFilterDropdown(v => !v)}
                   tabIndex={0}
                   title="Advanced Filters"
@@ -605,7 +610,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
           {/* AI Assistant Button */}
           <button
-            className="btn btn-ghost btn-circle flex items-center justify-center"
+            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
             title="Open AI Assistant"
             onClick={handleAIClick}
           >

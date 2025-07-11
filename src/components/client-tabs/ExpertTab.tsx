@@ -329,109 +329,123 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="p-6 space-y-8">
+    <div className="p-6 space-y-6">
       {/* Header */}
-      <div className="flex items-center gap-2 mb-4">
-        <AcademicCapIcon className="w-6 h-6 text-primary" />
-        <h3 className="text-xl font-semibold">Expert Assignment</h3>
+      <div className="flex items-center gap-3 mb-8">
+        <div className="p-2 bg-blue-100 rounded-lg">
+          <AcademicCapIcon className="w-6 h-6 text-blue-600" />
+        </div>
+        <div>
+          <h3 className="text-2xl font-bold text-gray-900">Expert Assignment</h3>
+          <p className="text-base text-gray-500">Case evaluation and expert opinions</p>
+        </div>
       </div>
 
-      {/* Main Card */}
-      <div className="card bg-base-100 shadow-lg p-6">
-        <div className="flex flex-col md:flex-row md:items-center md:gap-8 gap-4">
-          <div className="flex-1">
-            <div className="flex items-center gap-3 text-2xl font-bold mb-1">
-              <span>Expert: <span className="text-primary">{expertName}</span></span>
-              {(!client.expert || client.expert === '---' || client.expert === 'Not assigned') && (
-                <button
-                  className="btn btn-primary btn-sm ml-2"
-                  onClick={handleAssignRandomExpert}
-                  disabled={isAssigningExpert}
-                >
-                  {isAssigningExpert ? 'Assigning...' : 'I need an expert'}
-                </button>
-              )}
+      {/* Expert Information */}
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <h4 className="text-xl font-semibold text-gray-900">Expert Information</h4>
+        </div>
+        <div className="p-6">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
+                <span className="text-2xl font-bold text-gray-900">{expertName}</span>
+                {(!client.expert || client.expert === '---' || client.expert === 'Not assigned') && (
+                  <button
+                    className="btn btn-sm bg-purple-600 hover:bg-purple-700 text-white border-none"
+                    onClick={handleAssignRandomExpert}
+                    disabled={isAssigningExpert}
+                  >
+                    {isAssigningExpert ? 'Assigning...' : 'I need an expert'}
+                  </button>
+                )}
+              </div>
+              <div className="space-y-2">
+                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>
+                <span className={`inline-flex items-center px-3 py-1 rounded-full text-base font-medium ${
+                  eligibilityStatus.value === 'Not checked' ? 'bg-gray-100 text-gray-800' :
+                  eligibilityStatus.value.includes('feasible_no_check') ? 'bg-green-100 text-green-800' :
+                  eligibilityStatus.value.includes('feasible_check') ? 'bg-yellow-100 text-yellow-800' :
+                  eligibilityStatus.value.includes('not_feasible') ? 'bg-red-100 text-red-800' :
+                  'bg-gray-100 text-gray-800'
+                }`}>
+                  {statusDisplay}
+                </span>
+              </div>
             </div>
-            <div className="flex items-center gap-2 mt-2 mb-2">
-              <span className="text-lg font-medium">status:</span>
-              <span className={`rounded-full px-5 py-2 text-white font-bold text-lg shadow-md transition-colors duration-200
-                ${
-                  eligibilityStatus.value === 'Not checked' ? 'bg-neutral' :
-                  eligibilityStatus.value.includes('feasible_no_check') ? 'bg-emerald-400' :
-                  eligibilityStatus.value.includes('feasible_check') ? 'bg-yellow-400' :
-                  eligibilityStatus.value.includes('not_feasible') ? 'bg-red-500' :
-                  'bg-neutral'
-                }
-              `}>
-                {statusDisplay}
-              </span>
+            <div className="flex items-center">
+              <button
+                onClick={() => setIsDocumentModalOpen(true)}
+                className={`btn btn-outline border-purple-600 text-purple-600 bg-white hover:bg-purple-50 shadow-sm ${!hasDocumentLink ? 'btn-disabled' : ''}`}
+                disabled={!hasDocumentLink}
+              >
+                <FolderIcon className="w-5 h-5" />
+                Documents
+                <span className="badge bg-purple-600 text-white ml-2">{documentCount}</span>
+              </button>
             </div>
-          </div>
-          <div className="flex items-center mt-2 md:mt-0">
-            <button
-              onClick={() => setIsDocumentModalOpen(true)}
-              className={`btn btn-outline btn-primary flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg shadow hover:bg-primary hover:text-white transition-colors ${!hasDocumentLink ? 'btn-disabled' : ''}`}
-              disabled={!hasDocumentLink}
-            >
-              <FolderIcon className="w-5 h-5" />
-              Documents
-              <span className="badge badge-primary badge-sm ml-2">{documentCount}</span>
-            </button>
           </div>
         </div>
       </div>
 
       {/* Two Column Layout for Section and Expert Notes */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Section Eligibility */}
-        <div className="card bg-base-100 shadow-lg p-6">
-          <h3 className="text-lg font-semibold mb-4">Section Eligibility</h3>
-          <div className="space-y-4">
-            {/* Eligibility Dropdown FIRST */}
-            <div className="relative">
-              <select 
-                className="select select-bordered w-full text-base"
-                value={eligibilityStatus.value}
-                onChange={(e) => handleEligibilityChange(e.target.value)}
-              >
-                <option value="">Set Eligibility...</option>
-                {eligibilityOptions.map((option) => (
-                  <option 
-                    key={option.value} 
-                    value={option.value}
-                    className="py-2"
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+            <h4 className="text-xl font-semibold text-gray-900">Section Eligibility</h4>
+          </div>
+          <div className="p-6">
+            <div className="space-y-4">
+              {/* Eligibility Dropdown */}
+              <div className="space-y-2">
+                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
+                <select 
+                  className="select select-bordered w-full"
+                  value={eligibilityStatus.value}
+                  onChange={(e) => handleEligibilityChange(e.target.value)}
+                >
+                  <option value="">Set Eligibility...</option>
+                  {eligibilityOptions.map((option) => (
+                    <option 
+                      key={option.value} 
+                      value={option.value}
+                    >
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              
+              {/* Citizenship Section Dropdown */}
+              <div className="space-y-2">
+                <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Citizenship Section</label>
+                <div className="relative">
+                  <select 
+                    className="select select-bordered w-full"
+                    value={selectedSection}
+                    onChange={(e) => handleSectionChange(e.target.value)}
+                    disabled={!eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
                   >
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {/* Citizenship Section Dropdown SECOND, disabled if no eligibility or if 'not_feasible' */}
-            <div className="relative">
-              <select 
-                className="select select-bordered w-full text-base"
-                value={selectedSection}
-                onChange={(e) => handleSectionChange(e.target.value)}
-                disabled={!eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
-              >
-                <option value="">Select citizenship section...</option>
-                {sections.map((section) => (
-                  <option 
-                    key={section.value} 
-                    value={section.value}
-                    className="py-2"
-                  >
-                    {section.label}
-                  </option>
-                ))}
-              </select>
-              <HashtagIcon className="w-5 h-5 absolute right-10 top-1/2 transform -translate-y-1/2 pointer-events-none text-base-content/50" />
-            </div>
-            {/* Status and Timestamp Display */}
-            <div className="flex flex-col gap-2 mt-2">
+                    <option value="">Select citizenship section...</option>
+                    {sections.map((section) => (
+                      <option 
+                        key={section.value} 
+                        value={section.value}
+                      >
+                        {section.label}
+                      </option>
+                    ))}
+                  </select>
+                  <HashtagIcon className="w-5 h-5 absolute right-10 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400" />
+                </div>
+              </div>
+              
+              {/* Timestamp */}
               {eligibilityStatus.timestamp && (
-                <div className="flex items-center gap-2 text-sm text-base-content/70">
-                  <ClockIcon className="w-4 h-4" />
+                <div className="text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-3">
                   <span>Last updated: {new Date(eligibilityStatus.timestamp).toLocaleString()}</span>
                 </div>
               )}
@@ -440,15 +454,107 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
 
         {/* Expert Opinion Notes */}
-        <div className="card bg-base-100 shadow-lg p-6">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-lg font-semibold">Expert Notes</h3>
-            {!isAddingExpertNote && !editingExpertNoteId && (
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+            <div className="flex items-center justify-between">
+              <h4 className="text-xl font-semibold text-gray-900">Expert Notes</h4>
+              {!isAddingExpertNote && !editingExpertNoteId && (
+                <button 
+                  className="btn btn-sm"
+                  style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                  onClick={() => {
+                    setIsAddingExpertNote(true);
+                    setNewExpertNoteContent('');
+                  }}
+                >
+                  <PencilSquareIcon className="w-4 h-4" />
+                  Add Note
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="p-6">
+            {/* Add/Edit Expert Note Form */}
+            {(isAddingExpertNote || editingExpertNoteId) && (
+              <div className="mb-6">
+                <textarea
+                  className="textarea textarea-bordered w-full h-32 mb-3"
+                  placeholder="Enter your note..."
+                  value={newExpertNoteContent}
+                  onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                />
+                <div className="flex justify-end gap-2">
+                  <button 
+                    className="btn btn-ghost btn-sm hover:bg-red-50"
+                    onClick={handleCancelExpertEdit}
+                  >
+                    <XMarkIcon className="w-4 h-4 text-red-600" />
+                    Cancel
+                  </button>
+                  <button 
+                    className="btn btn-sm"
+                    style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                    onClick={handleSaveExpertNote}
+                    disabled={!newExpertNoteContent.trim()}
+                  >
+                    <CheckIcon className="w-4 h-4" />
+                    Save
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Expert Notes List */}
+            <div className="space-y-4 overflow-y-auto max-h-[300px]">
+              {expertNotes.length > 0 ? (
+                expertNotes.map((note) => (
+                  <div 
+                    key={note.id} 
+                    className={`bg-gray-50 rounded-lg p-4 ${
+                      editingExpertNoteId === note.id ? 'ring-2 ring-purple-200' : ''
+                    }`}
+                  >
+                    {editingExpertNoteId === note.id ? (
+                      <textarea
+                        className="textarea textarea-bordered w-full h-32 mb-3"
+                        value={newExpertNoteContent}
+                        onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                      />
+                    ) : (
+                      <>
+                        <div className="text-sm text-gray-400 mb-2">
+                          {note.timestamp}
+                        </div>
+                        <p className="text-base text-gray-900 whitespace-pre-wrap">{note.content}</p>
+                      </>
+                    )}
+                  </div>
+                ))
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  <div className="bg-gray-50 rounded-lg p-6">
+                    <p className="text-lg font-medium mb-1">No expert notes yet</p>
+                    <p className="text-base">Expert opinions and assessments will appear here</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Handler Opinion Section */}
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xl font-semibold text-gray-900">Handler Notes</h4>
+            {!isAddingHandlerNote && !editingHandlerNoteId && (
               <button 
-                className="btn btn-primary btn-sm gap-2"
+                className="btn btn-sm"
+                style={{ backgroundColor: '#5b21b6', color: 'white' }}
                 onClick={() => {
-                  setIsAddingExpertNote(true);
-                  setNewExpertNoteContent('');
+                  setIsAddingHandlerNote(true);
+                  setNewHandlerNoteContent('');
                 }}
               >
                 <PencilSquareIcon className="w-4 h-4" />
@@ -456,28 +562,30 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </button>
             )}
           </div>
-
-          {/* Add/Edit Expert Note Form */}
-          {(isAddingExpertNote || editingExpertNoteId) && (
+        </div>
+        <div className="p-6">
+          {/* Add/Edit Handler Note Form */}
+          {(isAddingHandlerNote || editingHandlerNoteId) && (
             <div className="mb-6">
               <textarea
                 className="textarea textarea-bordered w-full h-32 mb-3"
                 placeholder="Enter your note..."
-                value={newExpertNoteContent}
-                onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                value={newHandlerNoteContent}
+                onChange={(e) => setNewHandlerNoteContent(e.target.value)}
               />
               <div className="flex justify-end gap-2">
                 <button 
-                  className="btn btn-ghost btn-sm"
-                  onClick={handleCancelExpertEdit}
+                  className="btn btn-ghost btn-sm hover:bg-red-50"
+                  onClick={handleCancelHandlerEdit}
                 >
-                  <XMarkIcon className="w-4 h-4" />
+                  <XMarkIcon className="w-4 h-4 text-red-600" />
                   Cancel
                 </button>
                 <button 
-                  className="btn btn-primary btn-sm"
-                  onClick={handleSaveExpertNote}
-                  disabled={!newExpertNoteContent.trim()}
+                  className="btn btn-sm"
+                  style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                  onClick={handleSaveHandlerNote}
+                  disabled={!newHandlerNoteContent.trim()}
                 >
                   <CheckIcon className="w-4 h-4" />
                   Save
@@ -486,185 +594,111 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
           )}
 
-          {/* Expert Notes List */}
+          {/* Handler Notes List */}
           <div className="space-y-4 overflow-y-auto max-h-[300px]">
-            {expertNotes.map((note) => (
-              <div 
-                key={note.id} 
-                className={`bg-base-200 rounded-lg p-4 ${
-                  editingExpertNoteId === note.id ? 'ring-2 ring-primary' : ''
-                }`}
-              >
-                {editingExpertNoteId === note.id ? (
-                  <textarea
-                    className="textarea textarea-bordered w-full h-32 mb-3"
-                    value={newExpertNoteContent}
-                    onChange={(e) => setNewExpertNoteContent(e.target.value)}
-                  />
-                ) : (
-                  <>
-                    <div className="flex justify-between items-start mb-2">
-                      <div className="flex items-center gap-2 text-base-content/70">
-                        <ClockIcon className="w-4 h-4" />
-                        <span className="text-sm">{note.timestamp}</span>
+            {handlerNotes.length > 0 ? (
+              handlerNotes.map((note) => (
+                <div 
+                  key={note.id} 
+                  className={`bg-gray-50 rounded-lg p-4 ${
+                    editingHandlerNoteId === note.id ? 'ring-2 ring-purple-200' : ''
+                  }`}
+                >
+                  {editingHandlerNoteId === note.id ? (
+                    <textarea
+                      className="textarea textarea-bordered w-full h-32 mb-3"
+                      value={newHandlerNoteContent}
+                      onChange={(e) => setNewHandlerNoteContent(e.target.value)}
+                    />
+                  ) : (
+                    <>
+                      <div className="text-sm text-gray-400 mb-2">
+                        {note.timestamp}
                       </div>
-                      <button 
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => handleEditExpertNote(note)}
-                      >
-                        <PencilSquareIcon className="w-4 h-4" />
-                      </button>
-                    </div>
-                    <p className="text-base-content whitespace-pre-wrap">{note.content}</p>
-                  </>
-                )}
+                      <p className="text-base text-gray-900 whitespace-pre-wrap">{note.content}</p>
+                    </>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                <div className="bg-gray-50 rounded-lg p-6">
+                  <p className="text-lg font-medium mb-1">No handler notes yet</p>
+                  <p className="text-base">Case handling notes and updates will appear here</p>
+                </div>
               </div>
-            ))}
+            )}
           </div>
-        </div>
-      </div>
-
-      {/* Handler Opinion Section */}
-      <div className="card bg-base-100 shadow-lg p-6">
-        <div className="flex justify-between items-center mb-6">
-          <h3 className="text-lg font-semibold">Handler Notes</h3>
-          {!isAddingHandlerNote && !editingHandlerNoteId && (
-            <button 
-              className="btn btn-primary btn-sm gap-2"
-              onClick={() => {
-                setIsAddingHandlerNote(true);
-                setNewHandlerNoteContent('');
-              }}
-            >
-              <PencilSquareIcon className="w-4 h-4" />
-              Add Note
-            </button>
-          )}
-        </div>
-
-        {/* Add/Edit Handler Note Form */}
-        {(isAddingHandlerNote || editingHandlerNoteId) && (
-          <div className="mb-6">
-            <textarea
-              className="textarea textarea-bordered w-full h-32 mb-3"
-              placeholder="Enter your note..."
-              value={newHandlerNoteContent}
-              onChange={(e) => setNewHandlerNoteContent(e.target.value)}
-            />
-            <div className="flex justify-end gap-2">
-              <button 
-                className="btn btn-ghost btn-sm"
-                onClick={handleCancelHandlerEdit}
-              >
-                <XMarkIcon className="w-4 h-4" />
-                Cancel
-              </button>
-              <button 
-                className="btn btn-primary btn-sm"
-                onClick={handleSaveHandlerNote}
-                disabled={!newHandlerNoteContent.trim()}
-              >
-                <CheckIcon className="w-4 h-4" />
-                Save
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Handler Notes List */}
-        <div className="space-y-4 overflow-y-auto max-h-[300px]">
-          {handlerNotes.map((note) => (
-            <div 
-              key={note.id} 
-              className={`bg-base-200 rounded-lg p-4 ${
-                editingHandlerNoteId === note.id ? 'ring-2 ring-primary' : ''
-              }`}
-            >
-              {editingHandlerNoteId === note.id ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-32 mb-3"
-                  value={newHandlerNoteContent}
-                  onChange={(e) => setNewHandlerNoteContent(e.target.value)}
-                />
-              ) : (
-                <>
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center gap-2 text-base-content/70">
-                      <ClockIcon className="w-4 h-4" />
-                      <span className="text-sm">{note.timestamp}</span>
-                    </div>
-                    <button 
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => handleEditHandlerNote(note)}
-                    >
-                      <PencilSquareIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <p className="text-base-content whitespace-pre-wrap">{note.content}</p>
-                </>
-              )}
-            </div>
-          ))}
         </div>
       </div>
 
       {/* Document Upload Section */}
-      <div className="card bg-base-100 shadow-lg p-6">
-        <h3 className="text-lg font-semibold mb-4">Documents</h3>
-        <div className="flex flex-col gap-4">
-          {/* Upload Area */}
-          <div 
-            className={`border-2 border-dashed border-base-300 rounded-lg p-8 text-center transition-colors duration-200 ${isUploading ? 'bg-primary/10 border-primary' : 'bg-base-200'}`}
-            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
-            onDrop={handleFileDrop}
-          >
-            <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-base-content/50 mb-4" />
-            <div className="text-base-content/70 mb-4">
-              {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
-            </div>
-            <input
-              type="file"
-              className="hidden"
-              id="file-upload"
-              multiple
-              onChange={handleFileInput}
-              disabled={isUploading}
-            />
-            <label
-              htmlFor="file-upload"
-              className={`btn btn-outline gap-2 ${isUploading ? 'btn-disabled' : ''}`}
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+                      <h4 className="text-xl font-semibold text-gray-900">Document Upload</h4>
+        </div>
+        <div className="p-6">
+          <div className="space-y-4">
+            {/* Upload Area */}
+            <div 
+              className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${
+                isUploading 
+                  ? 'bg-purple-50 border-purple-300' 
+                  : 'bg-gray-50 border-gray-300 hover:border-purple-300 hover:bg-purple-50'
+              }`}
+              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
+              onDrop={handleFileDrop}
             >
-              <PaperClipIcon className="w-5 h-5" />
-              Choose Files
-            </label>
-          </div>
-
-          {/* Uploaded Files List */}
-          <div className="space-y-2">
-            {uploadedFiles.map((file, index) => (
-              <div key={index} className="flex items-center justify-between p-3 bg-base-200 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <PaperClipIcon className="w-5 h-5 text-primary" />
-                  <span className="font-medium">{file.name}</span>
-                </div>
-                <div>
-                  {file.status === 'uploading' && (
-                    <div className="radial-progress text-primary" style={{ "--value": file.progress || 0 } as any}>
-                      {file.progress || 0}%
-                    </div>
-                  )}
-                  {file.status === 'success' && (
-                    <CheckCircleIcon className="w-6 h-6 text-success" />
-                  )}
-                  {file.status === 'error' && (
-                    <div className="tooltip" data-tip={file.error}>
-                      <XCircleIcon className="w-6 h-6 text-error" />
-                    </div>
-                  )}
-                </div>
+              <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+              <div className="text-base text-gray-600 mb-4">
+                {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
               </div>
-            ))}
+              <input
+                type="file"
+                className="hidden"
+                id="file-upload"
+                multiple
+                onChange={handleFileInput}
+                disabled={isUploading}
+              />
+              <label
+                htmlFor="file-upload"
+                className={`btn btn-outline border-purple-600 text-purple-600 bg-white hover:bg-purple-50 ${isUploading ? 'btn-disabled' : ''}`}
+              >
+                <PaperClipIcon className="w-5 h-5" />
+                Choose Files
+              </label>
+            </div>
+
+            {/* Uploaded Files List */}
+            {uploadedFiles.length > 0 && (
+              <div className="space-y-2">
+                {uploadedFiles.map((file, index) => (
+                  <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                    <div className="flex items-center gap-3">
+                      <PaperClipIcon className="w-5 h-5 text-purple-500" />
+                      <span className="text-base font-medium text-gray-900">{file.name}</span>
+                    </div>
+                    <div>
+                      {file.status === 'uploading' && (
+                        <div className="radial-progress text-purple-600" style={{ "--value": file.progress || 0 } as any}>
+                          {file.progress || 0}%
+                        </div>
+                      )}
+                      {file.status === 'success' && (
+                        <CheckCircleIcon className="w-6 h-6 text-green-500" />
+                      )}
+                      {file.status === 'error' && (
+                        <div className="tooltip" data-tip={file.error}>
+                          <XCircleIcon className="w-6 h-6 text-red-500" />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

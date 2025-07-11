@@ -1,5 +1,6 @@
 import React from 'react';
 import { useLocation, Link } from 'react-router-dom';
+import { FaRobot } from 'react-icons/fa';
 import {
   HomeIcon,
   UserGroupIcon,
@@ -27,6 +28,7 @@ interface SidebarProps {
   userRole?: string;
   isOpen?: boolean;
   onClose?: () => void;
+  onOpenAIChat?: () => void;
 }
 
 interface SidebarItem {
@@ -38,7 +40,14 @@ interface SidebarItem {
 
 const sidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
-  { icon: CalendarIcon, label: 'Outlook Calendar', path: '/outlook-calendar' },
+  {
+    icon: CalendarIcon,
+    label: 'Calendar',
+    subItems: [
+      { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
+      { icon: CalendarIcon, label: 'Outlook Calendar', path: '/outlook-calendar' },
+    ],
+  },
   { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
   { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: UserIcon, label: 'Expert', path: '/expert' },
@@ -58,7 +67,7 @@ const sidebarItems: SidebarItem[] = [
   { icon: Cog6ToothIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
-const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose }) => {
+const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat }) => {
   const location = useLocation();
   const initials = userInitials || userName.split(' ').map(n => n[0]).join('');
 
@@ -277,12 +286,24 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                       {hasSubItems && (
                         <>
                           <button
-                            className={`flex items-center p-3 rounded-lg w-full transition-all duration-200 hover:scale-105 hover:shadow-md ${isExpanded ? 'sidebar-active-purple text-white shadow-lg' : 'text-base-content'}`}
+                            className={`flex items-center p-3 rounded-lg w-full transition-all duration-200 hover:scale-105 hover:shadow-md ${
+                              item.label === 'Calendar' || item.label === 'Leads'
+                                ? (isExpanded ? 'bg-white text-black font-bold shadow-lg' : 'text-black hover:bg-purple-100 hover:text-purple-700')
+                                : (isExpanded ? 'sidebar-active-purple text-white shadow-lg' : 'text-base-content')
+                            }`}
                             onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                             type="button"
                           >
-                            <Icon className={`w-6 h-6 min-w-[1.5rem] ${isExpanded ? 'text-white' : 'text-black'}`} />
-                            <span className={`ml-3 font-medium ${isExpanded ? 'text-white' : 'text-black'}`}>{item.label}</span>
+                            <Icon className={`w-6 h-6 min-w-[1.5rem] ${
+                              item.label === 'Calendar' || item.label === 'Leads'
+                                ? (isExpanded ? 'text-black' : 'text-black hover:text-purple-700')
+                                : (isExpanded ? 'text-white' : 'text-black')
+                            }`} />
+                            <span className={`ml-3 font-medium ${
+                              item.label === 'Calendar' || item.label === 'Leads'
+                                ? (isExpanded ? 'text-black' : 'text-black hover:text-purple-700')
+                                : (isExpanded ? 'text-white' : 'text-black')
+                            }`}>{item.label}</span>
                             <svg className={`w-4 h-4 ml-auto transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                           </button>
                           {isExpanded && (
@@ -295,11 +316,18 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                                     <Link
                                       to={sub.path!}
                                       onClick={onClose}
-                                      className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer
-                                        ${isSubActive ? 'bg-white text-black font-bold shadow' : 'text-white hover:bg-white hover:text-black'}`}
+                                      className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer ${
+                                        item.label === 'Calendar' || item.label === 'Leads'
+                                          ? (isSubActive ? 'bg-purple-600 text-white font-bold shadow' : 'text-black hover:bg-purple-100 hover:text-purple-700')
+                                          : (isSubActive ? 'bg-white text-black font-bold shadow' : 'text-white hover:bg-white hover:text-black')
+                                      }`}
                                     >
-                                      <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${isSubActive ? 'text-black' : 'group-hover/sidebar-link:text-black text-white'}`} />
-                                      <span className={`text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>{sub.label}</span>
+                                      <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${
+                                        item.label === 'Calendar' || item.label === 'Leads'
+                                          ? (isSubActive ? 'text-white' : 'text-black hover:text-purple-700')
+                                          : (isSubActive ? 'text-black' : 'group-hover/sidebar-link:text-black text-white')
+                                      }`} />
+                                      <span className="text-base font-medium whitespace-nowrap opacity-100">{sub.label}</span>
                                     </Link>
                                   </li>
                                 );
@@ -311,6 +339,19 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                     </li>
                   );
                 })}
+                {/* AI Assistant - Mobile Only */}
+                <li>
+                  <button
+                    className="flex items-center p-3 rounded-lg w-full transition-all duration-200 text-black hover:bg-purple-100 hover:text-purple-700 hover:scale-105 hover:shadow-md"
+                    onClick={() => {
+                      if (onOpenAIChat) onOpenAIChat();
+                      if (onClose) onClose();
+                    }}
+                  >
+                    <FaRobot className="w-6 h-6 min-w-[1.5rem] text-primary" />
+                    <span className="ml-3 font-medium text-black">AI Assistant</span>
+                  </button>
+                </li>
               </ul>
             </nav>
             

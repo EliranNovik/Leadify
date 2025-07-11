@@ -431,7 +431,7 @@ const Clients: React.FC<ClientsProps> = ({
     return (
       <span
         className="badge badge-sm ml-2 px-3 py-1 min-w-max whitespace-nowrap"
-        style={{ background: '#4638e2', color: '#fff', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem' }}
+        style={{ background: '#7c3aed', color: '#fff', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem' }}
       >
         {formatted}
       </span>
@@ -1483,158 +1483,247 @@ const Clients: React.FC<ClientsProps> = ({
       </div>
       {/* Client Details Section */}
       <div className="bg-base-100 rounded-lg shadow-lg w-full">
-        {/* NEW: Two-row client info header above tabs */}
-        <div className="w-full pt-6 pb-2 pl-12 flex flex-col gap-1 border-b border-base-200">
-          <div className="flex flex-wrap items-start justify-between gap-6 w-full">
-            {/* Left: Top row - Name, lead number, badge */}
-            <div className="flex flex-wrap items-center gap-4 min-w-0">
-              <h2 className="text-2xl font-bold flex items-center gap-3 mb-0 truncate text-black">{selectedClient ? selectedClient.name : ''}</h2>
-              <span className="text-lg font-semibold text-black">{selectedClient ? selectedClient.lead_number : ''}</span>
-              <span>{selectedClient ? getStageBadge(selectedClient.stage) : ''}</span>
-            </div>
-            {/* Right: Controls */}
-            <div className="flex flex-col md:flex-row items-end md:items-center gap-3 md:gap-4 mt-4 md:mt-0 pr-12">
-              <div className="flex gap-2 items-center">
-                {/* Balance badge first */}
-                {selectedClient && (
-                  <div className="badge badge-lg badge-success gap-2 p-4 text-lg">
-                    <span className="font-bold text-2xl">{getCurrencySymbol(selectedClient.balance_currency || selectedClient.proposal_currency)}</span>
-                    <span className="font-bold text-xl">{selectedClient.balance || '0'}</span>
-                  </div>
-                )}
-                <div className="dropdown">
-                  <label 
-                    tabIndex={0} 
-                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[120px]"
-                  >
-                    <span>Stages</span>
-                    <ChevronDownIcon className="w-5 h-5" />
-                  </label>
-                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60">
-                    {dropdownItems}
-                  </ul>
-                </div>
-                <div className="relative">
-                  <div className="dropdown dropdown-end">
-                    <label 
-                      tabIndex={0} 
-                      className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[120px]"
+        {/* Stylish Professional Client Header */}
+        <div className="bg-white border-b border-gray-200 px-8 py-6">
+          {/* Contact Information Row */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            {/* Contact Details */}
+            <div className="rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-[1.03] bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden">
+              <div className="p-6">
+                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                  <EnvelopeIcon className="w-5 h-5 text-white opacity-90" />
+                  Contact
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center py-2 border-b border-white/20">
+                    <span className="text-white/80 font-medium">Email</span>
+                    <a 
+                      href={selectedClient ? `mailto:${selectedClient.email}` : undefined} 
+                      className="text-white hover:text-white/80 transition-colors font-medium break-all text-right"
                     >
-                      <span>Actions</span>
-                      <ChevronDownIcon className="w-5 h-5" />
-                    </label>
-                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-lg bg-base-100 rounded-box w-60 right-0">
-                      <li>
-                        <a className="flex items-center gap-3 py-3" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
-                          <NoSymbolIcon className="w-5 h-5 text-red-500" />
-                          <span className="text-red-500">Unactivate</span>
-                        </a>
-                      </li>
-                      <li><a className="flex items-center gap-3 py-3"><StarIcon className="w-5 h-5 text-black" />Ask for recommendation</a></li>
-                      <li><a className="flex items-center gap-3 py-3" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
-                      <li><a className="flex items-center gap-3 py-3"><Squares2X2Icon className="w-5 h-5 text-black" />Create Sub-Lead</a></li>
-                    </ul>
+                      {selectedClient ? selectedClient.email : '---'}
+                    </a>
+                  </div>
+                  <div className="flex justify-between items-center py-2">
+                    <span className="text-white/80 font-medium">Phone</span>
+                    <a 
+                      href={selectedClient ? `tel:${selectedClient.phone}` : undefined} 
+                      className="text-white hover:text-white/80 transition-colors font-medium"
+                    >
+                      {selectedClient ? selectedClient.phone : '---'}
+                    </a>
                   </div>
                 </div>
               </div>
             </div>
+            
+            {/* Case Information */}
+            <div className="rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-[1.03] bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden">
+              <div className="p-6">
+                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                  <DocumentTextIcon className="w-5 h-5 text-white opacity-90" />
+                  Case Details
+                </h3>
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center py-2 border-b border-white/20">
+                    <span className="text-white/80 font-medium">Category</span>
+                    <span className="text-white font-semibold text-right">
+                      {selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-2">
+                    <span className="text-white/80 font-medium">Topic</span>
+                    <span className="text-white font-semibold text-right">
+                      {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            {/* Progress Indicator */}
+            <div className="rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 hover:scale-[1.03] bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden">
+              <div className="p-6">
+                <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2">
+                  <ChartBarIcon className="w-5 h-5 text-white opacity-90" />
+                  Status
+                </h3>
+                {selectedClient && (
+                  <div className="space-y-4">
+                    <div className="py-2 border-b border-white/20">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-white/80 font-medium">Probability</span>
+                        <span className="text-white font-bold">{selectedClient.probability || 0}%</span>
+                      </div>
+                      <div className="w-full bg-white/20 rounded-full h-2">
+                        <div 
+                          className="bg-white h-2 rounded-full transition-all duration-300" 
+                          style={{ width: `${selectedClient.probability || 0}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                    {selectedClient.next_followup && (
+                      <div className="flex justify-between items-center py-2">
+                        <span className="text-white/80 font-medium">Next Follow-up</span>
+                        <span className="text-white font-semibold text-right">
+                          {new Date(selectedClient.next_followup).toLocaleDateString()}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-          {/* Second row: Email, phone, category/topic */}
-          <div className="flex flex-wrap items-center gap-6 mt-2 text-base text-gray-700">
-            <div className="flex items-center gap-2">
-              <EnvelopeIcon className="w-5 h-5 text-primary" />
-              <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="text-black hover:underline break-all">
-                {selectedClient ? selectedClient.email : '---'}
-              </a>
+          
+          {/* Main Client Info Row */}
+          <div className="flex flex-wrap items-center justify-between gap-6 mt-6">
+            {/* Left: Client Identity */}
+            <div className="flex items-center gap-6 ml-4">
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900 mb-1">
+                  {selectedClient ? selectedClient.name : 'Loading...'}
+                </h1>
+                <div className="flex items-center gap-4">
+                  <span className="text-xl font-semibold text-gray-600">
+                    {selectedClient ? selectedClient.lead_number : ''}
+                  </span>
+                  {selectedClient && (
+                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800 border border-purple-200">
+                      {selectedClient.stage?.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()) || 'No Stage'}
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <PhoneIcon className="w-5 h-5 text-primary" />
-              <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="text-black hover:underline">
-                {selectedClient ? selectedClient.phone : '---'}
-              </a>
-            </div>
-            <div className="flex items-center gap-2">
-              <DocumentTextIcon className="w-5 h-5 text-primary" />
-              <span className="text-black">{selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'} <span className="text-base-content/70">•</span> <span className="text-black">{selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}</span></span>
+            
+            {/* Right: Balance & Actions */}
+            <div className="flex items-center gap-4">
+              {/* Balance Display */}
+              {selectedClient && (
+                <div className="text-2xl font-bold text-gray-900">
+                  {getCurrencySymbol(selectedClient.balance_currency || selectedClient.proposal_currency)}
+                  {(selectedClient.balance || 0).toLocaleString()}
+                </div>
+              )}
+              
+              {/* Action Buttons */}
+              <div className="flex gap-3">
+                <div className="dropdown">
+                  <label 
+                    tabIndex={0} 
+                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[120px] shadow-sm"
+                  >
+                    <span>Stages</span>
+                    <ChevronDownIcon className="w-5 h-5" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-xl bg-white rounded-xl w-64 border border-gray-200">
+                    {dropdownItems}
+                  </ul>
+                </div>
+                
+                <div className="dropdown dropdown-end">
+                  <label 
+                    tabIndex={0} 
+                    className="btn bg-neutral text-neutral-content hover:bg-neutral-focus border-none gap-2 min-w-[120px] shadow-sm"
+                  >
+                    <span>Actions</span>
+                    <ChevronDownIcon className="w-5 h-5" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-xl bg-white rounded-xl w-64 border border-gray-200">
+                    <li>
+                      <a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
+                        <NoSymbolIcon className="w-5 h-5 text-red-500" />
+                        <span className="text-red-600 font-medium">Unactivate</span>
+                      </a>
+                    </li>
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg"><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  </ul>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-        {/* Add a bigger gap before the tabs */}
-        <div className="mt-10"></div>
         {/* Tabs Navigation */}
-        <div className="border-b border-base-200">
-          <div className="max-w-7xl mx-auto">
+        <div className="bg-white">
+          <div className="w-full">
             {/* Desktop version */}
-            <ul className="tabs tabs-lifted mb-[-1px] gap-2 px-6 hidden md:flex">
-              {tabs.map((tab) => (
-                <li key={tab.id}>
-                  <button
-                    className={`tab text-base font-medium px-6 py-4 ${
-                      activeTab === tab.id ? 'tab-active !border-base-200' : ''
-                    }`}
-                    onClick={() => setActiveTab(tab.id)}
-                  >
-                    <div className="flex items-center gap-2">
-                      <tab.icon className="w-5 h-5" />
-                      <span>{tab.label}</span>
-                      {tab.id === 'interactions' && (
-                        <div className="badge badge-primary badge-sm">31</div>
-                      )}
-                    </div>
+            <div className="hidden md:flex items-center px-4 py-4">
+              <div className="flex bg-white rounded-xl shadow-lg border border-gray-200 p-1 gap-1 overflow-hidden w-full">
+                                  {tabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
+                        activeTab === tab.id
+                          ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
+                          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                      }`}
+                      onClick={() => setActiveTab(tab.id)}
+                    >
+                    <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                    <span className="whitespace-nowrap">{tab.label}</span>
+                    {tab.id === 'interactions' && (
+                      <div className={`badge badge-sm font-bold ${
+                        activeTab === tab.id 
+                          ? 'bg-white/20 text-white border-white/30' 
+                          : 'bg-purple-100 text-purple-700 border-purple-200'
+                      }`}>
+                        31
+                      </div>
+                    )}
+                    {activeTab === tab.id && (
+                      <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white rounded-full shadow-lg"></div>
+                    )}
                   </button>
-                </li>
-              ))}
-            </ul>
-            {/* Mobile version: pro styling, no zoom */}
-            <div className="md:hidden relative">
+                ))}
+              </div>
+            </div>
+            {/* Mobile version: modern card-based design */}
+            <div className="md:hidden px-6 py-4">
               <div
                 ref={mobileTabsRef}
-                className="overflow-x-auto scrollbar-hide -mx-2 px-2 py-3 flex items-center bg-base-200/80 rounded-2xl shadow-xl border border-base-300"
-                style={{ WebkitOverflowScrolling: 'touch', backdropFilter: 'blur(6px)' }}
+                className="overflow-x-auto scrollbar-hide bg-white rounded-2xl shadow-lg border border-gray-200 p-3 w-full"
+                style={{ WebkitOverflowScrolling: 'touch' }}
               >
-                <ul className="flex gap-3 snap-x snap-mandatory w-full">
+                <div className="flex gap-2 pb-1">
                   {tabs.map((tab, idx) => {
                     const isActive = activeTab === tab.id;
                     return (
-                      <li
+                      <button
                         key={tab.id}
-                        className="snap-center flex-shrink-0 flex flex-col items-center justify-center"
-                        data-tab-idx={idx}
-                        style={{ width: 84, transition: 'width 0.2s' }}
+                        className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
+                          isActive
+                            ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
+                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                        }`}
+                        onClick={() => setActiveTab(tab.id)}
                       >
-                        <button
-                          className={`flex items-center justify-center transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-primary/60 border-2 mb-1 ${
-                            isActive
-                              ? 'bg-black text-white border-black shadow-[0_4px_24px_0_rgba(0,0,0,0.10)]'
-                              : 'bg-white text-primary border-primary shadow-md hover:opacity-90'
-                          }`}
-                          onClick={() => setActiveTab(tab.id)}
-                          style={{
-                            width: isActive ? 56 : 48,
-                            height: isActive ? 56 : 48,
-                            minWidth: isActive ? 56 : 48,
-                            minHeight: isActive ? 56 : 48,
-                            maxWidth: isActive ? 56 : 48,
-                            maxHeight: isActive ? 56 : 48,
-                            borderRadius: 12,
-                            boxShadow: isActive ? '0 6px 24px 0 rgba(0,0,0,0.10), 0 0 0 2px #000' : undefined,
-                            transition: 'box-shadow 0.25s, background 0.25s, color 0.25s, width 0.25s, height 0.25s',
-                            padding: 0,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                          }}
-                        >
-                          <tab.icon className={`w-6 h-6 ${isActive ? 'text-white' : 'text-primary'}`} />
-                        </button>
-                        <span className={`truncate font-bold tracking-wide w-full text-center`} style={{ letterSpacing: 0.5, fontSize: isActive ? 13 : 11, color: '#111' }}>{tab.label}</span>
-                        {tab.id === 'interactions' && isActive && (
-                          <span className="block w-2 h-2 mt-1 rounded-full bg-black border border-white mx-auto animate-bounce"></span>
+                        <div className="relative">
+                          <tab.icon className={`w-6 h-6 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
+                          {tab.id === 'interactions' && (
+                            <div className={`absolute -top-2 -right-2 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${
+                              isActive 
+                                ? 'bg-white/20 text-white' 
+                                : 'bg-purple-100 text-purple-700'
+                            }`}>
+                              31
+                            </div>
+                          )}
+                        </div>
+                        <span className={`text-xs font-semibold truncate max-w-[70px] ${
+                          isActive ? 'text-white' : 'text-gray-600'
+                        }`}>
+                          {tab.label}
+                        </span>
+                        {isActive && (
+                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white rounded-full"></div>
                         )}
-                      </li>
+                      </button>
                     );
                   })}
-                </ul>
+                </div>
               </div>
             </div>
           </div>

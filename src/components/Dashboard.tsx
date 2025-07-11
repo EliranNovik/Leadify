@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Meetings from './Meetings';
 import AISuggestions from './AISuggestions';
 import OverdueFollowups from './OverdueFollowups';
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
@@ -229,9 +229,64 @@ const Dashboard: React.FC = () => {
   };
   // Score Board state
   const [scoreTab, setScoreTab] = React.useState("Today");
+  const [flippedCards, setFlippedCards] = React.useState<Set<string>>(new Set());
 
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
+
+  // Mock data for department line graphs (last 30 days)
+  const generateDepartmentData = (category: string) => {
+    const today = new Date();
+    const data = Array.from({ length: 30 }, (_, i) => {
+      const date = new Date(today);
+      date.setDate(today.getDate() - (29 - i));
+      
+      // Different patterns for different departments
+      let baseValue = 0;
+      switch (category) {
+        case 'General':
+          baseValue = Math.random() * 2;
+          break;
+        case 'Commercial & Civil':
+          baseValue = 3 + Math.sin(i / 5) * 2 + Math.random() * 1.5;
+          break;
+        case 'Small cases':
+          baseValue = 1 + Math.cos(i / 3) * 1 + Math.random() * 2;
+          break;
+        case 'USA - Immigration':
+          baseValue = 2 + Math.sin(i / 4) * 1.5 + Math.random() * 1;
+          break;
+        case 'Immigration to Israel':
+          baseValue = 4 + Math.cos(i / 6) * 2 + Math.random() * 2;
+          break;
+        case 'Austria and Germany':
+          baseValue = 15 + Math.sin(i / 7) * 5 + Math.random() * 3;
+          break;
+        default:
+          baseValue = Math.random() * 5;
+      }
+      
+      return {
+        date: date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+        fullDate: date.toLocaleDateString(),
+        contracts: Math.max(0, Math.round(baseValue))
+      };
+    });
+    return data;
+  };
+
+  // Handle card flip
+  const handleCardFlip = (category: string) => {
+    setFlippedCards(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(category)) {
+        newSet.delete(category);
+      } else {
+        newSet.add(category);
+      }
+      return newSet;
+    });
+  };
 
   // Mock data for Score Board bar charts
   const scoreboardBarDataToday = [
@@ -248,7 +303,6 @@ const Dashboard: React.FC = () => {
     { category: 'Small cases', signed: 47920, due: 70000 },
     { category: 'USA - Immigration', signed: 109675, due: 150000 },
     { category: 'Immigration to Israel', signed: 166332, due: 250000 },
-    { category: 'Poland', signed: 0, due: 80000 },
     { category: 'Austria and Germany', signed: 1505920, due: 1700000 },
   ];
   const scoreboardBarData30d = [
@@ -257,7 +311,6 @@ const Dashboard: React.FC = () => {
     { category: 'Small cases', signed: 47920, due: 50000 },
     { category: 'USA - Immigration', signed: 109675, due: 80000 },
     { category: 'Immigration to Israel', signed: 166332, due: 90000 },
-    { category: 'Poland', signed: 0, due: 0 },
     { category: 'Austria and Germany', signed: 1505920, due: 950000 },
   ];
 
@@ -279,9 +332,9 @@ const Dashboard: React.FC = () => {
         {teamAvg !== null && (
           <div>Team Avg: {teamAvg} contracts</div>
         )}
-      </div>
-    );
-  };
+          </div>
+  );
+};
 
   // Refs and state for matching AI Suggestions height
   const aiRef = useRef<HTMLDivElement>(null);
@@ -565,144 +618,454 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* 2. AI Suggestions (left) and Scoreboard (right) side by side */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-10 w-full" style={{ alignItems: 'stretch' }}>
+      <div className="flex flex-col md:flex-row gap-8 mb-10 w-full" style={{ alignItems: 'stretch' }}>
         {/* AI Suggestions Box */}
-        <div ref={aiRef} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col w-full">
+        <div ref={aiRef} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col w-full md:w-1/5">
           <AISuggestions />
         </div>
-        {/* Scoreboard Box */}
-        <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col justify-between w-full">
-          {/* Score Board Section */}
-          <div className="card-body p-8">
-            <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
-              <div className="flex items-center gap-2 mb-2">
-                <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-[#3b28c7] via-[#3b28c7] to-[#3b28c7] shadow">
-                  <ChartBarIcon className="w-7 h-7 text-white" />
+        {/* Professional CRM Scoreboard */}
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg flex flex-col justify-between w-full md:w-4/5">
+          <div className="w-full relative overflow-hidden">
+            <div className="card-body p-8">
+              {/* Header with gradient background */}
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 shadow-lg">
+                    <ChartBarIcon className="w-8 h-8 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-3xl font-bold text-gray-900">Performance Dashboard</h2>
+                    <p className="text-gray-600 text-sm mt-1">Real-time sales metrics and analytics</p>
+                  </div>
                 </div>
-                <span className="text-2xl font-extrabold bg-gradient-to-tr from-[#3b28c7] via-[#3b28c7] to-[#3b28c7] text-transparent bg-clip-text drop-shadow">Score Board</span>
+                <div className="flex items-center gap-2">
+                  <div className="tabs tabs-boxed bg-gray-100 shadow-inner rounded-xl p-1 border border-gray-200">
+                    {scoreboardTabs.map(tab => (
+                      <a
+                        key={tab}
+                        className={`tab text-sm font-semibold px-4 py-2 rounded-lg transition-all ${scoreTab === tab ? 'tab-active bg-white text-purple-600 shadow-sm border border-purple-200' : 'text-gray-600 hover:bg-gray-50'}`}
+                        onClick={() => setScoreTab(tab)}
+                      >
+                        {tab}
+                      </a>
+                    ))}
+                  </div>
+                </div>
               </div>
-              <div className="tabs tabs-boxed bg-white/20 rounded-xl p-1">
-                {scoreboardTabs.map(tab => (
-                  <a
-                    key={tab}
-                    className={`tab text-lg font-semibold px-6 py-2 rounded-lg transition-all ${scoreTab === tab ? 'tab-active bg-white text-purple-600 shadow' : 'text-white/80 hover:bg-white/20'}`}
-                    onClick={() => setScoreTab(tab)}
-                  >
-                    {tab}
-                  </a>
-                ))}
+
+              {/* Performance Summary Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-purple-50 rounded-lg">
+                      <UserGroupIcon className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <span className="text-2xl font-bold text-gray-900">142</span>
+                  </div>
+                  <div className="text-sm text-gray-700 font-medium">Total Leads</div>
+                  <div className="text-xs text-gray-500 mt-1">+12% from last month</div>
+                </div>
+                
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-purple-50 rounded-lg">
+                      <CheckCircleIcon className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <span className="text-2xl font-bold text-gray-900">89</span>
+                  </div>
+                  <div className="text-sm text-gray-700 font-medium">Conversions</div>
+                  <div className="text-xs text-gray-500 mt-1">62.7% conversion rate</div>
+                </div>
+                
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-purple-50 rounded-lg">
+                      <ArrowTrendingUpIcon className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <span className="text-2xl font-bold text-gray-900">₪487K</span>
+                  </div>
+                  <div className="text-sm text-gray-700 font-medium">Revenue</div>
+                  <div className="text-xs text-gray-500 mt-1">+18% from target</div>
+                </div>
+                
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="p-2 bg-purple-50 rounded-lg">
+                      <ClockIcon className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <span className="text-2xl font-bold text-gray-900">23</span>
+                  </div>
+                  <div className="text-sm text-gray-700 font-medium">Pending</div>
+                  <div className="text-xs text-gray-500 mt-1">Require follow-up</div>
+                </div>
+              </div>
+
+              {/* Department Performance Boxes */}
+              {scoreTab === 'Tables' && (
+                <div className="space-y-6">
+                  <div className="flex items-center gap-3 mb-6">
+                    <div className="p-2 bg-gradient-to-br from-purple-100 to-indigo-100 rounded-lg border border-purple-200">
+                      <ChartBarIcon className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <h3 className="text-lg font-semibold text-slate-800">Department Performance</h3>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {scoreboardCategories.map((category, index) => {
+                                            const todayData = scoreboardData["Today"][index];
+                      const last30Data = scoreboardData["Last 30d"][index];
+                      const isFlipped = flippedCards.has(category);
+                      const chartData = generateDepartmentData(category);
+                      
+                      return (
+                        <div key={category} className="relative h-64" style={{ perspective: '1000px' }}>
+                          <div 
+                            className="relative w-full h-full transition-transform duration-700 cursor-pointer"
+                            style={{ 
+                              transformStyle: 'preserve-3d',
+                              transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)'
+                            }}
+                            onClick={() => handleCardFlip(category)}
+                          >
+                            {/* Front of card */}
+                            <div 
+                              className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg hover:shadow-2xl hover:scale-[1.02] transition-all duration-300 overflow-hidden group"
+                              style={{ 
+                                backfaceVisibility: 'hidden',
+                                transform: 'rotateY(0deg)'
+                              }}
+                            >
+                              {/* Header */}
+                              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 group-hover:bg-gradient-to-r group-hover:from-purple-50 group-hover:to-indigo-50 transition-all duration-300">
+                                <h4 className="text-sm font-semibold text-slate-800 text-center group-hover:text-purple-800 transition-colors duration-300">{category}</h4>
+                              </div>
+                              
+                              {/* Content */}
+                              <div className="p-4">
+                                {/* Horizontal Stats Layout */}
+                                <div className="grid grid-cols-2 gap-3 mb-4">
+                                  {/* Today Stats - Left */}
+                                  <div className="bg-slate-50 rounded-lg p-3 group-hover:bg-slate-100 transition-all duration-300 hover:shadow-md">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <div className="w-2 h-2 bg-indigo-500 rounded-full group-hover:scale-125 transition-transform duration-300"></div>
+                                      <span className="text-xs font-medium text-slate-600 group-hover:text-indigo-700 transition-colors duration-300">Today</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      <div className="text-lg font-bold text-slate-800 group-hover:text-indigo-800 transition-colors duration-300">{todayData.count}</div>
+                                      <div className="text-xs font-medium text-slate-600 group-hover:text-indigo-600 transition-colors duration-300">₪{todayData.amount ? todayData.amount.toLocaleString() : '0'}</div>
+                                      {todayData.expected > 0 && (
+                                        <div className="text-xs text-slate-500 group-hover:text-indigo-500 transition-colors duration-300">
+                                          Target: {todayData.expected.toLocaleString()}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Last 30 Days Stats - Right */}
+                                  <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg p-3 border border-purple-400 group-hover:from-purple-600 group-hover:to-indigo-700 group-hover:border-purple-500 transition-all duration-300 hover:shadow-md">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <div className="w-2 h-2 bg-white rounded-full group-hover:scale-125 transition-transform duration-300"></div>
+                                      <span className="text-xs font-medium text-white group-hover:text-white transition-colors duration-300">Last 30d</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      <div className="text-lg font-bold text-white group-hover:text-white transition-colors duration-300">{last30Data.count}</div>
+                                      <div className="text-xs font-medium text-white/90 group-hover:text-white transition-colors duration-300">₪{last30Data.amount ? last30Data.amount.toLocaleString() : '0'}</div>
+                                      {last30Data.expected > 0 && (
+                                        <div className="text-xs text-white/80 group-hover:text-white/90 transition-colors duration-300">
+                                          Target: {last30Data.expected.toLocaleString()}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                
+                                {/* Performance Indicator */}
+                                {last30Data.amount > 0 && (
+                                  <div className="pt-2 border-t border-slate-100 group-hover:border-purple-200 transition-colors duration-300">
+                                    <div className="flex justify-between items-center">
+                                      <span className="text-xs text-slate-500 group-hover:text-purple-600 transition-colors duration-300">Performance</span>
+                                      <div className={`text-xs font-medium px-2 py-1 rounded-full transition-all duration-300 hover:scale-105 ${
+                                        last30Data.amount >= last30Data.expected 
+                                          ? 'bg-green-100 text-green-700 group-hover:bg-green-200 group-hover:shadow-sm' 
+                                          : last30Data.amount >= last30Data.expected * 0.8
+                                          ? 'bg-yellow-100 text-yellow-700 group-hover:bg-yellow-200 group-hover:shadow-sm'
+                                          : 'bg-red-100 text-red-700 group-hover:bg-red-200 group-hover:shadow-sm'
+                                      }`}>
+                                        {last30Data.expected > 0 
+                                          ? `${Math.round((last30Data.amount / last30Data.expected) * 100)}%`
+                                          : 'N/A'
+                                        }
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                              
+                              {/* Click hint */}
+                              <div className="absolute bottom-2 right-2 text-xs text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                Click to view trends
+                              </div>
+                            </div>
+
+                            {/* Back of card */}
+                            <div 
+                              className="absolute inset-0 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl border border-purple-300 shadow-lg overflow-hidden"
+                              style={{ 
+                                backfaceVisibility: 'hidden',
+                                transform: 'rotateY(180deg)'
+                              }}
+                            >
+                              {/* Header */}
+                              <div className="px-4 py-3 bg-white/10 border-b border-white/20 backdrop-blur-sm">
+                                <h4 className="text-sm font-semibold text-white text-center">{category} - 30 Day Trend</h4>
+                              </div>
+                              
+                              {/* Chart */}
+                              <div className="p-4 h-full">
+                                <div className="w-full h-40">
+                                  <ResponsiveContainer width="100%" height="100%">
+                                    <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                      <XAxis 
+                                        dataKey="date" 
+                                        tick={{ fontSize: 10, fill: 'white' }} 
+                                        axisLine={{ stroke: 'white', strokeWidth: 1 }} 
+                                        tickLine={{ stroke: 'white' }}
+                                        interval={5}
+                                      />
+                                      <YAxis 
+                                        tick={{ fontSize: 10, fill: 'white' }} 
+                                        axisLine={{ stroke: 'white', strokeWidth: 1 }} 
+                                        tickLine={{ stroke: 'white' }}
+                                        width={25}
+                                      />
+                                                                             <Tooltip
+                                         contentStyle={{ 
+                                           background: 'rgba(255,255,255,0.98)', 
+                                           borderRadius: 12, 
+                                           border: '1px solid #e5e7eb',
+                                           boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+                                           fontSize: 13,
+                                           fontWeight: 500,
+                                           padding: '12px 16px'
+                                         }}
+                                         labelStyle={{ 
+                                           color: '#374151', 
+                                           fontWeight: 'bold', 
+                                           fontSize: 14, 
+                                           marginBottom: 8 
+                                         }}
+                                         itemStyle={{ 
+                                           color: '#6366f1', 
+                                           fontSize: 13, 
+                                           fontWeight: 600 
+                                         }}
+                                         labelFormatter={(label) => {
+                                           const dataPoint = chartData.find(d => d.date === label);
+                                           return dataPoint ? `Date: ${dataPoint.fullDate}` : `Date: ${label}`;
+                                         }}
+                                         formatter={(value: number, name: string) => [
+                                           `${value} ${value === 1 ? 'contract' : 'contracts'}`, 
+                                           'Contracts Signed'
+                                         ]}
+                                         cursor={{ stroke: 'rgba(255,255,255,0.3)', strokeWidth: 2 }}
+                                         animationDuration={200}
+                                       />
+                                      <Line 
+                                        type="monotone" 
+                                        dataKey="contracts" 
+                                        stroke="#ffffff" 
+                                        strokeWidth={3}
+                                        dot={{ fill: '#ffffff', stroke: '#ffffff', strokeWidth: 2, r: 3 }}
+                                        activeDot={{ r: 5, fill: '#fbbf24', stroke: '#ffffff', strokeWidth: 2 }}
+                                      />
+                                    </LineChart>
+                                  </ResponsiveContainer>
+                                </div>
+                                
+                                {/* Stats summary */}
+                                <div className="mt-2 text-white text-xs">
+                                  <div className="flex justify-between">
+                                    <span>Total: {chartData.reduce((sum, d) => sum + d.contracts, 0)} contracts</span>
+                                    <span>Avg: {Math.round(chartData.reduce((sum, d) => sum + d.contracts, 0) / chartData.length)} per day</span>
+                                  </div>
+                                </div>
+                                                             </div>
+                             </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Professional Chart Visualization */}
+              {(scoreTab === 'Today' || scoreTab === currentMonthName || scoreTab === 'Last 30d') && (
+                <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 p-8 shadow-lg">
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3">
+                      <div className="p-3 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl shadow-lg">
+                        <ChartBarIcon className="w-6 h-6 text-white" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-900">Performance Analytics</h3>
+                        <p className="text-sm text-gray-600">Real-time business metrics</p>
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
+                      <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-2">
+                          <div className="w-4 h-4 bg-gradient-to-r from-purple-600 to-purple-700 rounded-full shadow-sm"></div>
+                          <span className="text-sm font-medium text-gray-700">Signed</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="w-4 h-4 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full shadow-sm"></div>
+                          <span className="text-sm font-medium text-gray-700">Due</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+                    <div className="w-full h-[450px]">
+                      {(() => {
+                        const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
+                        return (
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart
+                              data={chartData}
+                              barCategoryGap={16}
+                              margin={{ top: 30, right: 30, left: 20, bottom: 40 }}
+                            >
+                              <defs>
+                                <linearGradient id="signedGradient" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.8}/>
+                                  <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.9}/>
+                                </linearGradient>
+                                <linearGradient id="dueGradient" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.8}/>
+                                  <stop offset="100%" stopColor="#0891b2" stopOpacity={0.9}/>
+                                </linearGradient>
+                              </defs>
+                              <CartesianGrid strokeDasharray="2 2" stroke="#e5e7eb" opacity={0.3} />
+                              <XAxis 
+                                dataKey="category" 
+                                tick={{ fontSize: 11, fill: '#4b5563', fontWeight: '500' }} 
+                                axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
+                                tickLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
+                                tickMargin={12}
+                                interval={0}
+                              />
+                              <YAxis 
+                                tick={{ fontSize: 12, fill: '#4b5563' }} 
+                                axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
+                                tickLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
+                                width={45}
+                                tickMargin={8}
+                              />
+                              <Tooltip
+                                contentStyle={{ 
+                                  background: 'rgba(255,255,255,0.98)', 
+                                  borderRadius: 16, 
+                                  border: '1px solid #e5e7eb',
+                                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+                                  padding: '12px 16px'
+                                }}
+                                labelStyle={{ color: '#111827', fontWeight: 'bold', fontSize: '14px', marginBottom: '8px' }}
+                                itemStyle={{ color: '#374151', fontSize: '13px', fontWeight: '500' }}
+                                formatter={(value: number, name: string) => {
+                                  if (name === 'signed') return [`${value.toLocaleString()} contracts`, 'Signed'];
+                                  if (name === 'due') return [`${value.toLocaleString()} contracts`, 'Due'];
+                                  return [value.toLocaleString(), name || 'Unknown'];
+                                }}
+                                cursor={{ fill: 'rgba(0, 0, 0, 0.05)' }}
+                              />
+                              <Bar 
+                                dataKey="signed" 
+                                name="signed" 
+                                fill="url(#signedGradient)"
+                                radius={[8, 8, 0, 0]} 
+                                barSize={28}
+                                stroke="#7c3aed"
+                                strokeWidth={1}
+                                strokeOpacity={0.3}
+                              />
+                              <Bar 
+                                dataKey="due" 
+                                name="due" 
+                                fill="url(#dueGradient)"
+                                radius={[8, 8, 0, 0]} 
+                                barSize={28}
+                                stroke="#0891b2"
+                                strokeWidth={1}
+                                strokeOpacity={0.3}
+                              />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        );
+                      })()}
+                    </div>
+                  </div>
+                  
+                  {/* Chart Statistics */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+                    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-2 h-2 bg-purple-600 rounded-full"></div>
+                        <span className="text-sm font-medium text-gray-600">Total Signed</span>
+                      </div>
+                      <div className="text-2xl font-bold text-gray-900">
+                        {(() => {
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
+                          return data.reduce((sum, item) => sum + item.signed, 0);
+                        })()}
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-2 h-2 bg-cyan-500 rounded-full"></div>
+                        <span className="text-sm font-medium text-gray-600">Total Due</span>
+                      </div>
+                      <div className="text-2xl font-bold text-gray-900">
+                        {(() => {
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
+                          return data.reduce((sum, item) => sum + item.due, 0);
+                        })()}
+                      </div>
+                    </div>
+                    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+                      <div className="flex items-center gap-2 mb-1">
+                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                        <span className="text-sm font-medium text-gray-600">Conversion Rate</span>
+                      </div>
+                      <div className="text-2xl font-bold text-gray-900">
+                        {(() => {
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
+                          const signed = data.reduce((sum, item) => sum + item.signed, 0);
+                          const due = data.reduce((sum, item) => sum + item.due, 0);
+                          const total = signed + due;
+                          return total > 0 ? `${Math.round((signed / total) * 100)}%` : '0%';
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Quick Actions */}
+              <div className="flex flex-wrap gap-3 mt-6">
+                <button className="btn btn-sm bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg">
+                  <PlusIcon className="w-4 h-4 mr-2" />
+                  New Lead
+                </button>
+                <button className="btn btn-sm bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-none hover:from-blue-600 hover:to-cyan-600 shadow-lg">
+                  <MagnifyingGlassIcon className="w-4 h-4 mr-2" />
+                  Search
+                </button>
+                <button className="btn btn-sm bg-gradient-to-r from-green-500 to-teal-500 text-white border-none hover:from-green-600 hover:to-teal-600 shadow-lg">
+                  <ArrowPathIcon className="w-4 h-4 mr-2" />
+                  Refresh
+                </button>
               </div>
             </div>
-            {/* Table for Tables tab only */}
-            {scoreTab === 'Tables' && (
-              <div className="overflow-x-auto">
-                <table className="table w-full rounded-xl bg-white/10">
-                  <thead>
-                    <tr>
-                      <th className="text-lg font-bold text-gray-900 px-4 py-3 whitespace-nowrap bg-white border-b-2 border-purple-200"></th>
-                      {scoreboardCategories.map(cat => (
-                        <th key={cat} className="text-lg font-bold text-gray-900 px-4 py-3 whitespace-nowrap bg-white border-b-2 border-purple-200">{cat}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {/* Today row */}
-                    <tr className="hover:bg-white/10 transition-all">
-                      <td className="px-4 py-3 text-left font-bold text-lg text-gray-900">Today</td>
-                      {scoreboardData["Today"].map((cell, i) => (
-                        <td key={i} className="px-4 py-3 text-center align-top">
-                          <div className="inline-flex flex-col items-start w-full gap-1">
-                            <div className="flex flex-col items-center justify-center bg-purple-50 rounded-xl shadow-sm px-4 py-3 w-full hover:bg-purple-100/40 transition-all">
-                              <div className="flex items-center gap-1 mb-1">
-                                <svg className="w-5 h-5 text-purple-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>
-                                <span className="font-bold text-xl text-purple-900">{cell.count}</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <span className={`text-base font-semibold ${cell.amount < cell.expected ? 'text-red-500' : cell.amount >= cell.expected && cell.expected > 0 ? 'text-green-600' : 'text-gray-900'}`}>₪{cell.amount ? cell.amount.toLocaleString() : '0'}</span>
-                              </div>
-                            </div>
-                            {cell.expected > 0 && (
-                              <div className="text-xs text-gray-500 mt-1 text-right w-full">
-                                <span className="opacity-70">Expected:</span> <span className="font-semibold">{cell.expected.toLocaleString()}</span>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      ))}
-                    </tr>
-                    {/* Last 30d row */}
-                    <tr className="hover:bg-white/10 transition-all">
-                      <td className="px-4 py-3 text-left font-bold text-lg text-gray-900">Last 30 days</td>
-                      {scoreboardData["Last 30d"].map((cell, i) => (
-                        <td key={i} className="px-4 py-3 text-center align-top">
-                          <div className="inline-flex flex-col items-start w-full gap-1">
-                            <div className="flex flex-col items-center justify-center bg-purple-50 rounded-xl shadow-sm px-4 py-3 w-full hover:bg-purple-100/40 transition-all">
-                              <div className="flex items-center gap-1 mb-1">
-                                <svg className="w-5 h-5 text-purple-500" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>
-                                <span className="font-bold text-xl text-purple-900">{cell.count}</span>
-                              </div>
-                              <div className="flex items-center gap-1">
-                                <span className={`text-base font-semibold ${cell.amount < cell.expected ? 'text-red-500' : cell.amount >= cell.expected && cell.expected > 0 ? 'text-green-600' : 'text-gray-900'}`}>₪{cell.amount ? cell.amount.toLocaleString() : '0'}</span>
-                              </div>
-                            </div>
-                            {cell.expected > 0 && (
-                              <div className="text-xs text-gray-500 mt-1 text-right w-full">
-                                <span className="opacity-70">Expected:</span> <span className="font-semibold">{cell.expected.toLocaleString()}</span>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      ))}
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {/* Bar chart for Today, June, and Last 30d tabs */}
-            {(scoreTab === 'Today' || scoreTab === currentMonthName || scoreTab === 'Last 30d') && (
-              <div className="w-full h-[420px] flex flex-col items-center justify-center">
-                {(() => {
-                  const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
-                  return (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={chartData}
-                        barCategoryGap={32}
-                        margin={{ top: 32, right: 32, left: 16, bottom: 32 }}
-                      >
-                        <XAxis dataKey="category" tick={{ fontSize: 16, fill: '#3b28c7', fontWeight: 600 }} axisLine={{ stroke: '#3b28c7' }} tickLine={{ stroke: '#3b28c7' }} />
-                        <YAxis tick={{ fontSize: 14, fill: '#3b28c7' }} axisLine={{ stroke: '#3b28c7' }} tickLine={{ stroke: '#3b28c7' }} width={60} />
-                        <CartesianGrid strokeDasharray="3 3" stroke="#3b28c7" opacity={0.15} />
-                        <Tooltip
-                          contentStyle={{ background: 'rgba(0,0,0,0.8)', borderRadius: 12, color: '#fff', border: 'none' }}
-                          labelStyle={{ color: '#fff', fontWeight: 'bold' }}
-                          itemStyle={{ color: '#fff' }}
-                          formatter={(value: number, name: string) => {
-                            if (name === 'signed') return [value.toLocaleString(), 'Signed'];
-                            if (name === 'due') return [value.toLocaleString(), 'Due'];
-                            return [value.toLocaleString(), name || 'Unknown'];
-                          }}
-                        />
-                        <Bar dataKey="signed" name="Signed" fill="#3b28c7" radius={[8, 8, 0, 0]} barSize={40} />
-                        <Bar dataKey="due" name="Due" fill="#06b6d4" radius={[8, 8, 0, 0]} barSize={40} />
-                        <RechartsLegend
-                          verticalAlign="top"
-                          align="center"
-                          iconType="rect"
-                          height={36}
-                          wrapperStyle={{ fontSize: 18, fontWeight: 600, marginBottom: 16, color: '#3b28c7' }}
-                          formatter={(value: string) => {
-                            if (value === 'Signed') return <span style={{ color: '#3b28c7' }}>Signed</span>;
-                            if (value === 'Due') return <span style={{ color: '#06b6d4' }}>Due</span>;
-                            return value;
-                          }}
-                        />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  );
-                })()}
-              </div>
-            )}
           </div>
         </div>
       </div>

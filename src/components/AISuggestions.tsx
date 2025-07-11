@@ -185,28 +185,26 @@ const AISuggestions = forwardRef((props, ref) => {
       default: return 'bg-gray-100 text-gray-700';
     }
   };
+
+
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
     <div
-      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 min-h-[180px]"
+      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-[calc(50%-0.5rem)] md:w-full flex-shrink-0"
     >
-      <div className="flex items-start justify-between mb-2">
+      <div className="flex items-start justify-between mb-2 flex-shrink-0">
         <div className="flex items-center gap-2">
           {getTypeIcon(suggestion.type)}
           <span className="font-semibold text-sm capitalize text-gray-700">{suggestion.type}</span>
         </div>
-        {suggestion.dueDate && (
-          <span className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold ${getDueColor(suggestion.type)}`}>
-            <ClockIcon className="w-4 h-4" /> Due: {suggestion.dueDate}
-          </span>
-        )}
+        {/* Due date removed from small version */}
       </div>
-      <div className="flex-1">
-        <div className="font-bold text-lg text-gray-900 mb-1 leading-snug">{suggestion.message}</div>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">{suggestion.message}</div>
         {suggestion.context && (
-          <div className="text-sm text-gray-500 mb-2">{suggestion.context}</div>
+          <div className="text-sm text-gray-500 mb-2 line-clamp-3 flex-1">{suggestion.context}</div>
         )}
       </div>
-      <div className="flex justify-start mt-2">
+      <div className="flex justify-start mt-auto flex-shrink-0">
         <button className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all">
           {suggestion.action}
           <ArrowRightIcon className="w-4 h-4 ml-1" />
@@ -225,17 +223,36 @@ const AISuggestions = forwardRef((props, ref) => {
   const containerRef = React.useRef<HTMLDivElement>(null);
 
   return (
-    <div ref={containerRef}>
-      <div className="flex items-center justify-between mb-2">
+    <>
+      <style>{`
+        .line-clamp-2 {
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
+        .line-clamp-3 {
+          display: -webkit-box;
+          -webkit-line-clamp: 3;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
+      `}</style>
+      <div ref={containerRef}>
+        <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
           <SparklesIcon className="w-6 h-6" style={{ color: '#3b28c7' }} />
-          <div className="text-2xl font-bold">RMQ AI NOTICE</div>
+          <div className="text-2xl font-bold">RMQ AI</div>
         </div>
         <button className="btn btn-sm btn-outline" style={{ borderColor: '#3b28c7', color: '#3b28c7' }} onClick={() => setIsModalOpen(true)}>View All</button>
       </div>
       <div
-        className="overflow-y-auto grid grid-cols-1 gap-4 mt-0 scrollbar-none"
-        style={{ maxHeight: '572px', scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+        className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible flex md:grid flex-row md:flex-col md:grid-cols-1 gap-4 mt-0 scrollbar-none"
+        style={{ 
+          maxHeight: '1200px', 
+          scrollbarWidth: 'none', 
+          msOverflowStyle: 'none'
+        }}
       >
         {/* Hide scrollbar for Webkit browsers */}
         <style>{`
@@ -293,10 +310,31 @@ const AISuggestions = forwardRef((props, ref) => {
               </div>
             </div>
 
-            <div className="p-4 overflow-y-auto max-h-[calc(80vh-200px)] bg-white">
-              <div className="grid grid-cols-1 gap-4">
+            <div className="p-4 overflow-x-auto md:overflow-y-auto md:overflow-x-visible max-h-[calc(80vh-200px)] bg-white">
+              <div className="flex md:grid flex-row md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
                 {filteredSuggestions.map((suggestion) => (
-                  <SuggestionCard key={suggestion.id} suggestion={suggestion} />
+                  <div key={suggestion.id} className="w-[calc(50%-0.5rem)] md:w-full flex-shrink-0">
+                    <div className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full">
+                      <div className="flex items-start justify-between mb-2 flex-shrink-0">
+                        <div className="flex items-center gap-2">
+                          {getTypeIcon(suggestion.type)}
+                          <span className="font-semibold text-sm capitalize text-gray-700">{suggestion.type}</span>
+                        </div>
+                      </div>
+                      <div className="flex-1 flex flex-col overflow-hidden">
+                        <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">{suggestion.message}</div>
+                        {suggestion.context && (
+                          <div className="text-sm text-gray-500 mb-2 line-clamp-3 flex-1">{suggestion.context}</div>
+                        )}
+                      </div>
+                      <div className="flex justify-start mt-auto flex-shrink-0">
+                        <button className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all">
+                          {suggestion.action}
+                          <ArrowRightIcon className="w-4 h-4 ml-1" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
                 ))}
               </div>
             </div>
@@ -304,6 +342,7 @@ const AISuggestions = forwardRef((props, ref) => {
         </div>
       )}
     </div>
+    </>
   );
 });
 

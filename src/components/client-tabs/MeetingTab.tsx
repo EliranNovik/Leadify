@@ -351,247 +351,234 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const expandedData = expandedMeetingData[meeting.id] || {};
     const isExpanded = expandedMeetingId === meeting.id;
 
-    // Pick a gradient for this card
-    const gradients = [
-      'from-pink-500 via-purple-500 to-purple-600',
-      'from-purple-600 via-blue-600 to-blue-500',
-      'from-blue-500 via-cyan-500 to-teal-400',
-      'from-teal-400 via-green-400 to-green-600',
-    ];
-    const gradient = gradients[meeting.id % 4];
-    const iconColor = 'text-primary';
 
-    const renderEditableSection = (
-      title: string,
-      field: 'expert_notes' | 'handler_notes',
-      content?: any
-    ) => {
-      const isEditing = editingField?.meetingId === meeting.id && editingField?.field === field;
-      
-      // Extract the most recent note content if content is an array
-      const latestNote = Array.isArray(content) && content.length > 0 ? content[content.length - 1].content : content;
-
-      return (
-        <div className="bg-base-200/50 p-4 rounded-lg">
-          <div className="flex justify-between items-center mb-2">
-            <h5 className="font-semibold text-base-content/90">{title}</h5>
-            {isEditing ? (
-              <div className="flex items-center gap-1">
-                <button className="btn btn-ghost btn-xs btn-circle" onClick={handleSaveField}><CheckIcon className="w-4 h-4 text-success" /></button>
-                <button className="btn btn-ghost btn-xs btn-circle" onClick={handleCancelEditField}><XMarkIcon className="w-4 h-4 text-error" /></button>
-              </div>
-            ) : (
-              <button className="btn btn-ghost btn-xs btn-circle" onClick={() => handleEditField(meeting.id, field, content)}><PencilSquareIcon className="w-4 h-4" /></button>
-            )}
-          </div>
-          {isEditing ? (
-            <textarea
-              className="textarea textarea-bordered w-full h-28"
-              value={editedContent}
-              onChange={e => setEditedContent(e.target.value)}
-            />
-          ) : (
-            <p className="text-sm text-base-content/70 min-h-[4rem]">{latestNote || 'No notes yet.'}</p>
-          )}
-        </div>
-      );
-    };
 
     const past = isPastMeeting(meeting);
     const showPastActions = past && isRecentPastMeeting(meeting);
 
     return (
-      <div key={meeting.id} className="rounded-2xl border border-base-300 bg-white shadow transition-all duration-200 min-h-[220px]">
-        <div className="bg-white rounded-2xl h-full w-full">
-          <div className="card-body p-4">
-            {/* Header */}
-            <div className="flex flex-row justify-between items-start mb-2">
-              <div className="flex items-center gap-4">
-                <div className={`flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr ${gradient} shadow`}>
-                  <CalendarIcon className="w-7 h-7 text-white opacity-90" />
-                </div>
-                <div>
-                  <p className={`font-bold text-2xl bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>{formattedDate}</p>
-                  <div className={`flex items-center gap-2 bg-gradient-to-tr ${gradient} bg-clip-text text-transparent`}>
-                    <ClockIcon className="w-5 h-5 text-transparent" style={{ WebkitTextStroke: '1px #a3a3a3' }} />
-                    <span>{meeting.time}</span>
-                  </div>
-                </div>
+      <div key={meeting.id} className="bg-white border border-purple-200 rounded-xl shadow-sm hover:shadow-md hover:border-purple-300 transition-all duration-200 overflow-hidden">
+        {/* Header */}
+        <div className="px-4 py-3 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-purple-100">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-purple-600 shadow-sm">
+                <CalendarIcon className="w-5 h-5 text-white" />
               </div>
-              {/* Action Buttons */}
-              <div className="flex flex-col md:flex-row gap-2">
-                {(!past || showPastActions) && (
-                  <button
-                    className={`btn ${past ? 'btn-xs w-28' : 'btn-sm'} text-white border-none shadow-md hover:opacity-90 bg-gradient-to-tr ${gradient}`}
-                    onClick={() => handleSendEmail(meeting)}
-                    disabled={isSendingEmail}
-                    style={past ? undefined : { minWidth: 120 }}
-                  >
-                    Notify Client
-                  </button>
-                )}
-                {meeting.location === 'Teams' && !meeting.link && (
-                  <button
-                    className={`btn ${past ? 'btn-xs w-20' : 'btn-sm'} text-white border-none shadow-md hover:opacity-90 bg-gradient-to-tr ${gradient}`}
-                    onClick={() => handleCreateTeamsMeeting(meeting)}
-                    disabled={creatingTeamsMeetingId === meeting.id}
-                    style={past ? undefined : { minWidth: 120 }}
-                  >
-                    {creatingTeamsMeetingId === meeting.id ? (
-                      <span className="loading loading-spinner loading-xs mr-2"></span>
-                    ) : (
-                      <VideoCameraIcon className="w-4 h-4 mr-1" />
-                    )}
-                    Create Teams Link
-                  </button>
-                )}
-                {meeting.link && getValidTeamsLink(meeting.link) && (!past || showPastActions) && (
-                  <a
-                    href={getValidTeamsLink(meeting.link)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className={`btn ${past ? 'btn-xs w-28' : 'btn-sm'} text-white border-none shadow-md hover:opacity-90 bg-gradient-to-tr ${gradient}`}
-                    style={past ? undefined : { minWidth: 120 }}
-                  >
-                    Join Meeting
-                  </a>
-                )}
+              <div>
+                <p className="font-bold text-lg text-gray-900">{formattedDate}</p>
+                <div className="flex items-center gap-2 text-purple-600">
+                  <ClockIcon className="w-4 h-4" />
+                  <span className="text-sm font-medium">{meeting.time}</span>
+                </div>
               </div>
             </div>
+            {/* Action Buttons */}
+            <div className="flex gap-2">
+              {(!past || showPastActions) && (
+                <button
+                  className="btn btn-sm bg-purple-600 hover:bg-purple-700 text-white border-none shadow-sm"
+                  onClick={() => handleSendEmail(meeting)}
+                  disabled={isSendingEmail}
+                >
+                  <EnvelopeIcon className="w-4 h-4" />
+                  Notify
+                </button>
+              )}
+              {meeting.location === 'Teams' && !meeting.link && (
+                <button
+                  className="btn btn-sm btn-outline border-purple-300 text-purple-600 hover:bg-purple-50"
+                  onClick={() => handleCreateTeamsMeeting(meeting)}
+                  disabled={creatingTeamsMeetingId === meeting.id}
+                >
+                  {creatingTeamsMeetingId === meeting.id ? (
+                    <span className="loading loading-spinner loading-xs"></span>
+                  ) : (
+                    <VideoCameraIcon className="w-4 h-4" />
+                  )}
+                  Teams
+                </button>
+              )}
+              {meeting.link && getValidTeamsLink(meeting.link) && (!past || showPastActions) && (
+                <a
+                  href={getValidTeamsLink(meeting.link)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-sm bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white border-none shadow-sm"
+                >
+                  <LinkIcon className="w-4 h-4" />
+                  Join
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
 
-            {/* Details Section */}
-            <div className="grid grid-cols-2 gap-x-2 gap-y-2 md:grid-cols-2 md:gap-3 mb-2">
-              <div className="flex items-center gap-2 col-span-2">
-                <UserIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className="text-sm md:text-base text-gray-900">Scheduler: {meeting.scheduler || '---'}</span>
+        {/* Content */}
+        <div className="p-4">
+          <div className="space-y-3">
+
+            {/* Meeting Details */}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-purple-600 uppercase tracking-wide">Location</label>
+                <div className="flex items-center gap-2">
+                  <MapPinIcon className="w-4 h-4 text-purple-400" />
+                  <span className="text-sm text-gray-900">{meeting.location}</span>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <MapPinIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className="text-sm md:text-base text-gray-900">{meeting.location}</span>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-purple-600 uppercase tracking-wide">Manager</label>
+                <div className="flex items-center gap-2">
+                  <UserIcon className="w-4 h-4 text-purple-400" />
+                  <span className="text-sm text-gray-900">{meeting.manager || '---'}</span>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <UserIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className="text-sm md:text-base text-gray-900">Manager: {meeting.manager}</span>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-purple-600 uppercase tracking-wide">Expert</label>
+                <div className="flex items-center gap-2">
+                  <AcademicCapIcon className="w-4 h-4 text-purple-400" />
+                  <span className="text-sm text-gray-900">{meeting.expert || '---'}</span>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <AcademicCapIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className="text-sm md:text-base text-gray-900">Expert: {meeting.expert}</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <UserCircleIcon className={`w-5 h-5 ${iconColor}`} />
-                <span className="text-sm md:text-base text-gray-900">Helper: {meeting.helper}</span>
-              </div>
-              <div className="flex items-center gap-2 col-span-2 md:col-span-2">
-                <span className="font-semibold text-sm md:text-base text-gray-900">{meeting.currency}</span>
-                <span className="text-sm md:text-base text-gray-900">{meeting.amount}</span>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-purple-600 uppercase tracking-wide">Amount</label>
+                <div className="flex items-center gap-1">
+                  <span className="text-sm font-semibold text-purple-700">{meeting.currency} {meeting.amount}</span>
+                </div>
               </div>
             </div>
 
             {/* Brief Section */}
-            <div className="mt-2 pt-2 border-t border-gray-200">
+            <div className="border-t border-purple-100 pt-3">
               <div className="flex justify-between items-center mb-2">
-                <h4 className="font-semibold text-gray-900">Brief</h4>
+                <label className="text-xs font-medium text-purple-600 uppercase tracking-wide">Brief</label>
                 {editingBriefId === meeting.id ? (
                   <div className="flex items-center gap-1">
-                    <button className="btn btn-ghost btn-sm btn-circle" onClick={() => handleSaveBrief(meeting.id)}>
-                      <CheckIcon className="w-5 h-5 text-success" />
+                    <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
+                      <CheckIcon className="w-4 h-4 text-green-600" />
                     </button>
-                    <button className="btn btn-ghost btn-sm btn-circle" onClick={handleCancelEdit}>
-                      <XMarkIcon className="w-5 h-5 text-error" />
+                    <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
+                      <XMarkIcon className="w-4 h-4 text-red-600" />
                     </button>
                   </div>
                 ) : (
-                  <button className={`btn btn-sm btn-circle shadow bg-gradient-to-tr ${gradient} text-white hover:opacity-90`} onClick={handleEditBrief}>
-                    <PencilSquareIcon className="w-5 h-5" />
+                  <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
+                    <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
                   </button>
                 )}
               </div>
               {editingBriefId === meeting.id ? (
                 <textarea
-                  className={`textarea textarea-bordered w-full h-24 border-gray-300 text-gray-700 placeholder-gray-400`}
+                  className="textarea textarea-bordered w-full h-20 text-sm"
                   value={editedBrief}
                   onChange={(e) => setEditedBrief(e.target.value)}
                   placeholder="Add a meeting brief..."
                 />
               ) : (
-                <div className="bg-gray-50 rounded-xl border border-gray-200 p-3 my-1 min-h-[2.5rem] whitespace-pre-wrap transition-all text-gray-800">
-                  {meeting.brief || <span className="text-gray-400">No brief provided.</span>}
+                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                  {meeting.brief ? (
+                    <p className="text-sm text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+                  ) : (
+                    <span className="text-sm text-gray-400 italic">No brief provided</span>
+                  )}
                 </div>
               )}
             </div>
 
-            {/* Last Edited Section */}
-            <div className="text-xs mt-2 flex flex-col gap-1 text-gray-600">
-              <div className="flex items-center gap-2">
-                <ClockSolidIcon className="w-4 h-4" />
-                <span>Last edited: {new Date(meeting.lastEdited.timestamp).toLocaleString()}</span>
+            {/* Last Edited */}
+            {meeting.lastEdited && (
+              <div className="text-xs text-gray-400 flex justify-between border-t border-gray-100 pt-2">
+                <span>Last edited by {meeting.lastEdited.user}</span>
+                <span>{new Date(meeting.lastEdited.timestamp).toLocaleDateString()}</span>
               </div>
-              <div className="flex items-center gap-2">
-                <UserCircleIcon className="w-4 h-4" />
-                <span>by {meeting.lastEdited.user}</span>
-              </div>
-            </div>
+            )}
           </div>
-          {/* Collapsible Section - only render content if expanded */}
-          {isExpanded && (
-            <div className="bg-gray-50 p-2 md:p-3 border-t-2 border-dashed border-gray-200">
-              {expandedData.loading ? (
-                <div className="flex justify-center items-center py-8">
-                  <span className="loading loading-spinner loading-md"></span>
-                </div>
-              ) : (
-                <div className="flex flex-col md:flex-row gap-4">
-                  <div className="flex-1 bg-white p-4 rounded-lg">
-                    <div className="flex justify-between items-center mb-1">
-                      <h5 className="font-semibold text-gray-900">Expert Notes</h5>
-                    </div>
-                    {editingField?.meetingId === meeting.id && editingField?.field === 'expert_notes' ? (
-                      <textarea
-                        className="textarea textarea-bordered w-full h-24 border-gray-300 text-gray-700 placeholder-gray-400"
-                        value={editedContent}
-                        onChange={e => setEditedContent(e.target.value)}
-                        placeholder="Edit expert notes..."
-                      />
-                    ) : (
-                      <p className="text-sm text-gray-700 min-h-[2rem]">
-                        {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0
-                          ? expandedData.expert_notes[expandedData.expert_notes.length - 1].content
-                          : expandedData.expert_notes || 'No notes yet.'}
-                      </p>
-                    )}
+        </div>
+        {/* Collapsible Section */}
+        {isExpanded && (
+          <div className="bg-gradient-to-r from-purple-50 to-blue-50 border-t border-purple-100 p-4">
+            {expandedData.loading ? (
+              <div className="flex justify-center items-center py-8">
+                <span className="loading loading-spinner loading-md text-purple-600"></span>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-white rounded-lg p-4 border border-purple-100 shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <h5 className="font-semibold text-purple-800">Expert Notes</h5>
+                    <button 
+                      className="btn btn-ghost btn-xs hover:bg-purple-50"
+                      onClick={() => handleEditField(meeting.id, 'expert_notes', expandedData.expert_notes)}
+                    >
+                      <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
+                    </button>
                   </div>
-                  <div className="flex-1 bg-white p-4 rounded-lg">
-                    <div className="flex justify-between items-center mb-1">
-                      <h5 className="font-semibold text-gray-900">Handler Notes</h5>
+                  {editingField?.meetingId === meeting.id && editingField?.field === 'expert_notes' ? (
+                    <textarea
+                      className="textarea textarea-bordered w-full h-20 text-sm"
+                      value={editedContent}
+                      onChange={e => setEditedContent(e.target.value)}
+                      placeholder="Edit expert notes..."
+                    />
+                  ) : (
+                    <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                      {expandedData.expert_notes ? (
+                        <p className="text-sm text-gray-900">
+                          {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0
+                            ? expandedData.expert_notes[expandedData.expert_notes.length - 1].content
+                            : expandedData.expert_notes}
+                        </p>
+                      ) : (
+                        <span className="text-sm text-gray-400 italic">No notes yet</span>
+                      )}
                     </div>
-                    {editingField?.meetingId === meeting.id && editingField?.field === 'handler_notes' ? (
-                      <textarea
-                        className="textarea textarea-bordered w-full h-24 border-gray-300 text-gray-700 placeholder-gray-400"
-                        value={editedContent}
-                        onChange={e => setEditedContent(e.target.value)}
-                        placeholder="Edit handler notes..."
-                      />
-                    ) : (
-                      <p className="text-sm text-gray-700 min-h-[2rem]">
-                        {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0
-                          ? expandedData.handler_notes[expandedData.handler_notes.length - 1].content
-                          : expandedData.handler_notes || 'No notes yet.'}
-                      </p>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
-          {/* Expander Toggle */}
-          <div
-            className={`bg-gradient-to-tr ${gradient} hover:opacity-90 cursor-pointer transition-colors p-1 text-center rounded-b-2xl`}
-            onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
-          >
-            <div className="flex items-center justify-center gap-2 text-xs font-medium text-white">
-              <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
-              <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
-            </div>
+                <div className="bg-white rounded-lg p-4 border border-purple-100 shadow-sm">
+                  <div className="flex justify-between items-center mb-2">
+                    <h5 className="font-semibold text-purple-800">Handler Notes</h5>
+                    <button 
+                      className="btn btn-ghost btn-xs hover:bg-purple-50"
+                      onClick={() => handleEditField(meeting.id, 'handler_notes', expandedData.handler_notes)}
+                    >
+                      <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
+                    </button>
+                  </div>
+                  {editingField?.meetingId === meeting.id && editingField?.field === 'handler_notes' ? (
+                    <textarea
+                      className="textarea textarea-bordered w-full h-20 text-sm"
+                      value={editedContent}
+                      onChange={e => setEditedContent(e.target.value)}
+                      placeholder="Edit handler notes..."
+                    />
+                  ) : (
+                    <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                      {expandedData.handler_notes ? (
+                        <p className="text-sm text-gray-900">
+                          {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0
+                            ? expandedData.handler_notes[expandedData.handler_notes.length - 1].content
+                            : expandedData.handler_notes}
+                        </p>
+                      ) : (
+                        <span className="text-sm text-gray-400 italic">No notes yet</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Expander Toggle */}
+        <div
+          className="bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 cursor-pointer transition-all p-2 text-center border-t border-purple-200"
+          onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
+        >
+          <div className="flex items-center justify-center gap-2 text-xs font-medium text-white">
+            <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
+            <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
           </div>
         </div>
       </div>
@@ -599,77 +586,99 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="p-4">
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-8">
+        <div className="p-2 bg-green-100 rounded-lg">
+          <CalendarIcon className="w-6 h-6 text-green-600" />
+        </div>
+        <div>
+          <h3 className="text-2xl font-bold text-gray-900">Meeting Management</h3>
+          <p className="text-sm text-gray-500">Schedule and track client meetings</p>
+        </div>
+      </div>
+
       {/* Lead Scheduling Info Box */}
       {(leadSchedulingInfo.scheduler || leadSchedulingInfo.meeting_scheduling_notes || leadSchedulingInfo.next_followup || leadSchedulingInfo.followup) && (
-        <div className="card bg-base-100 shadow-xl rounded-2xl mb-10">
-          <div className="card-body p-6 md:p-8">
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-8 items-start">
-              <div className="flex flex-col items-start gap-2">
-                <div className="flex items-center gap-2 mb-1">
-                  <UserIcon className="w-7 h-7 text-primary" />
-                  <span className="font-semibold text-base-content/80 text-lg">Scheduler</span>
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+            <h4 className="text-lg font-semibold text-gray-900">Scheduling Information</h4>
+          </div>
+          <div className="p-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Scheduler</label>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <span className="text-base font-semibold text-gray-900">
+                    {leadSchedulingInfo.scheduler || <span className="text-gray-400 font-normal">Not assigned</span>}
+                  </span>
                 </div>
-                <div className="badge badge-outline badge-lg px-4 py-2 text-base font-bold bg-base-200">{leadSchedulingInfo.scheduler || <span className="text-base-content/40 font-normal">---</span>}</div>
               </div>
-              <div className="flex flex-col items-start gap-2">
-                <div className="flex items-center gap-2 mb-1">
-                  <DocumentTextIcon className="w-7 h-7 text-primary" />
-                  <span className="font-semibold text-base-content/80 text-lg">Meeting scheduling notes</span>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Scheduling Notes</label>
+                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                  <span className="text-sm text-gray-900 whitespace-pre-line">
+                    {leadSchedulingInfo.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
+                  </span>
                 </div>
-                <div className="text-base-content/90 text-base whitespace-pre-line bg-base-200 rounded-lg p-3 w-full min-h-[3rem]">{leadSchedulingInfo.meeting_scheduling_notes || <span className="text-base-content/40 font-normal">---</span>}</div>
               </div>
-              <div className="flex flex-col items-start gap-2">
-                <div className="flex items-center gap-2 mb-1">
-                  <ClockIcon className="w-7 h-7 text-primary" />
-                  <span className="font-semibold text-base-content/80 text-lg">Next followup date</span>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Next Follow-up</label>
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <span className="text-base font-semibold text-gray-900">
+                    {leadSchedulingInfo.next_followup ? new Date(leadSchedulingInfo.next_followup).toLocaleDateString() : <span className="text-gray-400 font-normal">Not set</span>}
+                  </span>
                 </div>
-                <div className="text-base-content/90 text-base font-bold bg-base-200 rounded-lg px-4 py-2">{leadSchedulingInfo.next_followup ? new Date(leadSchedulingInfo.next_followup).toLocaleDateString() : <span className="text-base-content/40 font-normal">---</span>}</div>
               </div>
-              <div className="flex flex-col items-start gap-2">
-                <div className="flex items-center gap-2 mb-1">
-                  <DocumentTextIcon className="w-7 h-7 text-primary" />
-                  <span className="font-semibold text-base-content/80 text-lg">Followup notes</span>
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Follow-up Notes</label>
+                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                  <span className="text-sm text-gray-900 whitespace-pre-line">
+                    {leadSchedulingInfo.followup || <span className="text-gray-400 italic">No notes</span>}
+                  </span>
                 </div>
-                <div className="text-base-content/90 text-base whitespace-pre-line bg-base-200 rounded-lg p-3 w-full min-h-[3rem]">{leadSchedulingInfo.followup || <span className="text-base-content/40 font-normal">---</span>}</div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      <div className="flex justify-between items-center mb-6">
-        <div className="flex items-center gap-2">
-        </div>
-      </div>
-
       {meetings.length > 0 ? (
-        <div className="flex flex-col md:flex-row gap-8 w-full">
-          {/* Current Meetings (left column) in white container */}
-          <div className="md:max-w-2xl w-full">
-            <div className="bg-white rounded-2xl shadow-xl p-6">
-              <div className="mb-3 font-semibold text-base-content/80 text-lg">Upcoming Meetings</div>
-              <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          {/* Upcoming Meetings */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+            <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+              <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
+            </div>
+            <div className="p-6">
+              <div className="space-y-4">
                 {upcomingMeetings.length > 0 ? (
                   upcomingMeetings.map(renderMeetingCard)
                 ) : (
-                  <div className="text-center py-8 text-base-content/70 bg-base-200 rounded-lg">
-                    No upcoming meetings scheduled.
+                  <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
+                    <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                    <p className="font-medium">No upcoming meetings</p>
+                    <p className="text-sm">Schedule a meeting to get started</p>
                   </div>
                 )}
               </div>
             </div>
           </div>
-          {/* Past Meetings (right column) in white container */}
-          <div className="flex-1 md:max-w-lg">
-            <div className="bg-white rounded-2xl shadow-xl p-6">
-              <div className="mb-3 font-semibold text-base-content/80 text-lg">Past Meetings</div>
-              <div className="flex flex-col gap-6">
+
+          {/* Past Meetings */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+            <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+              <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
+            </div>
+            <div className="p-6">
+              <div className="space-y-4">
                 {pastMeetings.length > 0 ? (
                   pastMeetings.map(renderMeetingCard)
                 ) : (
-                  <div className="text-center py-8 text-base-content/70 bg-base-200 rounded-lg">
-                    No past meetings.
+                  <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
+                    <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                    <p className="font-medium">No past meetings</p>
+                    <p className="text-sm">Completed meetings will appear here</p>
                   </div>
                 )}
               </div>
@@ -677,8 +686,17 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       ) : (
-        <div className="text-center py-8 text-base-content/70 bg-base-200 rounded-lg">
-          No meetings scheduled yet.
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+            <h4 className="text-lg font-semibold text-gray-900">Meetings</h4>
+          </div>
+          <div className="p-6">
+            <div className="text-center py-12 text-gray-500">
+              <CalendarIcon className="w-16 h-16 mx-auto text-gray-300 mb-4" />
+              <p className="text-lg font-medium mb-2">No meetings scheduled</p>
+              <p className="text-sm">Schedule your first meeting to get started</p>
+            </div>
+          </div>
         </div>
       )}
 

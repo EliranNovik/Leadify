@@ -61,37 +61,53 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="p-4">
-      <div className="flex items-center gap-2 mb-6">
-        <MegaphoneIcon className="w-6 h-6 text-primary" />
-        <h3 className="text-lg font-semibold">Marketing</h3>
+    <div className="p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-8">
+        <div className="p-2 bg-orange-100 rounded-lg">
+          <MegaphoneIcon className="w-6 h-6 text-orange-600" />
+        </div>
+        <div>
+          <h3 className="text-2xl font-bold text-gray-900">Marketing Information</h3>
+          <p className="text-sm text-gray-500">Client potential and source tracking</p>
+        </div>
       </div>
 
       {/* Potential Section */}
-      <div className="card bg-base-100 shadow-lg">
-        <div className="card-body">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="card-title text-xl">Potential</h2>
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="flex items-center justify-between">
+            <h4 className="text-lg font-semibold text-gray-900">Client Potential</h4>
             {isEditingPotential ? (
               <div className="flex gap-2">
-                <button className="btn btn-ghost btn-sm" onClick={handleSavePotential}><CheckIcon className="w-4 h-4" /></button>
-                <button className="btn btn-ghost btn-sm" onClick={() => { setIsEditingPotential(false); setPotentialMetrics(client.potential_metrics || defaultPotentialMetrics); }}><XMarkIcon className="w-4 h-4" /></button>
+                <button className="btn btn-ghost btn-sm hover:bg-green-50" onClick={handleSavePotential}>
+                  <CheckIcon className="w-4 h-4 text-green-600" />
+                </button>
+                <button className="btn btn-ghost btn-sm hover:bg-red-50" onClick={() => { setIsEditingPotential(false); setPotentialMetrics(client.potential_metrics || defaultPotentialMetrics); }}>
+                  <XMarkIcon className="w-4 h-4 text-red-600" />
+                </button>
               </div>
             ) : (
-              <button className="btn btn-square btn-sm" style={{ backgroundColor: '#000', color: 'white' }} onClick={() => setIsEditingPotential(true)}>
+              <button 
+                className="btn btn-square btn-sm"
+                style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                onClick={() => setIsEditingPotential(true)}
+              >
                 <PencilSquareIcon className="w-4 h-4" />
               </button>
             )}
           </div>
+        </div>
+        <div className="p-6">
           <div className="space-y-6">
             {potentialMetrics.map((metric, index) => (
-              <div key={index} className="space-y-2">
+              <div key={index} className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <span className="text-base-content/70">{metric.label}:</span>
+                  <label className="text-sm font-medium text-gray-700">{metric.label}</label>
                   {isEditingPotential ? (
                     <div className="flex gap-2 items-center">
                       <input
-                        className="input input-sm w-24"
+                        className="input input-bordered input-sm w-24"
                         value={metric.value}
                         onChange={e => {
                           const newMetrics = [...potentialMetrics];
@@ -101,7 +117,7 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       />
                       <input
                         type="number"
-                        className="input input-sm w-16"
+                        className="input input-bordered input-sm w-16"
                         value={metric.progress}
                         min={0}
                         max={100}
@@ -113,90 +129,139 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       />
                     </div>
                   ) : (
-                    <span className="font-medium">{metric.value}</span>
+                    <span className="font-semibold text-gray-900">{metric.value}</span>
                   )}
                 </div>
-                <progress
-                  className={`progress progress-${metric.color} w-full`}
-                  value={metric.progress}
-                  max="100"
-                />
+                <div className="w-full bg-gray-200 rounded-full h-2">
+                  <div 
+                    className={`h-2 rounded-full transition-all duration-300 ${
+                      metric.color === 'info' ? 'bg-blue-500' :
+                      metric.color === 'warning' ? 'bg-yellow-500' :
+                      metric.color === 'success' ? 'bg-green-500' :
+                      'bg-purple-500'
+                    }`}
+                    style={{ width: `${metric.progress}%` }}
+                  />
+                </div>
+                <div className="flex justify-between text-xs text-gray-500">
+                  <span>0%</span>
+                  <span>{metric.progress}%</span>
+                  <span>100%</span>
+                </div>
               </div>
             ))}
+          </div>
+        </div>
+      </div>
 
-            {/* Desired Location */}
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <span className="text-base-content/70">Desired Location</span>
-                {isEditingLocation ? (
-                  <div className="flex gap-2">
-                    <button className="btn btn-ghost btn-sm" onClick={handleSaveLocation}><CheckIcon className="w-4 h-4" /></button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => { setIsEditingLocation(false); setLocation(client.desired_location || ''); }}><XMarkIcon className="w-4 h-4" /></button>
-                  </div>
-                ) : (
-                  <button className="btn btn-square btn-sm" style={{ backgroundColor: '#000', color: 'white' }} onClick={() => setIsEditingLocation(true)}>
-                    <PencilSquareIcon className="w-4 h-4" />
-                  </button>
-                )}
+      {/* Desired Location Section */}
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="flex items-center justify-between">
+            <h4 className="text-lg font-semibold text-gray-900">Desired Location</h4>
+            {isEditingLocation ? (
+              <div className="flex gap-2">
+                <button className="btn btn-ghost btn-sm hover:bg-green-50" onClick={handleSaveLocation}>
+                  <CheckIcon className="w-4 h-4 text-green-600" />
+                </button>
+                <button className="btn btn-ghost btn-sm hover:bg-red-50" onClick={() => { setIsEditingLocation(false); setLocation(client.desired_location || ''); }}>
+                  <XMarkIcon className="w-4 h-4 text-red-600" />
+                </button>
               </div>
-              {isEditingLocation ? (
-                <input
-                  className="input input-sm w-full"
-                  value={location}
-                  onChange={e => setLocation(e.target.value)}
-                />
-              ) : (
-                <span className="font-medium">{location || 'Unset'}</span>
-              )}
-            </div>
+            ) : (
+              <button 
+                className="btn btn-square btn-sm"
+                style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                onClick={() => setIsEditingLocation(true)}
+              >
+                <PencilSquareIcon className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="p-6">
+          <div className="space-y-2">
+            {isEditingLocation ? (
+              <input
+                className="input input-bordered w-full"
+                value={location}
+                onChange={e => setLocation(e.target.value)}
+                placeholder="Enter desired location..."
+              />
+            ) : (
+              <div className="bg-gray-50 rounded-lg p-4">
+                <div className="flex items-center gap-2">
+                  <MapPinIcon className="w-5 h-5 text-gray-400" />
+                  <span className="text-gray-900 font-medium">{location || 'Not specified'}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       {/* Source Section */}
-      <div className="card bg-base-100 shadow-lg mt-6">
-        <div className="card-body">
-          <h2 className="card-title text-xl mb-2 flex items-center gap-2">
-            Source
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="flex items-center justify-between">
+            <h4 className="text-lg font-semibold text-gray-900">Lead Source</h4>
             {isEditingSource ? (
-              <>
-                <button className="btn btn-ghost btn-sm" onClick={handleSaveSource}><CheckIcon className="w-4 h-4" /></button>
-                <button className="btn btn-ghost btn-sm" onClick={() => { setIsEditingSource(false); setSource(client.source || ''); }}><XMarkIcon className="w-4 h-4" /></button>
-              </>
+              <div className="flex gap-2">
+                <button className="btn btn-ghost btn-sm hover:bg-green-50" onClick={handleSaveSource}>
+                  <CheckIcon className="w-4 h-4 text-green-600" />
+                </button>
+                <button className="btn btn-ghost btn-sm hover:bg-red-50" onClick={() => { setIsEditingSource(false); setSource(client.source || ''); }}>
+                  <XMarkIcon className="w-4 h-4 text-red-600" />
+                </button>
+              </div>
             ) : (
-              <button className="btn btn-square btn-sm" style={{ backgroundColor: '#000', color: 'white' }} onClick={() => setIsEditingSource(true)}>
+              <button 
+                className="btn btn-square btn-sm"
+                style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                onClick={() => setIsEditingSource(true)}
+              >
                 <PencilSquareIcon className="w-4 h-4" />
               </button>
             )}
-          </h2>
-          <div className="flex items-center gap-2">
+          </div>
+        </div>
+        <div className="p-6">
+          <div className="space-y-3">
             {isEditingSource ? (
               <input
-                className="input input-sm w-32"
+                className="input input-bordered w-full"
                 value={source}
                 onChange={e => setSource(e.target.value)}
+                placeholder="Enter lead source..."
               />
             ) : (
-              <>
-                <span className="badge badge-primary">Auto lead</span>
-                <span className="text-base-content/70">{source}</span>
-              </>
+              <div className="flex items-center gap-3">
+                <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                  Auto Lead
+                </span>
+                <span className="text-gray-900 font-medium">{source || 'Not specified'}</span>
+              </div>
             )}
           </div>
         </div>
       </div>
 
       {/* Facts of Case Section */}
-      <div className="card bg-base-100 shadow-lg mt-6">
-        <div className="card-body">
-          <h2 className="card-title text-xl mb-2">Facts of Case</h2>
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <h4 className="text-lg font-semibold text-gray-900">Facts of Case</h4>
+        </div>
+        <div className="p-6">
           {client.facts && client.facts.trim() !== '' ? (
-            <div className="bg-base-200 p-4 rounded-lg whitespace-pre-line">
-              {client.facts}
+            <div className="bg-gray-50 rounded-lg p-4 min-h-[100px]">
+              <p className="text-gray-900 whitespace-pre-line leading-relaxed">{client.facts}</p>
             </div>
           ) : (
-            <div className="alert bg-base-200">
-              <span>No case facts have been specified yet</span>
+            <div className="text-center py-8 text-gray-500">
+              <div className="bg-gray-50 rounded-lg p-6">
+                <p className="font-medium mb-1">No case facts specified</p>
+                <p className="text-sm">Case facts will appear here when available</p>
+              </div>
             </div>
           )}
         </div>
