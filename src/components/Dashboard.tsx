@@ -2,13 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import Meetings from './Meetings';
 import AISuggestions from './AISuggestions';
 import OverdueFollowups from './OverdueFollowups';
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
 import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
 import { useMsal } from '@azure/msal-react';
 import { DateTime } from 'luxon';
+import { FaWhatsapp } from 'react-icons/fa';
 
 
 
@@ -571,12 +572,197 @@ const Dashboard: React.FC = () => {
       {/* Expanded Content for Top Boxes */}
       {expanded === 'meetings' && (
         <div className="glass-card mt-4 animate-fade-in">
-          <Meetings />
+          {/* Desktop Table View */}
+          <div className="hidden md:block">
+            <Meetings />
+          </div>
+          
+          {/* Mobile Card View */}
+          <div className="md:hidden">
+            <div className="space-y-4">
+              <h3 className="text-xl font-bold text-gray-900 mb-4">Today's Meetings</h3>
+              <div className="grid grid-cols-1 gap-4">
+                {[
+                  { name: 'David Lee', lead_number: 'L122324', time: '10:00 AM', manager: 'Anna Zh', category: 'German Citizenship', amount: 12000, expert: 'Dr. Cohen', location: 'Berlin Office', probability: 85 },
+                  { name: 'Emma Wilson', lead_number: 'L122325', time: '2:30 PM', manager: 'MichaelW', category: 'Austrian Citizenship', amount: 14000, expert: 'Adv. Levi', location: 'Vienna Office', probability: 75 },
+                  { name: 'John Smith', lead_number: 'L122326', time: '4:00 PM', manager: 'Isaac', category: 'Business Visa', amount: 8000, expert: 'Ms. Katz', location: 'Tel Aviv Office', probability: 60 }
+                ].map((meeting, index) => (
+                  <div key={index} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
+                    <div className="flex-1 cursor-pointer flex flex-col">
+                      {/* Lead Number and Name */}
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{meeting.lead_number}</span>
+                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
+                      </div>
+
+                      {/* Stage */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Stage</span>
+                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+                          Meeting Scheduled
+                        </span>
+                      </div>
+
+                      <div className="space-y-2 divide-y divide-gray-100">
+                        {/* Time */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Time</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.time}</span>
+                        </div>
+
+                        {/* Manager */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Manager</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.manager}</span>
+                        </div>
+
+                        {/* Category */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Category</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.category}</span>
+                        </div>
+
+                        {/* Amount */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Amount</span>
+                          <span className="text-sm font-bold text-green-600">₪{meeting.amount.toLocaleString()}</span>
+                        </div>
+
+                        {/* Expert */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Expert</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
+                        </div>
+
+                        {/* Location */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Location</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.location}</span>
+                        </div>
+
+                        {/* Probability */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Probability</span>
+                          <span className="text-sm font-bold text-green-600">{meeting.probability}%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="absolute bottom-4 left-4 right-4 flex gap-2">
+                      <button className="btn btn-primary btn-sm flex-1">
+                        <VideoCameraIcon className="w-4 h-4" />
+                        Join Meeting
+                      </button>
+                      <button className="btn btn-success btn-sm">
+                        <FaWhatsapp className="w-4 h-4" />
+                      </button>
+                      <button className="btn btn-info btn-sm">
+                        <EnvelopeIcon className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       )}
       {expanded === 'overdue' && (
         <div className="glass-card mt-4 animate-fade-in">
-          <OverdueFollowups />
+          {/* Desktop Table View */}
+          <div className="hidden md:block">
+            <OverdueFollowups />
+          </div>
+          
+          {/* Mobile Card View */}
+          <div className="md:hidden">
+            <div className="space-y-4">
+              <h3 className="text-xl font-bold text-gray-900 mb-4">Overdue Follow-ups</h3>
+              <div className="grid grid-cols-1 gap-4">
+                {[
+                  { name: 'Sarah Parker', lead_number: 'L122327', days_overdue: 3, manager: 'Anna Zh', category: 'German Citizenship', amount: 12000, expert: 'Dr. Cohen', probability: 70 },
+                  { name: 'Tom Anderson', lead_number: 'L122328', days_overdue: 5, manager: 'MichaelW', category: 'Austrian Citizenship', amount: 14000, expert: 'Adv. Levi', probability: 65 },
+                  { name: 'Rachel Green', lead_number: 'L122329', days_overdue: 2, manager: 'Isaac', category: 'Business Visa', amount: 8000, expert: 'Ms. Katz', probability: 80 }
+                ].map((followup, index) => (
+                  <div key={index} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-red-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
+                    <div className="flex-1 cursor-pointer flex flex-col">
+                      {/* Lead Number and Name */}
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{followup.lead_number}</span>
+                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{followup.name}</h3>
+                        <span className="text-xs font-bold px-2 py-1 rounded bg-red-500 text-white">
+                          {followup.days_overdue} days overdue
+                        </span>
+                      </div>
+
+                      {/* Stage */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Stage</span>
+                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-red-500 text-white">
+                          Follow-up Required
+                        </span>
+                      </div>
+
+                      <div className="space-y-2 divide-y divide-gray-100">
+                        {/* Days Overdue */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Days Overdue</span>
+                          <span className="text-sm font-bold text-red-600">{followup.days_overdue} days</span>
+                        </div>
+
+                        {/* Manager */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Manager</span>
+                          <span className="text-sm font-bold text-gray-800">{followup.manager}</span>
+                        </div>
+
+                        {/* Category */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Category</span>
+                          <span className="text-sm font-bold text-gray-800">{followup.category}</span>
+                        </div>
+
+                        {/* Amount */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Amount</span>
+                          <span className="text-sm font-bold text-green-600">₪{followup.amount.toLocaleString()}</span>
+                        </div>
+
+                        {/* Expert */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Expert</span>
+                          <span className="text-sm font-bold text-gray-800">{followup.expert}</span>
+                        </div>
+
+                        {/* Probability */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Probability</span>
+                          <span className="text-sm font-bold text-green-600">{followup.probability}%</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Action Buttons */}
+                    <div className="absolute bottom-4 left-4 right-4 flex gap-2">
+                      <button className="btn btn-error btn-sm flex-1">
+                        <PhoneIcon className="w-4 h-4" />
+                        Call Now
+                      </button>
+                      <button className="btn btn-success btn-sm">
+                        <FaWhatsapp className="w-4 h-4" />
+                      </button>
+                      <button className="btn btn-info btn-sm">
+                        <EnvelopeIcon className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       )}
       {expanded === 'messages' && (
@@ -1071,14 +1257,14 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* 3. Top Workers Row: 4 boxes */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 w-full mb-12">
+      <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 w-full mb-12">
         {/* Top Closers */}
-        <div className="rounded-2xl p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white min-w-0 flex-1">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white h-full min-h-[180px] md:min-h-0">
           <div className="flex items-center gap-2 mb-2">
-            <UserGroupIcon className="w-6 h-6 text-white opacity-90" />
-            <span className="text-base font-bold text-white drop-shadow">Top Closers</span>
+            <UserGroupIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
+            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Closers</span>
           </div>
-          <div className="w-full flex flex-col gap-2 mt-1">
+          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
             {[
               { name: 'MiriamL', count: 12, movement: 'up' },
               { name: 'YehonatanD', count: 9, movement: 'down' },
@@ -1087,33 +1273,33 @@ const Dashboard: React.FC = () => {
               <div key={user.name} className="flex items-center gap-2 w-full">
                 <div className="flex items-center gap-1">
                   {user.movement === 'up' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
                   )}
                   {user.movement === 'down' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
                   )}
                   {user.movement === 'none' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
                   )}
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
+                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
                 </div>
                 <div className="flex-1">
-                  <span className="font-semibold text-white text-xl">{user.name}</span>
+                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="text-3xl font-bold text-white">{user.count}</span>
+                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
         {/* Top Schedulers */}
-        <div className="rounded-2xl p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white min-w-0 flex-1">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white h-full min-h-[180px] md:min-h-0">
           <div className="flex items-center gap-2 mb-2">
-            <CalendarIcon className="w-6 h-6 text-white opacity-90" />
-            <span className="text-base font-bold text-white drop-shadow">Top Schedulers</span>
+            <CalendarIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
+            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Schedulers</span>
           </div>
-          <div className="w-full flex flex-col gap-2 mt-1">
+          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
             {[
               { name: 'Anna Zh', count: 15, movement: 'up' },
               { name: 'MichaelW', count: 11, movement: 'down' },
@@ -1122,33 +1308,33 @@ const Dashboard: React.FC = () => {
               <div key={user.name} className="flex items-center gap-2 w-full">
                 <div className="flex items-center gap-1">
                   {user.movement === 'up' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
                   )}
                   {user.movement === 'down' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
                   )}
                   {user.movement === 'none' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
                   )}
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
+                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
                 </div>
                 <div className="flex-1">
-                  <span className="font-semibold text-white text-xl">{user.name}</span>
+                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="text-3xl font-bold text-white">{user.count}</span>
+                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
         {/* Top Experts */}
-        <div className="rounded-2xl p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white min-w-0 flex-1">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white h-full min-h-[180px] md:min-h-0">
           <div className="flex items-center gap-2 mb-2">
-            <svg className="w-6 h-6 text-white opacity-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 14l9-5-9-5-9 5 9 5z" /><path d="M12 14l6.16-3.422A12.083 12.083 0 0112 21.5a12.083 12.083 0 01-6.16-10.922L12 14z" /></svg>
-            <span className="text-base font-bold text-white drop-shadow">Top Experts</span>
+            <svg className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 14l9-5-9-5-9 5 9 5z" /><path d="M12 14l6.16-3.422A12.083 12.083 0 0112 21.5a12.083 12.083 0 01-6.16-10.922L12 14z" /></svg>
+            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Experts</span>
           </div>
-          <div className="w-full flex flex-col gap-2 mt-1">
+          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
             {[
               { name: 'Kyrill', count: 10, movement: 'down' },
               { name: 'Ido', count: 8, movement: 'up' },
@@ -1157,33 +1343,33 @@ const Dashboard: React.FC = () => {
               <div key={user.name} className="flex items-center gap-2 w-full">
                 <div className="flex items-center gap-1">
                   {user.movement === 'up' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
                   )}
                   {user.movement === 'down' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
                   )}
                   {user.movement === 'none' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
                   )}
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
+                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
                 </div>
                 <div className="flex-1">
-                  <span className="font-semibold text-white text-xl">{user.name}</span>
+                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="text-3xl font-bold text-white">{user.count}</span>
+                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
         {/* Top Handler */}
-        <div className="rounded-2xl p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white min-w-0 flex-1">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white h-full min-h-[180px] md:min-h-0">
           <div className="flex items-center gap-2 mb-2">
-            <UserGroupIcon className="w-6 h-6 text-white opacity-90" />
-            <span className="text-base font-bold text-white drop-shadow">Top Handlers</span>
+            <UserGroupIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
+            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Handlers</span>
           </div>
-          <div className="w-full flex flex-col gap-2 mt-1">
+          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
             {[
               { name: 'Caroline', count: 7, movement: 'up' },
               { name: 'Lena', count: 6, movement: 'down' },
@@ -1192,21 +1378,21 @@ const Dashboard: React.FC = () => {
               <div key={user.name} className="flex items-center gap-2 w-full">
                 <div className="flex items-center gap-1">
                   {user.movement === 'up' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
                   )}
                   {user.movement === 'down' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
                   )}
                   {user.movement === 'none' && (
-                    <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
+                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
                   )}
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center font-bold text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
+                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
                 </div>
                 <div className="flex-1">
-                  <span className="font-semibold text-white text-xl">{user.name}</span>
+                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <span className="text-3xl font-bold text-white">{user.count}</span>
+                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
                 </div>
               </div>
             ))}
