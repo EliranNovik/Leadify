@@ -188,29 +188,27 @@ const AISuggestions = forwardRef((props, ref) => {
 
 
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
-    <div
-      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-[calc(50%-0.5rem)] md:w-full flex-shrink-0"
-    >
-      <div className="flex items-start justify-between mb-2 flex-shrink-0">
-        <div className="flex items-center gap-2">
-          {getTypeIcon(suggestion.type)}
-          <span className="font-semibold text-sm capitalize text-gray-700">{suggestion.type}</span>
+    <div className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full">
+        <div className="flex items-start justify-between mb-2 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            {getTypeIcon(suggestion.type)}
+            <span className="font-semibold text-sm capitalize text-gray-700">{suggestion.type}</span>
+          </div>
+          {/* Due date removed from small version */}
         </div>
-        {/* Due date removed from small version */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">{suggestion.message}</div>
+          {suggestion.context && (
+            <div className="text-sm text-gray-500 mb-2 line-clamp-3 flex-1">{suggestion.context}</div>
+          )}
+        </div>
+        <div className="flex justify-start mt-auto flex-shrink-0">
+          <button className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all">
+            {suggestion.action}
+            <ArrowRightIcon className="w-4 h-4 ml-1" />
+          </button>
+        </div>
       </div>
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">{suggestion.message}</div>
-        {suggestion.context && (
-          <div className="text-sm text-gray-500 mb-2 line-clamp-3 flex-1">{suggestion.context}</div>
-        )}
-      </div>
-      <div className="flex justify-start mt-auto flex-shrink-0">
-        <button className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all">
-          {suggestion.action}
-          <ArrowRightIcon className="w-4 h-4 ml-1" />
-        </button>
-      </div>
-    </div>
   );
 
   useImperativeHandle(ref, () => ({
@@ -237,6 +235,38 @@ const AISuggestions = forwardRef((props, ref) => {
           -webkit-box-orient: vertical;
           overflow: hidden;
         }
+        /* Completely disable touch interactions on grid items - mobile only */
+        @media (max-width: 768px) {
+          .ai-suggestions-container > div {
+            touch-action: none !important;
+            -webkit-user-drag: none !important;
+            -khtml-user-drag: none !important;
+            -moz-user-drag: none !important;
+            -o-user-drag: none !important;
+            user-drag: none !important;
+            pointer-events: none !important;
+            position: relative !important;
+            transform: none !important;
+            will-change: auto !important;
+          }
+          /* Allow buttons to be clickable on mobile */
+          .ai-suggestions-container button {
+            touch-action: manipulation !important;
+            pointer-events: auto !important;
+          }
+          /* Force grid items to stay in position on mobile */
+          .ai-suggestions-container {
+            touch-action: pan-x !important;
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+          }
+        }
+        /* Desktop: allow normal interactions */
+        @media (min-width: 769px) {
+          .ai-suggestions-container > div {
+            pointer-events: auto !important;
+          }
+        }
       `}</style>
       <div ref={containerRef}>
         <div className="flex items-center justify-between mb-2">
@@ -247,11 +277,14 @@ const AISuggestions = forwardRef((props, ref) => {
         <button className="btn btn-sm btn-outline" style={{ borderColor: '#3b28c7', color: '#3b28c7' }} onClick={() => setIsModalOpen(true)}>View All</button>
       </div>
       <div
-        className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible flex md:grid flex-row md:flex-col md:grid-cols-1 gap-4 mt-0 scrollbar-none"
+        className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible grid grid-flow-col auto-cols-[calc(50%-0.5rem)] md:grid-flow-row md:grid-cols-1 gap-4 mt-0 scrollbar-none ai-suggestions-container"
+        draggable="false"
         style={{ 
           maxHeight: '1200px', 
           scrollbarWidth: 'none', 
-          msOverflowStyle: 'none'
+          msOverflowStyle: 'none',
+          touchAction: 'pan-x', // Only allow horizontal panning on mobile
+          WebkitOverflowScrolling: 'touch' // Smooth scrolling on iOS
         }}
       >
         {/* Hide scrollbar for Webkit browsers */}

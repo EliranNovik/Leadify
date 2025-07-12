@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -324,9 +324,33 @@ const CalendarPage: React.FC = () => {
 
   // WhatsApp functionality
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
-  const [whatsAppInput, setWhatsAppInput] = useState("");
+  const [whatsAppInput, setWhatsAppInput] = useState('');
+  const [viewMode, setViewMode] = useState<'list' | 'cards'>('list');
+  // WhatsApp chat messages for the chat box (from selectedLead.manual_interactions)
   const [selectedLeadForWhatsApp, setSelectedLeadForWhatsApp] = useState<any>(null);
   const { instance, accounts } = useMsal();
+
+  // Set default view mode based on screen size
+  useEffect(() => {
+    const handleResize = () => {
+      if (window.innerWidth < 768) {
+        // Mobile: default to cards view
+        setViewMode('cards');
+      } else {
+        // Desktop: default to list view
+        setViewMode('list');
+      }
+    };
+
+    // Set initial view mode
+    handleResize();
+
+    // Add event listener for window resize
+    window.addEventListener('resize', handleResize);
+
+    // Cleanup
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Email functionality
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
@@ -821,26 +845,247 @@ const CalendarPage: React.FC = () => {
     setComposeAttachments(prev => [...prev, ...newAttachments]);
   };
 
-  const renderMeetingRow = (meeting: any) => {
+  // Mobile-friendly meeting card component
+  const renderMeetingCard = (meeting: any) => {
     const lead = meeting.lead || {};
     const isExpanded = expandedMeetingId === meeting.id;
     const expandedData = expandedMeetingData[meeting.id] || {};
-    // Determine if there are expert notes (for icon)
     const hasExpertNotes = Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false;
-    // Probability color logic (same as PipelinePage)
     const probability = lead.probability ?? meeting.probability;
     let probabilityColor = 'text-red-600';
     if (probability >= 80) probabilityColor = 'text-green-600';
     else if (probability >= 60) probabilityColor = 'text-yellow-600';
     else if (probability >= 40) probabilityColor = 'text-orange-600';
-    
-    // Debug: Log lead data for this specific row
-    console.log('Rendering meeting row:', {
-      meetingId: meeting.id,
-      lead,
-      leadNumber: lead.lead_number,
-      meetingLeadNumber: meeting.lead_number
-    });
+
+    return (
+      <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
+        <div onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)} className="flex-1 cursor-pointer flex flex-col">
+          {/* Lead Number and Name */}
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number || meeting.lead_number}</span>
+            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+            <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name || meeting.name}</h3>
+            {/* Expert status indicator */}
+            {hasExpertNotes ? (
+              <AcademicCapIcon className="w-6 h-6 text-green-400 ml-4" title="Expert opinion exists" />
+            ) : (
+              <QuestionMarkCircleIcon className="w-6 h-6 text-yellow-400 ml-2" title="No expert opinion" />
+            )}
+          </div>
+
+          {/* Stage */}
+          <div className="flex justify-between items-center py-1">
+            <span className="text-xs font-semibold text-gray-500">Stage</span>
+            <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+              {lead.stage || meeting.stage ? (lead.stage || meeting.stage).replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A'}
+            </span>
+          </div>
+
+          <div className="space-y-2 divide-y divide-gray-100">
+            {/* Time */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs font-semibold text-gray-500">Time</span>
+              <span className="text-sm font-bold text-gray-800 ml-2">
+                {meeting.meeting_time ? meeting.meeting_time.slice(0,5) : 'No time'}
+              </span>
+            </div>
+
+            {/* Manager */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs font-semibold text-gray-500">Manager</span>
+              <span className="text-sm font-bold text-gray-800 ml-2">
+                {lead.manager || meeting.meeting_manager || '---'}
+              </span>
+            </div>
+
+            {/* Category */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs font-semibold text-gray-500">Category</span>
+              <span className="text-sm font-bold text-gray-800 ml-2">{lead.category || meeting.category || 'N/A'}</span>
+            </div>
+
+            {/* Amount */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs font-semibold text-gray-500">Amount</span>
+              <span className="text-sm font-bold text-gray-800 ml-2">
+                {typeof lead.balance === 'number'
+                  ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
+                  : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '₪0')}
+              </span>
+            </div>
+
+            {/* Expert */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs font-semibold text-gray-500">Expert</span>
+              <span className="text-sm font-bold text-gray-800 ml-2">
+                {lead.expert || meeting.expert || 'N/A'}
+              </span>
+            </div>
+
+            {/* Location */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs font-semibold text-gray-500">Location</span>
+              <span className="text-sm font-bold text-gray-800 ml-2">
+                {meeting.location || meeting.meeting_location || 'N/A'}
+              </span>
+            </div>
+
+            {/* Probability */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs font-semibold text-gray-500">Probability</span>
+              <span className={`text-sm font-bold ml-2 ${probabilityColor}`}>
+                {typeof probability === 'number' ? `${probability}%` : 'N/A'}
+              </span>
+            </div>
+          </div>
+
+          {/* Meeting Date (if available) */}
+          {lead.meetings && lead.meetings.length > 0 && (
+            <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
+              <CalendarIcon className="w-4 h-4" />
+              <span>Meeting: {lead.meetings[0].meeting_date}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Action Buttons */}
+        <div className="mt-4 flex justify-end">
+          <div className="flex gap-2">
+            <button 
+              className="btn btn-outline btn-primary btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                const url = getValidTeamsLink(meeting.teams_meeting_url);
+                if (url) {
+                  window.open(url, '_blank');
+                } else {
+                  alert('No meeting URL available');
+                }
+              }}
+              title="Teams Meeting"
+            >
+              <VideoCameraIcon className="w-4 h-4" />
+            </button>
+            {lead.phone && (
+              <button
+                className="btn btn-outline btn-success btn-sm"
+                title="WhatsApp"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleWhatsAppClick(lead, meeting);
+                }}
+              >
+                <FaWhatsapp className="w-4 h-4" />
+              </button>
+            )}
+            {(lead.lead_number || meeting.lead_number) && (
+              <button
+                className="btn btn-outline btn-info btn-sm"
+                title="Email"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleEmailClick(lead, meeting);
+                }}
+              >
+                <EnvelopeIcon className="w-4 h-4" />
+              </button>
+            )}
+            <button
+              className="btn btn-outline btn-warning btn-sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+              }}
+            >
+              {isExpanded ? 'Show Less' : 'Show More'}
+              <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Expanded Details */}
+        {isExpanded && (
+          <div className="mt-4 p-4 border-t border-gray-100 bg-gray-50 rounded-lg">
+            {expandedData.loading ? (
+              <div className="flex justify-center items-center py-4">
+                <span className="loading loading-spinner loading-md"></span>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="bg-white p-3 rounded-lg">
+                  <h6 className="font-semibold text-gray-800 mb-2">Expert Notes</h6>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
+                    {Array.isArray(expandedData.expert_notes) && expandedData.expert_notes.length > 0 ? (
+                      expandedData.expert_notes.map((note: any) => (
+                        <div key={note.id} className="bg-gray-50 p-2 rounded text-xs">
+                          <div className="flex items-center gap-1 text-gray-500 mb-1">
+                            <ClockIcon className="w-3 h-3" />
+                            <span>{note.timestamp}</span>
+                          </div>
+                          <p className="text-gray-700 whitespace-pre-wrap">{note.content}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-gray-500">
+                        {expandedData.expert_notes || 'No expert notes yet.'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="bg-white p-3 rounded-lg">
+                  <h6 className="font-semibold text-gray-800 mb-2">Handler Notes</h6>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
+                    {Array.isArray(expandedData.handler_notes) && expandedData.handler_notes.length > 0 ? (
+                      expandedData.handler_notes.map((note: any) => (
+                        <div key={note.id} className="bg-gray-50 p-2 rounded text-xs">
+                          <div className="flex items-center gap-1 text-gray-500 mb-1">
+                            <ClockIcon className="w-3 h-3" />
+                            <span>{note.timestamp}</span>
+                          </div>
+                          <p className="text-gray-700 whitespace-pre-wrap">{note.content}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-sm text-gray-500">
+                        {expandedData.handler_notes || 'No handler notes yet.'}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex justify-center">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedMeeting(meeting);
+                      setIsDocumentModalOpen(true);
+                    }}
+                    className={`btn btn-outline btn-primary btn-sm flex items-center gap-2 ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
+                    disabled={!meeting.lead.onedrive_folder_link}
+                  >
+                    <FolderIcon className="w-4 h-4" />
+                    Documents
+                    <span className="badge badge-primary badge-xs ml-1">3</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Desktop table row component (for department tables)
+  const renderMeetingRow = (meeting: any) => {
+    const lead = meeting.lead || {};
+    const isExpanded = expandedMeetingId === meeting.id;
+    const expandedData = expandedMeetingData[meeting.id] || {};
+    const hasExpertNotes = Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false;
+    const probability = lead.probability ?? meeting.probability;
+    let probabilityColor = 'text-red-600';
+    if (probability >= 80) probabilityColor = 'text-green-600';
+    else if (probability >= 60) probabilityColor = 'text-yellow-600';
+    else if (probability >= 40) probabilityColor = 'text-orange-600';
     
     return (
       <React.Fragment key={meeting.id}>
@@ -858,7 +1103,6 @@ const CalendarPage: React.FC = () => {
               ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
               : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '0')}
           </td>
-          {/* Expert column */}
           <td>
             <span className="inline-flex items-center">
               {hasExpertNotes ? (
@@ -869,9 +1113,7 @@ const CalendarPage: React.FC = () => {
               {lead.expert || meeting.expert || <span className="text-gray-400">N/A</span>}
             </span>
           </td>
-          {/* Location column */}
           <td>{meeting.location || meeting.meeting_location || 'N/A'}</td>
-          {/* Probability column */}
           <td>
             <span className={`font-bold ${probabilityColor}`}>
               {typeof probability === 'number' ? `${probability}%` : 'N/A'}
@@ -880,21 +1122,20 @@ const CalendarPage: React.FC = () => {
           <td>{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
             <div className="flex flex-col items-center gap-2">
-            <button 
+              <button 
                 className="btn btn-primary btn-sm"
-              onClick={() => {
-                const url = getValidTeamsLink(meeting.teams_meeting_url);
-                if (url) {
-                  window.open(url, '_blank');
-                } else {
-                  alert('No meeting URL available');
-                }
-              }}
+                onClick={() => {
+                  const url = getValidTeamsLink(meeting.teams_meeting_url);
+                  if (url) {
+                    window.open(url, '_blank');
+                  } else {
+                    alert('No meeting URL available');
+                  }
+                }}
                 title="Teams Meeting"
-            >
-              <VideoCameraIcon className="w-4 h-4" />
-            </button>
-              {/* WhatsApp button */}
+              >
+                <VideoCameraIcon className="w-4 h-4" />
+              </button>
               {lead.phone && (
                 <button
                   className="btn btn-success btn-sm"
@@ -904,7 +1145,6 @@ const CalendarPage: React.FC = () => {
                   <FaWhatsapp className="w-4 h-4" />
                 </button>
               )}
-              {/* Email button navigates to Interactions tab */}
               {(lead.lead_number || meeting.lead_number) && (
                 <button
                   className="btn btn-info btn-sm"
@@ -921,7 +1161,7 @@ const CalendarPage: React.FC = () => {
         {/* Expanded Details Row */}
         {isExpanded && (
           <tr>
-            <td colSpan={7} className="p-0">
+            <td colSpan={10} className="p-0">
               <div className="bg-base-100/50 p-4 border-t border-base-200">
                 {expandedData.loading ? (
                   <div className="flex justify-center items-center py-4">
@@ -999,7 +1239,7 @@ const CalendarPage: React.FC = () => {
               onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
             >
               <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
-              <ChevronDownIcon className={`w-5 h-5 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
+              <ChevronDownIcon className={`w-5 h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
             </button>
           </td>
         </tr>
@@ -1080,33 +1320,76 @@ const CalendarPage: React.FC = () => {
         </div>
       </div>
 
+      {/* View Toggle Button */}
+      <div className="flex justify-end mb-4">
+        <button
+          className="btn btn-outline btn-primary btn-sm flex items-center gap-2"
+          onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
+          title={viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
+        >
+          {viewMode === 'cards' ? (
+            <Bars3Icon className="w-5 h-5" />
+          ) : (
+            <Squares2X2Icon className="w-5 h-5" />
+          )}
+          <span className="hidden md:inline">{viewMode === 'cards' ? 'List View' : 'Card View'}</span>
+        </button>
+      </div>
+
       {/* Meetings List */}
       <div className="bg-base-100 rounded-lg shadow-lg overflow-x-auto">
-        <table className="table w-full text-base">
-          <thead>
-            <tr className="bg-base-200 text-lg">
-              <th>Lead</th>
-              <th>Time</th>
-              <th>Manager</th>
-              <th>Category</th>
-              <th>Amount</th>
-              <th>Expert</th>
-              <th>Location</th>
-              <th>Probability</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+        {/* Desktop Table - Show when viewMode is 'list' */}
+        {viewMode === 'list' && (
+          <table className="table w-full text-base">
+            <thead>
+              <tr className="bg-base-200 text-lg">
+                <th>Lead</th>
+                <th>Time</th>
+                <th>Manager</th>
+                <th>Category</th>
+                <th>Amount</th>
+                <th>Expert</th>
+                <th>Location</th>
+                <th>Probability</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {isLoading ? (
+                <tr><td colSpan={10} className="text-center p-8 text-lg">Loading meetings...</td></tr>
+              ) : filteredMeetings.length > 0 ? (
+                filteredMeetings.map(renderMeetingRow)
+              ) : (
+                <tr><td colSpan={10} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
+              )}
+            </tbody>
+          </table>
+        )}
+        
+        {/* Cards View - Show when viewMode is 'cards' */}
+        {viewMode === 'cards' && (
+          <div>
             {isLoading ? (
-              <tr><td colSpan={10} className="text-center p-8 text-lg">Loading meetings...</td></tr>
+              <div className="text-center p-8">
+                <div className="loading loading-spinner loading-lg"></div>
+                <p className="mt-4 text-base-content/60">Loading meetings...</p>
+              </div>
             ) : filteredMeetings.length > 0 ? (
-              filteredMeetings.map(renderMeetingRow)
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6 p-6">
+                {filteredMeetings.map(renderMeetingCard)}
+              </div>
             ) : (
-              <tr><td colSpan={10} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
+              <div className="text-center p-8">
+                <div className="text-base-content/60">
+                  <CalendarIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p className="text-lg font-medium">No meetings found</p>
+                  <p className="text-sm">Try adjusting your search or filters</p>
+                </div>
+              </div>
             )}
-          </tbody>
-        </table>
+          </div>
+        )}
       </div>
 
       {/* Total Amount - move this up above department tables */}
@@ -1150,25 +1433,34 @@ const CalendarPage: React.FC = () => {
             {/* Content */}
             {isExpanded && (
               <div className="p-4">
-              <table className="table w-full text-base">
-                <thead>
-                    <tr className="bg-base-200 text-lg">
-                    <th>Lead</th>
-                    <th>Time</th>
-                      <th>Manager</th>
-                      <th>Category</th>
-                      <th>Amount</th>
-                      <th>Expert</th>
-                    <th>Location</th>
-                      <th>Probability</th>
-                      <th>Status</th>
-                      <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                    {deptMeetings.map(renderMeetingRow)}
-                </tbody>
-              </table>
+                {/* Desktop Table - Show when viewMode is 'list' */}
+                {viewMode === 'list' && (
+                  <table className="table w-full text-base">
+                    <thead>
+                      <tr className="bg-base-200 text-lg">
+                        <th>Lead</th>
+                        <th>Time</th>
+                        <th>Manager</th>
+                        <th>Category</th>
+                        <th>Amount</th>
+                        <th>Expert</th>
+                        <th>Location</th>
+                        <th>Probability</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {deptMeetings.map(renderMeetingRow)}
+                    </tbody>
+                  </table>
+                )}
+                {/* Cards View - Show when viewMode is 'cards' */}
+                {viewMode === 'cards' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+                    {deptMeetings.map(renderMeetingCard)}
+                  </div>
+                )}
               </div>
             )}
           </div>
