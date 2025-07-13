@@ -114,7 +114,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         <>
           <button 
             className="btn btn-square btn-sm"
-            style={{ backgroundColor: '#5b21b6', color: 'white' }}
+            style={{ backgroundColor: '#3b28c7', color: 'white' }}
             onClick={onEdit}
           >
             <PencilSquareIcon className="w-4 h-4" />

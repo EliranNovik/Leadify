@@ -392,15 +392,15 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       <div className="overflow-x-auto w-full">
         {/* Title and Total */}
         <div className="mb-10 mt-8">
-          <div className="flex flex-row items-end gap-6">
-            <span className="inline-flex items-center gap-3 text-4xl font-black text-primary tracking-tight leading-tight drop-shadow-sm">
-              <BanknotesIconSolid className="w-10 h-10 text-success/80" />
+          <div className="flex flex-col sm:flex-row items-start sm:items-end gap-2 sm:gap-6 w-full">
+            <span className="inline-flex items-center gap-2 sm:gap-3 text-2xl sm:text-4xl font-black text-primary tracking-tight leading-tight drop-shadow-sm">
+              <BanknotesIconSolid className="w-8 h-8 sm:w-10 sm:h-10 text-success/80" />
               Payments Plan
             </span>
-            <span className="text-3xl font-extrabold text-primary">
-              ₪{total.toLocaleString()} <span className="text-black font-bold text-2xl ml-4">+ VAT {vat.toLocaleString()}</span>
+            <span className="text-xl sm:text-3xl font-extrabold text-primary">
+              ₪{total.toLocaleString()} <span className="text-black font-bold text-lg sm:text-2xl ml-2 sm:ml-4">+ VAT {vat.toLocaleString()}</span>
             </span>
-            <span className="text-lg font-semibold text-gray-700 ml-2">Total</span>
+            <span className="text-base sm:text-lg font-semibold text-gray-700 ml-0 sm:ml-2">Total</span>
           </div>
         </div>
         {/* View toggle button */}
@@ -510,33 +510,8 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             {financePlan.payments.map((p: PaymentPlan, idx: number) => (
               <div
                 key={p.id || idx}
-                className="bg-white rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-200 border border-base-200 flex flex-col gap-0 relative group"
+                className="bg-white rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-200 border border-base-200 flex flex-col gap-0 relative group min-h-[460px]"
               >
-                {/* Action icons */}
-                <div className="flex justify-center gap-3 mb-2">
-                  {p.id ? (
-                    <>
-                      <button
-                        className="btn btn-xs btn-circle bg-primary/10 hover:bg-primary text-primary hover:text-white border-none shadow-sm flex items-center justify-center"
-                        title="Delete"
-                        onClick={() => handleDeletePayment(p)}
-                        style={{ padding: 0 }}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        className="btn btn-xs btn-circle bg-primary/10 hover:bg-primary text-primary hover:text-white border-none shadow-sm flex items-center justify-center"
-                        title="Edit"
-                        onClick={() => handleEditPayment(p)}
-                        style={{ padding: 0 }}
-                      >
-                        <PencilLine className="w-4 h-4" />
-                      </button>
-                    </>
-                  ) : (
-                    <span className="text-gray-400">—</span>
-                  )}
-                </div>
                 {/* Card content */}
                 {editingPaymentId === p.id ? (
                   <div className="flex flex-col gap-0 divide-y divide-base-200">
@@ -575,30 +550,59 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-0 divide-y divide-base-200">
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
-                      <span className="font-bold text-lg text-black">{p.duePercent}</span>
+                    {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
+                    <div className="flex items-center bg-primary text-white rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
+                      {/* Order (left) */}
+                      <span className="text-xs font-bold uppercase tracking-wider flex-1 text-left truncate">{p.order}</span>
+                      {/* Percent (center) */}
+                      <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">{p.duePercent}%</span>
+                      {/* Actions (right) */}
+                      <div className="flex gap-2 items-center ml-4">
+                        {p.id ? (
+                          <>
+                            <button
+                              className="btn btn-xs btn-circle bg-white hover:bg-gray-200 text-black border-none shadow-sm flex items-center justify-center"
+                              title="Delete"
+                              onClick={() => handleDeletePayment(p)}
+                              style={{ padding: 0 }}
+                            >
+                              <Trash2 className="w-4 h-4 text-black" />
+                            </button>
+                            <button
+                              className="btn btn-xs btn-circle bg-white hover:bg-gray-200 text-black border-none shadow-sm flex items-center justify-center"
+                              title="Edit"
+                              onClick={() => handleEditPayment(p)}
+                              style={{ padding: 0 }}
+                            >
+                              <PencilLine className="w-4 h-4 text-black" />
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-white/50">—</span>
+                        )}
+                      </div>
                     </div>
+                    {/* Due Date */}
                     <div className="flex items-center justify-between py-3">
                       <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
                       <span className="font-semibold text-black">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</span>
                     </div>
+                    {/* Value */}
                     <div className="flex items-center justify-between py-3">
                       <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
                       <span className="font-bold text-lg text-primary">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                     </div>
+                    {/* VAT */}
                     <div className="flex items-center justify-between py-3">
                       <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
                       <span className="font-bold text-black">{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                     </div>
+                    {/* Client */}
                     <div className="flex items-center justify-between py-3">
                       <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
                       <span className="font-semibold text-black">{p.client}</span>
                     </div>
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                      <span className="text-black">{p.order}</span>
-                    </div>
+                    {/* Proforma */}
                     <div className="flex items-center justify-between py-3">
                       <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Proforma</span>
                       {p.proforma && p.proforma.trim() !== '' ? (
@@ -619,6 +623,7 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         </button>
                       )}
                     </div>
+                    {/* Notes */}
                     <div className="flex items-center justify-between py-3">
                       <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
                       <span className="text-right max-w-[60%] text-black">{p.notes}</span>

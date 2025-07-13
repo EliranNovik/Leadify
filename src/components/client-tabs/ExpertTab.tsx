@@ -354,7 +354,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <span className="text-2xl font-bold text-gray-900">{expertName}</span>
                 {(!client.expert || client.expert === '---' || client.expert === 'Not assigned') && (
                   <button
-                    className="btn btn-sm bg-purple-600 hover:bg-purple-700 text-white border-none"
+                    className="btn btn-sm text-white border-none"
+                    style={{ backgroundColor: '#3b28c7' }}
+                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2d1b69'}
+                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3b28c7'}
                     onClick={handleAssignRandomExpert}
                     disabled={isAssigningExpert}
                   >
@@ -378,12 +381,23 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <div className="flex items-center">
               <button
                 onClick={() => setIsDocumentModalOpen(true)}
-                className={`btn btn-outline border-purple-600 text-purple-600 bg-white hover:bg-purple-50 shadow-sm ${!hasDocumentLink ? 'btn-disabled' : ''}`}
+                className={`btn btn-outline bg-white shadow-sm ${!hasDocumentLink ? 'btn-disabled' : ''}`}
+                style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                onMouseEnter={(e) => {
+                  if (!e.currentTarget.disabled) {
+                    e.currentTarget.style.backgroundColor = '#f3f0ff';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!e.currentTarget.disabled) {
+                    e.currentTarget.style.backgroundColor = 'white';
+                  }
+                }}
                 disabled={!hasDocumentLink}
               >
                 <FolderIcon className="w-5 h-5" />
                 Documents
-                <span className="badge bg-purple-600 text-white ml-2">{documentCount}</span>
+                <span className="badge text-white ml-2" style={{ backgroundColor: '#3b28c7' }}>{documentCount}</span>
               </button>
             </div>
           </div>
@@ -461,7 +475,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               {!isAddingExpertNote && !editingExpertNoteId && (
                 <button 
                   className="btn btn-sm"
-                  style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                  style={{ backgroundColor: '#3b28c7', color: 'white' }}
                   onClick={() => {
                     setIsAddingExpertNote(true);
                     setNewExpertNoteContent('');
@@ -493,7 +507,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </button>
                   <button 
                     className="btn btn-sm"
-                    style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                    style={{ backgroundColor: '#3b28c7', color: 'white' }}
                     onClick={handleSaveExpertNote}
                     disabled={!newExpertNoteContent.trim()}
                   >
@@ -511,8 +525,9 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   <div 
                     key={note.id} 
                     className={`bg-gray-50 rounded-lg p-4 ${
-                      editingExpertNoteId === note.id ? 'ring-2 ring-purple-200' : ''
+                      editingExpertNoteId === note.id ? 'ring-2' : ''
                     }`}
+                    style={editingExpertNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } as React.CSSProperties : {}}
                   >
                     {editingExpertNoteId === note.id ? (
                       <textarea
@@ -551,7 +566,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             {!isAddingHandlerNote && !editingHandlerNoteId && (
               <button 
                 className="btn btn-sm"
-                style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                style={{ backgroundColor: '#3b28c7', color: 'white' }}
                 onClick={() => {
                   setIsAddingHandlerNote(true);
                   setNewHandlerNoteContent('');
@@ -583,7 +598,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </button>
                 <button 
                   className="btn btn-sm"
-                  style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                  style={{ backgroundColor: '#3b28c7', color: 'white' }}
                   onClick={handleSaveHandlerNote}
                   disabled={!newHandlerNoteContent.trim()}
                 >
@@ -601,8 +616,9 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div 
                   key={note.id} 
                   className={`bg-gray-50 rounded-lg p-4 ${
-                    editingHandlerNoteId === note.id ? 'ring-2 ring-purple-200' : ''
+                    editingHandlerNoteId === note.id ? 'ring-2' : ''
                   }`}
+                  style={editingHandlerNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } : {}}
                 >
                   {editingHandlerNoteId === note.id ? (
                     <textarea
@@ -643,9 +659,25 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <div 
               className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${
                 isUploading 
-                  ? 'bg-purple-50 border-purple-300' 
-                  : 'bg-gray-50 border-gray-300 hover:border-purple-300 hover:bg-purple-50'
+                  ? 'bg-gray-50 border-gray-300' 
+                  : 'bg-gray-50 border-gray-300'
               }`}
+              style={{
+                borderColor: isUploading ? '#3b28c7' : '',
+                backgroundColor: isUploading ? '#f3f0ff' : ''
+              }}
+              onMouseEnter={(e) => {
+                if (!isUploading) {
+                  e.currentTarget.style.borderColor = '#3b28c7';
+                  e.currentTarget.style.backgroundColor = '#f3f0ff';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (!isUploading) {
+                  e.currentTarget.style.borderColor = '#d1d5db';
+                  e.currentTarget.style.backgroundColor = '#f9fafb';
+                }
+              }}
               onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
               onDrop={handleFileDrop}
@@ -664,7 +696,18 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               />
               <label
                 htmlFor="file-upload"
-                className={`btn btn-outline border-purple-600 text-purple-600 bg-white hover:bg-purple-50 ${isUploading ? 'btn-disabled' : ''}`}
+                className={`btn btn-outline bg-white ${isUploading ? 'btn-disabled' : ''}`}
+                style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                onMouseEnter={(e) => {
+                  if (!isUploading) {
+                    e.currentTarget.style.backgroundColor = '#f3f0ff';
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  if (!isUploading) {
+                    e.currentTarget.style.backgroundColor = 'white';
+                  }
+                }}
               >
                 <PaperClipIcon className="w-5 h-5" />
                 Choose Files
@@ -677,12 +720,12 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 {uploadedFiles.map((file, index) => (
                   <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
                     <div className="flex items-center gap-3">
-                      <PaperClipIcon className="w-5 h-5 text-purple-500" />
+                      <PaperClipIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
                       <span className="text-base font-medium text-gray-900">{file.name}</span>
                     </div>
                     <div>
                       {file.status === 'uploading' && (
-                        <div className="radial-progress text-purple-600" style={{ "--value": file.progress || 0 } as any}>
+                        <div className="radial-progress" style={{ "--value": file.progress || 0, color: '#3b28c7' } as any}>
                           {file.progress || 0}%
                         </div>
                       )}

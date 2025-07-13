@@ -90,7 +90,7 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             ) : (
               <button 
                 className="btn btn-square btn-sm"
-                style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                style={{ backgroundColor: '#3b28c7', color: 'white' }}
                 onClick={() => setIsEditingPotential(true)}
               >
                 <PencilSquareIcon className="w-4 h-4" />
@@ -138,7 +138,7 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       metric.color === 'info' ? 'bg-blue-500' :
                       metric.color === 'warning' ? 'bg-yellow-500' :
                       metric.color === 'success' ? 'bg-green-500' :
-                      'bg-purple-500'
+                      'bg-[#3b28c7]'
                     }`}
                     style={{ width: `${metric.progress}%` }}
                   />
@@ -171,7 +171,7 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             ) : (
               <button 
                 className="btn btn-square btn-sm"
-                style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                style={{ backgroundColor: '#3b28c7', color: 'white' }}
                 onClick={() => setIsEditingLocation(true)}
               >
                 <PencilSquareIcon className="w-4 h-4" />
@@ -217,7 +217,7 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             ) : (
               <button 
                 className="btn btn-square btn-sm"
-                style={{ backgroundColor: '#5b21b6', color: 'white' }}
+                style={{ backgroundColor: '#3b28c7', color: 'white' }}
                 onClick={() => setIsEditingSource(true)}
               >
                 <PencilSquareIcon className="w-4 h-4" />
