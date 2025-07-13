@@ -1059,12 +1059,23 @@ const CalendarPage: React.FC = () => {
                       setSelectedMeeting(meeting);
                       setIsDocumentModalOpen(true);
                     }}
-                    className={`btn btn-outline btn-primary btn-sm flex items-center gap-2 ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
+                    className={`btn btn-outline bg-white shadow-sm ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
+                    style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                    onMouseEnter={(e) => {
+                      if (!e.currentTarget.disabled) {
+                        e.currentTarget.style.backgroundColor = '#f3f0ff';
+                      }
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!e.currentTarget.disabled) {
+                        e.currentTarget.style.backgroundColor = 'white';
+                      }
+                    }}
                     disabled={!meeting.lead.onedrive_folder_link}
                   >
                     <FolderIcon className="w-4 h-4" />
                     Documents
-                    <span className="badge badge-primary badge-xs ml-1">3</span>
+                    <span className="badge text-white ml-1" style={{ backgroundColor: '#3b28c7' }}>3</span>
                   </button>
                 </div>
               </div>
@@ -1215,12 +1226,23 @@ const CalendarPage: React.FC = () => {
                           setSelectedMeeting(meeting);
                           setIsDocumentModalOpen(true);
                         }}
-                        className={`btn btn-outline btn-primary flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg shadow hover:bg-primary hover:text-white transition-colors ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
+                        className={`btn btn-outline bg-white shadow-sm flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg transition-colors ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
+                        style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                        onMouseEnter={(e) => {
+                          if (!e.currentTarget.disabled) {
+                            e.currentTarget.style.backgroundColor = '#f3f0ff';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          if (!e.currentTarget.disabled) {
+                            e.currentTarget.style.backgroundColor = 'white';
+                          }
+                        }}
                         disabled={!meeting.lead.onedrive_folder_link}
                       >
                         <FolderIcon className="w-5 h-5" />
                         Documents
-                        <span className="badge badge-primary badge-sm ml-2">3</span>
+                        <span className="badge text-white ml-2" style={{ backgroundColor: '#3b28c7' }}>3</span>
                       </button>
                     </div>
                   </div>
@@ -1427,6 +1449,9 @@ const CalendarPage: React.FC = () => {
               <span className="text-lg font-bold text-gray-800 flex items-center gap-2">
                 {deptName}
                 <span className="ml-2 text-base-content/60 font-semibold">({deptMeetings.length})</span>
+                {totalAmount > 0 && (
+                  <span className="ml-2 text-sm text-primary font-semibold">₪{totalAmount.toLocaleString()}</span>
+                )}
               </span>
               <ChevronDownIcon className={`w-6 h-6 text-gray-700 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
             </button>
@@ -1693,6 +1718,15 @@ const CalendarPage: React.FC = () => {
         </div>,
         document.body
       )}
+
+      {/* Document Modal */}
+      <DocumentModal
+        isOpen={isDocumentModalOpen}
+        onClose={() => setIsDocumentModalOpen(false)}
+        leadNumber={selectedMeeting?.lead?.lead_number || selectedMeeting?.lead_number || ''}
+        clientName={selectedMeeting?.lead?.name || selectedMeeting?.name || ''}
+        onDocumentCountChange={() => {}}
+      />
     </div>
   );
 };

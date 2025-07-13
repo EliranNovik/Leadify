@@ -1313,7 +1313,7 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => setShowPaymentsPlanDrawer(true)}>
+          <a className="flex items-center gap-3 py-3" onClick={() => { setShowPaymentsPlanDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <BanknotesIcon className="w-5 h-5 text-black" />
             Payments plan
           </a>
