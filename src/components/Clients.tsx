@@ -42,6 +42,7 @@ import {
   SparklesIcon,
   XMarkIcon,
   HandThumbUpIcon,
+  PlusIcon,
 } from '@heroicons/react/24/outline';
 import InfoTab from './client-tabs/InfoTab';
 import RolesTab from './client-tabs/RolesTab';
@@ -255,13 +256,15 @@ const Clients: React.FC<ClientsProps> = ({
   const [showPaymentsPlanDrawer, setShowPaymentsPlanDrawer] = useState(false);
   const [editingBalance, setEditingBalance] = useState(false);
   const [editedBalance, setEditedBalance] = useState(selectedClient?.balance || 0);
-  const [autoPlan, setAutoPlan] = useState('40/30/30');
+  const [autoPlan, setAutoPlan] = useState('');
   const autoPlanOptions = [
+    '', // Default empty option
     '40/30/30',
     '50/30/20',
     '34/33/33',
     '60/20/20',
     '70/20/10',
+    '50/25/25',
   ];
   const [payments, setPayments] = useState<any[]>([]);
   const [showAddPayment, setShowAddPayment] = useState(false);
@@ -274,6 +277,90 @@ const Clients: React.FC<ClientsProps> = ({
     applicants: '',
     notes: '',
   });
+
+  // 1. Add state for the Success drawer and its form fields
+  const [showSuccessDrawer, setShowSuccessDrawer] = useState(false);
+  const [successForm, setSuccessForm] = useState({
+    handler: '',
+    currency: 'NIS',
+    numApplicants: '',
+    proposal: '',
+    potentialValue: '',
+  });
+  const [handlerOptions, setHandlerOptions] = useState<string[]>(['---']);
+
+  // Fetch handler options from database
+  useEffect(() => {
+    const fetchHandlers = async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('full_name, role')
+        .eq('role', 'handler')
+        .order('full_name', { ascending: true });
+      if (!error && data) {
+        setHandlerOptions(['---', ...data.map((u: any) => u.full_name)]);
+      }
+    };
+    fetchHandlers();
+  }, []);
+
+  // Handler for Payment Received - new Client !!!
+  const handlePaymentReceivedNewClient = () => {
+    setShowSuccessDrawer(true);
+    setSuccessForm({
+      handler: selectedClient?.closer || '',
+      currency: selectedClient?.proposal_currency || 'NIS',
+      numApplicants: selectedClient?.number_of_applicants_meeting || '',
+      proposal: selectedClient?.proposal_total || '',
+      potentialValue: selectedClient?.potential_value || '',
+    });
+  };
+
+  // Handler to save Success drawer
+  const handleSaveSuccessDrawer = async () => {
+    if (!selectedClient) return;
+    try {
+      // Convert empty strings to appropriate values for numeric fields
+      const numApplicants = successForm.numApplicants === '' ? null : Number(successForm.numApplicants);
+      const proposal = successForm.proposal === '' ? null : Number(successForm.proposal);
+      const potentialValue = successForm.potentialValue === '' ? null : Number(successForm.potentialValue);
+      
+      const { error } = await supabase
+        .from('leads')
+        .update({
+          stage: 'Success',
+          closer: successForm.handler,
+          proposal_currency: successForm.currency,
+          number_of_applicants_meeting: numApplicants,
+          proposal_total: proposal,
+          potential_value: potentialValue,
+        })
+        .eq('id', selectedClient.id);
+      
+      if (error) throw error;
+      
+      // Update local state immediately
+      setSelectedClient((prev: any) => ({
+        ...prev,
+        stage: 'Success',
+        closer: successForm.handler,
+        proposal_currency: successForm.currency,
+        number_of_applicants_meeting: numApplicants,
+        proposal_total: proposal,
+        potential_value: potentialValue,
+      }));
+      
+      setShowSuccessDrawer(false);
+      
+      // Force a complete refresh from the database
+      await refreshClientData(selectedClient.id);
+      
+      toast.success('Lead updated to Success!');
+    } catch (error) {
+      console.error('Error updating lead:', error);
+      toast.error('Failed to update lead.');
+    }
+  };
 
   // Add useEffect to fetch meetings when reschedule drawer opens
   useEffect(() => {
@@ -388,9 +475,48 @@ const Clients: React.FC<ClientsProps> = ({
     if (!selectedClient) return;
     
     try {
+      // Get current user info
+      const account = instance?.getAllAccounts()[0];
+      let currentUserFullName = account?.name || 'Unknown User';
+      
+      // Try to get full_name from database
+      if (account?.username) {
+        try {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', account.username)
+            .single();
+          
+          if (userData?.full_name) {
+            currentUserFullName = userData.full_name;
+          }
+        } catch (error) {
+          console.log('Could not fetch user full_name, using account.name as fallback');
+        }
+      }
+
+      // Prepare update data
+      const updateData: any = { 
+        stage,
+        last_stage_changed_by: currentUserFullName,
+        last_stage_changed_at: new Date().toISOString()
+      };
+
+      // Add specific tracking for important stages
+      if (stage === 'communication_started') {
+        updateData.communication_started_by = currentUserFullName;
+        updateData.communication_started_at = new Date().toISOString();
+      } else if (stage === 'unactivated' || stage === 'client_declined') {
+        updateData.unactivated_by = currentUserFullName;
+        updateData.unactivated_at = new Date().toISOString();
+      }
+
+      console.log('Updating lead stage with tracking:', updateData);
+
       const { error } = await supabase
         .from('leads')
-        .update({ stage })
+        .update(updateData)
         .eq('id', selectedClient.id);
       
       if (error) throw error;
@@ -464,6 +590,29 @@ const Clients: React.FC<ClientsProps> = ({
         return;
       }
 
+      // Get current user's full_name from database to match scheduler dropdown values
+      let currentUserFullName = account.name; // fallback to account name
+      try {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', account.username)
+          .single();
+        
+        if (userData?.full_name) {
+          currentUserFullName = userData.full_name;
+        }
+      } catch (error) {
+        console.log('Could not fetch user full_name, using account.name as fallback');
+      }
+
+      console.log('Meeting creation debug:', {
+        accountUsername: account.username,
+        accountName: account.name,
+        currentUserFullName: currentUserFullName,
+        selectedClientId: selectedClient.id
+      });
+
       let teamsMeetingUrl = '';
       
       // Only create Teams meeting if location is Teams
@@ -501,30 +650,47 @@ const Clients: React.FC<ClientsProps> = ({
       }
 
       // Create meeting record in database
-      const { error: meetingError } = await supabase
+      const meetingData = {
+        client_id: selectedClient.id,
+        meeting_date: meetingFormData.date,
+        meeting_time: meetingFormData.time,
+        meeting_location: meetingFormData.location,
+        meeting_manager: meetingFormData.manager || account.name,
+        meeting_currency: 'NIS',
+        meeting_amount: 0,
+        expert: selectedClient.expert || '---',
+        helper: meetingFormData.helper || '---',
+        teams_meeting_url: teamsMeetingUrl,
+        meeting_brief: '',
+        scheduler: currentUserFullName, // Add logged-in user as scheduler using full_name
+        last_edited_timestamp: new Date().toISOString(),
+        last_edited_by: account.name,
+      };
+
+      console.log('Attempting to insert meeting data:', meetingData);
+
+      const { data: insertedData, error: meetingError } = await supabase
         .from('meetings')
-        .insert([{
-          client_id: selectedClient.id,
-          meeting_date: meetingFormData.date,
-          meeting_time: meetingFormData.time,
-          meeting_location: meetingFormData.location,
-          meeting_manager: meetingFormData.manager || account.name,
-          meeting_currency: 'NIS',
-          meeting_amount: 0,
-          expert: selectedClient.expert || '---',
-          helper: meetingFormData.helper || '---',
-          teams_meeting_url: teamsMeetingUrl,
-          meeting_brief: '',
-          last_edited_timestamp: new Date().toISOString(),
-          last_edited_by: account.name,
-        }]);
+        .insert([meetingData])
+        .select();
 
-      if (meetingError) throw meetingError;
+      console.log('Database insert result:', { insertedData, meetingError });
 
-      // Update lead stage to 'meeting_scheduled'
+      if (meetingError) {
+        console.error('Meeting creation error:', meetingError);
+        throw meetingError;
+      }
+
+      console.log('Meeting created successfully with scheduler:', currentUserFullName);
+      console.log('Inserted meeting record:', insertedData);
+
+      // Update lead stage to 'meeting_scheduled' and set scheduler
       await supabase
         .from('leads')
-        .update({ stage: 'meeting_scheduled' })
+        .update({ 
+          stage: 'meeting_scheduled',
+          scheduler: currentUserFullName // Also update scheduler in leads table
+        })
         .eq('id', selectedClient.id);
 
       // Update UI
@@ -978,81 +1144,35 @@ const Clients: React.FC<ClientsProps> = ({
   // Handle save payments plan
   const handleSavePaymentsPlan = async () => {
     if (!selectedClient?.id) return;
-    
     setIsSavingPaymentPlan(true);
-    const balance = selectedClient?.balance || 0;
-    const vat = balance * 0.18;
-    const total = balance + vat;
-    
-    // Create payments based on auto plan
-    const payments: Array<{
-      duePercent: string;
-      dueDate: string;
-      value: number;
-      valueVat: number;
-      client: string;
-      order: string;
-      proforma?: string;
-      notes: string;
-    }> = [];
-    const planParts = autoPlan.split('/').map(Number);
-    const totalAmount = total;
-    
-    let remainingAmount = totalAmount;
-    for (let i = 0; i < planParts.length; i++) {
-      const percentage = planParts[i];
-      const amount = (totalAmount * percentage) / 100;
-      const vatAmount = (amount * 0.18);
-      
-      payments.push({
-        duePercent: `${percentage}%`,
-        dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-        value: Math.round(amount * 100) / 100,
-        valueVat: Math.round(vatAmount * 100) / 100,
-        client: selectedClient?.name || '',
-        order: i === 0 ? 'First Payment' : i === planParts.length - 1 ? 'Final Payment' : 'Intermediate Payment',
-        notes: '',
-      });
-      
-      remainingAmount -= amount;
-    }
-    
-    const newFinancePlan = {
-      total: Math.round(totalAmount * 100) / 100,
-      vat: Math.round(vat * 100) / 100,
-      payments: payments,
-    };
-    
     try {
-      // First, delete any existing payment plans for this lead
+      // Delete any existing payment plans for this lead
       const { error: deleteError } = await supabase
         .from('payment_plans')
         .delete()
         .eq('lead_id', selectedClient.id);
-      
       if (deleteError) throw deleteError;
-      
-      // Insert new payment plans
+
+      // Insert all current payments (manual and auto)
       const paymentPlansToInsert = payments.map(payment => ({
         lead_id: selectedClient.id,
-        due_percent: parseFloat(payment.duePercent.replace('%', '')),
-        due_date: new Date(Date.now() + (payments.indexOf(payment) + 1) * 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-        value: payment.value,
-        value_vat: payment.valueVat,
+        due_percent: payment.duePercent ? parseFloat(payment.duePercent.replace('%', '')) : 0,
+        due_date: payment.dueDate || payment.date || null,
+        value: typeof payment.value === 'number' ? payment.value : parseFloat(payment.value),
+        value_vat: typeof payment.valueVat === 'number' ? payment.valueVat : parseFloat(payment.valueVat),
         client_name: payment.client,
         payment_order: payment.order,
         notes: payment.notes,
       }));
-      
       const { error: insertError } = await supabase
         .from('payment_plans')
         .insert(paymentPlansToInsert);
-      
       if (insertError) throw insertError;
-      
       setShowPaymentsPlanDrawer(false);
+      setPayments([]); // Clear payments to prevent duplicates
       setActiveTab('finances');
       toast.success('Payment plan saved successfully!');
+      await refreshClientData(selectedClient.id);
     } catch (error) {
       console.error('Error saving payment plan:', error);
       toast.error('Failed to save payment plan. Please try again.');
@@ -1360,7 +1480,7 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('client_signed')}>
+          <a className="flex items-center gap-3 py-3" onClick={handlePaymentReceivedNewClient}>
             <CheckCircleIcon className="w-5 h-5 text-green-600" />
             Payment Received - new Client !!!
           </a>
@@ -2569,7 +2689,7 @@ const Clients: React.FC<ClientsProps> = ({
       {showPaymentsPlanDrawer && (
         <div className="fixed inset-0 z-50 flex">
           {/* Overlay */}
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowPaymentsPlanDrawer(false)} />
+          <div className="fixed inset-0 bg-black/30" onClick={() => { setShowPaymentsPlanDrawer(false); setPayments([]); }} />
           {/* Drawer */}
           <div className="ml-auto w-full max-w-xl bg-white h-full shadow-2xl p-0 flex flex-col animate-slideInRight z-50 overflow-y-auto border-l border-gray-200">
             {/* Header */}
@@ -2578,7 +2698,7 @@ const Clients: React.FC<ClientsProps> = ({
                 <h3 className="text-2xl font-bold text-gray-900">{selectedClient?.lead_number} - {selectedClient?.name}</h3>
                 <div className="text-base font-medium text-gray-500 mt-1">Payments plan</div>
               </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowPaymentsPlanDrawer(false)}>
+              <button className="btn btn-ghost btn-sm" onClick={() => { setShowPaymentsPlanDrawer(false); setPayments([]); }}>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
@@ -2624,9 +2744,42 @@ const Clients: React.FC<ClientsProps> = ({
               <select
                 className="select select-bordered w-full max-w-xs"
                 value={autoPlan}
-                onChange={e => setAutoPlan(e.target.value)}
+                onChange={e => {
+                  const selectedPlan = e.target.value;
+                  if (selectedPlan) {
+                    if (payments.length > 0) {
+                      if (!window.confirm('This will overwrite your current payments. Continue?')) {
+                        return;
+                      }
+                    }
+                    // Generate payment rows for the selected plan
+                    const planParts = selectedPlan.split('/').map(Number);
+                    const balance = selectedClient?.balance || 0;
+                    const vat = balance * 0.18;
+                    const total = balance + vat;
+                    const totalAmount = total;
+                    const newPayments = [];
+                    for (let i = 0; i < planParts.length; i++) {
+                      const percentage = planParts[i];
+                      const amount = (totalAmount * percentage) / 100;
+                      const vatAmount = (amount * 0.18);
+                      newPayments.push({
+                        duePercent: `${percentage}%`,
+                        dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000).toLocaleDateString(),
+                        value: Math.round(amount * 100) / 100,
+                        valueVat: Math.round(vatAmount * 100) / 100,
+                        client: selectedClient?.name || '',
+                        order: i === 0 ? 'First Payment' : i === planParts.length - 1 ? 'Final Payment' : 'Intermediate Payment',
+                        notes: '',
+                      });
+                    }
+                    setPayments(newPayments);
+                  }
+                  setAutoPlan(selectedPlan);
+                }}
               >
-                {autoPlanOptions.map(opt => (
+                <option value="">Choose auto plan...</option>
+                {autoPlanOptions.filter(opt => opt).map(opt => (
                   <option key={opt} value={opt}>{opt}</option>
                 ))}
               </select>
@@ -2682,7 +2835,16 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 </div>
                 <div className="flex justify-end">
-                  <button className="btn btn-primary px-8" onClick={() => { setPayments([...payments, newPayment]); setShowAddPayment(false); }}>
+                  <button className="btn btn-primary px-8" onClick={() => {
+                    let valueNum = typeof newPayment.value === 'number' ? newPayment.value : parseFloat(newPayment.value);
+                    if (isNaN(valueNum)) valueNum = 0;
+                    const valueVatNum = Math.round(valueNum * 0.18 * 100) / 100;
+                    setPayments([
+                      ...payments,
+                      { ...newPayment, value: valueNum, valueVat: valueVatNum, duePercent: '', dueDate: newPayment.date }
+                    ]);
+                    setShowAddPayment(false);
+                  }}>
                     Save
                   </button>
                 </div>
@@ -2714,138 +2876,329 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Overlay */}
           <div className="fixed inset-0 bg-black/30" onClick={() => setShowProformaDrawer(false)} />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-2xl bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50 overflow-y-auto">
+          <div className="ml-auto w-full max-w-4xl h-full bg-gradient-to-br from-blue-50 to-indigo-50 shadow-2xl p-0 flex flex-col animate-slideInRight z-50 overflow-hidden">
             {/* Header */}
-            <div className="mb-6 p-4 rounded-lg bg-blue-100 border border-blue-200">
-              <div className="text-lg font-semibold mb-1">
-                Client: <span className="text-blue-700 font-bold">{proformaData.client}</span> <span className="inline-block text-blue-700 ml-2"><svg className="w-5 h-5 inline" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 8v4l3 3" /></svg></span> <span className="text-blue-900 font-bold">Missing Tax ID!</span>
-              </div>
-              <div className="text-md font-medium">Payment: <span className="text-blue-900 font-bold">₪ {proformaData.payment.toLocaleString()}</span></div>
-              <div className="text-md">Language: {proformaData.language}</div>
-              <div className="text-md mt-2">
-                <span className="text-blue-900 font-bold">Proforma Name: </span>
-                <span className="text-blue-700">{generatedProformaName}</span>
+            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-6 border-b border-blue-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold mb-1">Create Proforma</h2>
+                  <p className="text-blue-100 text-sm">Client: {proformaData.client}</p>
+                </div>
+                <button className="btn btn-ghost btn-sm text-white hover:bg-white/20" onClick={() => setShowProformaDrawer(false)}>
+                  <XMarkIcon className="w-6 h-6" />
+                </button>
               </div>
             </div>
-            <div className="mb-4 text-xl font-bold">Language: {proformaData.language}</div>
-            {/* Editable table */}
-            <table className="table w-full mb-4">
-              <thead>
-                <tr>
-                  <th>Description</th>
-                  <th>Qty</th>
-                  <th>Rate</th>
-                  <th>Total</th>
-                  {!proformaData?.isViewMode && <th>Delete</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {proformaData.rows.map((row: any, idx: number) => (
-                  <tr key={idx}>
-                    <td>
-                      <input 
-                        className="input input-bordered w-full" 
-                        value={row.description} 
-                        onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
-                        readOnly={proformaData?.isViewMode}
-                      />
-                    </td>
-                    <td>
-                      <input 
-                        className="input input-bordered w-16" 
-                        type="number" 
-                        value={row.qty} 
-                        onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
-                        readOnly={proformaData?.isViewMode}
-                      />
-                    </td>
-                    <td>
-                      <input 
-                        className="input input-bordered w-24" 
-                        type="number" 
-                        value={row.rate} 
-                        onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
-                        readOnly={proformaData?.isViewMode}
-                      />
-                    </td>
-                    <td><input className="input input-bordered w-24" type="number" value={row.total} readOnly /></td>
-                    {!proformaData?.isViewMode && (
-                      <td><a className="text-blue-600 hover:underline cursor-pointer" onClick={() => handleDeleteProformaRow(idx)}>delete</a></td>
+
+            {/* Main Content - Two Column Layout */}
+            <div className="flex-1 flex overflow-hidden">
+              {/* Left Column - Invoice Items */}
+              <div className="flex-1 p-6 overflow-y-auto">
+                <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <DocumentTextIcon className="w-5 h-5 text-blue-600" />
+                    Invoice Items
+                  </h3>
+                  
+                  {/* Editable table */}
+                  <div className="overflow-x-auto">
+                    <table className="table w-full">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="text-sm font-semibold text-gray-700">Description</th>
+                          <th className="text-sm font-semibold text-gray-700">Qty</th>
+                          <th className="text-sm font-semibold text-gray-700">Rate</th>
+                          <th className="text-sm font-semibold text-gray-700">Total</th>
+                          {!proformaData?.isViewMode && <th className="text-sm font-semibold text-gray-700">Actions</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {proformaData.rows.map((row: any, idx: number) => (
+                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                            <td>
+                              <input 
+                                className="input input-bordered w-full text-sm" 
+                                value={row.description} 
+                                onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
+                                readOnly={proformaData?.isViewMode}
+                                placeholder="Item description"
+                              />
+                            </td>
+                            <td>
+                              <input 
+                                className="input input-bordered w-20 text-sm text-center" 
+                                type="number" 
+                                value={row.qty} 
+                                onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
+                                readOnly={proformaData?.isViewMode}
+                              />
+                            </td>
+                            <td>
+                              <input 
+                                className="input input-bordered w-24 text-sm text-right" 
+                                type="number" 
+                                value={row.rate} 
+                                onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
+                                readOnly={proformaData?.isViewMode}
+                              />
+                            </td>
+                            <td>
+                              <input className="input input-bordered w-24 text-sm text-right font-semibold" type="number" value={row.total} readOnly />
+                            </td>
+                            {!proformaData?.isViewMode && (
+                              <td>
+                                <button 
+                                  className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50" 
+                                  onClick={() => handleDeleteProformaRow(idx)}
+                                >
+                                  <TrashIcon className="w-4 h-4" />
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {!proformaData?.isViewMode && (
+                    <button 
+                      className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50" 
+                      onClick={handleAddProformaRow}
+                    >
+                      <PlusIcon className="w-4 h-4 mr-1" />
+                      Add Row
+                    </button>
+                  )}
+                </div>
+
+                {/* Settings Section */}
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <Cog6ToothIcon className="w-5 h-5 text-green-600" />
+                    Settings
+                  </h3>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="form-control">
+                      <label className="label cursor-pointer justify-start gap-3">
+                        <input 
+                          type="checkbox" 
+                          className="checkbox checkbox-primary" 
+                          checked={proformaData.addVat} 
+                          onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
+                          disabled={proformaData?.isViewMode}
+                        />
+                        <span className="label-text font-medium">Add VAT (18%)</span>
+                      </label>
+                    </div>
+                    
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Currency</span>
+                      </label>
+                      <select 
+                        className="select select-bordered w-full" 
+                        value={proformaData.currency} 
+                        onChange={e => setProformaData((prev: any) => ({ ...prev, currency: e.target.value }))}
+                        disabled={proformaData?.isViewMode}
+                      >
+                        <option value="₪">₪ (NIS)</option>
+                        <option value="$">$ (USD)</option>
+                        <option value="€">€ (EUR)</option>
+                      </select>
+                    </div>
+                    
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Bank Account</span>
+                      </label>
+                      <select 
+                        className="select select-bordered w-full" 
+                        value={proformaData.bankAccount} 
+                        onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
+                        disabled={proformaData?.isViewMode}
+                      >
+                        <option value="">Select account...</option>
+                        <option value="1">Account 1</option>
+                        <option value="2">Account 2</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Notes Section */}
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
+                    Notes
+                  </h3>
+                  <textarea 
+                    className="textarea textarea-bordered w-full min-h-[120px] text-sm" 
+                    value={proformaData.notes} 
+                    onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
+                    readOnly={proformaData?.isViewMode}
+                    placeholder="Add any additional notes or terms..."
+                  />
+                </div>
+              </div>
+
+              {/* Right Column - Summary & Actions */}
+              <div className="w-80 bg-white border-l border-gray-200 p-6 flex flex-col">
+                {/* Summary Card */}
+                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 mb-6 border border-blue-200">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <ChartPieIcon className="w-5 h-5 text-blue-600" />
+                    Summary
+                  </h3>
+                  
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm font-medium text-gray-600">Subtotal:</span>
+                      <span className="font-semibold text-gray-800">
+                        {proformaData.currency} {proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0).toLocaleString()}
+                      </span>
+                    </div>
+                    
+                    {proformaData.addVat && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-medium text-gray-600">VAT (18%):</span>
+                        <span className="font-semibold text-gray-800">
+                          {proformaData.currency} {Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 0.18 * 100) / 100}
+                        </span>
+                      </div>
                     )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!proformaData?.isViewMode && (
-              <a className="text-blue-600 hover:underline cursor-pointer mb-2" onClick={handleAddProformaRow}>add row</a>
-            )}
-            {/* Totals */}
-            <div className="mb-2 flex gap-4 items-center">
-              <div>Total:</div>
-              <input className="input input-bordered w-32" type="number" value={proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)} readOnly />
-            </div>
-            <div className="mb-4 flex gap-4 items-center">
-              <div>Total with VAT:</div>
-              <input className="input input-bordered w-32" type="number" value={proformaData.addVat ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)} readOnly />
-            </div>
-            {/* VAT, currency, bank, notes */}
-            <div className="mb-4 flex items-center gap-4">
-              <label className="flex items-center gap-2">
-                <input 
-                  type="checkbox" 
-                  checked={proformaData.addVat} 
-                  onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
-                  disabled={proformaData?.isViewMode}
-                /> Add vat
-              </label>
-              <label>Currency:
-                <select 
-                  className="select select-bordered ml-2" 
-                  value={proformaData.currency} 
-                  onChange={e => setProformaData((prev: any) => ({ ...prev, currency: e.target.value }))}
-                  disabled={proformaData?.isViewMode}
-                >
-                  <option value="₪">₪</option>
-                  <option value="$">$</option>
-                  <option value="€">€</option>
-                </select>
-              </label>
-              <label>Bank account:
-                <select 
-                  className="select select-bordered ml-2" 
-                  value={proformaData.bankAccount} 
-                  onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
-                  disabled={proformaData?.isViewMode}
-                >
-                  <option value="">---------</option>
-                  <option value="1">Account 1</option>
-                  <option value="2">Account 2</option>
-                </select>
-              </label>
-            </div>
-            <div className="mb-4">
-              <label>Notes:</label>
-              <textarea 
-                className="textarea textarea-bordered w-full min-h-[100px]" 
-                value={proformaData.notes} 
-                onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
-                readOnly={proformaData?.isViewMode}
-              />
-            </div>
-            {proformaData?.isViewMode ? (
-              <div className="flex gap-2">
-                <button className="btn btn-primary w-32" onClick={() => setShowProformaDrawer(false)}>Close</button>
-                <button className="btn btn-outline w-32" onClick={() => {
-                  // Remove view mode flag to allow editing
-                  setProformaData((prev: any) => ({ ...prev, isViewMode: false }));
-                }}>Edit</button>
+                    
+                    <div className="border-t border-gray-300 pt-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-lg font-bold text-gray-800">Total:</span>
+                        <span className="text-xl font-bold text-blue-600">
+                          {proformaData.currency} {proformaData.addVat ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Proforma Info */}
+                <div className="bg-gray-50 rounded-xl p-4 mb-6">
+                  <h4 className="font-semibold text-gray-800 mb-2">Proforma Details</h4>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Name:</span>
+                      <span className="font-medium">{generatedProformaName}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Language:</span>
+                      <span className="font-medium">{proformaData.language}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Payment:</span>
+                      <span className="font-medium">{proformaData.currency} {proformaData.payment.toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="mt-auto space-y-3">
+                  {proformaData?.isViewMode ? (
+                    <>
+                      <button className="btn btn-primary w-full" onClick={() => setShowProformaDrawer(false)}>
+                        Close
+                      </button>
+                      <button className="btn btn-outline w-full" onClick={() => {
+                        setProformaData((prev: any) => ({ ...prev, isViewMode: false }));
+                      }}>
+                        Edit Proforma
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="btn btn-primary w-full shadow-lg hover:shadow-xl transition-shadow" onClick={handleCreateProforma}>
+                        <DocumentCheckIcon className="w-5 h-5 mr-2" />
+                        Create Proforma
+                      </button>
+                      <div className="text-xs text-gray-500 text-center bg-yellow-50 p-3 rounded-lg border border-yellow-200">
+                        ⚠️ Once created, changes cannot be made!
+                      </div>
+                    </>
+                  )}
+                </div>
               </div>
-            ) : (
-              <>
-                <button className="btn btn-primary w-32" onClick={handleCreateProforma}>Create</button>
-                <div className="mt-2 text-xs text-gray-500">* Once you create, CHANGES CANNOT be made!</div>
-              </>
-            )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Success Drawer */}
+      {showSuccessDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="fixed inset-0 bg-black/30" onClick={() => setShowSuccessDrawer(false)} />
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold">Mark as Success</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowSuccessDrawer(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-4 flex-1">
+              <div>
+                <label className="block font-semibold mb-1">Handler</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={successForm.handler}
+                  onChange={e => setSuccessForm(f => ({ ...f, handler: e.target.value }))}
+                >
+                  {handlerOptions.map((handler) => (
+                    <option key={handler} value={handler}>{handler}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Currency</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={successForm.currency}
+                  onChange={e => setSuccessForm(f => ({ ...f, currency: e.target.value }))}
+                >
+                  <option value="NIS">NIS</option>
+                  <option value="USD">USD</option>
+                  <option value="EUR">EUR</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Number of Applicants</label>
+                <input
+                  type="number"
+                  className="input input-bordered w-full"
+                  value={successForm.numApplicants}
+                  onChange={e => setSuccessForm(f => ({ ...f, numApplicants: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Proposal (Amount Total)</label>
+                <input
+                  type="number"
+                  className="input input-bordered w-full"
+                  value={successForm.proposal}
+                  onChange={e => setSuccessForm(f => ({ ...f, proposal: e.target.value }))}
+                />
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Potential Value</label>
+                <input
+                  type="number"
+                  className="input input-bordered w-full"
+                  value={successForm.potentialValue}
+                  onChange={e => setSuccessForm(f => ({ ...f, potentialValue: e.target.value }))}
+                />
+              </div>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button className="btn btn-primary px-8" onClick={handleSaveSuccessDrawer}>
+                Save
+              </button>
+            </div>
           </div>
         </div>
       )}

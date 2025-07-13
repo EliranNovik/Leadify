@@ -9,6 +9,7 @@ import { loginRequest } from '../../msalConfig';
 import ReactDOM from 'react-dom';
 import { BanknotesIcon as BanknotesIconSolid } from '@heroicons/react/24/solid';
 import { PencilLine, Trash2 } from 'lucide-react';
+import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
 
 interface PaymentPlan {
   id: string | number;
@@ -41,6 +42,20 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [showProformaDrawer, setShowProformaDrawer] = useState(false);
   const [proformaData, setProformaData] = useState<any>(null);
   const [generatedProformaName, setGeneratedProformaName] = useState<string>('');
+
+  // Add state and handler for editing subtotal at the top of the component:
+  const [isEditingSubtotal, setIsEditingSubtotal] = useState(false);
+  const [editableSubtotal, setEditableSubtotal] = useState('');
+  const saveSubtotal = () => {
+    // Update the first row's total to match the edited subtotal
+    if (proformaData && proformaData.rows && proformaData.rows.length > 0) {
+      const diff = parseFloat(editableSubtotal) - proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
+      const newRows = [...proformaData.rows];
+      newRows[0].total = parseFloat(editableSubtotal);
+      setProformaData((prev: any) => ({ ...prev, rows: newRows }));
+    }
+    setIsEditingSubtotal(false);
+  };
 
   // Fetch payment plans when component mounts or client changes
   useEffect(() => {
@@ -387,6 +402,11 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const total = financePlan.payments.reduce((sum: number, p: PaymentPlan) => sum + Number(p.value), 0);
   const vat = financePlan.payments.reduce((sum: number, p: PaymentPlan) => sum + Number(p.valueVat), 0);
 
+  // Before rendering payment rows, calculate total:
+  const totalPayments = financePlan.payments.reduce((sum, p) => sum + Number(p.value || 0) + Number(p.valueVat || 0), 0);
+  // Before rendering payment rows, calculate totalBalanceWithVat:
+  const totalBalanceWithVat = (client?.balance || 0) * 1.18;
+
   return (
     <>
       <div className="overflow-x-auto w-full">
@@ -555,7 +575,9 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       {/* Order (left) */}
                       <span className="text-xs font-bold uppercase tracking-wider flex-1 text-left truncate">{p.order}</span>
                       {/* Percent (center) */}
-                      <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">{p.duePercent}%</span>
+                      <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
+                        {totalBalanceWithVat > 0 ? ((Number(p.value || 0) + Number(p.valueVat || 0)) / totalBalanceWithVat * 100).toFixed(1) : '0'}%
+                      </span>
                       {/* Actions (right) */}
                       <div className="flex gap-2 items-center ml-4">
                         {p.id ? (
@@ -642,144 +664,260 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           {/* Overlay */}
           <div className="fixed inset-0 bg-black/30" onClick={() => setShowProformaDrawer(false)} />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-2xl h-full bg-base-100 shadow-2xl p-8 flex flex-col animate-slideInRight z-[110] overflow-y-auto relative">
-            {/* Close Button */}
-            <button className="absolute top-4 right-4 btn btn-ghost btn-sm" onClick={() => setShowProformaDrawer(false)}>
-              <XMarkIcon className="w-6 h-6" />
-            </button>
+          <div className="ml-auto w-full max-w-4xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
             {/* Header */}
-            <div className="mb-6 p-4 rounded-lg bg-blue-100 border border-blue-200">
-              <div className="text-lg font-semibold mb-1">
-                Client: <span className="text-blue-700 font-bold">{proformaData.client}</span> <span className="inline-block text-blue-700 ml-2"><svg className="w-5 h-5 inline" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path d="M12 8v4l3 3" /></svg></span> <span className="text-blue-900 font-bold">Missing Tax ID!</span>
-              </div>
-              <div className="text-md font-medium">Payment: <span className="text-blue-900 font-bold">₪ {proformaData.payment.toLocaleString()}</span></div>
-              <div className="text-md">Language: {proformaData.language}</div>
-              <div className="text-md mt-2">
-                <span className="text-blue-900 font-bold">Proforma Name: </span>
-                <span className="text-blue-700">{generatedProformaName}</span>
+            <div className="bg-gradient-to-r from-indigo-700 via-purple-700 to-teal-600 text-white p-8 border-b border-blue-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-3xl font-extrabold mb-1">Create Proforma</h2>
+                  <p className="text-blue-100 text-lg">Client: {proformaData.client}</p>
+                </div>
+                <button className="btn btn-ghost btn-lg text-white hover:bg-white/20" onClick={() => setShowProformaDrawer(false)}>
+                  <XMarkIcon className="w-8 h-8" />
+                </button>
               </div>
             </div>
-            <div className="mb-4 text-xl font-bold">Language: {proformaData.language}</div>
-            {/* Editable table */}
-            <table className="table w-full mb-4">
-              <thead>
-                <tr>
-                  <th>Description</th>
-                  <th>Qty</th>
-                  <th>Rate</th>
-                  <th>Total</th>
-                  {!proformaData?.isViewMode && <th>Delete</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {proformaData.rows.map((row: any, idx: number) => (
-                  <tr key={idx}>
-                    <td>
-                      <input 
-                        className="input input-bordered w-full" 
-                        value={row.description} 
-                        onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
-                        readOnly={proformaData?.isViewMode}
-                      />
-                    </td>
-                    <td>
-                      <input 
-                        className="input input-bordered w-16" 
-                        type="number" 
-                        value={row.qty} 
-                        onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
-                        readOnly={proformaData?.isViewMode}
-                      />
-                    </td>
-                    <td>
-                      <input 
-                        className="input input-bordered w-24" 
-                        type="number" 
-                        value={row.rate} 
-                        onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
-                        readOnly={proformaData?.isViewMode}
-                      />
-                    </td>
-                    <td><input className="input input-bordered w-24" type="number" value={row.total} readOnly /></td>
-                    {!proformaData?.isViewMode && (
-                      <td><a className="text-blue-600 hover:underline cursor-pointer" onClick={() => handleDeleteProformaRow(idx)}>delete</a></td>
+
+            {/* Main Content - Two Column Layout */}
+            <div className="flex-1 flex flex-col md:flex-row overflow-y-auto md:overflow-hidden">
+              {/* Left Column - Invoice Items */}
+              <div className="flex-1 p-4 md:p-6 md:overflow-y-auto">
+                <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <DocumentTextIcon className="w-5 h-5 text-blue-600" />
+                    Invoice Items
+                  </h3>
+                  {/* Editable table */}
+                  <div className="overflow-x-auto">
+                    <table className="table w-full min-w-[500px]">
+                      <thead>
+                        <tr className="bg-gray-50">
+                          <th className="text-sm font-semibold text-gray-700">Description</th>
+                          <th className="text-sm font-semibold text-gray-700">Qty</th>
+                          <th className="text-sm font-semibold text-gray-700">Rate</th>
+                          <th className="text-sm font-semibold text-gray-700">Total</th>
+                          {!proformaData?.isViewMode && <th className="text-sm font-semibold text-gray-700">Actions</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {proformaData.rows.map((row: any, idx: number) => (
+                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                            <td>
+                              <input 
+                                className="input input-bordered w-full text-base py-3 px-4" 
+                                value={row.description} 
+                                onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
+                                readOnly={proformaData?.isViewMode}
+                                placeholder="Item description"
+                              />
+                            </td>
+                            <td>
+                              <input 
+                                className="input input-bordered w-24 text-base text-right py-3 px-4" 
+                                type="number" 
+                                value={row.qty} 
+                                onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
+                                readOnly={proformaData?.isViewMode}
+                              />
+                            </td>
+                            <td>
+                              <input 
+                                className="input input-bordered w-24 text-base text-right py-3 px-4" 
+                                type="number" 
+                                value={row.rate} 
+                                onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
+                                readOnly={proformaData?.isViewMode}
+                              />
+                            </td>
+                            <td>
+                              <input className="input input-bordered w-24 text-base text-right font-semibold py-3 px-4" type="number" value={row.total} readOnly />
+                            </td>
+                            {!proformaData?.isViewMode && (
+                              <td>
+                                <button 
+                                  className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50" 
+                                  onClick={() => handleDeleteProformaRow(idx)}
+                                >
+                                  <TrashIcon className="w-4 h-4" />
+                                </button>
+                              </td>
+                            )}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {!proformaData?.isViewMode && (
+                    <button 
+                      className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50" 
+                      onClick={handleAddProformaRow}
+                    >
+                      <PlusIcon className="w-4 h-4 mr-1" />
+                      Add Row
+                    </button>
+                  )}
+                </div>
+
+                {/* Settings Section */}
+                <div className="bg-white rounded-xl shadow-lg p-6 mb-8">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <Cog6ToothIcon className="w-5 h-5 text-green-600" />
+                    Settings
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="form-control">
+                      <label className="label cursor-pointer justify-start gap-3">
+                        <input 
+                          type="checkbox" 
+                          className="checkbox checkbox-primary" 
+                          checked={proformaData.addVat} 
+                          onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
+                          disabled={proformaData?.isViewMode}
+                        />
+                        <span className="label-text font-medium">Add VAT (18%)</span>
+                      </label>
+                    </div>
+                    {/* In the settings section, remove the currency field (dropdown and label) */}
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Bank Account</span>
+                      </label>
+                      <select 
+                        className="select select-bordered w-full" 
+                        value={proformaData.bankAccount} 
+                        onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
+                        disabled={proformaData?.isViewMode}
+                      >
+                        <option value="">Select account...</option>
+                        <option value="1">Account 1</option>
+                        <option value="2">Account 2</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Notes Section */}
+                <div className="bg-white rounded-xl shadow-lg p-6">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
+                    Notes
+                  </h3>
+                  <textarea 
+                    className="textarea textarea-bordered w-full min-h-[120px] text-sm" 
+                    value={proformaData.notes} 
+                    onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
+                    readOnly={proformaData?.isViewMode}
+                    placeholder="Add any additional notes or terms..."
+                  />
+                </div>
+              </div>
+
+              {/* Right Column - Summary & Actions */}
+              <div className="w-full md:w-80 bg-white border-l border-gray-200 p-4 md:p-6 flex flex-col mt-6 md:mt-0">
+                {/* Summary Card */}
+                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 mb-6 border border-blue-200 w-full">
+                  {/* In the summary card, move the edit button to the top, next to the 'Summary' title: */}
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                      <ChartPieIcon className="w-5 h-5 text-blue-600" />
+                      Summary
+                    </h3>
+                    <button className="btn btn-ghost btn-xs" onClick={() => setIsEditingSubtotal(true)} title="Edit total amount">
+                      <PencilLine className="w-4 h-4 text-gray-500" />
+                    </button>
+                  </div>
+                  <div className="space-y-3">
+                    {/* In the subtotal row, remove the edit button and just show the value or input: */}
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm font-medium text-gray-600">Subtotal:</span>
+                      {isEditingSubtotal ? (
+                        <input
+                          className="input input-bordered w-24 text-base text-right py-2 px-3 mr-2"
+                          type="number"
+                          value={editableSubtotal}
+                          onChange={e => setEditableSubtotal(e.target.value)}
+                          onBlur={saveSubtotal}
+                          autoFocus
+                        />
+                      ) : (
+                        <span className="font-semibold text-gray-800">
+                          {proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                    {proformaData.addVat && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-medium text-gray-600">VAT (18%):</span>
+                        <span className="font-semibold text-gray-800">
+                          {Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 0.18 * 100) / 100}
+                        </span>
+                      </div>
                     )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!proformaData?.isViewMode && (
-              <a className="text-blue-600 hover:underline cursor-pointer mb-2" onClick={handleAddProformaRow}>add row</a>
-            )}
-            {/* Totals */}
-            <div className="mb-2 flex gap-4 items-center">
-              <div>Total:</div>
-              <input className="input input-bordered w-32" type="number" value={proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)} readOnly />
-            </div>
-            <div className="mb-4 flex gap-4 items-center">
-              <div>Total with VAT:</div>
-              <input className="input input-bordered w-32" type="number" value={proformaData.addVat ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)} readOnly />
-            </div>
-            {/* VAT, currency, bank, notes */}
-            <div className="mb-4 flex items-center gap-4">
-              <label className="flex items-center gap-2">
-                <input 
-                  type="checkbox" 
-                  checked={proformaData.addVat} 
-                  onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
-                  disabled={proformaData?.isViewMode}
-                /> Add vat
-              </label>
-              <label>Currency:
-                <select 
-                  className="select select-bordered ml-2" 
-                  value={proformaData.currency} 
-                  onChange={e => setProformaData((prev: any) => ({ ...prev, currency: e.target.value }))}
-                  disabled={proformaData?.isViewMode}
-                >
-                  <option value="₪">₪</option>
-                  <option value="$">$</option>
-                  <option value="€">€</option>
-                </select>
-              </label>
-              <label>Bank account:
-                <select 
-                  className="select select-bordered ml-2" 
-                  value={proformaData.bankAccount} 
-                  onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
-                  disabled={proformaData?.isViewMode}
-                >
-                  <option value="">---------</option>
-                  <option value="1">Account 1</option>
-                  <option value="2">Account 2</option>
-                </select>
-              </label>
-            </div>
-            <div className="mb-4">
-              <label>Notes:</label>
-              <textarea 
-                className="textarea textarea-bordered w-full min-h-[100px]" 
-                value={proformaData.notes} 
-                onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
-                readOnly={proformaData?.isViewMode}
-              />
-            </div>
-            {proformaData?.isViewMode ? (
-              <div className="flex gap-2">
-                <button className="btn btn-primary w-32" onClick={() => setShowProformaDrawer(false)}>Close</button>
-                <button className="btn btn-outline w-32" onClick={() => {
-                  // Remove view mode flag to allow editing
-                  setProformaData((prev: any) => ({ ...prev, isViewMode: false }));
-                }}>Edit</button>
+                    <div className="border-t border-gray-300 pt-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-lg font-bold text-gray-800">Total:</span>
+                        <span className="text-xl font-bold text-blue-600">
+                          {proformaData.addVat ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Proforma Info */}
+                <div className="bg-gray-50 rounded-xl p-4 mb-6 w-full">
+                  <h4 className="font-semibold text-gray-800 mb-2">Proforma Details</h4>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Name:</span>
+                      <span className="font-medium">{generatedProformaName}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Language:</span>
+                      <span className="font-medium">{proformaData.language}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Payment:</span>
+                      <span className="font-medium">{proformaData.payment.toLocaleString()}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="mt-auto space-y-3">
+                  {proformaData?.isViewMode ? (
+                    <>
+                      <button className="btn btn-primary w-full" onClick={() => setShowProformaDrawer(false)}>
+                        Close
+                      </button>
+                      <button className="btn btn-outline w-full" onClick={() => {
+                        setProformaData((prev: any) => ({ ...prev, isViewMode: false }));
+                      }}>
+                        Edit Proforma
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button className="btn btn-primary w-full shadow-lg hover:shadow-xl transition-shadow" onClick={handleCreateProforma}>
+                        <DocumentCheckIcon className="w-5 h-5 mr-2" />
+                        Create Proforma
+                      </button>
+                      <div className="text-xs text-gray-500 text-center bg-yellow-50 p-3 rounded-lg border border-yellow-200">
+                        ⚠️ Once created, changes cannot be made!
+                      </div>
+                    </>
+                  )}
+                </div>
+                {proformaData?.createdBy && (
+                  <div className="absolute bottom-4 left-6 text-xs text-gray-400">
+                    Created by: {proformaData.createdBy}
+                  </div>
+                )}
               </div>
-            ) : (
-              <>
-                <button className="btn btn-primary w-32" onClick={handleCreateProforma}>Create</button>
-                <div className="mt-2 text-xs text-gray-500">* Once you create, CHANGES CANNOT be made!</div>
-              </>
-            )}
+            </div>
           </div>
-        </div>, document.body)}
+        </div>, document.body)
+      }
     </>
   );
 };

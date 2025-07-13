@@ -103,8 +103,7 @@ const ProformaViewPage: React.FC = () => {
         <div className="flex flex-col gap-1 md:items-end">
           <div><span className="font-semibold text-gray-700">Proforma #:</span> <span className="text-gray-900">{proforma.proformaName}</span></div>
           <div><span className="font-semibold text-gray-700">Date:</span> <span className="text-gray-900">{new Date(proforma.createdAt).toLocaleDateString()}</span></div>
-          <div><span className="font-semibold text-gray-700">Created by:</span> <span className="text-gray-900">{proforma.createdBy || ''}</span></div>
-          <div><span className="font-semibold text-gray-700">Currency:</span> <span className="text-gray-900">{proforma.currency}</span></div>
+          {/* Removed Created by from here */}
         </div>
       </div>
 
@@ -124,8 +123,8 @@ const ProformaViewPage: React.FC = () => {
               <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                 <td className="px-4 py-2 text-gray-900 font-medium">{row.description}</td>
                 <td className="px-4 py-2 text-right">{row.qty}</td>
-                <td className="px-4 py-2 text-right">{row.rate} {proforma.currency}</td>
-                <td className="px-4 py-2 text-right font-bold">{row.total} {proforma.currency}</td>
+                <td className="px-4 py-2 text-right">{proforma.currency} {row.rate}</td>
+                <td className="px-4 py-2 text-right font-bold">{proforma.currency} {row.total}</td>
               </tr>
             ))}
           </tbody>
@@ -137,17 +136,17 @@ const ProformaViewPage: React.FC = () => {
         <div className="w-full md:w-1/2 bg-gray-50 rounded-xl p-6 border border-gray-200">
           <div className="flex justify-between text-lg mb-2">
             <span className="font-semibold text-gray-700">Subtotal</span>
-            <span className="font-bold text-gray-900">{proforma.total} {proforma.currency}</span>
+            <span className="font-bold text-gray-900">{proforma.currency} {proforma.total}</span>
           </div>
           {proforma.addVat && (
             <div className="flex justify-between text-lg mb-2">
               <span className="font-semibold text-gray-700">VAT (18%)</span>
-              <span className="font-bold text-gray-900">{(proforma.totalWithVat - proforma.total).toFixed(2)} {proforma.currency}</span>
+              <span className="font-bold text-gray-900">{proforma.currency} {(proforma.totalWithVat - proforma.total).toFixed(2)}</span>
             </div>
           )}
           <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
             <span>Total</span>
-            <span className="text-primary">{proforma.totalWithVat} {proforma.currency}</span>
+            <span className="text-primary">{proforma.currency} {proforma.totalWithVat}</span>
           </div>
         </div>
       </div>
@@ -158,6 +157,10 @@ const ProformaViewPage: React.FC = () => {
           <span className="font-semibold">Notes:</span> {proforma.notes}
         </div>
       )}
+      {/* Created by at bottom left inside the card */}
+      <div className="mt-8 text-xs text-gray-400 text-left">
+        Created by: {proforma.createdBy || ''}
+      </div>
     </div>
   );
 };

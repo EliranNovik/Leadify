@@ -10,6 +10,7 @@ import PipelinePage from './components/PipelinePage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
 import ProformaViewPage from './pages/ProformaViewPage';
+import ReportsPage from './pages/ReportsPage';
 
 interface AppRoutesProps {
   selectedClient: any;
@@ -35,6 +36,7 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
     <Route path="/admin" element={<AdminPage />} />
     <Route path="/teams" element={<TeamsPage />} />
     <Route path="/proforma/:id" element={<ProformaViewPage />} />
+    <Route path="/reports" element={<ReportsPage />} />
     {/* Add other routes from your sidebar here */}
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>

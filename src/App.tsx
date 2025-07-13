@@ -28,6 +28,7 @@ import TeamsPage from './pages/TeamsPage';
 import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
 import ProformaViewPage from './pages/ProformaViewPage';
+import ReportsPage from './pages/ReportsPage';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -155,6 +156,7 @@ const AppContent: React.FC = () => {
                     <Route path="/collection" element={<CollectionPage />} />
                     <Route path="/performance" element={<MyPerformancePage />} />
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />
+                    <Route path="/reports" element={<ReportsPage />} />
                   </Routes>
                 </main>
               </div>
