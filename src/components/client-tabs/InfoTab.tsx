@@ -172,7 +172,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Probability Section */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
           <div className="flex items-center justify-between">
             <h4 className="text-lg font-semibold text-gray-900">Case Probability</h4>
@@ -212,7 +212,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {/* Left Column */}
         <div className="space-y-6">
           {/* Followup */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
               <h4 className="text-lg font-semibold text-gray-900">Follow-up Status</h4>
             </div>
@@ -248,7 +248,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
 
           {/* Eligibility */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
               <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
             </div>
@@ -268,7 +268,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
 
           {/* Special Notes */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-gray-900">Special Notes</h4>
@@ -339,7 +339,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
 
           {/* General Notes */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-gray-900">General Notes</h4>
@@ -411,7 +411,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {/* Right Column */}
         <div className="space-y-6">
           {/* Tags */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-gray-900">Tags</h4>

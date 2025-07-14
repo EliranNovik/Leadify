@@ -302,7 +302,7 @@ const renderFamilyNode = ({ nodeDatum }: any, onNodeClick: (node: any) => void) 
         }}>
           {nodeDatum.isPersecuted && (
             <span style={{
-              background: 'linear-gradient(90deg, #ef4444 60%, #f87171 100%)',
+              background: '#ef4444',
               color: '#fff',
               fontWeight: 600,
               fontSize: 10,
@@ -312,7 +312,7 @@ const renderFamilyNode = ({ nodeDatum }: any, onNodeClick: (node: any) => void) 
           )}
           {nodeDatum.isMainApplicant && (
             <span style={{
-              background: 'linear-gradient(90deg, #3b82f6 60%, #60a5fa 100%)',
+              background: '#3b82f6',
               color: '#fff',
               fontWeight: 600,
               fontSize: 10,
@@ -388,8 +388,8 @@ const CaseDetailsView = ({
   return (
     <div className="space-y-6">
       {/* Header with Back Button */}
-      <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400">
-        <div className="bg-white rounded-3xl p-6">
+      <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+        <div>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <button 
@@ -444,15 +444,15 @@ const CaseDetailsView = ({
       </div>
       
       {/* Detail Tabs */}
-      <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-purple-500 via-blue-500 to-cyan-500">
-        <div className="bg-white rounded-2xl p-2">
+      <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+        <div className="p-2">
           <div className="flex gap-2 overflow-x-auto">
             {detailTabs.map((tab) => (
               <button
                 key={tab.id}
                 className={`flex items-center gap-2 px-4 py-3 rounded-xl font-semibold transition-all duration-300 whitespace-nowrap ${
                   activeDetailTab === tab.id 
-                    ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg' 
+                    ? 'bg-blue-600 text-white shadow-lg' 
                     : 'text-gray-600 hover:bg-gray-100'
                 }`}
                 onClick={() => setActiveDetailTab(tab.id)}
@@ -470,8 +470,8 @@ const CaseDetailsView = ({
         {activeDetailTab === 'overview' && (
           <div className="space-y-6">
             {/* Case Information */}
-            <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-blue-500 via-purple-500 to-pink-500">
-              <div className="bg-white rounded-3xl p-6">
+            <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+              <div>
                 <h3 className="text-xl font-bold mb-4">Case Information</h3>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   <div>
@@ -504,8 +504,8 @@ const CaseDetailsView = ({
             
             {/* Persecuted Ancestor Details */}
             {persecutedAncestor && (
-              <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-red-500 via-orange-500 to-yellow-400">
-                <div className="bg-white rounded-3xl p-6">
+              <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+                <div>
                   <h3 className="text-xl font-bold mb-4 flex items-center gap-2">
                     <HeartIcon className="w-6 h-6 text-red-500" />
                     Persecuted Ancestor: {persecutedAncestor.name}
@@ -549,8 +549,8 @@ const CaseDetailsView = ({
         {activeDetailTab === 'family' && (
           <div className="space-y-6">
             {/* Family Tree Visualization */}
-            <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-green-500 via-blue-500 to-purple-500">
-              <div className="bg-white rounded-3xl p-6">
+            <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+              <div>
                 <h3 className="text-xl font-bold mb-6">Family Tree - Lineage from Persecuted Ancestor</h3>
                 <div style={{ width: '100%', height: '600px' }}>
                   <Tree
@@ -588,8 +588,8 @@ const CaseDetailsView = ({
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               {caseData.familyMembers.map((member: any) => (
-                <div key={member.id} className="rounded-3xl p-0.5 bg-gradient-to-tr from-cyan-500 via-blue-500 to-purple-500">
-                  <div className="bg-white rounded-3xl p-6">
+                <div key={member.id} className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+                  <div>
                     <div className="flex items-center justify-between mb-4">
                       <h3 className="text-lg font-bold">{member.name}</h3>
                       <div className="flex gap-2">
@@ -633,8 +633,8 @@ const CaseDetailsView = ({
         {activeDetailTab === 'documents' && (
           <div className="space-y-6">
             {caseData.familyMembers.map((member: any) => (
-              <div key={member.id} className="rounded-3xl p-0.5 bg-gradient-to-tr from-green-500 via-blue-500 to-purple-500">
-                <div className="bg-white rounded-3xl p-6">
+              <div key={member.id} className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+                <div>
                   <div className="flex items-center justify-between mb-6">
                     <h3 className="text-lg font-bold">{member.name} - Documents</h3>
                     <div className="flex gap-2">
@@ -711,8 +711,8 @@ const CaseDetailsView = ({
             </div>
 
             {/* Case Tasks */}
-            <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-orange-500 via-red-500 to-pink-500">
-              <div className="bg-white rounded-3xl p-6">
+            <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+              <div>
                 <div className="flex items-center justify-between mb-6">
                   <h3 className="text-xl font-bold">Case Tasks</h3>
                   <button className="btn btn-primary gap-2">
@@ -772,8 +772,8 @@ const CaseDetailsView = ({
 
         {activeDetailTab === 'timeline' && (
           <div className="space-y-6">
-            <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-purple-500 via-blue-500 to-green-500">
-              <div className="bg-white rounded-3xl p-6">
+            <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+              <div>
                 <h3 className="text-xl font-bold mb-6">Case Timeline</h3>
                 <div className="relative">
                   {/* Timeline line */}
@@ -931,7 +931,7 @@ const DashboardContent = () => {
       {/* Summary Cards with Gradients */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 md:gap-6">
         {/* Active Cases */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-4 md:p-6">
+        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-blue-600 text-white relative overflow-hidden p-4 md:p-6">
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <FolderIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
@@ -944,7 +944,7 @@ const DashboardContent = () => {
         </div>
 
         {/* Pending Documents */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-4 md:p-6">
+        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-blue-600 text-white relative overflow-hidden p-4 md:p-6">
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <InboxArrowDownIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
@@ -957,7 +957,7 @@ const DashboardContent = () => {
         </div>
 
         {/* Urgent Tasks */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-4 md:p-6">
+        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-blue-600 text-white relative overflow-hidden p-4 md:p-6">
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <ExclamationTriangleIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
@@ -970,7 +970,7 @@ const DashboardContent = () => {
         </div>
 
         {/* Ready to Submit */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden p-4 md:p-6">
+        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-blue-600 text-white relative overflow-hidden p-4 md:p-6">
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <DocumentArrowUpIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
@@ -1001,10 +1001,10 @@ const DashboardContent = () => {
       {/* Recent Activity & Urgent Items */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Recent Activity */}
-        <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400">
-          <div className="bg-white rounded-3xl p-6">
+        <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+          <div>
             <div className="flex items-center gap-3 mb-6">
-              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-purple-500 to-blue-500 shadow">
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600 shadow">
                 <ClockIcon className="w-6 h-6 text-white" />
               </div>
               <span className="text-xl font-bold text-gray-900">Recent Activity</span>
@@ -1036,10 +1036,10 @@ const DashboardContent = () => {
         </div>
 
         {/* Urgent Items */}
-        <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-red-500 via-orange-500 to-yellow-400">
-          <div className="bg-white rounded-3xl p-6">
+        <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+          <div>
             <div className="flex items-center gap-3 mb-6">
-              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-red-500 to-orange-500 shadow">
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600 shadow">
                 <ExclamationTriangleIcon className="w-6 h-6 text-white" />
               </div>
               <span className="text-xl font-bold text-gray-900">Urgent Items</span>
@@ -1072,11 +1072,11 @@ const DashboardContent = () => {
       </div>
 
       {/* Application Status Overview */}
-      <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-green-500 via-emerald-500 to-teal-500">
-        <div className="bg-white rounded-3xl p-6">
+      <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+        <div>
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-gradient-to-tr from-green-500 to-teal-500 shadow">
+              <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-blue-600 shadow">
                 <ChartBarIcon className="w-6 h-6 text-white" />
               </div>
               <span className="text-xl font-bold text-gray-900">Application Status Overview</span>
@@ -1148,8 +1148,8 @@ const CasesContent = ({ onViewCase }: { onViewCase: (caseId: string) => void }) 
       {/* Cases Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
         {mockCases.map((case_) => (
-          <div key={case_.id} className="rounded-2xl p-0.5 bg-gradient-to-tr from-blue-500 via-purple-500 to-pink-500">
-            <div className="bg-white rounded-2xl p-6 h-full">
+          <div key={case_.id} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+            <div className="h-full">
               <div className="flex items-center justify-between mb-4">
                 <span className="text-sm font-bold text-primary">{case_.id}</span>
                 <span className={`badge ${case_.priority === 'High' ? 'badge-error' : case_.priority === 'Medium' ? 'badge-warning' : 'badge-info'}`}>
@@ -1228,8 +1228,8 @@ const DocumentsContent = () => {
       </div>
 
       {/* Documents Table */}
-      <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-green-500 via-blue-500 to-purple-500">
-        <div className="bg-white rounded-2xl p-6">
+      <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+        <div>
           <div className="overflow-x-auto">
             <table className="table w-full">
               <thead>
@@ -1321,8 +1321,8 @@ const TasksContent = () => {
       {/* Tasks List */}
       <div className="space-y-4">
         {mockTasks.map((task) => (
-          <div key={task.id} className="rounded-2xl p-0.5 bg-gradient-to-tr from-yellow-400 via-orange-500 to-red-500">
-            <div className="bg-white rounded-2xl p-6">
+          <div key={task.id} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+            <div>
               <div className="flex items-center justify-between">
                 <div className="flex-1">
                   <div className="flex items-center gap-3 mb-2">
@@ -1394,8 +1394,8 @@ const CommunicationsContent = () => {
       </div>
 
       {selectedTab === 'messages' && (
-        <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-blue-500 via-purple-500 to-pink-500">
-          <div className="bg-white rounded-2xl p-6">
+        <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+          <div>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-bold">Client Messages</h3>
               <button className="btn btn-primary gap-2">
@@ -1424,8 +1424,8 @@ const CommunicationsContent = () => {
       )}
 
       {selectedTab === 'emails' && (
-        <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-green-500 via-blue-500 to-purple-500">
-          <div className="bg-white rounded-2xl p-6">
+        <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+          <div>
             <h3 className="text-xl font-bold mb-6">Email Templates</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {[
@@ -1451,8 +1451,8 @@ const CommunicationsContent = () => {
       )}
 
       {selectedTab === 'reminders' && (
-        <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-orange-500 via-red-500 to-pink-500">
-          <div className="bg-white rounded-2xl p-6">
+        <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+          <div>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-bold">Automated Reminders</h3>
               <button className="btn btn-primary gap-2">
@@ -1518,8 +1518,8 @@ const ApplicationsContent = () => {
       </div>
 
       {/* Applications Table */}
-      <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-purple-500 via-blue-500 to-green-500">
-        <div className="bg-white rounded-2xl p-6">
+      <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+        <div>
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-xl font-bold">Applications Status</h3>
             <button className="btn btn-primary gap-2">
@@ -1608,8 +1608,8 @@ const ClientsContent = () => {
       </div>
 
       {/* Clients Table */}
-      <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-cyan-500 via-blue-500 to-purple-500">
-        <div className="bg-white rounded-2xl p-6">
+      <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+        <div>
           <div className="overflow-x-auto">
             <table className="table w-full">
               <thead>
@@ -1714,16 +1714,16 @@ const CaseManagerPage: React.FC = () => {
   };
 
   return (
-    <div className="flex-1 min-h-screen bg-gradient-to-br from-blue-50 via-purple-50 to-pink-50">
+    <div className="flex-1 min-h-screen bg-white">
       {/* Header Section */}
       <div className="w-full px-4 md:px-6 pt-6 pb-4">
-        <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400">
-          <div className="bg-white rounded-3xl p-6 md:p-8">
+        <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
+          <div className="p-6 md:p-8">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
               {/* Left side - Title and Description */}
               <div className="flex-1">
                 <div className="flex items-center gap-4 mb-4">
-                  <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-tr from-purple-500 to-blue-500 shadow-lg">
+                  <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 shadow-lg">
                     <UserIcon className="w-8 h-8 text-white" />
                   </div>
                   <div>
@@ -1768,8 +1768,8 @@ const CaseManagerPage: React.FC = () => {
       </div>
       {/* Tabs Navigation */}
       <div className="w-full px-4 md:px-6 pb-4">
-        <div className="rounded-2xl p-0.5 bg-gradient-to-tr from-purple-500 via-blue-500 to-cyan-500">
-          <div className="bg-white rounded-2xl p-2">
+        <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+          <div className="p-2">
             {/* Desktop version */}
             <div className="hidden md:flex gap-2">
               {tabs.map((tab) => (
@@ -1777,7 +1777,7 @@ const CaseManagerPage: React.FC = () => {
                   key={tab.id}
                   className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold transition-all duration-300 ${
                     activeTab === tab.id 
-                      ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg transform scale-105' 
+                      ? 'bg-blue-600 text-white shadow-lg transform scale-105' 
                       : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                   }`}
                   onClick={() => setActiveTab(tab.id)}
@@ -1799,7 +1799,7 @@ const CaseManagerPage: React.FC = () => {
                         key={tab.id}
                         className={`flex flex-col items-center justify-center gap-1 px-3 py-3 rounded-xl min-w-[80px] font-semibold transition-all duration-300 ${
                           isActive 
-                            ? 'bg-gradient-to-r from-purple-500 to-blue-500 text-white shadow-lg transform scale-105' 
+                            ? 'bg-blue-600 text-white shadow-lg transform scale-105' 
                             : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                         }`}
                         onClick={() => setActiveTab(tab.id)}

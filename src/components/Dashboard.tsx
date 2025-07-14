@@ -34,6 +34,14 @@ const Dashboard: React.FC = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [showAllSuggestions, setShowAllSuggestions] = useState(false);
 
+  // 1. Add state for real signed leads
+  const [realSignedLeads, setRealSignedLeads] = useState<any[]>([]);
+  const [realLeadsLoading, setRealLeadsLoading] = useState(false);
+
+  // 1. Add state for real overdue leads
+  const [realOverdueLeads, setRealOverdueLeads] = useState<any[]>([]);
+  const [overdueLeadsLoading, setOverdueLeadsLoading] = useState(false);
+
 
 
 
@@ -493,6 +501,59 @@ const Dashboard: React.FC = () => {
     </div>
   );
 
+  // 2. Add effect to fetch real signed leads when showLeadsList is true
+  useEffect(() => {
+    if (!showLeadsList) return;
+    setRealLeadsLoading(true);
+    // Stages considered as 'signed' or after
+    const signedStages = [
+      'Client signed agreement',
+      'payment_request_sent',
+      'finances_and_payments_plan',
+      'Success',
+      'client_signed',
+      'Mtng sum+Agreement sent',
+    ];
+    (async () => {
+      const { data, error } = await supabase
+        .from('leads')
+        .select('id, lead_number, name, topic, expert, proposal_total, proposal_currency, date_signed, created_at, stage')
+        .in('stage', signedStages)
+        .order('date_signed', { ascending: false })
+        .order('created_at', { ascending: false });
+      if (!error && data) setRealSignedLeads(data);
+      else setRealSignedLeads([]);
+      setRealLeadsLoading(false);
+    })();
+  }, [showLeadsList]);
+
+  // 2. Add effect to fetch real overdue leads when expanded === 'overdue'
+  useEffect(() => {
+    if (expanded !== 'overdue') return;
+    
+    const fetchOverdueLeads = async () => {
+      setOverdueLeadsLoading(true);
+      try {
+        const today = new Date().toISOString().split('T')[0];
+        const { data, error } = await supabase
+          .from('leads')
+          .select('*')
+          .lte('next_followup', today)
+          .not('next_followup', 'is', null);
+
+        if (error) throw error;
+        setRealOverdueLeads(data || []);
+      } catch (error) {
+        console.error("Error fetching overdue leads:", error);
+        setRealOverdueLeads([]);
+      } finally {
+        setOverdueLeadsLoading(false);
+      }
+    };
+
+    fetchOverdueLeads();
+  }, [expanded]);
+
   return (
     <div className="p-0 md:p-6 space-y-8">
       {/* 1. Summary Boxes: 4 columns */}
@@ -671,98 +732,143 @@ const Dashboard: React.FC = () => {
       )}
       {expanded === 'overdue' && (
         <div className="glass-card mt-4 animate-fade-in">
-          {/* Desktop Table View */}
-          <div className="hidden md:block">
-            <OverdueFollowups />
-          </div>
-          
-          {/* Mobile Card View */}
-          <div className="md:hidden">
-            <div className="space-y-4">
-              <h3 className="text-xl font-bold text-gray-900 mb-4">Overdue Follow-ups</h3>
-              <div className="grid grid-cols-1 gap-4">
-                {[
-                  { name: 'Sarah Parker', lead_number: 'L122327', days_overdue: 3, manager: 'Anna Zh', category: 'German Citizenship', amount: 12000, expert: 'Dr. Cohen', probability: 70 },
-                  { name: 'Tom Anderson', lead_number: 'L122328', days_overdue: 5, manager: 'MichaelW', category: 'Austrian Citizenship', amount: 14000, expert: 'Adv. Levi', probability: 65 },
-                  { name: 'Rachel Green', lead_number: 'L122329', days_overdue: 2, manager: 'Isaac', category: 'Business Visa', amount: 8000, expert: 'Ms. Katz', probability: 80 }
-                ].map((followup, index) => (
-                  <div key={index} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-red-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
-                    <div className="flex-1 cursor-pointer flex flex-col">
-                      {/* Lead Number and Name */}
-                      <div className="mb-3 flex items-center gap-2">
-                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{followup.lead_number}</span>
-                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{followup.name}</h3>
-                        <span className="text-xs font-bold px-2 py-1 rounded bg-red-500 text-white">
-                          {followup.days_overdue} days overdue
-                        </span>
-                      </div>
-
-                      {/* Stage */}
-                      <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Stage</span>
-                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-red-500 text-white">
-                          Follow-up Required
-                        </span>
-                      </div>
-
-                      <div className="space-y-2 divide-y divide-gray-100">
-                        {/* Days Overdue */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Days Overdue</span>
-                          <span className="text-sm font-bold text-red-600">{followup.days_overdue} days</span>
-                        </div>
-
-                        {/* Manager */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Manager</span>
-                          <span className="text-sm font-bold text-gray-800">{followup.manager}</span>
-                        </div>
-
-                        {/* Category */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Category</span>
-                          <span className="text-sm font-bold text-gray-800">{followup.category}</span>
-                        </div>
-
-                        {/* Amount */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Amount</span>
-                          <span className="text-sm font-bold text-green-600">₪{followup.amount.toLocaleString()}</span>
-                        </div>
-
-                        {/* Expert */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Expert</span>
-                          <span className="text-sm font-bold text-gray-800">{followup.expert}</span>
-                        </div>
-
-                        {/* Probability */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Probability</span>
-                          <span className="text-sm font-bold text-green-600">{followup.probability}%</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="absolute bottom-4 left-4 right-4 flex gap-2">
-                      <button className="btn btn-error btn-sm flex-1">
-                        <PhoneIcon className="w-4 h-4" />
-                        Call Now
-                      </button>
-                      <button className="btn btn-success btn-sm">
-                        <FaWhatsapp className="w-4 h-4" />
-                      </button>
-                      <button className="btn btn-info btn-sm">
-                        <EnvelopeIcon className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+          <div className="font-bold text-lg mb-4 text-base-content/80">Overdue Follow-ups</div>
+          {overdueLeadsLoading ? (
+            <div className="flex justify-center items-center py-12">
+              <span className="loading loading-spinner loading-lg text-primary"></span>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* Desktop Card Grid View */}
+              <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-6">
+                {realOverdueLeads.length === 0 ? (
+                  <div className="col-span-full text-center py-12 text-gray-500">
+                    No overdue follow-ups. Great job!
+                  </div>
+                ) : (
+                  realOverdueLeads.map((lead, index) => {
+                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                    return (
+                      <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
+                        <div className="flex-1 flex flex-col">
+                          {/* Lead Number and Name */}
+                          <div className="mb-3 flex items-center gap-2">
+                            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                            <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            <span className="text-xs font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
+                          </div>
+                          {/* Stage */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Stage</span>
+                            <span className="text-xs font-bold text-black">Follow-up Required</span>
+                          </div>
+                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                            {/* Category */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Category</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.category || 'Not specified'}</span>
+                            </div>
+                            {/* Topic */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Topic</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                            </div>
+                            {/* Expert */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Expert</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.expert || 'Not assigned'}</span>
+                            </div>
+                            {/* Amount */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Amount</span>
+                              <span className="text-xs font-bold text-gray-800">
+                                {lead.balance_currency || '₪'}{(lead.balance || 0).toLocaleString()}
+                              </span>
+                            </div>
+                            {/* Manager */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Manager</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.manager || 'Not assigned'}</span>
+                            </div>
+                            {/* Probability */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Probability</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.probability || 0}%</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              {/* Mobile Card View */}
+              <div className="md:hidden space-y-4">
+                {realOverdueLeads.length === 0 ? (
+                  <div className="text-center py-12 text-gray-500">
+                    No overdue follow-ups. Great job!
+                  </div>
+                ) : (
+                  realOverdueLeads.map((lead, index) => {
+                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                    return (
+                      <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
+                        <div className="flex-1 flex flex-col">
+                          {/* Lead Number and Name */}
+                          <div className="mb-3 flex items-center gap-2">
+                            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                            <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            <span className="text-xs font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
+                          </div>
+                          {/* Stage */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Stage</span>
+                            <span className="text-xs font-bold text-black">Follow-up Required</span>
+                          </div>
+                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                            {/* Category */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Category</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.category || 'Not specified'}</span>
+                            </div>
+                            {/* Topic */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Topic</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                            </div>
+                            {/* Expert */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Expert</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.expert || 'Not assigned'}</span>
+                            </div>
+                            {/* Amount */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Amount</span>
+                              <span className="text-xs font-bold text-gray-800">
+                                {lead.balance_currency || '₪'}{(lead.balance || 0).toLocaleString()}
+                              </span>
+                            </div>
+                            {/* Manager */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Manager</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.manager || 'Not assigned'}</span>
+                            </div>
+                            {/* Probability */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-xs font-semibold text-gray-500">Probability</span>
+                              <span className="text-xs font-bold text-gray-800">{lead.probability || 0}%</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
       {expanded === 'messages' && (
@@ -1502,37 +1608,123 @@ const Dashboard: React.FC = () => {
       </div>
       {showLeadsList && (
         <div className="glass-card mt-6 p-6 shadow-lg rounded-2xl w-full max-w-full animate-fade-in">
-          <div className="font-bold text-lg mb-4 text-base-content/80">Signed Leads (Last 30 Days)</div>
-          <div className="overflow-x-auto">
-            <table className="table w-full text-lg">
-              <thead>
-                <tr>
-                  <th className="font-bold text-xl px-0 py-3">Lead</th>
-                  <th className="font-bold text-xl px-0 py-3">Topic</th>
-                  <th className="font-bold text-xl px-0 py-3">Expert</th>
-                  <th className="font-bold text-xl px-0 py-3">Amount</th>
-                  <th className="font-bold text-xl px-0 py-3">Signed Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {signedLeads.slice().reverse().map((lead, idx) => (
-                  <tr
+          <div className="font-bold text-lg mb-4 text-base-content/80">My Signed Leads</div>
+          {realLeadsLoading ? (
+            <div className="flex justify-center items-center py-12"><span className="loading loading-spinner loading-lg text-primary"></span></div>
+          ) : (
+            <>
+              {/* Desktop Card Grid View */}
+              <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-6">
+                {realSignedLeads.map((lead, idx) => (
+                  <div
                     key={lead.id}
-                    className={`${idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'} transition-all duration-150 hover:bg-gray-200`}
-                  >
-                    <td className="px-0 py-3 text-primary whitespace-nowrap">
-                      <span className="font-bold">{lead.leadNumber}</span>
-                      <span className="text-black font-normal ml-2">- {lead.clientName}</span>
-                    </td>
-                    <td className="px-0 py-3"><span className="badge badge-outline">{lead.topic}</span></td>
-                    <td className="px-0 py-3 text-base-content/80 whitespace-nowrap">{lead.expert}</td>
-                    <td className="px-0 py-3 text-success font-bold whitespace-nowrap">₪{lead.amount.toLocaleString()}</td>
-                    <td className="px-0 py-3 text-base-content/80 whitespace-nowrap">{lead.date}</td>
-                  </tr>
+                    className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative"
+              >
+                <div className="flex-1 flex flex-col">
+                  {/* Lead Number and Name */}
+                  <div className="mb-3 flex items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                    <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                      </div>
+                      {/* Stage */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Stage</span>
+                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+                          {lead.stage}
+                        </span>
+                      </div>
+                      <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                        {/* Topic */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Topic</span>
+                          <span className="badge badge-outline text-sm font-bold text-gray-800">{lead.topic}</span>
+                        </div>
+                        {/* Expert */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Expert</span>
+                          <span className="text-sm font-bold text-gray-800">{lead.expert}</span>
+                        </div>
+                        {/* Amount */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Amount</span>
+                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Number(lead.proposal_total).toLocaleString() : ''}</span>
+                        </div>
+                        {/* Signed Date */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Signed Date</span>
+                          <span className="text-sm font-bold text-gray-800">{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : (lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '--')}</span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* View Lead Button */}
+                    <a
+                      href={`/clients/${lead.lead_number}`}
+                      className="btn btn-sm btn-outline border-[#3b28c7] text-[#3b28c7] font-bold mt-4 self-end hover:bg-[#3b28c7]/10 hover:border-[#3b28c7] transition-colors"
+                      style={{ borderWidth: 2 }}
+                    >
+                      View Lead
+                    </a>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </div>
+              </div>
+              {/* Mobile Card View */}
+              <div className="md:hidden flex flex-col gap-6">
+                {realSignedLeads.map((lead, idx) => (
+                  <div
+                    key={lead.id}
+                    className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-gray-100 group flex flex-col justify-between min-h-[340px] relative"
+                  >
+                    <div className="flex-1 flex flex-col">
+                      {/* Lead Number and Name */}
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                      </div>
+                      {/* Stage */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Stage</span>
+                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+                          {lead.stage}
+                        </span>
+                      </div>
+                      <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                        {/* Topic */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Topic</span>
+                          <span className="badge badge-outline text-sm font-bold text-gray-800">{lead.topic}</span>
+                        </div>
+                        {/* Expert */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Expert</span>
+                          <span className="text-sm font-bold text-gray-800">{lead.expert}</span>
+                        </div>
+                        {/* Amount */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Amount</span>
+                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Number(lead.proposal_total).toLocaleString() : ''}</span>
+                        </div>
+                        {/* Signed Date */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Signed Date</span>
+                          <span className="text-sm font-bold text-gray-800">{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : (lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '--')}</span>
+                        </div>
+                      </div>
+                    </div>
+                    {/* View Lead Button */}
+                    <a
+                      href={`/clients/${lead.lead_number}`}
+                      className="btn btn-sm btn-outline border-[#3b28c7] text-[#3b28c7] font-bold mt-4 self-end hover:bg-[#3b28c7]/10 hover:border-[#3b28c7] transition-colors"
+                      style={{ borderWidth: 2 }}
+                    >
+                      View Lead
+                    </a>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
 

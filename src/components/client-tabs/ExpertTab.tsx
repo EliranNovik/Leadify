@@ -342,7 +342,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Expert Information */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
           <h4 className="text-xl font-semibold text-gray-900">Expert Information</h4>
         </div>
@@ -407,7 +407,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       {/* Two Column Layout for Section and Expert Notes */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Section Eligibility */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
             <h4 className="text-xl font-semibold text-gray-900">Section Eligibility</h4>
           </div>
@@ -468,7 +468,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
 
         {/* Expert Opinion Notes */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
             <div className="flex items-center justify-between">
               <h4 className="text-xl font-semibold text-gray-900">Expert Notes</h4>
@@ -559,7 +559,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Handler Opinion Section */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
           <div className="flex items-center justify-between">
             <h4 className="text-xl font-semibold text-gray-900">Handler Notes</h4>
@@ -649,7 +649,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Document Upload Section */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
                       <h4 className="text-xl font-semibold text-gray-900">Document Upload</h4>
         </div>

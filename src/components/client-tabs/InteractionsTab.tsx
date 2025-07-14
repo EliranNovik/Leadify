@@ -27,6 +27,7 @@ import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import sanitizeHtml from 'sanitize-html';
 
 interface Attachment {
   id: string;
@@ -50,6 +51,7 @@ interface Interaction {
   observation: string;
   editable: boolean;
   status?: string;
+  subject?: string; // <-- add this line
 }
 
 const contactMethods = [
@@ -389,6 +391,21 @@ async function fetchCurrentUserFullName() {
   return null;
 }
 
+// Utility to sanitize email HTML for modal view
+function sanitizeEmailHtml(html: string): string {
+  return sanitizeHtml(html, {
+    allowedTags: [
+      'p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a'
+    ],
+    allowedAttributes: {
+      'a': ['href', 'target', 'rel']
+    },
+    allowedSchemes: ['http', 'https', 'mailto'],
+    disallowedTagsMode: 'discard',
+    allowedStyles: {},
+  });
+}
+
 const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
@@ -606,8 +623,27 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   useEffect(() => {
     let isMounted = true;
     async function fetchAndCombineInteractions() {
+      // Ensure currentUserFullName is set before mapping emails
+      let userFullName = currentUserFullName;
+      if (!userFullName) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user && user.email) {
+          const { data, error } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', user.email)
+            .single();
+          if (!error && data?.full_name) {
+            userFullName = data.full_name;
+            if (isMounted) setCurrentUserFullName(data.full_name);
+          }
+        }
+      }
       // 1. Manual interactions (excluding WhatsApp)
-      const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp');
+      const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp').map((i: any) => ({
+        ...i,
+        employee: i.direction === 'out' ? (userFullName || 'You') : i.employee || client.name,
+      }));
       // 2. Email interactions
       const clientEmails = (client as any).emails || [];
       const emailInteractions = clientEmails.map((e: any) => {
@@ -616,14 +652,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         // Enhanced email body processing
         function cleanEmailBody(htmlContent: string): string {
           if (!htmlContent) return '';
-          
           // First apply the signature and quoted text removal
           let cleanedHtml = stripSignatureAndQuotedText(htmlContent);
-          
           // Additional aggressive cleaning for timeline
           cleanedHtml = cleanedHtml
             // Split at common quoted content indicators and take only the first part
-            .split(/(?:Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4})/i)[0]
+            .split(/(?:Am\s+\w+\.?\,?\s+\d{1,2}\.\s+\w+\s+\d{4})/i)[0]
             .split(/(?:On\s+\w+,?\s+\w+\s+\d{1,2})/i)[0]
             .split(/(?:‪Am\s+)/i)[0]  // Handle Unicode marker
             .split(/(?:Von:|From:|Gesendet:|Sent:)/i)[0]
@@ -632,14 +666,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')  // All Unicode direction markers
             .replace(/<.*?@.*?>/g, '')  // Email addresses in brackets
             .trim();
-          
-          // Convert to plain text for timeline display
-          const tempDiv = document.createElement('div');
-          tempDiv.innerHTML = cleanedHtml;
-          let text = tempDiv.textContent || tempDiv.innerText || '';
-          
+          // --- FINAL STRIP: Remove any remaining HTML tags using DOMParser ---
+          if (typeof window !== 'undefined' && cleanedHtml.match(/<[^>]+>/)) {
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = cleanedHtml;
+            cleanedHtml = tempDiv.textContent || tempDiv.innerText || '';
+          } else {
+            // Fallback for SSR or if no tags
+            cleanedHtml = cleanedHtml.replace(/<[^>]+>/g, '');
+          }
+          // Remove all HTML comments
+          cleanedHtml = cleanedHtml.replace(/<!--([\s\S]*?)-->/g, '');
           // Additional cleaning for timeline display
-          text = text
+          cleanedHtml = cleanedHtml
             // Remove excessive whitespace
             .replace(/\s+/g, ' ')
             // Remove common Outlook artifacts
@@ -660,8 +699,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             // Remove standalone punctuation
             .replace(/^\s*[.,;:]\s*/g, '')
             .trim();
-          
-          return text;
+          return cleanedHtml;
         }
         
         let body = e.body_preview || e.bodyPreview || '';
@@ -686,11 +724,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
           time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
           raw_date: e.sent_at,
-          employee: e.direction === 'outgoing' ? (currentUserFullName || 'You') : client.name,
+          employee: e.direction === 'outgoing' ? (userFullName || 'You') : client.name,
           direction: e.direction === 'outgoing' ? 'out' : 'in',
           kind: 'email',
           length: '',
           content: body,
+          subject: e.subject || '', // <-- add subject here
           observation: e.observation || '',
           editable: true,
           status: e.status,
@@ -882,22 +921,37 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   }, [isEmailModalOpen, client]);
 
-  const openEditDrawer = (idx: number) => {
+  // Update openEditDrawer to return a Promise and always fetch latest data for manual interactions
+  const openEditDrawer = async (idx: number) => {
     const row = interactions[idx];
-    setEditIndex(idx);
+    let latestRow = row;
+    if (row.id && row.id.toString().startsWith('manual_')) {
+      const { data, error } = await supabase
+        .from('leads')
+        .select('manual_interactions')
+        .eq('id', client.id)
+        .single();
+      if (!error && data?.manual_interactions) {
+        const found = data.manual_interactions.find((i: any) => i.id === row.id || i.id === Number(row.id));
+        if (found) {
+          latestRow = { ...row, ...found };
+        }
+      }
+    }
+    setActiveInteraction(latestRow);
     setEditData({
-      date: row.date,
-      time: row.time,
-      content: row.content,
-      observation: row.observation,
-      length: (row.length || '').replace('m', ''),
+      date: latestRow.date || '',
+      time: latestRow.time || '',
+      content: latestRow.content || '',
+      observation: latestRow.observation || '',
+      length: latestRow.length ? String(latestRow.length).replace(/m$/, '') : '',
     });
-    setDrawerOpen(true);
+    setDetailsDrawerOpen(true);
   };
 
   const closeDrawer = () => {
-    setDrawerOpen(false);
-    setEditIndex(null);
+    setDetailsDrawerOpen(false);
+    setActiveInteraction(null);
   };
 
   const handleEditChange = (field: string, value: string) => {
@@ -905,15 +959,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   };
 
   const handleSave = async () => {
-    if (editIndex === null) return;
+    if (!activeInteraction) return;
     
-    const interactionToUpdate = interactions[editIndex];
-    const isManual = interactionToUpdate.id.toString().startsWith('manual_');
+    const isManual = activeInteraction.id.toString().startsWith('manual_');
 
     // --- Optimistic Update ---
     const previousInteractions = [...interactions];
-    const updatedInteractions = interactions.map((interaction, index) => {
-      if (index === editIndex) {
+    const updatedInteractions = interactions.map((interaction) => {
+      if (interaction.id === activeInteraction.id) {
         return {
           ...interaction,
           date: editData.date,
@@ -931,19 +984,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
 
     try {
       if (isManual) {
-        const updatedManualInteraction = updatedInteractions[editIndex];
-        const allManualInteractions = updatedInteractions.filter(i => i.id.toString().startsWith('manual_'));
-        
-        const { error } = await supabase
-          .from('leads')
-          .update({ manual_interactions: allManualInteractions })
-          .eq('id', client.id);
-        if (error) throw error;
+        const updatedManualInteraction = updatedInteractions.find(i => i.id === activeInteraction.id);
+        if (updatedManualInteraction) {
+          const allManualInteractions = updatedInteractions.filter(i => i.id.toString().startsWith('manual_'));
+          
+          const { error } = await supabase
+            .from('leads')
+            .update({ manual_interactions: allManualInteractions })
+            .eq('id', client.id);
+          if (error) throw error;
+        }
       } else {
         const { error } = await supabase
           .from('emails')
           .update({ observation: editData.observation })
-          .eq('message_id', interactionToUpdate.id);
+          .eq('message_id', activeInteraction.id);
         if (error) throw error;
       }
       
@@ -1195,36 +1250,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 <div
                   key={row.id}
                   ref={idx === lastEmailIdx ? lastEmailRef : null}
-                  className="relative pl-12 md:pl-16 cursor-pointer group"
-                  onClick={() => {
-                    if (row.kind === 'email') {
-                      setIsEmailModalOpen(true);
-                      setActiveEmailId(row.id.toString());
-                    } else if (row.kind === 'whatsapp') {
-                      setIsWhatsAppOpen(true);
-                      setActiveWhatsAppId(row.id.toString());
-                    } else if (row.kind === 'call') {
-                      setActiveInteraction(row);
-                      setDetailsDrawerOpen(true);
-                    } else {
-                      setActiveInteraction(row);
-                      setDetailsDrawerOpen(true);
-                    }
-                  }}
+                  className="relative pl-16 md:pl-20 cursor-pointer group"
+                  onClick={async () => { await openEditDrawer(idx); }}
                 >
-                  {/* Timeline dot */}
-                  <div className={`absolute -left-3 md:-left-4 top-2 w-6 h-6 md:w-8 md:h-8 rounded-full flex items-center justify-center shadow-lg ring-2 ring-white ${iconBg}`} style={{ zIndex: 2 }}>
-                    {icon}
+                  {/* Timeline dot and icon, large, left-aligned */}
+                  <div className="absolute -left-6 md:-left-8 top-0" style={{ zIndex: 2 }}>
+                    <div className={`w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-lg ring-2 ring-white ${iconBg}`}>
+                      {React.cloneElement(icon, { className: 'w-6 h-6 md:w-8 md:h-8' })}
+                    </div>
                   </div>
-                  
-                  {/* Date/time */}
-                  <div className="mb-3">
+                  {/* Timestamp above the card */}
+                  <div className="mb-2">
                     <div className="text-xs md:text-sm font-semibold text-gray-600">{day} {month}, {time}</div>
                   </div>
-                  
                   {/* Card - Mobile optimized */}
                   <div className="w-full pr-3 md:pr-6">
-                    <div className={`p-[1px] rounded-xl ${cardBg} shadow-lg hover:shadow-xl transition-all duration-200`}>
+                    <div className={`p-[1px] rounded-xl ${cardBg} shadow-xl hover:shadow-2xl transition-all duration-200`}>
                       <div className="bg-white rounded-xl p-3 md:p-4">
                         <div className="flex items-center gap-3 mb-2">
                           <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${avatarBg} text-sm`}>
@@ -1250,7 +1291,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         
                         {row.content && (
                           <div className="text-xs md:text-sm text-gray-700 break-words overflow-hidden">
-                            <div className="line-clamp-2">{row.content}</div>
+                            {/* Subject in bold with colon, then body with spacing */}
+                            {row.subject ? (
+                              <>
+                                <span className="font-bold mr-1">{row.subject}:</span>
+                                <br />
+                                <span className="ml-1">
+                                  {typeof row.content === 'string'
+                                    ? row.content.replace(new RegExp(`^${row.subject}\s*:?[\s\-]*`, 'i'), '').trim()
+                                    : row.content}
+                                </span>
+                              </>
+                            ) : (
+                              <span>{row.content}</span>
+                            )}
                           </div>
                         )}
                         
@@ -1352,7 +1406,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         </div>
                         <div className="font-bold mb-2 text-sm md:text-base">{email.subject}</div>
                         <div className="prose prose-sm md:prose max-w-none text-xs md:text-sm" dangerouslySetInnerHTML={{ 
-                          __html: stripSignatureAndQuotedText(email.bodyPreview || '') 
+                          __html: sanitizeEmailHtml(stripSignatureAndQuotedText(email.bodyPreview || '')) 
                         }} />
                         {/* Attachments */}
                         {email.attachments && email.attachments.length > 0 && (
@@ -1630,18 +1684,49 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             </div>
             <div className="flex flex-col gap-4 flex-1">
               <div><span className="font-semibold">Type:</span> {activeInteraction.kind}</div>
+              <div><span className="font-semibold">Date:</span> {activeInteraction.date} {activeInteraction.time}</div>
               <div><span className="font-semibold">Employee:</span> {activeInteraction.employee}</div>
-              <div><span className="font-semibold">Date:</span> {activeInteraction.date}</div>
-              <div><span className="font-semibold">Time:</span> {activeInteraction.time}</div>
-              {activeInteraction.length && <div><span className="font-semibold">Length:</span> {activeInteraction.length}</div>}
-              {activeInteraction.status && <div><span className="font-semibold">Status:</span> {activeInteraction.status}</div>}
-              {activeInteraction.content && <div><span className="font-semibold">Content:</span> <div className="bg-base-200 rounded p-2 mt-1 whitespace-pre-line">{activeInteraction.content}</div></div>}
-              {activeInteraction.observation && <div><span className="font-semibold">Observation:</span> <div className="bg-base-200 rounded p-2 mt-1 whitespace-pre-line">{activeInteraction.observation}</div></div>}
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={() => setDetailsDrawerOpen(false)}>
-                Close
-              </button>
+              {activeInteraction.kind === 'call' && activeInteraction.editable && (
+                <>
+                  <div>
+                    <label className="block font-semibold mb-1">Minutes</label>
+                    <input
+                      type="number"
+                      className="input input-bordered w-full"
+                      value={editData.length}
+                      onChange={e => handleEditChange('length', e.target.value)}
+                      min={0}
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Content</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[80px]"
+                      value={editData.content}
+                      onChange={e => handleEditChange('content', e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Observation</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[60px]"
+                      value={editData.observation}
+                      onChange={e => handleEditChange('observation', e.target.value)}
+                    />
+                  </div>
+                  <div className="flex gap-2 justify-end mt-4">
+                    <button className="btn btn-primary" onClick={handleSave}>Save</button>
+                    <button className="btn btn-ghost" onClick={closeDrawer}>Cancel</button>
+                  </div>
+                </>
+              )}
+              {/* Show non-editable fields for other types or non-editable interactions */}
+              {!(activeInteraction.kind === 'call' && activeInteraction.editable) && (
+                <>
+                  <div><span className="font-semibold">Content:</span> {activeInteraction.content}</div>
+                  <div><span className="font-semibold">Observation:</span> {activeInteraction.observation}</div>
+                </>
+              )}
             </div>
           </div>
         </div>,

@@ -530,7 +530,7 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             {financePlan.payments.map((p: PaymentPlan, idx: number) => (
               <div
                 key={p.id || idx}
-                className="bg-white rounded-2xl p-6 shadow-xl hover:shadow-2xl transition-all duration-200 border border-base-200 flex flex-col gap-0 relative group min-h-[460px]"
+                className="bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border border-base-200 flex flex-col gap-0 relative group min-h-[460px]"
               >
                 {/* Card content */}
                 {editingPaymentId === p.id ? (
@@ -571,9 +571,9 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 ) : (
                   <div className="flex flex-col gap-0 divide-y divide-base-200">
                     {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
-                    <div className="flex items-center bg-primary text-white rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
+                    <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
                       {/* Order (left) */}
-                      <span className="text-xs font-bold uppercase tracking-wider flex-1 text-left truncate">{p.order}</span>
+                      <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
                       {/* Percent (center) */}
                       <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
                         {totalBalanceWithVat > 0 ? ((Number(p.value || 0) + Number(p.valueVat || 0)) / totalBalanceWithVat * 100).toFixed(1) : '0'}%
@@ -583,24 +583,24 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         {p.id ? (
                           <>
                             <button
-                              className="btn btn-xs btn-circle bg-white hover:bg-gray-200 text-black border-none shadow-sm flex items-center justify-center"
+                              className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                               title="Delete"
                               onClick={() => handleDeletePayment(p)}
                               style={{ padding: 0 }}
                             >
-                              <Trash2 className="w-4 h-4 text-black" />
+                              <Trash2 className="w-4 h-4 text-primary" />
                             </button>
                             <button
-                              className="btn btn-xs btn-circle bg-white hover:bg-gray-200 text-black border-none shadow-sm flex items-center justify-center"
+                              className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                               title="Edit"
                               onClick={() => handleEditPayment(p)}
                               style={{ padding: 0 }}
                             >
-                              <PencilLine className="w-4 h-4 text-black" />
+                              <PencilLine className="w-4 h-4 text-primary" />
                             </button>
                           </>
                         ) : (
-                          <span className="text-white/50">—</span>
+                          <span className="text-primary/50">—</span>
                         )}
                       </div>
                     </div>

@@ -247,7 +247,7 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Facts of Case Section */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
           <h4 className="text-lg font-semibold text-gray-900">Facts of Case</h4>
         </div>

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDownIcon } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
+import UserManagement from './UserManagement';
 
 const ADMIN_TABS = [
   {
@@ -347,20 +348,29 @@ const AdminPage: React.FC = () => {
         </div>
       )}
       {/* Content Area */}
-      <div className="bg-base-100 rounded-xl shadow p-8 min-h-[200px] flex items-center justify-center text-xl font-semibold text-primary mt-8">
+      <div className="bg-base-100 rounded-xl shadow p-8 min-h-[200px] mt-8">
         {selected.tab !== null && selected.sub !== null ? (
           ADMIN_TABS[selected.tab].label === 'Misc' &&
           ADMIN_TABS[selected.tab].subcategories[selected.sub] === 'Contract templates' ? (
             <div className="w-full"><ContractTemplatesManager /></div>
+          ) : ADMIN_TABS[selected.tab].label === 'Authentication' &&
+          ADMIN_TABS[selected.tab].subcategories[selected.sub] === 'Users' ? (
+            <div className="w-full"><UserManagement /></div>
           ) : (
-            <>
+            <div className="flex items-center justify-center text-xl font-semibold text-primary">
               {`${ADMIN_TABS[selected.tab].label} / ${ADMIN_TABS[selected.tab].subcategories[selected.sub]}`}
               <span className="ml-4 text-base text-base-content/60 font-normal">(Placeholder content)</span>
-            </>
+            </div>
           )
         ) : openTab !== null ? (
-          <span className="text-base text-base-content/60 font-normal">Select a subcategory</span>
-        ) : 'Select a category'}
+          <div className="flex items-center justify-center text-xl font-semibold text-primary">
+            <span className="text-base text-base-content/60 font-normal">Select a subcategory</span>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center text-xl font-semibold text-primary">
+            Select a category
+          </div>
+        )}
       </div>
       {/* Glassy card style */}
       <style>{`

@@ -160,8 +160,9 @@ const Clients: React.FC<ClientsProps> = ({
   setSelectedClient,
   refreshClientData,
 }) => {
-  const { lead_number } = useParams<{ lead_number: string }>();
+  const { lead_number = "" } = useParams();
   const location = useLocation();
+  const fullLeadNumber = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, ''));
   const [activeTab, setActiveTab] = useState('info');
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
@@ -287,22 +288,29 @@ const Clients: React.FC<ClientsProps> = ({
     proposal: '',
     potentialValue: '',
   });
-  const [handlerOptions, setHandlerOptions] = useState<string[]>(['---']);
+  const [schedulerOptions, setSchedulerOptions] = useState<string[]>([]);
 
-  // Fetch handler options from database
+  // Fetch scheduler options from database
   useEffect(() => {
-    const fetchHandlers = async () => {
+    const fetchSchedulers = async () => {
       const { data, error } = await supabase
         .from('users')
         .select('full_name, role')
-        .eq('role', 'handler')
+        .eq('role', 'scheduler')
         .order('full_name', { ascending: true });
       if (!error && data) {
-        setHandlerOptions(['---', ...data.map((u: any) => u.full_name)]);
+        setSchedulerOptions(data.map((u: any) => u.full_name));
       }
     };
-    fetchHandlers();
+    fetchSchedulers();
   }, []);
+
+  // Helper to convert lead number to case number
+  const convertLeadToCaseNumber = (leadNumber: string): string => {
+    if (!leadNumber) return leadNumber;
+    // Replace 'L' with 'C' at the beginning of the lead number
+    return leadNumber.replace(/^L/, 'C');
+  };
 
   // Handler for Payment Received - new Client !!!
   const handlePaymentReceivedNewClient = () => {
@@ -325,10 +333,14 @@ const Clients: React.FC<ClientsProps> = ({
       const proposal = successForm.proposal === '' ? null : Number(successForm.proposal);
       const potentialValue = successForm.potentialValue === '' ? null : Number(successForm.potentialValue);
       
+      // Convert lead number to case number
+      const caseNumber = convertLeadToCaseNumber(selectedClient.lead_number);
+      
       const { error } = await supabase
         .from('leads')
         .update({
           stage: 'Success',
+          lead_number: caseNumber, // Update the lead number to case number
           closer: successForm.handler,
           proposal_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants,
@@ -343,6 +355,7 @@ const Clients: React.FC<ClientsProps> = ({
       setSelectedClient((prev: any) => ({
         ...prev,
         stage: 'Success',
+        lead_number: caseNumber, // Update the lead number in local state
         closer: successForm.handler,
         proposal_currency: successForm.currency,
         number_of_applicants_meeting: numApplicants,
@@ -399,12 +412,14 @@ const Clients: React.FC<ClientsProps> = ({
     const fetchClient = async () => {
       setLocalLoading(true);
       if (lead_number) {
+        console.log('Fetching client with lead_number:', fullLeadNumber);
         const { data, error } = await supabase
           .from('leads')
           .select('*, emails (*), closer')
-          .eq('lead_number', lead_number)
+          .eq('lead_number', fullLeadNumber)
           .single();
 
+        console.log('Database query result:', { data, error });
         if (error) {
           console.error('Error fetching client', error);
           navigate('/clients');
@@ -430,7 +445,7 @@ const Clients: React.FC<ClientsProps> = ({
 
     fetchClient();
     return () => { isMounted = false; };
-  }, [lead_number, navigate, setSelectedClient]);
+  }, [lead_number, navigate, setSelectedClient, fullLeadNumber]);
 
   // Handle tab switching from URL
   useEffect(() => {
@@ -1399,6 +1414,52 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
+  // After extracting fullLeadNumber
+  const isSubLead = fullLeadNumber.includes('/');
+  const masterLeadNumber = isSubLead ? fullLeadNumber.split('/')[0] : null;
+  
+  // Add state for sub-leads
+  const [subLeads, setSubLeads] = useState<any[]>([]);
+  const [isMasterLead, setIsMasterLead] = useState(false);
+
+  // Function to fetch sub-leads for master leads
+  const fetchSubLeads = useCallback(async (leadNumber: string) => {
+    if (!leadNumber || leadNumber.includes('/')) return; // Not a master lead
+    
+    try {
+      const { data, error } = await supabase
+        .from('leads')
+        .select('lead_number, name, stage')
+        .like('lead_number', `${leadNumber}/%`)
+        .order('lead_number', { ascending: true });
+      
+      if (error) {
+        console.error('Error fetching sub-leads:', error);
+        return;
+      }
+      
+      if (data && data.length > 0) {
+        setSubLeads(data);
+        setIsMasterLead(true);
+      } else {
+        setSubLeads([]);
+        setIsMasterLead(false);
+      }
+    } catch (error) {
+      console.error('Error fetching sub-leads:', error);
+    }
+  }, []);
+
+  // Fetch sub-leads when client changes
+  useEffect(() => {
+    if (selectedClient?.lead_number && !selectedClient.lead_number.includes('/')) {
+      fetchSubLeads(selectedClient.lead_number);
+    } else {
+      setSubLeads([]);
+      setIsMasterLead(false);
+    }
+  }, [selectedClient?.lead_number, fetchSubLeads]);
+
   if (!localLoading && !selectedClient) {
     return (
       <div className="p-6">
@@ -1588,11 +1649,106 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
+  // Sub-lead drawer state
+  const [showSubLeadDrawer, setShowSubLeadDrawer] = useState(false);
+  const [subLeadStep, setSubLeadStep] = useState<'initial' | 'newContact' | 'newProcedure' | 'details'>('initial');
+  const [subLeadForm, setSubLeadForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    category: '',
+    topic: '',
+    special_notes: '',
+    source: '',
+    language: '',
+    tags: '',
+    // Details step fields
+    handler: '',
+    currency: 'NIS',
+    numApplicants: '',
+    proposal: '',
+    potentialValue: '',
+  });
+
+  // Helper to generate sub-lead number
+  const generateSubLeadNumber = async (baseLeadNumber: string): Promise<string> => {
+    const { data, error } = await supabase
+      .from('leads')
+      .select('lead_number')
+      .like('lead_number', `${baseLeadNumber}/%`);
+    let max = 0;
+    if (data) {
+      data.forEach((l: any) => {
+        const match = l.lead_number.match(/\/(\d+)$/);
+        if (match) max = Math.max(max, parseInt(match[1]));
+      });
+    }
+    return `${baseLeadNumber}/${max + 1}`;
+  };
+
+  // Handler to save sub-lead
+  const handleSaveSubLead = async () => {
+    if (!selectedClient) return;
+    try {
+      const subLeadNumber = await generateSubLeadNumber(selectedClient.lead_number);
+      const newLeadData = {
+        lead_number: subLeadNumber,
+        name: subLeadForm.name,
+        email: subLeadForm.email,
+        phone: subLeadForm.phone,
+        category: subLeadForm.category,
+        topic: subLeadForm.topic,
+        special_notes: subLeadForm.special_notes,
+        source: subLeadForm.source,
+        language: subLeadForm.language,
+        tags: subLeadForm.tags,
+        stage: 'new',
+        probability: 0,
+        balance: 0,
+        balance_currency: subLeadForm.currency || 'NIS',
+        handler: subLeadForm.handler,
+        number_of_applicants_meeting: subLeadForm.numApplicants === '' ? null : Number(subLeadForm.numApplicants),
+        proposal_total: subLeadForm.proposal === '' ? null : Number(subLeadForm.proposal),
+        potential_value: subLeadForm.potentialValue === '' ? null : Number(subLeadForm.potentialValue),
+        created_at: new Date().toISOString(),
+      };
+      const { error } = await supabase.from('leads').insert([newLeadData]);
+      if (error) throw error;
+      toast.success(`Sub-lead created: ${subLeadNumber}`);
+      setShowSubLeadDrawer(false);
+      setSubLeadStep('initial');
+      setSubLeadForm({
+        name: '', email: '', phone: '', category: '', topic: '', special_notes: '', source: '', language: '', tags: '', handler: '', currency: 'NIS', numApplicants: '', proposal: '', potentialValue: '',
+      });
+      
+      // Navigate to the newly created sub-lead's page
+      navigate(`/clients/${subLeadNumber}`);
+    } catch (error) {
+      console.error('Error creating sub-lead:', error);
+      toast.error('Failed to create sub-lead.');
+    }
+  };
+
+  // Example options for category and topic
+  const categoryOptions = [
+    'Citizenship',
+    'Immigration',
+    'Legal Advice',
+    'Other',
+  ];
+  const topicOptions = [
+    'German Citizenship',
+    'Austrian Citizenship',
+    'Visa',
+    'Consultation',
+    'Other',
+  ];
+
   return (
-    <div className="min-h-screen bg-base-200">
+    <div className="min-h-screen bg-white dark:bg-gray-900">
       {/* Mobile-Only Stylish Client Card (Pipeline Style) */}
       <div className="md:hidden px-2 pt-4 pb-2">
-        <div className="bg-white rounded-2xl p-5 shadow-md border border-gray-100 min-h-[340px] flex flex-col justify-between relative">
+        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 min-h-[340px] flex flex-col justify-between relative">
           {/* Remove Dropdown menu for secondary actions (top right) */}
           {/* Top Row: Lead Number, Name, Stage */}
           <div className="flex items-center gap-2 mb-2 w-full">
@@ -1605,10 +1761,26 @@ const Clients: React.FC<ClientsProps> = ({
               </span>
             )}
           </div>
+          {isSubLead && masterLeadNumber && (
+            <div className="text-xs text-gray-500 mb-2">
+              This is a sub-lead of the master lead <a href={`/clients/${masterLeadNumber}`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
+            </div>
+          )}
+          {/* Master lead notice for mobile */}
+          {isMasterLead && subLeads.length > 0 && (
+            <div className="text-xs text-gray-500 mb-2">
+              Sub-leads: {subLeads.map((subLead, index) => (
+                <span key={subLead.lead_number}>
+                  <a href={`/clients/${subLead.lead_number}`} className="underline text-blue-700 hover:text-blue-900">{subLead.lead_number}</a>
+                  {index < subLeads.length - 1 ? ', ' : ''}
+                </span>
+              ))}
+            </div>
+          )}
           {/* Category badge */}
           {selectedClient?.category && (
             <div className="mb-2">
-              <span className="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 border border-blue-200">{selectedClient.category}</span>
+              <span className="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">{selectedClient.category}</span>
             </div>
           )}
           {/* Info Grid: Amount, Probability, Next Follow-up, Category, Topic */}
@@ -1649,27 +1821,50 @@ const Clients: React.FC<ClientsProps> = ({
                   <span>Stages</span>
                   <ChevronDownIcon className="w-6 h-6" />
                 </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-xl bg-white rounded-xl w-56 border border-gray-200">
+                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                   {dropdownItems}
                 </ul>
               </div>
             </div>
+            {selectedClient && selectedClient.stage === 'created' && (
+              <div className="flex-1">
+                <div className="dropdown w-full">
+                  <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
+                    <span>Assign to</span>
+                    <ChevronDownIcon className="w-4 h-4" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                    {schedulerOptions.map((scheduler) => (
+                      <li key={scheduler}>
+                        <a 
+                          className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
+                          onClick={() => updateScheduler(scheduler)}
+                        >
+                          <UserIcon className="w-5 h-5 text-primary" />
+                          <span className="font-medium">{scheduler}</span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
             <div className="flex-1">
               <div className="dropdown w-full">
                 <label tabIndex={0} className="btn btn-md w-full bg-black text-white border-none gap-3 shadow-sm text-lg font-bold py-3">
                   <span>Actions</span>
                   <ChevronDownIcon className="w-6 h-6" />
                 </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-xl bg-white rounded-xl w-56 border border-gray-200">
+                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                   <li>
                     <a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
                       <NoSymbolIcon className="w-5 h-5 text-red-500" />
                       <span className="text-red-600 font-medium">Unactivate</span>
                     </a>
                   </li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg"><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => setShowSubLeadDrawer(true)}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                 </ul>
               </div>
             </div>
@@ -1688,9 +1883,26 @@ const Clients: React.FC<ClientsProps> = ({
         )}
       </div>
       {/* Client Details Section (desktop) */}
-      <div className="hidden md:block bg-white w-full">
+      <div className="hidden md:block bg-white dark:bg-gray-900 w-full">
         {/* Modern CRM Header */}
         <div className="px-8 py-6">
+          {/* Sub-lead notice at the top */}
+          {isSubLead && masterLeadNumber && (
+            <div className="text-sm text-gray-500 mb-2">
+              This is a sub-lead of the master lead <a href={`/clients/${masterLeadNumber}`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
+            </div>
+          )}
+          {/* Master lead notice */}
+          {isMasterLead && subLeads.length > 0 && (
+            <div className="text-sm text-gray-500 mb-2">
+              Sub-leads: {subLeads.map((subLead, index) => (
+                <span key={subLead.lead_number}>
+                  <a href={`/clients/${subLead.lead_number}`} className="underline text-blue-700 hover:text-blue-900">{subLead.lead_number}</a>
+                  {index < subLeads.length - 1 ? ', ' : ''}
+                </span>
+              ))}
+            </div>
+          )}
           {/* Top Row: Lead Number, Client Name, Stage Badge, Amount, and Action Buttons */}
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-4">
@@ -1705,7 +1917,6 @@ const Clients: React.FC<ClientsProps> = ({
                 </span>
               )}
             </div>
-            
             {/* Amount and Action Buttons */}
             <div className="flex items-center gap-3">
               {/* Amount moved here */}
@@ -1719,77 +1930,100 @@ const Clients: React.FC<ClientsProps> = ({
                   <span>Stages</span>
                   <ChevronDownIcon className="w-4 h-4" />
                 </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-xl bg-white rounded-xl w-56 border border-gray-200">
+                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                   {dropdownItems}
                 </ul>
               </div>
+              {selectedClient && selectedClient.stage === 'created' && (
+                <div className="dropdown">
+                  <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
+                    <span>Assign to</span>
+                    <ChevronDownIcon className="w-4 h-4" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                    {schedulerOptions.map((scheduler) => (
+                      <li key={scheduler}>
+                        <a 
+                          className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
+                          onClick={() => updateScheduler(scheduler)}
+                        >
+                          <UserIcon className="w-5 h-5 text-primary" />
+                          <span className="font-medium">{scheduler}</span>
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               <div className="dropdown dropdown-end">
-                <label tabIndex={0} className="btn btn-outline border-gray-300 text-gray-700 hover:bg-gray-50 gap-2">
+                <label tabIndex={0} className="btn btn-outline border-gray-300 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 gap-2">
                   <span>Actions</span>
                   <ChevronDownIcon className="w-4 h-4" />
                 </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow-xl bg-white rounded-xl w-56 border border-gray-200">
+                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                   <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg"><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => setShowSubLeadDrawer(true)}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                 </ul>
               </div>
             </div>
           </div>
 
           {/* Client Details - Left/Right Layout */}
-          <div className="border-t border-gray-200 pt-8">
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-8">
             <div className="flex justify-between gap-6">
-              {/* Left Side - Contact & Case Information in 2x2 + 1 Layout */}
+              {/* Left Side - Contact & Case Information: Email, Category | Phone, Topic | Closer */}
               <div className="flex-1">
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-1">
-                  {/* Email with Category and Closer below */}
-                  <div className="space-y-4">
+                <div className="flex flex-row gap-6">
+                  {/* Left vertical stack: Email, Category */}
+                  <div className="space-y-6 border-r border-gray-200 pr-6">
                     <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Email</p>
+                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Email</p>
                       <a 
                         href={selectedClient ? `mailto:${selectedClient.email}` : undefined} 
-                        className="flex items-center gap-2 text-gray-900 hover:text-blue-600 transition-colors"
+                        className="flex items-center gap-3 text-gray-900 hover:text-blue-600 transition-colors"
                       >
-                        <EnvelopeIcon className="w-4 h-4 text-gray-500" />
-                        <span className="text-sm font-medium break-all">
+                        <EnvelopeIcon className="w-5 h-5 text-gray-500" />
+                        <span className="text-base font-medium break-all">
                           {selectedClient ? selectedClient.email : '---'}
                         </span>
                       </a>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Category</p>
-                      <p className="text-sm font-medium text-gray-900">
+                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Category</p>
+                      <p className="text-base font-medium text-gray-900">
                         {selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}
                       </p>
                     </div>
-                    <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Closer</p>
-                      <p className="text-sm font-medium text-gray-900">
-                        {selectedClient?.closer || 'Not assigned'}
-                      </p>
-                    </div>
                   </div>
-                  
-                  {/* Phone with Topic below */}
-                  <div className="space-y-4">
+                  {/* Middle vertical stack: Phone, Topic */}
+                  <div className="space-y-6 border-r border-gray-200 px-6">
                     <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Phone</p>
+                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Phone</p>
                       <a 
                         href={selectedClient ? `tel:${selectedClient.phone}` : undefined} 
-                        className="flex items-center gap-2 text-gray-900 hover:text-green-600 transition-colors"
+                        className="flex items-center gap-3 text-gray-900 hover:text-green-600 transition-colors"
                       >
-                        <PhoneIcon className="w-4 h-4 text-gray-500" />
-                        <span className="text-sm font-medium">
+                        <PhoneIcon className="w-5 h-5 text-gray-500" />
+                        <span className="text-base font-medium">
                           {selectedClient ? selectedClient.phone : '---'}
                         </span>
                       </a>
                     </div>
                     <div>
-                      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Topic</p>
-                      <p className="text-sm font-medium text-gray-900">
+                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Topic</p>
+                      <p className="text-base font-medium text-gray-900">
                         {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
+                      </p>
+                    </div>
+                  </div>
+                  {/* Right vertical stack: Closer */}
+                  <div className="space-y-6 pl-6">
+                    <div>
+                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Closer</p>
+                      <p className="text-base font-medium text-gray-900">
+                        {selectedClient?.closer || 'Not assigned'}
                       </p>
                     </div>
                   </div>
@@ -1799,7 +2033,7 @@ const Clients: React.FC<ClientsProps> = ({
               {/* Right Side - Probability & Follow-up Stacked */}
               <div className="w-48 space-y-6">
                 <div className="text-right">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Probability</p>
+                  <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Probability</p>
                   <div className="space-y-2">
                     <p className="text-xl font-bold text-gray-900">{selectedClient?.probability || 0}%</p>
                     <div className="w-full bg-gray-200 rounded-full h-2">
@@ -1813,15 +2047,15 @@ const Clients: React.FC<ClientsProps> = ({
 
                 {selectedClient?.next_followup ? (
                   <div className="text-right">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Next Follow-up</p>
-                    <p className="text-sm font-medium text-gray-900">
+                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Next Follow-up</p>
+                    <p className="text-base font-medium text-gray-900">
                       {new Date(selectedClient.next_followup).toLocaleDateString()}
                     </p>
                   </div>
                 ) : (
                   <div className="text-right">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Follow-up</p>
-                    <p className="text-sm font-medium text-gray-500">Not scheduled</p>
+                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Follow-up</p>
+                    <p className="text-base font-medium text-gray-500">Not scheduled</p>
                   </div>
                 )}
               </div>
@@ -1829,18 +2063,18 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
         {/* Tabs Navigation */}
-        <div className="bg-white">
+        <div className="bg-white dark:bg-gray-800">
           <div className="w-full">
             {/* Desktop version */}
             <div className="hidden md:flex items-center px-4 py-4">
-              <div className="flex bg-white rounded-xl shadow-lg border border-gray-200 p-1 gap-1 overflow-hidden w-full">
+              <div className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-hidden w-full">
                                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
                       className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
                         activeTab === tab.id
                           ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
-                          : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
                       }`}
                       onClick={() => setActiveTab(tab.id)}
                     >
@@ -1856,7 +2090,7 @@ const Clients: React.FC<ClientsProps> = ({
                       </div>
                     )}
                     {activeTab === tab.id && (
-                      <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white rounded-full shadow-lg"></div>
+                      <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
                     )}
                   </button>
                 ))}
@@ -1866,7 +2100,7 @@ const Clients: React.FC<ClientsProps> = ({
             <div className="md:hidden px-6 py-4">
               <div
                 ref={mobileTabsRef}
-                className="overflow-x-auto scrollbar-hide bg-white rounded-2xl shadow-lg border border-gray-200 p-3 w-full"
+                className="overflow-x-auto scrollbar-hide bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 dark:border-gray-700 p-3 w-full"
                 style={{ WebkitOverflowScrolling: 'touch' }}
               >
                 <div className="flex gap-2 pb-1">
@@ -1878,7 +2112,7 @@ const Clients: React.FC<ClientsProps> = ({
                         className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
                           isActive
                             ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
-                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                            : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
                         }`}
                         onClick={() => setActiveTab(tab.id)}
                       >
@@ -1900,7 +2134,7 @@ const Clients: React.FC<ClientsProps> = ({
                           {tab.label}
                         </span>
                         {isActive && (
-                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white rounded-full"></div>
+                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
                         )}
                       </button>
                     );
@@ -1912,7 +2146,7 @@ const Clients: React.FC<ClientsProps> = ({
         </div>
 
         {/* Tab Content - full width, white background */}
-        <div className="w-full bg-white min-h-screen">
+        <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
           <div
             key={activeTab}
             className="p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
@@ -1929,7 +2163,7 @@ const Clients: React.FC<ClientsProps> = ({
             <div className="px-6 py-4">
               <div
                 ref={mobileTabsRef}
-                className="overflow-x-auto scrollbar-hide bg-white rounded-2xl shadow-lg border border-gray-200 p-3 w-full"
+                className="overflow-x-auto scrollbar-hide bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 dark:border-gray-700 p-3 w-full"
                 style={{ WebkitOverflowScrolling: 'touch' }}
               >
                 <div className="flex gap-2 pb-1">
@@ -1941,7 +2175,7 @@ const Clients: React.FC<ClientsProps> = ({
                         className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
                           isActive
                             ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
-                            : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                            : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
                         }`}
                         onClick={() => setActiveTab(tab.id)}
                       >
@@ -1963,7 +2197,7 @@ const Clients: React.FC<ClientsProps> = ({
                           {tab.label}
                         </span>
                         {isActive && (
-                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white rounded-full"></div>
+                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
                         )}
                       </button>
                     );
@@ -1972,7 +2206,7 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
             </div>
             {/* Tab Content - full width, white background */}
-            <div className="w-full bg-white min-h-screen">
+            <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
               <div
                 key={activeTab}
                 className="p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
@@ -2691,7 +2925,7 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Overlay */}
           <div className="fixed inset-0 bg-black/30" onClick={() => { setShowPaymentsPlanDrawer(false); setPayments([]); }} />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-xl bg-white h-full shadow-2xl p-0 flex flex-col animate-slideInRight z-50 overflow-y-auto border-l border-gray-200">
+          <div className="ml-auto w-full max-w-xl bg-white h-full shadow-2xl p-0 flex flex-col animate-slideInRight z-50 overflow-y-auto border-l border-gray-200 dark:border-gray-700">
             {/* Header */}
             <div className="flex items-center justify-between px-8 pt-8 pb-4 border-b border-gray-100">
               <div>
@@ -2703,7 +2937,7 @@ const Clients: React.FC<ClientsProps> = ({
               </button>
             </div>
             {/* Summary Section */}
-            <div className="px-8 pt-6 pb-4 border-b border-gray-100 bg-gray-50">
+            <div className="px-8 pt-6 pb-4 border-b border-gray-100 bg-gray-50 dark:bg-gray-700">
               <div className="space-y-2">
                 {/* Edit button above total balance */}
                 <div className="flex justify-end mb-1">
@@ -2740,7 +2974,7 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
             {/* Auto plan dropdown */}
             <div className="px-8 pt-6 pb-2">
-              <label className="block font-semibold mb-1 text-gray-700">Auto plan</label>
+              <label className="block font-semibold mb-1 text-gray-700 dark:text-gray-300">Auto plan</label>
               <select
                 className="select select-bordered w-full max-w-xs"
                 value={autoPlan}
@@ -2792,7 +3026,7 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
             {/* Add Payment Form */}
             {showAddPayment && (
-              <div className="bg-white rounded-xl shadow p-6 border border-gray-200 mb-6 mx-8">
+              <div className="bg-white rounded-xl shadow p-6 border border-gray-200 dark:border-gray-700 mb-6 mx-8">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
                   <div>
                     <label className="block font-semibold mb-1">Client:</label>
@@ -2904,17 +3138,17 @@ const Clients: React.FC<ClientsProps> = ({
                   <div className="overflow-x-auto">
                     <table className="table w-full">
                       <thead>
-                        <tr className="bg-gray-50">
-                          <th className="text-sm font-semibold text-gray-700">Description</th>
-                          <th className="text-sm font-semibold text-gray-700">Qty</th>
-                          <th className="text-sm font-semibold text-gray-700">Rate</th>
-                          <th className="text-sm font-semibold text-gray-700">Total</th>
-                          {!proformaData?.isViewMode && <th className="text-sm font-semibold text-gray-700">Actions</th>}
+                        <tr className="bg-gray-50 dark:bg-gray-700">
+                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Description</th>
+                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Qty</th>
+                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Rate</th>
+                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Total</th>
+                          {!proformaData?.isViewMode && <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Actions</th>}
                         </tr>
                       </thead>
                       <tbody>
                         {proformaData.rows.map((row: any, idx: number) => (
-                          <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                          <tr key={idx} className="hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors">
                             <td>
                               <input 
                                 className="input input-bordered w-full text-sm" 
@@ -3044,7 +3278,7 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
 
               {/* Right Column - Summary & Actions */}
-              <div className="w-80 bg-white border-l border-gray-200 p-6 flex flex-col">
+              <div className="w-80 bg-white border-l border-gray-200 dark:border-gray-700 p-6 flex flex-col">
                 {/* Summary Card */}
                 <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 mb-6 border border-blue-200">
                   <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
@@ -3081,7 +3315,7 @@ const Clients: React.FC<ClientsProps> = ({
                 </div>
 
                 {/* Proforma Info */}
-                <div className="bg-gray-50 rounded-xl p-4 mb-6">
+                <div className="bg-gray-50 dark:bg-gray-700 rounded-xl p-4 mb-6">
                   <h4 className="font-semibold text-gray-800 mb-2">Proforma Details</h4>
                   <div className="space-y-2 text-sm">
                     <div className="flex justify-between">
@@ -3149,8 +3383,8 @@ const Clients: React.FC<ClientsProps> = ({
                   value={successForm.handler}
                   onChange={e => setSuccessForm(f => ({ ...f, handler: e.target.value }))}
                 >
-                  {handlerOptions.map((handler) => (
-                    <option key={handler} value={handler}>{handler}</option>
+                  {schedulerOptions.map((scheduler) => (
+                    <option key={scheduler} value={scheduler}>{scheduler}</option>
                   ))}
                 </select>
               </div>
@@ -3198,6 +3432,73 @@ const Clients: React.FC<ClientsProps> = ({
               <button className="btn btn-primary px-8" onClick={handleSaveSuccessDrawer}>
                 Save
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSubLeadDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="fixed inset-0 bg-black/30" onClick={() => { setShowSubLeadDrawer(false); setSubLeadStep('initial'); }} />
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold">Create Sub-Lead</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowSubLeadDrawer(false)}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-4 flex-1">
+              {subLeadStep === 'initial' && (
+                <>
+                  <button className="btn btn-primary mb-4" onClick={() => { setSubLeadStep('newProcedure'); setSubLeadForm(f => ({ ...f, ...selectedClient })); }}>New Procedure (Same Contact)</button>
+                  <button className="btn btn-outline" onClick={() => setSubLeadStep('newContact')}>Add New Contact</button>
+                </>
+              )}
+              {subLeadStep === 'newContact' && (
+                <>
+                  <label className="block font-semibold mb-1">Name</label>
+                  <input className="input input-bordered w-full" value={subLeadForm.name} onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))} />
+                  <label className="block font-semibold mb-1">Email</label>
+                  <input className="input input-bordered w-full" value={subLeadForm.email} onChange={e => setSubLeadForm(f => ({ ...f, email: e.target.value }))} />
+                  <label className="block font-semibold mb-1">Phone</label>
+                  <input className="input input-bordered w-full" value={subLeadForm.phone} onChange={e => setSubLeadForm(f => ({ ...f, phone: e.target.value }))} />
+                  <label className="block font-semibold mb-1">Category</label>
+                  <select className="select select-bordered w-full" value={subLeadForm.category} onChange={e => setSubLeadForm(f => ({ ...f, category: e.target.value }))}>
+                    <option value="">Select category...</option>
+                    {categoryOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  </select>
+                  <label className="block font-semibold mb-1">Topic</label>
+                  <select className="select select-bordered w-full" value={subLeadForm.topic} onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}>
+                    <option value="">Select topic...</option>
+                    {topicOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                  </select>
+                  <label className="block font-semibold mb-1">Special Notes</label>
+                  <textarea className="textarea textarea-bordered w-full" value={subLeadForm.special_notes} onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))} />
+                  <button className="btn btn-primary mt-4" onClick={() => setSubLeadStep('details')}>Save & Next</button>
+                </>
+              )}
+              {subLeadStep === 'newProcedure' && (
+                <button className="btn btn-primary mt-4" onClick={() => setSubLeadStep('details')}>Next</button>
+              )}
+              {subLeadStep === 'details' && (
+                <>
+                  <label className="block font-semibold mb-1">Handler</label>
+                  <input className="input input-bordered w-full" value={subLeadForm.handler} onChange={e => setSubLeadForm(f => ({ ...f, handler: e.target.value }))} />
+                  <label className="block font-semibold mb-1">Currency</label>
+                  <select className="select select-bordered w-full" value={subLeadForm.currency} onChange={e => setSubLeadForm(f => ({ ...f, currency: e.target.value }))}>
+                    <option value="NIS">NIS</option>
+                    <option value="USD">USD</option>
+                    <option value="EUR">EUR</option>
+                  </select>
+                  <label className="block font-semibold mb-1">Number of Applicants</label>
+                  <input className="input input-bordered w-full" value={subLeadForm.numApplicants} onChange={e => setSubLeadForm(f => ({ ...f, numApplicants: e.target.value }))} />
+                  <label className="block font-semibold mb-1">Proposal (Amount Total)</label>
+                  <input className="input input-bordered w-full" value={subLeadForm.proposal} onChange={e => setSubLeadForm(f => ({ ...f, proposal: e.target.value }))} />
+                  <label className="block font-semibold mb-1">Potential Value</label>
+                  <input className="input input-bordered w-full" value={subLeadForm.potentialValue} onChange={e => setSubLeadForm(f => ({ ...f, potentialValue: e.target.value }))} />
+                  <button className="btn btn-primary mt-4" onClick={handleSaveSubLead}>Save Sub-Lead</button>
+                </>
+              )}
             </div>
           </div>
         </div>

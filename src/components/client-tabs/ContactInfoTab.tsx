@@ -362,7 +362,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               return (
                 <div
                   key={contact.id}
-                  className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden"
+                  className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden"
                 >
                   {/* Header */}
                   <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">

@@ -201,17 +201,26 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             })}
           </nav>
 
-          {/* User info and Sign out button under Admin Panel */}
-          <div className="flex flex-col items-center px-4 py-6 border-t border-white/10 mt-4 w-full">
-            <div className={`flex items-center w-full justify-center ${isSidebarHovered ? 'justify-between' : 'justify-center'}`}> 
-              {/* Username and role only when open */}
-              {isSidebarHovered && (
-                <div className="flex flex-col items-start ml-2">
-                  <span className="text-white font-semibold text-base leading-tight">{userName}</span>
-                  <span className="text-white/70 text-xs font-medium leading-tight">{userRole}</span>
-                </div>
-              )}
-              {/* Sign out button with tooltip when collapsed */}
+          {/* Settings and Sign out buttons */}
+          <div className="flex flex-col items-center px-4 py-6 border-t border-white/10 mt-4 w-full gap-3">
+            <div className={`flex items-center w-full ${isSidebarHovered ? 'justify-between' : 'justify-center flex-col gap-3'}`}>
+              {/* Settings button */}
+              <div className="relative group">
+                <Link
+                  to="/settings"
+                  className="bg-white/10 text-white rounded-lg p-2 flex items-center justify-center shadow border border-white/20 hover:border-cyan-300 hover:bg-cyan-400/20 transition-colors duration-200"
+                  title="Settings"
+                >
+                  <Cog6ToothIcon className="w-6 h-6" />
+                </Link>
+                {!isSidebarHovered && (
+                  <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 bg-black/90 text-white text-xs rounded-lg px-3 py-2 shadow-lg whitespace-nowrap z-50 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity duration-200">
+                    Settings
+                  </div>
+                )}
+              </div>
+              
+              {/* Sign out button */}
               <div className="relative group">
                 <button
                   className="bg-white/10 text-white rounded-lg p-2 flex items-center justify-center shadow border border-white/20 hover:border-cyan-300 hover:bg-cyan-400/20 transition-colors duration-200"
@@ -222,8 +231,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 </button>
                 {!isSidebarHovered && (
                   <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 bg-black/90 text-white text-xs rounded-lg px-3 py-2 shadow-lg whitespace-nowrap z-50 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity duration-200">
-                    <div className="font-semibold">{userName}</div>
-                    <div className="text-white/70">{userRole}</div>
+                    Sign out
                   </div>
                 )}
               </div>
@@ -355,14 +363,17 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               </ul>
             </nav>
             
-            {/* Footer with user info and sign out */}
+            {/* Footer with settings and sign out */}
             <div className="p-4 border-t border-base-200">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-primary text-primary-content rounded-full flex items-center justify-center font-semibold">
-                    {initials}
-                  </div>
-                </div>
+              <div className="flex items-center justify-center gap-4">
+                <Link
+                  to="/settings"
+                  className="btn btn-ghost btn-circle btn-sm"
+                  title="Settings"
+                  onClick={onClose}
+                >
+                  <Cog6ToothIcon className="w-5 h-5" />
+                </Link>
                 <button 
                   className="btn btn-ghost btn-circle btn-sm" 
                   title="Sign out" 

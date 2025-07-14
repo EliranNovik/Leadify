@@ -357,7 +357,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const showPastActions = past && isRecentPastMeeting(meeting);
 
     return (
-      <div key={meeting.id} className="bg-white border border-purple-200 rounded-xl shadow-sm hover:shadow-md hover:border-purple-300 transition-all duration-200 overflow-hidden">
+      <div key={meeting.id} className="bg-white border border-purple-200 rounded-xl shadow-lg hover:shadow-xl hover:border-purple-300 transition-all duration-200 overflow-hidden">
         {/* Header */}
         <div className="px-4 py-3 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-purple-100">
           <div className="flex items-center justify-between">
@@ -600,7 +600,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Lead Scheduling Info Box */}
       {(leadSchedulingInfo.scheduler || leadSchedulingInfo.meeting_scheduling_notes || leadSchedulingInfo.next_followup || leadSchedulingInfo.followup) && (
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
             <h4 className="text-lg font-semibold text-gray-900">Scheduling Information</h4>
           </div>
@@ -646,7 +646,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       {meetings.length > 0 ? (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
           {/* Upcoming Meetings */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
               <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
             </div>
@@ -666,7 +666,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
 
           {/* Past Meetings */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
               <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
             </div>
@@ -686,7 +686,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
           <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
             <h4 className="text-lg font-semibold text-gray-900">Meetings</h4>
           </div>

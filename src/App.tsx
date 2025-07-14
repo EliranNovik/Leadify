@@ -29,6 +29,7 @@ import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
 import ProformaViewPage from './pages/ProformaViewPage';
 import ReportsPage from './pages/ReportsPage';
+import SettingsPage from './pages/SettingsPage';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -142,7 +143,7 @@ const AppContent: React.FC = () => {
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
-                    <Route path="/clients/:lead_number" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
+                    <Route path="/clients/:lead_number/*" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
                     <Route path="/calendar" element={<CalendarPage />} />
                     <Route path="/outlook-calendar" element={<OutlookCalendarPage />} />
                     <Route path="/expert" element={<ExpertPage />} />
@@ -157,6 +158,7 @@ const AppContent: React.FC = () => {
                     <Route path="/performance" element={<MyPerformancePage />} />
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />
                     <Route path="/reports" element={<ReportsPage />} />
+                    <Route path="/settings" element={<SettingsPage />} />
                   </Routes>
                 </main>
               </div>
