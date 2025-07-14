@@ -65,6 +65,7 @@ import {
 } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
 import LeadSummaryDrawer from './LeadSummaryDrawer';
+import { generateProformaName } from '../lib/proforma';
 
 interface TabItem {
   id: string;
@@ -316,7 +317,7 @@ const Clients: React.FC<ClientsProps> = ({
   const handlePaymentReceivedNewClient = () => {
     setShowSuccessDrawer(true);
     setSuccessForm({
-      handler: selectedClient?.closer || '',
+      handler: '', // No default name
       currency: selectedClient?.proposal_currency || 'NIS',
       numApplicants: selectedClient?.number_of_applicants_meeting || '',
       proposal: selectedClient?.proposal_total || '',
@@ -336,17 +337,21 @@ const Clients: React.FC<ClientsProps> = ({
       // Convert lead number to case number
       const caseNumber = convertLeadToCaseNumber(selectedClient.lead_number);
       
+      const updateData: any = {
+        stage: 'Success',
+        lead_number: caseNumber, // Update the lead number to case number
+        proposal_currency: successForm.currency,
+        number_of_applicants_meeting: numApplicants,
+        proposal_total: proposal,
+        potential_value: potentialValue,
+      };
+      if (successForm.handler) {
+        updateData.closer = successForm.handler;
+      }
+      
       const { error } = await supabase
         .from('leads')
-        .update({
-          stage: 'Success',
-          lead_number: caseNumber, // Update the lead number to case number
-          closer: successForm.handler,
-          proposal_currency: successForm.currency,
-          number_of_applicants_meeting: numApplicants,
-          proposal_total: proposal,
-          potential_value: potentialValue,
-        })
+        .update(updateData)
         .eq('id', selectedClient.id);
       
       if (error) throw error;
@@ -356,7 +361,6 @@ const Clients: React.FC<ClientsProps> = ({
         ...prev,
         stage: 'Success',
         lead_number: caseNumber, // Update the lead number in local state
-        closer: successForm.handler,
         proposal_currency: successForm.currency,
         number_of_applicants_meeting: numApplicants,
         proposal_total: proposal,
@@ -748,15 +752,17 @@ const Clients: React.FC<ClientsProps> = ({
     if (!selectedClient) return;
     setIsSavingMeetingEnded(true);
 
+    // If proposalTotal is changed, update balance as well
+    const proposalTotal = parseFloat(meetingEndedData.proposalTotal);
     const updateData = {
       probability: meetingEndedData.probability,
       meeting_brief: meetingEndedData.meetingBrief,
       number_of_applicants_meeting: meetingEndedData.numberOfApplicants,
       potential_applicants_meeting: meetingEndedData.potentialApplicants,
-      proposal_total: parseFloat(meetingEndedData.proposalTotal),
+      proposal_total: proposalTotal,
       proposal_currency: meetingEndedData.proposalCurrency,
-      balance: parseFloat(meetingEndedData.meetingTotal),
-      balance_currency: meetingEndedData.meetingTotalCurrency,
+      balance: proposalTotal, // Sync balance to proposal_total
+      balance_currency: meetingEndedData.proposalCurrency,
       stage: 'waiting_for_mtng_sum',
     };
 
@@ -778,8 +784,8 @@ const Clients: React.FC<ClientsProps> = ({
           .from('meetings')
           .update({
             meeting_brief: meetingEndedData.meetingBrief,
-            meeting_amount: parseFloat(meetingEndedData.meetingTotal),
-            meeting_currency: meetingEndedData.meetingTotalCurrency,
+            meeting_amount: proposalTotal,
+            meeting_currency: meetingEndedData.proposalCurrency,
           })
           .eq('id', latestMeetingId);
 
@@ -898,7 +904,7 @@ const Clients: React.FC<ClientsProps> = ({
           proposal_currency: offerCurrency,
           closer: closerName,
           stage: 'Mtng sum+Agreement sent',
-          balance: offerTotal ? parseFloat(offerTotal) : null,
+          balance: offerTotal ? parseFloat(offerTotal) : null, // Sync balance to proposal_total
           balance_currency: offerCurrency
         })
         .eq('id', selectedClient.id);
@@ -1160,15 +1166,21 @@ const Clients: React.FC<ClientsProps> = ({
   const handleSavePaymentsPlan = async () => {
     if (!selectedClient?.id) return;
     setIsSavingPaymentPlan(true);
+
+    // Optimistic UI update
+    setShowPaymentsPlanDrawer(false);
+    setPayments([]); // Optionally, setPayments(newPayments) if you want to show them immediately
+    setActiveTab('finances');
+    toast.success('Payment plan saved!');
+
     try {
-      // Delete any existing payment plans for this lead
+      // Delete and insert in the background
       const { error: deleteError } = await supabase
         .from('payment_plans')
         .delete()
         .eq('lead_id', selectedClient.id);
       if (deleteError) throw deleteError;
 
-      // Insert all current payments (manual and auto)
       const paymentPlansToInsert = payments.map(payment => ({
         lead_id: selectedClient.id,
         due_percent: payment.duePercent ? parseFloat(payment.duePercent.replace('%', '')) : 0,
@@ -1183,14 +1195,11 @@ const Clients: React.FC<ClientsProps> = ({
         .from('payment_plans')
         .insert(paymentPlansToInsert);
       if (insertError) throw insertError;
-      setShowPaymentsPlanDrawer(false);
-      setPayments([]); // Clear payments to prevent duplicates
-      setActiveTab('finances');
-      toast.success('Payment plan saved successfully!');
-      await refreshClientData(selectedClient.id);
+      // Optionally, refresh just the payment plans here if needed
+      // await refreshPaymentPlans(selectedClient.id);
     } catch (error) {
-      console.error('Error saving payment plan:', error);
       toast.error('Failed to save payment plan. Please try again.');
+      // Optionally, revert UI changes here
     } finally {
       setIsSavingPaymentPlan(false);
     }
@@ -1204,13 +1213,12 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Handler to open proforma drawer
   const handleOpenProforma = async (payment: any) => {
-    const proformaName = await generateProformaName(selectedClient?.id);
+    const proformaName = await generateProformaName();
     setGeneratedProformaName(proformaName);
-    
     setProformaData({
       client: selectedClient?.name,
       clientId: selectedClient?.id,
-      paymentRowId: payment.id, // Add the payment row ID
+      paymentRowId: payment.id,
       payment: payment.value + payment.valueVat,
       base: payment.value,
       vat: payment.valueVat,
@@ -1252,68 +1260,13 @@ const Clients: React.FC<ClientsProps> = ({
     }));
   };
 
-  // Function to generate sequential proforma name
-  const generateProformaName = async (clientId: number) => {
-    if (!clientId) {
-      const year = new Date().getFullYear();
-      const timestamp = Date.now().toString().slice(-4);
-      return `${year}-${timestamp} Proforma`;
-    }
-    
-    try {
-      // Get all existing proformas for this client
-      const { data, error } = await supabase
-        .from('payment_plans')
-        .select('proforma')
-        .eq('lead_id', clientId)
-        .not('proforma', 'is', null);
-
-      if (error) throw error;
-
-      // Extract proforma names and find the highest number
-      const existingNames = data
-        .map(row => row.proforma)
-        .filter(proforma => proforma && typeof proforma === 'string')
-        .map(proforma => {
-          try {
-            const parsed = JSON.parse(proforma);
-            return parsed.proformaName || '';
-          } catch {
-            return '';
-          }
-        })
-        .filter(name => name.startsWith(`${new Date().getFullYear()}-`));
-
-      // Find the highest number
-      let maxNumber = 0;
-      existingNames.forEach(name => {
-        const match = name.match(/\d+$/);
-        if (match) {
-          const num = parseInt(match[0]);
-          if (num > maxNumber) maxNumber = num;
-        }
-      });
-
-      // Generate next number
-      const nextNumber = maxNumber + 1;
-      const year = new Date().getFullYear();
-      return `${year}-${nextNumber.toString().padStart(2, '0')} Proforma`;
-    } catch (error) {
-      console.error('Error generating proforma name:', error);
-      // Fallback to current timestamp
-      const year = new Date().getFullYear();
-      const timestamp = Date.now().toString().slice(-4);
-      return `${year}-${timestamp} Proforma`;
-    }
-  };
-
   // Generate proforma content as a structured object
   const generateProformaContent = async (data: any, createdBy: string) => {
     const total = data.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
     const totalWithVat = data.addVat ? Math.round(total * 1.18 * 100) / 100 : total;
     
     // Generate proforma name
-    const proformaName = await generateProformaName(data.clientId);
+    const proformaName = await generateProformaName();
     
     return JSON.stringify({
       client: data.client,
@@ -1341,10 +1294,21 @@ const Clients: React.FC<ClientsProps> = ({
     try {
       // Get current user (example for MSAL)
       let createdBy = 'Unknown';
-      if (instance && typeof instance.getAllAccounts === 'function') {
-        const account = instance.getAllAccounts()[0];
-        if (account && account.name) createdBy = account.name;
-      }
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user && user.email) {
+          const { data: userData, error } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', user.email)
+            .single();
+          if (!error && userData?.full_name) {
+            createdBy = userData.full_name;
+          } else {
+            createdBy = user.email;
+          }
+        }
+      } catch {}
       // Generate proforma content with name and createdBy
       const proformaContent = await generateProformaContent(proformaData, createdBy);
       // Save proforma to the database for the specific payment row
@@ -1494,33 +1458,33 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => { setShowPaymentsPlanDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowPaymentsPlanDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <BanknotesIcon className="w-5 h-5 text-black" />
             Payments plan
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
             Schedule Meeting
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => setShowLeadSummaryDrawer(true)}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowLeadSummaryDrawer(true)}>
             <DocumentTextIcon className="w-5 h-5 text-black" />
             Lead summary
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('payment_request_sent')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => updateLeadStage('payment_request_sent')}>
             <CurrencyDollarIcon className="w-5 h-5 text-black" />
             Payment request sent
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Unactivate/Spam')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Unactivate/Spam')}>
             <NoSymbolIcon className="w-5 h-5 text-red-500" />
-            <span className="text-red-500">Unactivate/Spam</span>
+            <span className="text-red-500 saira-regular">Unactivate/Spam</span>
           </a>
         </li>
       </>
@@ -1529,25 +1493,25 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
             Schedule Meeting
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => setShowLeadSummaryDrawer(true)}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowLeadSummaryDrawer(true)}>
             <DocumentTextIcon className="w-5 h-5 text-black" />
             Lead summary
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={handlePaymentReceivedNewClient}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handlePaymentReceivedNewClient}>
             <CheckCircleIcon className="w-5 h-5 text-green-600" />
             Payment Received - new Client !!!
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('finances_and_payments_plan')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => updateLeadStage('finances_and_payments_plan')}>
             <BanknotesIcon className="w-5 h-5 text-black" />
             Finances & Payments plan
           </a>
@@ -1560,19 +1524,19 @@ const Clients: React.FC<ClientsProps> = ({
         {selectedClient.stage === 'meeting_scheduled' ? (
           <>
             <li>
-              <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
                 <CalendarDaysIcon className="w-5 h-5 text-black" />
                 Schedule Meeting
               </a>
             </li>
             <li>
-              <a className="flex items-center gap-3 py-3" onClick={() => setShowRescheduleDrawer(true)}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowRescheduleDrawer(true)}>
                 <ArrowPathIcon className="w-5 h-5 text-black" />
                 Meeting ReScheduling
               </a>
             </li>
             <li>
-              <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Meeting Ended')}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Meeting Ended')}>
                 <CheckCircleIcon className="w-5 h-5 text-black" />
                 Meeting Ended
               </a>
@@ -1580,7 +1544,7 @@ const Clients: React.FC<ClientsProps> = ({
           </>
         ) : (
           <li>
-            <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+            <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
               <CalendarDaysIcon className="w-5 h-5 text-black" />
               Schedule Meeting
             </a>
@@ -1588,7 +1552,7 @@ const Clients: React.FC<ClientsProps> = ({
         )}
         {selectedClient.stage === 'waiting_for_mtng_sum' && (
           <li>
-            <a className="flex items-center gap-3 py-3" onClick={openSendOfferDrawer}>
+            <a className="flex items-center gap-3 py-3 saira-regular" onClick={openSendOfferDrawer}>
               <DocumentCheckIcon className="w-5 h-5 text-black" />
               Send Price Offer
             </a>
@@ -1596,16 +1560,16 @@ const Clients: React.FC<ClientsProps> = ({
         )}
         {!['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started'].includes(selectedClient.stage) && (
           <li>
-            <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Communication Started')}>
+            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Communication Started')}>
               <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
               Communication Started
             </a>
           </li>
         )}
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => handleStageUpdate('Unactivate/Spam')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Unactivate/Spam')}>
             <NoSymbolIcon className="w-5 h-5 text-red-500" />
-            <span className="text-red-500">Unactivate/Spam</span>
+            <span className="text-red-500 saira-regular">Unactivate/Spam</span>
           </a>
         </li>
       </>
@@ -1614,33 +1578,33 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
             Schedule Meeting
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={handleOpenSignedDrawer}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleOpenSignedDrawer}>
             <HandThumbUpIcon className="w-5 h-5 text-black" />
             Client signed
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={handleOpenDeclinedDrawer}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleOpenDeclinedDrawer}>
             <HandThumbDownIcon className="w-5 h-5 text-black" />
-            <span className="text-black">Client declined</span>
+            <span className="text-black saira-regular">Client declined</span>
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => setShowLeadSummaryDrawer(true)}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowLeadSummaryDrawer(true)}>
             <DocumentTextIcon className="w-5 h-5 text-black" />
             Lead summary
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
         <li>
-          <a className="flex items-center gap-3 py-3" onClick={() => updateLeadStage('revised_offer')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => updateLeadStage('revised_offer')}>
             <PencilSquareIcon className="w-5 h-5 text-black" />
             Revised price offer
           </a>
@@ -1752,9 +1716,9 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Remove Dropdown menu for secondary actions (top right) */}
           {/* Top Row: Lead Number, Name, Stage */}
           <div className="flex items-center gap-2 mb-2 w-full">
-            <span className="text-xs font-semibold text-gray-400 tracking-widest">{selectedClient?.lead_number}</span>
+            <span className="text-xs font-semibold text-gray-400 tracking-widest saira-regular">{selectedClient?.lead_number}</span>
             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-            <span className="text-lg font-extrabold text-gray-900 truncate flex-1">{selectedClient?.name || 'Loading...'}</span>
+            <span className="text-lg font-extrabold text-gray-900 truncate flex-1 saira-regular">{selectedClient?.name || 'Loading...'}</span>
             {selectedClient?.stage && (
               <span className="ml-2 px-2 py-1 rounded-full text-xs font-bold bg-[#3b28c7] text-white whitespace-nowrap">
                 {selectedClient.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
@@ -1786,21 +1750,21 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Info Grid: Amount, Probability, Next Follow-up, Category, Topic */}
           <div className="grid grid-cols-2 gap-y-2 gap-x-4 items-center mb-6 mt-2">
             <span className="text-base text-gray-500 text-left font-semibold">Amount</span>
-            <span className="text-xl font-bold text-gray-900 text-right">{getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}{(selectedClient?.balance || 0).toLocaleString()}</span>
+            <span className="text-xl font-bold text-black text-right saira-regular">{getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}{(selectedClient?.balance || 0).toLocaleString()}</span>
             <span className="text-base text-gray-500 text-left font-semibold">Probability</span>
-            <span className="font-bold text-primary text-xl text-right">{selectedClient?.probability || 0}%</span>
+            <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.probability || 0}%</span>
             <span className="text-base text-gray-500 text-left font-semibold">Next Follow-up</span>
-            <span className="font-bold text-primary text-xl text-right">{selectedClient?.next_followup ? new Date(selectedClient.next_followup).toLocaleDateString() : '--'}</span>
+            <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.next_followup ? new Date(selectedClient.next_followup).toLocaleDateString() : '--'}</span>
             {selectedClient?.category && (
               <>
                 <span className="text-base text-gray-500 text-left font-semibold">Category</span>
-                <span className="text-base font-bold text-gray-800 text-right">{selectedClient.category}</span>
+                <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient.category}</span>
               </>
             )}
             {selectedClient?.topic && (
               <>
                 <span className="text-base text-gray-500 text-left font-semibold">Topic</span>
-                <span className="text-base font-bold text-gray-800 text-right">{selectedClient.topic}</span>
+                <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient.topic}</span>
               </>
             )}
           </div>
@@ -1907,12 +1871,12 @@ const Clients: React.FC<ClientsProps> = ({
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-3">
-                <span className="text-2xl font-bold text-gray-900">{selectedClient?.lead_number || 'Loading...'}</span>
+                <span className="text-2xl font-bold text-gray-900 saira-regular">{selectedClient?.lead_number || 'Loading...'}</span>
                 <span className="w-2 h-2 bg-gray-300 rounded-full"></span>
-                <h1 className="text-3xl font-bold text-gray-900">{selectedClient?.name || 'Loading...'}</h1>
+                <h1 className="text-3xl font-bold text-gray-900 saira-regular">{selectedClient?.name || 'Loading...'}</h1>
               </div>
               {selectedClient?.stage && (
-                <span className="px-4 py-2 rounded-xl text-white font-bold text-sm shadow-lg" style={{ backgroundColor: '#3b28c7' }}>
+                <span className="px-4 py-2 rounded-xl text-white font-bold text-sm shadow-lg saira-light" style={{ backgroundColor: '#3b28c7' }}>
                   {selectedClient.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
                 </span>
               )}
@@ -1926,7 +1890,7 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
               
               <div className="dropdown">
-                <label tabIndex={0} className="btn bg-gray-900 text-white border-none hover:bg-gray-800 gap-2">
+                <label tabIndex={0} className="btn bg-gray-900 text-white border-none hover:bg-gray-800 gap-2 saira-regular">
                   <span>Stages</span>
                   <ChevronDownIcon className="w-4 h-4" />
                 </label>
@@ -1956,7 +1920,7 @@ const Clients: React.FC<ClientsProps> = ({
                 </div>
               )}
               <div className="dropdown dropdown-end">
-                <label tabIndex={0} className="btn btn-outline border-gray-300 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 gap-2">
+                <label tabIndex={0} className="btn btn-outline border-gray-300 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 gap-2 saira-regular">
                   <span>Actions</span>
                   <ChevronDownIcon className="w-4 h-4" />
                 </label>
@@ -1985,16 +1949,12 @@ const Clients: React.FC<ClientsProps> = ({
                         className="flex items-center gap-3 text-gray-900 hover:text-blue-600 transition-colors"
                       >
                         <EnvelopeIcon className="w-5 h-5 text-gray-500" />
-                        <span className="text-base font-medium break-all">
-                          {selectedClient ? selectedClient.email : '---'}
-                        </span>
+                        <span className="text-base font-medium break-all saira-light">{selectedClient ? selectedClient.email : '---'}</span>
                       </a>
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Category</p>
-                      <p className="text-base font-medium text-gray-900">
-                        {selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}
-                      </p>
+                      <p className="text-base font-medium text-gray-900 saira-light">{selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}</p>
                     </div>
                   </div>
                   {/* Middle vertical stack: Phone, Topic */}
@@ -2006,25 +1966,19 @@ const Clients: React.FC<ClientsProps> = ({
                         className="flex items-center gap-3 text-gray-900 hover:text-green-600 transition-colors"
                       >
                         <PhoneIcon className="w-5 h-5 text-gray-500" />
-                        <span className="text-base font-medium">
-                          {selectedClient ? selectedClient.phone : '---'}
-                        </span>
+                        <span className="text-base font-medium saira-light">{selectedClient ? selectedClient.phone : '---'}</span>
                       </a>
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Topic</p>
-                      <p className="text-base font-medium text-gray-900">
-                        {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
-                      </p>
+                      <p className="text-base font-medium text-gray-900 saira-light">{selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}</p>
                     </div>
                   </div>
                   {/* Right vertical stack: Closer */}
                   <div className="space-y-6 pl-6">
                     <div>
                       <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Closer</p>
-                      <p className="text-base font-medium text-gray-900">
-                        {selectedClient?.closer || 'Not assigned'}
-                      </p>
+                      <p className="text-base font-medium text-gray-900 saira-light">{selectedClient?.closer || 'Not assigned'}</p>
                     </div>
                   </div>
                 </div>
@@ -2035,7 +1989,7 @@ const Clients: React.FC<ClientsProps> = ({
                 <div className="text-right">
                   <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Probability</p>
                   <div className="space-y-2">
-                    <p className="text-xl font-bold text-gray-900">{selectedClient?.probability || 0}%</p>
+                    <p className="text-xl font-bold text-gray-900 saira-light">{selectedClient?.probability || 0}%</p>
                     <div className="w-full bg-gray-200 rounded-full h-2">
                       <div 
                         className="bg-gray-800 h-2 rounded-full transition-all duration-300" 
@@ -2048,9 +2002,7 @@ const Clients: React.FC<ClientsProps> = ({
                 {selectedClient?.next_followup ? (
                   <div className="text-right">
                     <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Next Follow-up</p>
-                    <p className="text-base font-medium text-gray-900">
-                      {new Date(selectedClient.next_followup).toLocaleDateString()}
-                    </p>
+                    <p className="text-base font-medium text-gray-900 saira-light">{new Date(selectedClient.next_followup).toLocaleDateString()}</p>
                   </div>
                 ) : (
                   <div className="text-right">
@@ -2079,7 +2031,7 @@ const Clients: React.FC<ClientsProps> = ({
                       onClick={() => setActiveTab(tab.id)}
                     >
                     <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
-                    <span className="whitespace-nowrap">{tab.label}</span>
+                    <span className={`whitespace-nowrap saira-light font-bold ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
                     {tab.id === 'interactions' && (
                       <div className={`badge badge-sm font-bold ${
                         activeTab === tab.id 
@@ -2989,19 +2941,18 @@ const Clients: React.FC<ClientsProps> = ({
                     // Generate payment rows for the selected plan
                     const planParts = selectedPlan.split('/').map(Number);
                     const balance = selectedClient?.balance || 0;
-                    const vat = balance * 0.18;
-                    const total = balance + vat;
-                    const totalAmount = total;
                     const newPayments = [];
                     for (let i = 0; i < planParts.length; i++) {
                       const percentage = planParts[i];
-                      const amount = (totalAmount * percentage) / 100;
-                      const vatAmount = (amount * 0.18);
+                      const value = Math.round(balance * (percentage / 100) * 100) / 100;
+                      const valueVat = Math.round(value * 0.18 * 100) / 100;
+                      const dateObj = new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000);
+                      const dueDate = dateObj.toISOString().split('T')[0];
                       newPayments.push({
                         duePercent: `${percentage}%`,
-                        dueDate: new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000).toLocaleDateString(),
-                        value: Math.round(amount * 100) / 100,
-                        valueVat: Math.round(vatAmount * 100) / 100,
+                        dueDate: dueDate,
+                        value: value,
+                        valueVat: valueVat,
                         client: selectedClient?.name || '',
                         order: i === 0 ? 'First Payment' : i === planParts.length - 1 ? 'Final Payment' : 'Intermediate Payment',
                         notes: '',
@@ -3383,6 +3334,7 @@ const Clients: React.FC<ClientsProps> = ({
                   value={successForm.handler}
                   onChange={e => setSuccessForm(f => ({ ...f, handler: e.target.value }))}
                 >
+                  <option value="">--</option>
                   {schedulerOptions.map((scheduler) => (
                     <option key={scheduler} value={scheduler}>{scheduler}</option>
                   ))}

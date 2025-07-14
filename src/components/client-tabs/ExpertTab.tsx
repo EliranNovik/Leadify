@@ -651,7 +651,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       {/* Document Upload Section */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-                      <h4 className="text-xl font-semibold text-gray-900">Document Upload</h4>
+          <h4 className="text-xl font-semibold text-gray-900">Document Upload</h4>
         </div>
         <div className="p-6">
           <div className="space-y-4">

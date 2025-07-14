@@ -344,7 +344,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 <UserIcon className="w-6 h-6 text-purple-600" />
               </div>
               <div>
-                <h3 className="text-2xl font-bold text-gray-900">Contact Information</h3>
+                <h3 className="text-xl font-bold">Contact Information</h3>
                 <p className="text-sm text-gray-500">Manage client contacts and contracts</p>
               </div>
             </div>
@@ -427,7 +427,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         ) : (
                           <div className="text-base text-gray-900 flex items-center gap-2">
                             <PhoneIcon className="w-4 h-4 text-gray-400" />
-                            {contact.mobile}
+                            <span className="text-base font-medium">{contact.mobile}</span>
                           </div>
                         )}
                       </div>
@@ -454,12 +454,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         ) : contact.phone && contact.phone !== '---' ? (
                           <a href={`tel:${contact.phone}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center gap-2 transition-colors">
                             <PhoneIcon className="w-4 h-4 text-gray-400" />
-                            {contact.phone}
+                            <span className="text-base font-medium">{contact.phone}</span>
                           </a>
                         ) : (
                           <div className="text-base text-gray-900 flex items-center gap-2">
                             <PhoneIcon className="w-4 h-4 text-gray-400" />
-                            {contact.phone}
+                            <span className="text-base font-medium">{contact.phone}</span>
                           </div>
                         )}
                       </div>
@@ -486,12 +486,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         ) : contact.email && contact.email !== '---' ? (
                           <a href={`mailto:${contact.email}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center gap-2 transition-colors">
                             <EnvelopeIcon className="w-4 h-4 text-gray-400" />
-                            <span className="truncate">{contact.email}</span>
+                            <span className="text-base font-medium">{contact.email}</span>
                           </a>
                         ) : (
                           <div className="text-base text-gray-900 flex items-center gap-2">
                             <EnvelopeIcon className="w-4 h-4 text-gray-400" />
-                            <span className="truncate">{contact.email}</span>
+                            <span className="text-base font-medium">{contact.email}</span>
                           </div>
                         )}
                       </div>

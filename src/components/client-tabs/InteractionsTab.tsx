@@ -1743,7 +1743,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             <div className="flex items-center justify-between p-6 border-b border-base-300 bg-gradient-to-r from-purple-600 to-indigo-600">
               <div className="flex items-center gap-3">
                 <SparklesIcon className="w-6 h-6 text-white" />
-                <h3 className="text-xl font-bold text-white">AI Smart Recap</h3>
+                <h3 className="text-xl font-bold text-white saira-regular">AI Smart Recap</h3>
               </div>
               <button className="btn btn-ghost btn-sm text-white hover:bg-white/20" onClick={() => setAiDrawerOpen(false)}>
                 <XMarkIcon className="w-6 h-6" />

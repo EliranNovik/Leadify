@@ -166,7 +166,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           <InformationCircleIcon className="w-6 h-6 text-blue-600" />
         </div>
         <div>
-          <h3 className="text-2xl font-bold text-gray-900">Client Information</h3>
+          <h2 className="text-2xl font-bold">Client Information</h2>
           <p className="text-sm text-gray-500">View and manage client details and case information</p>
         </div>
       </div>
@@ -185,7 +185,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           <div className="space-y-4">
             <div className="flex justify-between items-center">
               <span className="text-sm font-medium text-gray-500">Success Probability</span>
-              <span className="text-2xl font-bold text-gray-900">{probability}%</span>
+              <span className="text-lg font-bold text-gray-900">{probability}%</span>
             </div>
             <input
               type="range"
@@ -324,7 +324,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         <p key={index} className="text-gray-900 mb-2 last:mb-0">{note}</p>
                       ))
                     ) : (
-                      <span className="text-gray-500 italic">No special notes added</span>
+                      <span className="text-gray-500">No special notes added</span>
                     )}
                   </div>
                   {(client.special_notes_last_edited_by || client.special_notes_last_edited_at) && (
@@ -393,7 +393,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     {generalNotes ? (
                       <p className="text-gray-900">{generalNotes}</p>
                     ) : (
-                      <span className="text-gray-500 italic">No general notes added</span>
+                      <span className="text-gray-500">No general notes added</span>
                     )}
                   </div>
                   {(client.general_notes_last_edited_by || client.general_notes_last_edited_at) && (
@@ -465,7 +465,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     {tags ? (
                       <p className="text-gray-900">{tags}</p>
                     ) : (
-                      <span className="text-gray-500 italic">No tags added</span>
+                      <span className="text-gray-500">No tags added</span>
                     )}
                   </div>
                   {(client.tags_last_edited_by || client.tags_last_edited_at) && (
@@ -534,7 +534,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     {anchor ? (
                       <p className="text-gray-900">{anchor}</p>
                     ) : (
-                      <span className="text-gray-500 italic">No anchor information</span>
+                      <span className="text-gray-500">No anchor information</span>
                     )}
                   </div>
                   {(client.anchor_last_edited_by || client.anchor_last_edited_at) && (
@@ -605,7 +605,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         <p key={index} className="text-gray-900 mb-3 last:mb-0 font-medium">{fact}</p>
                       ))
                     ) : (
-                      <span className="text-gray-500 italic">No case facts added</span>
+                      <span className="text-gray-500">No case facts added</span>
                     )}
                   </div>
                   {(client.facts_last_edited_by || client.facts_last_edited_at) && (

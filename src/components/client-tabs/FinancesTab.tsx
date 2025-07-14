@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon } from '@heroicons/react/24/outline';
+import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import { useMsal } from '@azure/msal-react';
@@ -10,6 +10,7 @@ import ReactDOM from 'react-dom';
 import { BanknotesIcon as BanknotesIconSolid } from '@heroicons/react/24/solid';
 import { PencilLine, Trash2 } from 'lucide-react';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
+import { generateProformaName } from '../../lib/proforma';
 
 interface PaymentPlan {
   id: string | number;
@@ -21,6 +22,9 @@ interface PaymentPlan {
   order: string;
   proforma?: string | null;
   notes: string;
+  paid?: boolean;
+  paid_at?: string;
+  paid_by?: string;
 }
 
 interface FinancePlan {
@@ -29,7 +33,11 @@ interface FinancePlan {
   payments: PaymentPlan[];
 }
 
-const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+interface FinancesTabProps extends ClientTabProps {
+  onPaymentMarkedPaid?: (paymentId: string | number) => void;
+}
+
+const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPaymentMarkedPaid }) => {
   const navigate = useNavigate();
   const { instance } = useMsal();
   const [financePlan, setFinancePlan] = useState<FinancePlan | null>(null);
@@ -55,6 +63,45 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setProformaData((prev: any) => ({ ...prev, rows: newRows }));
     }
     setIsEditingSubtotal(false);
+  };
+
+  // Add paid state for each payment row
+  const [paidMap, setPaidMap] = useState<{ [id: string]: boolean }>({});
+
+  // Handler to mark a payment as paid
+  const handleMarkAsPaid = async (id: string | number) => {
+    setPaidMap(prev => ({ ...prev, [id]: true }));
+    if (onPaymentMarkedPaid) onPaymentMarkedPaid(id);
+    let paidBy = 'Unknown';
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && user.email) {
+        const { data: userData, error } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', user.email)
+          .single();
+        if (!error && userData?.full_name) {
+          paidBy = userData.full_name;
+        } else {
+          paidBy = user.email;
+        }
+      }
+    } catch {}
+    // Update DB
+    const { error } = await supabase
+      .from('payment_plans')
+      .update({
+        paid: true,
+        paid_at: new Date().toISOString(),
+        paid_by: paidBy,
+      })
+      .eq('id', id);
+    if (!error) {
+      toast.success('Payment marked as paid!');
+    } else {
+      toast.error('Failed to mark as paid.');
+    }
   };
 
   // Fetch payment plans when component mounts or client changes
@@ -89,6 +136,9 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             order: plan.payment_order,
             proforma: plan.proforma || null,
             notes: plan.notes || '',
+            paid: plan.paid || false,
+            paid_at: plan.paid_at || null,
+            paid_by: plan.paid_by || null,
           }));
 
           setFinancePlan({
@@ -129,6 +179,9 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           order: plan.payment_order,
           proforma: plan.proforma || null,
           notes: plan.notes || '',
+          paid: plan.paid || false,
+          paid_at: plan.paid_at || null,
+          paid_by: plan.paid_by || null,
         }));
         setFinancePlan({
           total: Math.round(total * 100) / 100,
@@ -195,68 +248,13 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  // Function to generate sequential proforma name
-  const generateProformaName = async (clientId: number) => {
-    if (!clientId) {
-      const year = new Date().getFullYear();
-      const timestamp = Date.now().toString().slice(-4);
-      return `${year}-${timestamp} Proforma`;
-    }
-    
-    try {
-      // Get all existing proformas for this client
-      const { data, error } = await supabase
-        .from('payment_plans')
-        .select('proforma')
-        .eq('lead_id', clientId)
-        .not('proforma', 'is', null);
-
-      if (error) throw error;
-
-      // Extract proforma names and find the highest number
-      const existingNames = data
-        .map(row => row.proforma)
-        .filter(proforma => proforma && typeof proforma === 'string')
-        .map(proforma => {
-          try {
-            const parsed = JSON.parse(proforma);
-            return parsed.proformaName || '';
-          } catch {
-            return '';
-          }
-        })
-        .filter(name => name.startsWith(`${new Date().getFullYear()}-`));
-
-      // Find the highest number
-      let maxNumber = 0;
-      existingNames.forEach(name => {
-        const match = name.match(/\d+$/);
-        if (match) {
-          const num = parseInt(match[0]);
-          if (num > maxNumber) maxNumber = num;
-        }
-      });
-
-      // Generate next number
-      const nextNumber = maxNumber + 1;
-      const year = new Date().getFullYear();
-      return `${year}-${nextNumber.toString().padStart(2, '0')} Proforma`;
-    } catch (error) {
-      console.error('Error generating proforma name:', error);
-      // Fallback to current timestamp
-      const year = new Date().getFullYear();
-      const timestamp = Date.now().toString().slice(-4);
-      return `${year}-${timestamp} Proforma`;
-    }
-  };
-
   // Generate proforma content as a structured object
   const generateProformaContent = async (data: any, createdBy: string) => {
     const total = data.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
     const totalWithVat = data.addVat ? Math.round(total * 1.18 * 100) / 100 : total;
     
     // Generate proforma name
-    const proformaName = await generateProformaName(data.clientId);
+    const proformaName = await generateProformaName();
     
     return JSON.stringify({
       client: data.client,
@@ -280,7 +278,7 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Handler to open proforma drawer
   const handleOpenProforma = async (payment: PaymentPlan) => {
-    const proformaName = await generateProformaName(Number(client?.id));
+    const proformaName = await generateProformaName();
     setGeneratedProformaName(proformaName);
     
     setProformaData({
@@ -332,12 +330,22 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const handleCreateProforma = async () => {
     if (!proformaData) return;
     try {
-      // Get current user (example for MSAL)
       let createdBy = 'Unknown';
-      if (instance && typeof instance.getAllAccounts === 'function') {
-        const account = instance.getAllAccounts()[0];
-        if (account && account.name) createdBy = account.name;
-      }
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user && user.email) {
+          const { data: userData, error } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', user.email)
+            .single();
+          if (!error && userData?.full_name) {
+            createdBy = userData.full_name;
+          } else {
+            createdBy = user.email;
+          }
+        }
+      } catch {}
       // Generate proforma content with name and createdBy
       const proformaContent = await generateProformaContent(proformaData, createdBy);
       // Save proforma to the database for the specific payment row
@@ -440,9 +448,9 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
         {/* Table or Box view */}
         {viewMode === 'table' ? (
-          <div className="bg-white rounded-2xl shadow-xl p-4 mb-12 border border-base-200">
+          <div className="bg-white rounded-2xl shadow-xl p-4 mb-12 border border-base-200 overflow-x-auto">
             <table className="min-w-full rounded-xl overflow-hidden">
-              <thead className="bg-base-200">
+              <thead className="bg-base-200 sticky top-0 z-10">
                 <tr>
                   <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
                   <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
@@ -456,69 +464,103 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </tr>
               </thead>
               <tbody>
-                {financePlan.payments.map((p: PaymentPlan, idx: number) => (
-                  <tr key={p.id || idx} className={
-                    `transition-all ${idx % 2 === 0 ? 'bg-white' : 'bg-base-100'} hover:bg-primary/5 border-b-2 border-base-200 last:border-0` // add row divider
-                  } style={{ height: '64px' }}>
-                    {editingPaymentId === p.id ? (
-                      <>
-                        <td className="align-middle text-center"><input className="input input-bordered w-20 text-center" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} /></td>
-                        <td className="align-middle text-center"><input className="input input-bordered w-32 text-center" type="date" value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''} onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))} /></td>
-                        <td className="align-middle text-center"><input className="input input-bordered w-32 text-center" type="number" value={editPaymentData.value} onChange={e => setEditPaymentData((d: any) => ({ ...d, value: e.target.value }))} /></td>
-                        <td className="align-middle text-center"><input className="input input-bordered w-32 text-center" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} /></td>
-                        <td className="align-middle text-center">---</td>
-                        <td className="align-middle text-center"><input className="input input-bordered w-32 text-center" value={editPaymentData.order} onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))} /></td>
-                        <td className="align-middle text-center">{editPaymentData.proforma && editPaymentData.proforma.trim() !== '' ? <span className="text-green-600">Proforma Saved</span> : <span className="text-gray-400">No Proforma</span>}</td>
-                        <td className="align-middle text-center"><input className="input input-bordered w-32 text-center" value={editPaymentData.notes} onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} /></td>
-                        <td className="align-middle min-w-[120px] sticky right-0 bg-white z-10 flex flex-col gap-2 items-end py-2">
-                          <div className="flex gap-2">
-                            <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
-                            <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
-                          </div>
-                        </td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="font-bold text-lg align-middle text-center">{p.duePercent}</td>
-                        <td className="align-middle text-center">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</td>
-                        <td className="font-bold align-middle text-center">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span className='text-gray-500 font-bold'>+ {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></td>
-                        <td className="text-primary font-semibold align-middle text-center">{p.client}</td>
-                        <td className="align-middle text-center">---</td>
-                        <td className="align-middle text-center">{p.order}</td>
-                        <td className="align-middle text-center">
-                          {p.proforma && p.proforma.trim() !== '' ? (
-                            <button 
-                              className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
-                              title="View Proforma" 
-                              onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
+                {financePlan.payments.map((p: PaymentPlan, idx: number) => {
+                  const isPaid = p.paid;
+                  return (
+                    <tr
+                      key={p.id || idx}
+                      className={`transition-all duration-200 ${
+                        isPaid
+                          ? 'bg-green-50 border-l-4 border-green-400'
+                          : idx % 2 === 0
+                            ? 'bg-white border-l-4 border-transparent'
+                            : 'bg-base-100 border-l-4 border-transparent'
+                      } hover:bg-blue-50 rounded-xl shadow-sm`}
+                      style={{ verticalAlign: 'middle', position: 'relative' }}
+                    >
+                      {/* Paid Watermark */}
+                      {isPaid && (
+                        <td colSpan={9} style={{
+                          position: 'absolute',
+                          top: '50%',
+                          left: '50%',
+                          transform: 'translate(-50%, -50%) rotate(-20deg)',
+                          fontSize: '2.5rem',
+                          color: 'rgba(34,197,94,0.13)',
+                          fontWeight: 900,
+                          letterSpacing: 2,
+                          pointerEvents: 'none',
+                          zIndex: 10,
+                          textShadow: '0 2px 8px rgba(34,197,94,0.2)'
+                        }}>PAID</td>
+                      )}
+                      {/* Each column in correct order: */}
+                      <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">{p.duePercent}</td>
+                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</td>
+                      <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span className='text-gray-500 font-bold'>+ {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></td>
+                      <td className="text-primary font-semibold align-middle text-center px-4 py-3 whitespace-nowrap">{p.client}</td>
+                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">---</td>
+                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.order}</td>
+                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                        {p.proforma && p.proforma.trim() !== '' ? (
+                          <button 
+                            className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
+                            title="View Proforma" 
+                            onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
+                          >
+                            {getProformaName(p.proforma)}
+                          </button>
+                        ) : (
+                          <button 
+                            className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
+                            title="Create Proforma" 
+                            onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
+                          >
+                            Create Proforma
+                          </button>
+                        )}
+                      </td>
+                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.notes}</td>
+                      <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
+                        {p.id ? (
+                          <>
+                            {/* Dollar icon (small) */}
+                            {p.proforma && !isPaid && (
+                              <button
+                                className="btn btn-xs btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                                title="Mark as Paid"
+                                onClick={() => handleMarkAsPaid(p.id)}
+                                style={{ padding: 0 }}
+                              >
+                                <CurrencyDollarIcon className="w-4 h-4" />
+                              </button>
+                            )}
+                            {/* Edit icon (small) */}
+                            <button
+                              className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                              title="Edit"
+                              onClick={() => handleEditPayment(p)}
+                              style={{ padding: 0 }}
                             >
-                              {getProformaName(p.proforma)}
+                              <PencilIcon className="w-4 h-4" />
                             </button>
-                          ) : (
-                            <button 
-                              className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
-                              title="Create Proforma" 
-                              onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
+                            {/* Delete icon (small) */}
+                            <button
+                              className="btn btn-xs btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                              title="Delete"
+                              onClick={() => handleDeletePayment(p)}
+                              style={{ padding: 0 }}
                             >
-                              Create Proforma
+                              <TrashIcon className="w-4 h-4" />
                             </button>
-                          )}
-                        </td>
-                        <td className="align-middle text-center">{p.notes}</td>
-                        <td className="flex gap-2 justify-end align-middle min-w-[80px]">
-                          {p.id ? (
-                            <>
-                              <TrashIcon className="w-5 h-5 text-red-500 cursor-pointer hover:text-red-700" title="Delete" onClick={() => handleDeletePayment(p)} />
-                              <PencilIcon className="w-5 h-5 text-blue-500 cursor-pointer hover:text-blue-700" title="Edit" onClick={() => handleEditPayment(p)} />
-                            </>
-                          ) : (
-                            <span className="text-gray-400">—</span>
-                          )}
-                        </td>
-                      </>
-                    )}
-                  </tr>
-                ))}
+                          </>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
             <div className="mt-10 flex justify-start">
@@ -527,133 +569,167 @@ const FinancesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
-            {financePlan.payments.map((p: PaymentPlan, idx: number) => (
-              <div
-                key={p.id || idx}
-                className="bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border border-base-200 flex flex-col gap-0 relative group min-h-[460px]"
-              >
-                {/* Card content */}
-                {editingPaymentId === p.id ? (
-                  <div className="flex flex-col gap-0 divide-y divide-base-200">
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
-                      <input className="input input-bordered w-40 text-right" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} />
-                    </div>
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
-                      <input className="input input-bordered w-48 text-right" type="date" value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''} onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))} />
-                    </div>
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
-                      <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.value} onChange={e => setEditPaymentData((d: any) => ({ ...d, value: e.target.value }))} />
-                    </div>
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
-                      <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.valueVat} onChange={e => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value }))} />
-                    </div>
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
-                      <input className="input input-bordered w-48 text-right" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} />
-                    </div>
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                      <input className="input input-bordered w-48 text-right" value={editPaymentData.order} onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))} />
-                    </div>
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
-                      <input className="input input-bordered w-48 text-right" value={editPaymentData.notes} onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} />
-                    </div>
-                    <div className="flex gap-2 justify-end pt-4">
-                      <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
-                      <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col gap-0 divide-y divide-base-200">
-                    {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
-                    <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
-                      {/* Order (left) */}
-                      <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
-                      {/* Percent (center) */}
-                      <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
-                        {totalBalanceWithVat > 0 ? ((Number(p.value || 0) + Number(p.valueVat || 0)) / totalBalanceWithVat * 100).toFixed(1) : '0'}%
-                      </span>
-                      {/* Actions (right) */}
-                      <div className="flex gap-2 items-center ml-4">
-                        {p.id ? (
-                          <>
-                            <button
-                              className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                              title="Delete"
-                              onClick={() => handleDeletePayment(p)}
-                              style={{ padding: 0 }}
-                            >
-                              <Trash2 className="w-4 h-4 text-primary" />
-                            </button>
-                            <button
-                              className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                              title="Edit"
-                              onClick={() => handleEditPayment(p)}
-                              style={{ padding: 0 }}
-                            >
-                              <PencilLine className="w-4 h-4 text-primary" />
-                            </button>
-                          </>
-                        ) : (
-                          <span className="text-primary/50">—</span>
-                        )}
+            {financePlan.payments.map((p: PaymentPlan, idx: number) => {
+              const isPaid = p.paid;
+              return (
+                <div
+                  key={p.id || idx}
+                  className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border flex flex-col gap-0 relative group min-h-[460px] ${isPaid ? 'border-green-500 ring-2 ring-green-400' : 'border-base-200'}`}
+                  style={{ position: 'relative', overflow: 'hidden' }}
+                >
+                  {/* Paid Watermark */}
+                  {isPaid && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%) rotate(-20deg)',
+                      fontSize: '3rem',
+                      color: 'rgba(34,197,94,0.15)',
+                      fontWeight: 900,
+                      letterSpacing: 2,
+                      pointerEvents: 'none',
+                      zIndex: 10,
+                      textShadow: '0 2px 8px rgba(34,197,94,0.2)'
+                    }}>PAID</div>
+                  )}
+                  {/* Due Badge */}
+                  {p.proforma && !isPaid && (
+                    <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
+                  )}
+                  {/* Card content */}
+                  {editingPaymentId === p.id ? (
+                    <div className="flex flex-col gap-0 divide-y divide-base-200">
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
+                        <input className="input input-bordered w-40 text-right" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} />
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
+                        <input className="input input-bordered w-48 text-right" type="date" value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''} onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))} />
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
+                        <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.value} onChange={e => setEditPaymentData((d: any) => ({ ...d, value: e.target.value }))} />
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
+                        <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.valueVat} onChange={e => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value }))} />
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
+                        <input className="input input-bordered w-48 text-right" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} />
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
+                        <input className="input input-bordered w-48 text-right" value={editPaymentData.order} onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))} />
+                      </div>
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
+                        <input className="input input-bordered w-48 text-right" value={editPaymentData.notes} onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} />
+                      </div>
+                      <div className="flex gap-2 justify-end pt-4">
+                        <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
+                        <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
                       </div>
                     </div>
-                    {/* Due Date */}
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
-                      <span className="font-semibold text-black">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</span>
+                  ) : (
+                    <div className="flex flex-col gap-0 divide-y divide-base-200">
+                      {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
+                      <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
+                        {/* Order (left) */}
+                        <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
+                        {/* Percent (center) */}
+                        <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
+                          {totalBalanceWithVat > 0 ? ((Number(p.value || 0) + Number(p.valueVat || 0)) / totalBalanceWithVat * 100).toFixed(1) : '0'}%
+                        </span>
+                        {/* Actions (right) */}
+                        <div className="flex gap-2 items-center ml-4">
+                          {p.id ? (
+                            <>
+                              <button
+                                className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                title="Delete"
+                                onClick={() => handleDeletePayment(p)}
+                                style={{ padding: 0 }}
+                              >
+                                <Trash2 className="w-4 h-4 text-primary" />
+                              </button>
+                              <button
+                                className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                title="Edit"
+                                onClick={() => handleEditPayment(p)}
+                                style={{ padding: 0 }}
+                              >
+                                <PencilLine className="w-4 h-4 text-primary" />
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-primary/50">—</span>
+                          )}
+                        </div>
+                      </div>
+                      {/* Due Date */}
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
+                        <span className="font-semibold text-black">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</span>
+                      </div>
+                      {/* Value */}
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
+                        <span className="font-bold text-lg text-primary">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                      {/* VAT */}
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
+                        <span className="font-bold text-black">{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                      </div>
+                      {/* Client */}
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
+                        <span className="font-semibold text-black">{p.client}</span>
+                      </div>
+                      {/* Proforma */}
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Proforma</span>
+                        {p.proforma && p.proforma.trim() !== '' ? (
+                          <button 
+                            className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
+                            title="View Proforma" 
+                            onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
+                          >
+                            {getProformaName(p.proforma)}
+                          </button>
+                        ) : (
+                          <button 
+                            className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
+                            title="Create Proforma" 
+                            onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
+                          >
+                            Create Proforma
+                          </button>
+                        )}
+                      </div>
+                      {/* Notes */}
+                      <div className="flex items-center justify-between py-3">
+                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
+                        <span className="text-right max-w-[60%] text-black">{p.notes}</span>
+                      </div>
                     </div>
-                    {/* Value */}
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
-                      <span className="font-bold text-lg text-primary">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                    </div>
-                    {/* VAT */}
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
-                      <span className="font-bold text-black">{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                    </div>
-                    {/* Client */}
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
-                      <span className="font-semibold text-black">{p.client}</span>
-                    </div>
-                    {/* Proforma */}
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Proforma</span>
-                      {p.proforma && p.proforma.trim() !== '' ? (
-                        <button 
-                          className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
-                          title="View Proforma" 
-                          onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
-                        >
-                          {getProformaName(p.proforma)}
-                        </button>
-                      ) : (
-                        <button 
-                          className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
-                          title="Create Proforma" 
-                          onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
-                        >
-                          Create Proforma
-                        </button>
-                      )}
-                    </div>
-                    {/* Notes */}
-                    <div className="flex items-center justify-between py-3">
-                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
-                      <span className="text-right max-w-[60%] text-black">{p.notes}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
+                  )}
+                  {/* Dollar Icon Button at bottom right */}
+                  {p.proforma && !isPaid && (
+                    <button
+                      className="absolute bottom-4 right-4 bg-green-100 hover:bg-green-200 text-green-700 rounded-full p-2 shadow-lg z-20 border-2 border-green-300 transition-transform hover:scale-110"
+                      title="Mark as Paid"
+                      onClick={() => handleMarkAsPaid(p.id)}
+                    >
+                      <CurrencyDollarIcon className="w-6 h-6" />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -235,30 +235,16 @@ const AISuggestions = forwardRef((props, ref) => {
           -webkit-box-orient: vertical;
           overflow: hidden;
         }
-        /* Completely disable touch interactions on grid items - mobile only */
+        /* Mobile: Allow normal scrolling while maintaining horizontal card scrolling */
         @media (max-width: 768px) {
-          .ai-suggestions-container > div {
-            touch-action: none !important;
-            -webkit-user-drag: none !important;
-            -khtml-user-drag: none !important;
-            -moz-user-drag: none !important;
-            -o-user-drag: none !important;
-            user-drag: none !important;
-            pointer-events: none !important;
-            position: relative !important;
-            transform: none !important;
-            will-change: auto !important;
-          }
-          /* Allow buttons to be clickable on mobile */
-          .ai-suggestions-container button {
-            touch-action: manipulation !important;
-            pointer-events: auto !important;
-          }
-          /* Force grid items to stay in position on mobile */
           .ai-suggestions-container {
             touch-action: pan-x !important;
             overflow-x: auto !important;
-            overflow-y: hidden !important;
+            overflow-y: visible !important;
+          }
+          .ai-suggestions-container > div {
+            touch-action: manipulation !important;
+            pointer-events: auto !important;
           }
         }
         /* Desktop: allow normal interactions */

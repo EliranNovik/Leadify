@@ -3,6 +3,8 @@ import { supabase } from '../lib/supabase';
 import { ExclamationTriangleIcon, CurrencyDollarIcon, CalendarIcon, DocumentTextIcon, Squares2X2Icon, Bars3Icon, PrinterIcon, EnvelopeIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useNavigate } from 'react-router-dom';
+import FinancesTab from '../components/client-tabs/FinancesTab'; // If not already imported
+import toast from 'react-hot-toast';
 
 const COLLECTION_LABEL_OPTIONS = [
   { value: 'Important' },
@@ -168,6 +170,41 @@ const CollectionPage: React.FC = () => {
   // Add state for current user
   const [currentUserName, setCurrentUserName] = useState<string>('');
 
+  // Add handler to remove payment from awaitingPayments
+  const handlePaymentMarkedPaid = async (paymentId: string | number) => {
+    let paidBy = 'Unknown';
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && user.email) {
+        const { data: userData, error } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', user.email)
+          .single();
+        if (!error && userData?.full_name) {
+          paidBy = userData.full_name;
+        } else {
+          paidBy = user.email;
+        }
+      }
+    } catch {}
+    // Update DB
+    const { error } = await supabase
+      .from('payment_plans')
+      .update({
+        paid: true,
+        paid_at: new Date().toISOString(),
+        paid_by: paidBy,
+      })
+      .eq('id', paymentId);
+    if (!error) {
+      setAwaitingPayments(prev => prev.filter(p => p.id !== paymentId));
+      toast.success('Payment marked as paid!');
+    } else {
+      toast.error('Failed to mark as paid.');
+    }
+  };
+
   useEffect(() => {
     if (tab === 'no_payment') {
       const fetchLeads = async () => {
@@ -229,7 +266,7 @@ const CollectionPage: React.FC = () => {
       // Fetch all payment_plans with a proforma, join to leads for lead_number and name
       const { data, error } = await supabase
         .from('payment_plans')
-        .select('id, lead_id, due_date, value, value_vat, proforma, payment_order, leads:lead_id(lead_number, name)')
+        .select('id, lead_id, due_date, value, value_vat, proforma, payment_order, paid, leads:lead_id(lead_number, name)')
         .not('proforma', 'is', null)
         .order('due_date', { ascending: true });
       if (error) {
@@ -237,25 +274,27 @@ const CollectionPage: React.FC = () => {
         setLoading(false);
         return;
       }
-      // Map to display format
-      const mapped = (data || []).map((row: any) => {
-        let proformaName = 'Proforma';
-        if (row.proforma) {
-          try {
-            const parsed = JSON.parse(row.proforma);
-            proformaName = parsed.proformaName || 'Proforma';
-          } catch {}
-        }
-        return {
-          id: row.id,
-          lead_number: row.leads?.lead_number || '',
-          name: row.leads?.name || '',
-          date: row.due_date,
-          total_amount: Number(row.value) + Number(row.value_vat),
-          proformaName,
-          order: row.payment_order || '',
-        };
-      });
+      // Map to display format and filter out paid
+      const mapped = (data || [])
+        .filter((row: any) => !row.paid)
+        .map((row: any) => {
+          let proformaName = 'Proforma';
+          if (row.proforma) {
+            try {
+              const parsed = JSON.parse(row.proforma);
+              proformaName = parsed.proformaName || 'Proforma';
+            } catch {}
+          }
+          return {
+            id: row.id,
+            lead_number: row.leads?.lead_number || '',
+            name: row.leads?.name || '',
+            date: row.due_date,
+            total_amount: Number(row.value) + Number(row.value_vat),
+            proformaName,
+            order: row.payment_order || '',
+          };
+        });
       setAwaitingPayments(mapped);
       setLoading(false);
     };
@@ -542,6 +581,7 @@ const CollectionPage: React.FC = () => {
                     <th className="text-lg font-bold">Total Amount</th>
                     <th className="text-lg font-bold">Order</th>
                     <th className="text-lg font-bold">Proforma</th>
+                    <th className="text-lg font-bold">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="text-base">
@@ -563,6 +603,17 @@ const CollectionPage: React.FC = () => {
                           onClick={() => navigate(`/proforma/${row.id}`)}
                         >
                           {row.proformaName}
+                        </button>
+                      </td>
+                      <td>
+                        {/* Dollar icon button to mark as paid and remove row */}
+                        <button
+                          className="btn btn-xs btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                          title="Mark as Paid"
+                          onClick={() => handlePaymentMarkedPaid(row.id)}
+                          style={{ padding: 0 }}
+                        >
+                          <CurrencyDollarIcon className="w-4 h-4" />
                         </button>
                       </td>
                     </tr>

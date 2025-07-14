@@ -49,6 +49,28 @@ const Meetings: React.FC = () => {
   const [tomorrowMeetings, setTomorrowMeetings] = useState<Meeting[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Helper function to extract valid Teams link from stored data
+  const getValidTeamsLink = (link: string | undefined): string => {
+    if (!link) return '';
+    try {
+      // If it's a plain URL, return as is
+      if (link.startsWith('http')) return link;
+      // If it's a stringified object, parse and extract joinUrl
+      const obj = JSON.parse(link);
+      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
+        return obj.joinUrl;
+      }
+      // Some Graph API responses use joinWebUrl
+      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
+        return obj.joinWebUrl;
+      }
+    } catch (e) {
+      // Not JSON, just return as is
+      if (typeof link === 'string' && link.startsWith('http')) return link;
+    }
+    return '';
+  };
+
   useEffect(() => {
     const fetchMeetings = async () => {
       try {
@@ -217,9 +239,9 @@ const Meetings: React.FC = () => {
                 </div>
               </td>
               <td>
-                {meeting.link && (
+                {getValidTeamsLink(meeting.link) && (
                   <a
-                    href={meeting.link}
+                    href={getValidTeamsLink(meeting.link)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="btn btn-ghost btn-sm"
@@ -270,9 +292,9 @@ const Meetings: React.FC = () => {
             <span className="font-semibold">Value:</span>
             <span className="text-success font-bold">{meeting.value}</span>
           </div>
-          {meeting.link && (
+          {getValidTeamsLink(meeting.link) && (
             <a
-              href={meeting.link}
+              href={getValidTeamsLink(meeting.link)}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-primary btn-sm mt-2"

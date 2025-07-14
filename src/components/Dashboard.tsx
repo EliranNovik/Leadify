@@ -10,6 +10,7 @@ import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
 import { useMsal } from '@azure/msal-react';
 import { DateTime } from 'luxon';
 import { FaWhatsapp } from 'react-icons/fa';
+import { useNavigate } from 'react-router-dom';
 
 
 
@@ -42,8 +43,92 @@ const Dashboard: React.FC = () => {
   const [realOverdueLeads, setRealOverdueLeads] = useState<any[]>([]);
   const [overdueLeadsLoading, setOverdueLeadsLoading] = useState(false);
 
+  const navigate = useNavigate();
 
+  // Helper function to extract valid Teams link from stored data
+  const getValidTeamsLink = (link: string | undefined): string => {
+    if (!link) return '';
+    try {
+      // If it's a plain URL, return as is
+      if (link.startsWith('http')) return link;
+      // If it's a stringified object, parse and extract joinUrl
+      const obj = JSON.parse(link);
+      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
+        return obj.joinUrl;
+      }
+      // Some Graph API responses use joinWebUrl
+      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
+        return obj.joinWebUrl;
+      }
+    } catch (e) {
+      // Not JSON, just return as is
+      if (typeof link === 'string' && link.startsWith('http')) return link;
+    }
+    return '';
+  };
 
+  // --- Add state for today's meetings (real data) ---
+  const [todayMeetings, setTodayMeetings] = useState<any[]>([]);
+  const [meetingsLoading, setMeetingsLoading] = useState(false);
+
+  useEffect(() => {
+    // Fetch today's meetings (real data, similar to Meetings.tsx)
+    const fetchMeetings = async () => {
+      setMeetingsLoading(true);
+      try {
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        const { data: meetings, error } = await supabase
+          .from('meetings')
+          .select(`
+            id,
+            meeting_date,
+            meeting_time,
+            meeting_location,
+            meeting_manager,
+            meeting_currency,
+            meeting_amount,
+            expert,
+            helper,
+            teams_meeting_url,
+            meeting_brief,
+            leads:client_id (
+              lead_number,
+              name,
+              status,
+              topic,
+              stage,
+              manager
+            )
+          `)
+          .eq('meeting_date', todayStr)
+          .not('teams_meeting_url', 'is', null);
+        if (!error && meetings) {
+          setTodayMeetings(
+            meetings.map((meeting: any) => ({
+              id: meeting.id,
+              lead: meeting.leads?.lead_number || 'N/A',
+              name: meeting.leads?.name || 'Unknown',
+              topic: meeting.leads?.topic || 'Consultation',
+              expert: meeting.expert || 'Unassigned',
+              time: meeting.meeting_time,
+              location: meeting.meeting_location || 'Teams',
+              manager: meeting.meeting_manager,
+              value: meeting.meeting_amount ? `${meeting.meeting_currency} ${meeting.meeting_amount}` : '0',
+              link: meeting.teams_meeting_url,
+              stage: meeting.leads?.stage,
+            }))
+          );
+        } else {
+          setTodayMeetings([]);
+        }
+      } catch (e) {
+        setTodayMeetings([]);
+      }
+      setMeetingsLoading(false);
+    };
+    if (expanded === 'meetings') fetchMeetings();
+  }, [expanded]);
 
   // Add mock client messages
   const mockMessages = [
@@ -637,95 +722,82 @@ const Dashboard: React.FC = () => {
           <div className="hidden md:block">
             <Meetings />
           </div>
-          
-          {/* Mobile Card View */}
+          {/* Mobile Card View (REAL DATA) */}
           <div className="md:hidden">
             <div className="space-y-4">
               <h3 className="text-xl font-bold text-gray-900 mb-4">Today's Meetings</h3>
-              <div className="grid grid-cols-1 gap-4">
-                {[
-                  { name: 'David Lee', lead_number: 'L122324', time: '10:00 AM', manager: 'Anna Zh', category: 'German Citizenship', amount: 12000, expert: 'Dr. Cohen', location: 'Berlin Office', probability: 85 },
-                  { name: 'Emma Wilson', lead_number: 'L122325', time: '2:30 PM', manager: 'MichaelW', category: 'Austrian Citizenship', amount: 14000, expert: 'Adv. Levi', location: 'Vienna Office', probability: 75 },
-                  { name: 'John Smith', lead_number: 'L122326', time: '4:00 PM', manager: 'Isaac', category: 'Business Visa', amount: 8000, expert: 'Ms. Katz', location: 'Tel Aviv Office', probability: 60 }
-                ].map((meeting, index) => (
-                  <div key={index} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
-                    <div className="flex-1 cursor-pointer flex flex-col">
-                      {/* Lead Number and Name */}
-                      <div className="mb-3 flex items-center gap-2">
-                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{meeting.lead_number}</span>
-                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
+              {meetingsLoading ? (
+                <div className="text-center py-8 text-base-content/70">Loading...</div>
+              ) : todayMeetings.length === 0 ? (
+                <div className="text-center py-8 text-base-content/70">No meetings scheduled for today</div>
+              ) : (
+                <div className="grid grid-cols-1 gap-4">
+                  {todayMeetings.map((meeting, index) => (
+                    <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
+                      <div className="flex-1 cursor-pointer flex flex-col">
+                        {/* Lead Number and Name */}
+                        <div className="mb-3 flex items-center gap-2">
+                          <span className="text-xs font-semibold text-gray-400 tracking-widest">{meeting.lead}</span>
+                          <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                          <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
+                        </div>
+                        {/* Stage */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Stage</span>
+                          <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+                            {meeting.stage ? meeting.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()) : 'Meeting Scheduled'}
+                          </span>
+                        </div>
+                        <div className="space-y-2 divide-y divide-gray-100">
+                          {/* Time */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Time</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.time}</span>
+                          </div>
+                          {/* Manager */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Manager</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.manager}</span>
+                          </div>
+                          {/* Topic */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Topic</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.topic}</span>
+                          </div>
+                          {/* Amount */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Amount</span>
+                            <span className="text-sm font-bold text-green-600">{meeting.value}</span>
+                          </div>
+                          {/* Expert */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Expert</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
+                          </div>
+                          {/* Location */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Location</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.location}</span>
+                          </div>
+                        </div>
                       </div>
-
-                      {/* Stage */}
-                      <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Stage</span>
-                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
-                          Meeting Scheduled
-                        </span>
-                      </div>
-
-                      <div className="space-y-2 divide-y divide-gray-100">
-                        {/* Time */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Time</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.time}</span>
-                        </div>
-
-                        {/* Manager */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Manager</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.manager}</span>
-                        </div>
-
-                        {/* Category */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Category</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.category}</span>
-                        </div>
-
-                        {/* Amount */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Amount</span>
-                          <span className="text-sm font-bold text-green-600">₪{meeting.amount.toLocaleString()}</span>
-                        </div>
-
-                        {/* Expert */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Expert</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
-                        </div>
-
-                        {/* Location */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Location</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.location}</span>
-                        </div>
-
-                        {/* Probability */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Probability</span>
-                          <span className="text-sm font-bold text-green-600">{meeting.probability}%</span>
-                        </div>
+                      {/* Action Buttons */}
+                      <div className="absolute bottom-4 left-4 right-4">
+                        {/* Join Meeting (Teams) */}
+                        <a
+                          className={`btn btn-primary btn-sm w-full${!getValidTeamsLink(meeting.link) ? ' pointer-events-none opacity-50' : ''}`}
+                          href={getValidTeamsLink(meeting.link) || '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          <VideoCameraIcon className="w-4 h-4" />
+                          Join Meeting
+                        </a>
                       </div>
                     </div>
-
-                    {/* Action Buttons */}
-                    <div className="absolute bottom-4 left-4 right-4 flex gap-2">
-                      <button className="btn btn-primary btn-sm flex-1">
-                        <VideoCameraIcon className="w-4 h-4" />
-                        Join Meeting
-                      </button>
-                      <button className="btn btn-success btn-sm">
-                        <FaWhatsapp className="w-4 h-4" />
-                      </button>
-                      <button className="btn btn-info btn-sm">
-                        <EnvelopeIcon className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

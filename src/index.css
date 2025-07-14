@@ -69,6 +69,14 @@
   animation: checkmarkPop 0.7s cubic-bezier(0.4,0,0.2,1) both;
 }
 
+body, html, #root {
+  font-family: "Saira", sans-serif !important;
+  font-optical-sizing: auto;
+  font-weight: 500;
+  font-style: normal;
+  font-variation-settings: "wdth" 100;
+}
+
 @media (max-width: 640px) {
   .navbar {
     min-height: 4.5rem !important;
