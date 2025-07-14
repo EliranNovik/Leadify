@@ -1,4 +1,4 @@
-import React, { useState, forwardRef, useImperativeHandle } from 'react';
+import React, { useState, forwardRef, useImperativeHandle, useEffect } from 'react';
 import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, XMarkIcon, FunnelIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 
 interface Suggestion {
@@ -44,7 +44,6 @@ const mockSuggestions: Suggestion[] = [
     dueDate: 'Today',
     context: 'Meeting notes available'
   },
-  // New reminder card
   {
     id: '11',
     type: 'reminder',
@@ -53,7 +52,6 @@ const mockSuggestions: Suggestion[] = [
     dueDate: 'Today',
     context: 'Meeting scheduled for tomorrow'
   },
-  // New urgent card
   {
     id: '12',
     type: 'urgent',
@@ -62,7 +60,6 @@ const mockSuggestions: Suggestion[] = [
     dueDate: 'Today',
     context: 'Update client with research results'
   },
-  // Extra card 1
   {
     id: '13',
     type: 'important',
@@ -71,7 +68,6 @@ const mockSuggestions: Suggestion[] = [
     dueDate: 'Tomorrow',
     context: 'Client signed agreement today'
   },
-  // Extra card 2
   {
     id: '14',
     type: 'reminder',
@@ -80,7 +76,6 @@ const mockSuggestions: Suggestion[] = [
     dueDate: 'This week',
     context: 'Initial consultation completed'
   },
-  // Extra card 3
   {
     id: '15',
     type: 'urgent',
@@ -186,28 +181,52 @@ const AISuggestions = forwardRef((props, ref) => {
     }
   };
 
-
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
     <div 
-      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full suggestion-card"
+      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 md:hover:shadow-xl md:hover:scale-[1.025] p-5 h-[280px] w-full suggestion-card"
       draggable={false}
       onDragStart={(e) => e.preventDefault()}
       onTouchStart={(e) => {
-        // Prevent default touch behavior that might interfere with scrolling
-        e.currentTarget.style.touchAction = 'manipulation';
+        // Disable any transform on touch
+        e.currentTarget.style.transform = 'none';
+        e.currentTarget.style.touchAction = 'pan-y';
+        
+        const touch = e.touches[0];
+        (e.currentTarget as any).initialTouchY = touch.clientY;
+        (e.currentTarget as any).initialTouchX = touch.clientX;
       }}
       onTouchMove={(e) => {
-        // Allow touch move for scrolling
-        e.stopPropagation();
+        const touch = e.touches[0];
+        const currentTarget = e.currentTarget as any;
+        
+        // Keep transform disabled
+        currentTarget.style.transform = 'none';
+        
+        if (currentTarget.initialTouchY !== undefined) {
+          const deltaY = Math.abs(touch.clientY - currentTarget.initialTouchY);
+          const deltaX = Math.abs(touch.clientX - currentTarget.initialTouchX);
+          
+          if (deltaY > deltaX) {
+            return;
+          }
+        }
+        
+        e.preventDefault();
       }}
-      style={{ touchAction: 'manipulation' }}
+      onTouchEnd={(e) => {
+        // Reset transform
+        e.currentTarget.style.transform = 'none';
+        (e.currentTarget as any).initialTouchY = undefined;
+        (e.currentTarget as any).initialTouchX = undefined;
+      }}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{ touchAction: 'pan-y' }}
     >
         <div className="flex items-start justify-between mb-2 flex-shrink-0">
           <div className="flex items-center gap-2">
             {getTypeIcon(suggestion.type)}
             <span className="font-semibold text-sm capitalize text-gray-700">{suggestion.type}</span>
           </div>
-          {/* Due date removed from small version */}
         </div>
         <div className="flex-1 flex flex-col overflow-hidden">
           <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">{suggestion.message}</div>
@@ -248,39 +267,18 @@ const AISuggestions = forwardRef((props, ref) => {
           -webkit-box-orient: vertical;
           overflow: hidden;
         }
-        /* Mobile: Prevent dragging but allow proper scrolling */
+        /* Disable hover effects on mobile */
         @media (max-width: 768px) {
-          .ai-suggestions-container {
-            touch-action: auto !important;
-            overflow-x: auto !important;
-            overflow-y: visible !important;
-            -webkit-overflow-scrolling: touch !important;
-          }
-          .ai-suggestions-container .suggestion-card {
-            touch-action: manipulation !important;
-            pointer-events: auto !important;
-            user-select: none !important;
-            -webkit-user-select: none !important;
-            -moz-user-select: none !important;
-            -ms-user-select: none !important;
-          }
-          .ai-suggestions-container .suggestion-card * {
-            pointer-events: auto !important;
-          }
-          /* Prevent any dragging behavior on mobile */
-          .ai-suggestions-container .suggestion-card:active {
+          .suggestion-card {
             transform: none !important;
+            transition: none !important;
           }
-          .ai-suggestions-container .suggestion-card img,
-          .ai-suggestions-container .suggestion-card svg {
-            pointer-events: none !important;
-            user-select: none !important;
+          .suggestion-card:hover {
+            transform: none !important;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
           }
-        }
-        /* Desktop: allow normal interactions */
-        @media (min-width: 769px) {
-          .ai-suggestions-container .suggestion-card {
-            pointer-events: auto !important;
+          .suggestion-card:active {
+            transform: none !important;
           }
         }
       `}</style>
@@ -292,32 +290,24 @@ const AISuggestions = forwardRef((props, ref) => {
         </div>
         <button className="btn btn-sm btn-outline" style={{ borderColor: '#3b28c7', color: '#3b28c7' }} onClick={() => setIsModalOpen(true)}>View All</button>
       </div>
-      <div
-        className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible grid grid-flow-col auto-cols-[calc(50%-0.5rem)] md:grid-flow-row md:grid-cols-1 gap-4 mt-0 scrollbar-none ai-suggestions-container"
-        draggable={false}
-        onDragStart={(e) => e.preventDefault()}
-        onTouchStart={(e) => {
-          // Only prevent default if this is a horizontal swipe on mobile
-          const isMobile = window.innerWidth <= 768;
-          if (isMobile) {
-            e.currentTarget.style.touchAction = 'pan-x pan-y';
-          }
-        }}
+      <div 
+        className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible max-h-[1200px] bg-white"
         style={{ 
-          maxHeight: '1200px', 
           scrollbarWidth: 'none', 
           msOverflowStyle: 'none',
-          touchAction: 'auto', // Allow both horizontal and vertical touch actions
-          WebkitOverflowScrolling: 'touch' // Smooth scrolling on iOS
+          WebkitOverflowScrolling: 'touch'
         }}
       >
-        {/* Hide scrollbar for Webkit browsers */}
         <style>{`
           .scrollbar-none::-webkit-scrollbar { display: none; }
         `}</style>
-        {mockSuggestions.map((suggestion) => (
-          <SuggestionCard key={suggestion.id} suggestion={suggestion} />
-        ))}
+        <div className="flex md:grid flex-row md:grid-cols-1 gap-4">
+          {mockSuggestions.map((suggestion) => (
+            <div key={suggestion.id} className="w-[calc(50%-0.5rem)] md:w-full flex-shrink-0">
+              <SuggestionCard suggestion={suggestion} />
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Modal for View All */}
@@ -371,39 +361,7 @@ const AISuggestions = forwardRef((props, ref) => {
               <div className="flex md:grid flex-row md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
                 {filteredSuggestions.map((suggestion) => (
                   <div key={suggestion.id} className="w-[calc(50%-0.5rem)] md:w-full flex-shrink-0">
-                    <div 
-                      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full suggestion-card"
-                      draggable={false}
-                      onDragStart={(e) => e.preventDefault()}
-                      onTouchStart={(e) => {
-                        // Prevent default touch behavior that might interfere with scrolling
-                        e.currentTarget.style.touchAction = 'manipulation';
-                      }}
-                      onTouchMove={(e) => {
-                        // Allow touch move for scrolling
-                        e.stopPropagation();
-                      }}
-                      style={{ touchAction: 'manipulation' }}
-                    >
-                      <div className="flex items-start justify-between mb-2 flex-shrink-0">
-                        <div className="flex items-center gap-2">
-                          {getTypeIcon(suggestion.type)}
-                          <span className="font-semibold text-sm capitalize text-gray-700">{suggestion.type}</span>
-                        </div>
-                      </div>
-                      <div className="flex-1 flex flex-col overflow-hidden">
-                        <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">{suggestion.message}</div>
-                        {suggestion.context && (
-                          <div className="text-sm text-gray-500 mb-2 line-clamp-3 flex-1">{suggestion.context}</div>
-                        )}
-                      </div>
-                      <div className="flex justify-start mt-auto flex-shrink-0">
-                        <button className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all">
-                          {suggestion.action}
-                          <ArrowRightIcon className="w-4 h-4 ml-1" />
-                        </button>
-                      </div>
-                    </div>
+                    <SuggestionCard suggestion={suggestion} />
                   </div>
                 ))}
               </div>
@@ -416,4 +374,4 @@ const AISuggestions = forwardRef((props, ref) => {
   );
 });
 
-export default AISuggestions; 
+export default AISuggestions;
