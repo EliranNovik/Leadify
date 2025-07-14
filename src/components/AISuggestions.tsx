@@ -189,38 +189,17 @@ const AISuggestions = forwardRef((props, ref) => {
       onTouchStart={(e) => {
         // Disable any transform on touch
         e.currentTarget.style.transform = 'none';
-        e.currentTarget.style.touchAction = 'pan-y';
-        
-        const touch = e.touches[0];
-        (e.currentTarget as any).initialTouchY = touch.clientY;
-        (e.currentTarget as any).initialTouchX = touch.clientX;
       }}
       onTouchMove={(e) => {
-        const touch = e.touches[0];
-        const currentTarget = e.currentTarget as any;
-        
-        // Keep transform disabled
-        currentTarget.style.transform = 'none';
-        
-        if (currentTarget.initialTouchY !== undefined) {
-          const deltaY = Math.abs(touch.clientY - currentTarget.initialTouchY);
-          const deltaX = Math.abs(touch.clientX - currentTarget.initialTouchX);
-          
-          if (deltaY > deltaX) {
-            return;
-          }
-        }
-        
-        e.preventDefault();
+        // Keep transform disabled during touch
+        e.currentTarget.style.transform = 'none';
       }}
       onTouchEnd={(e) => {
         // Reset transform
         e.currentTarget.style.transform = 'none';
-        (e.currentTarget as any).initialTouchY = undefined;
-        (e.currentTarget as any).initialTouchX = undefined;
       }}
       onContextMenu={(e) => e.preventDefault()}
-      style={{ touchAction: 'pan-y' }}
+      style={{ touchAction: 'auto' }}
     >
         <div className="flex items-start justify-between mb-2 flex-shrink-0">
           <div className="flex items-center gap-2">
