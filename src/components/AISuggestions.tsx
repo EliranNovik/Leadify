@@ -188,7 +188,20 @@ const AISuggestions = forwardRef((props, ref) => {
 
 
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
-    <div className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full">
+    <div 
+      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full suggestion-card"
+      draggable={false}
+      onDragStart={(e) => e.preventDefault()}
+      onTouchStart={(e) => {
+        // Prevent default touch behavior that might interfere with scrolling
+        e.currentTarget.style.touchAction = 'manipulation';
+      }}
+      onTouchMove={(e) => {
+        // Allow touch move for scrolling
+        e.stopPropagation();
+      }}
+      style={{ touchAction: 'manipulation' }}
+    >
         <div className="flex items-start justify-between mb-2 flex-shrink-0">
           <div className="flex items-center gap-2">
             {getTypeIcon(suggestion.type)}
@@ -235,21 +248,38 @@ const AISuggestions = forwardRef((props, ref) => {
           -webkit-box-orient: vertical;
           overflow: hidden;
         }
-        /* Mobile: Allow normal scrolling while maintaining horizontal card scrolling */
+        /* Mobile: Prevent dragging but allow proper scrolling */
         @media (max-width: 768px) {
           .ai-suggestions-container {
-            touch-action: pan-x !important;
+            touch-action: auto !important;
             overflow-x: auto !important;
             overflow-y: visible !important;
+            -webkit-overflow-scrolling: touch !important;
           }
-          .ai-suggestions-container > div {
+          .ai-suggestions-container .suggestion-card {
             touch-action: manipulation !important;
             pointer-events: auto !important;
+            user-select: none !important;
+            -webkit-user-select: none !important;
+            -moz-user-select: none !important;
+            -ms-user-select: none !important;
+          }
+          .ai-suggestions-container .suggestion-card * {
+            pointer-events: auto !important;
+          }
+          /* Prevent any dragging behavior on mobile */
+          .ai-suggestions-container .suggestion-card:active {
+            transform: none !important;
+          }
+          .ai-suggestions-container .suggestion-card img,
+          .ai-suggestions-container .suggestion-card svg {
+            pointer-events: none !important;
+            user-select: none !important;
           }
         }
         /* Desktop: allow normal interactions */
         @media (min-width: 769px) {
-          .ai-suggestions-container > div {
+          .ai-suggestions-container .suggestion-card {
             pointer-events: auto !important;
           }
         }
@@ -264,12 +294,20 @@ const AISuggestions = forwardRef((props, ref) => {
       </div>
       <div
         className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible grid grid-flow-col auto-cols-[calc(50%-0.5rem)] md:grid-flow-row md:grid-cols-1 gap-4 mt-0 scrollbar-none ai-suggestions-container"
-        draggable="false"
+        draggable={false}
+        onDragStart={(e) => e.preventDefault()}
+        onTouchStart={(e) => {
+          // Only prevent default if this is a horizontal swipe on mobile
+          const isMobile = window.innerWidth <= 768;
+          if (isMobile) {
+            e.currentTarget.style.touchAction = 'pan-x pan-y';
+          }
+        }}
         style={{ 
           maxHeight: '1200px', 
           scrollbarWidth: 'none', 
           msOverflowStyle: 'none',
-          touchAction: 'pan-x', // Only allow horizontal panning on mobile
+          touchAction: 'auto', // Allow both horizontal and vertical touch actions
           WebkitOverflowScrolling: 'touch' // Smooth scrolling on iOS
         }}
       >
@@ -333,7 +371,20 @@ const AISuggestions = forwardRef((props, ref) => {
               <div className="flex md:grid flex-row md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
                 {filteredSuggestions.map((suggestion) => (
                   <div key={suggestion.id} className="w-[calc(50%-0.5rem)] md:w-full flex-shrink-0">
-                    <div className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full">
+                    <div 
+                      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 hover:shadow-xl hover:scale-[1.025] p-5 h-[280px] w-full suggestion-card"
+                      draggable={false}
+                      onDragStart={(e) => e.preventDefault()}
+                      onTouchStart={(e) => {
+                        // Prevent default touch behavior that might interfere with scrolling
+                        e.currentTarget.style.touchAction = 'manipulation';
+                      }}
+                      onTouchMove={(e) => {
+                        // Allow touch move for scrolling
+                        e.stopPropagation();
+                      }}
+                      style={{ touchAction: 'manipulation' }}
+                    >
                       <div className="flex items-start justify-between mb-2 flex-shrink-0">
                         <div className="flex items-center gap-2">
                           {getTypeIcon(suggestion.type)}
