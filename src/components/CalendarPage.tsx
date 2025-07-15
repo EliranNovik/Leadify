@@ -858,25 +858,25 @@ const CalendarPage: React.FC = () => {
     else if (probability >= 40) probabilityColor = 'text-orange-600';
 
     return (
-      <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
+      <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed">
         <div onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)} className="flex-1 cursor-pointer flex flex-col">
           {/* Lead Number and Name */}
           <div className="mb-3 flex items-center gap-2">
-            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number || meeting.lead_number}</span>
+            <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">{lead.lead_number || meeting.lead_number}</span>
             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-            <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name || meeting.name}</h3>
+            <h3 className="text-lg md:text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name || meeting.name}</h3>
             {/* Expert status indicator */}
             {hasExpertNotes ? (
-              <AcademicCapIcon className="w-6 h-6 text-green-400 ml-4" title="Expert opinion exists" />
+              <AcademicCapIcon className="w-6 h-6 md:w-7 md:h-7 text-green-400 ml-4" title="Expert opinion exists" />
             ) : (
-              <QuestionMarkCircleIcon className="w-6 h-6 text-yellow-400 ml-2" title="No expert opinion" />
+              <QuestionMarkCircleIcon className="w-6 h-6 md:w-7 md:h-7 text-yellow-400 ml-2" title="No expert opinion" />
             )}
           </div>
 
           {/* Stage */}
           <div className="flex justify-between items-center py-1">
-            <span className="text-xs font-semibold text-gray-500">Stage</span>
-            <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+            <span className="text-xs md:text-base font-semibold text-gray-500">Stage</span>
+            <span className="text-xs md:text-base font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
               {lead.stage || meeting.stage ? (lead.stage || meeting.stage).replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A'}
             </span>
           </div>
@@ -884,30 +884,30 @@ const CalendarPage: React.FC = () => {
           <div className="space-y-2 divide-y divide-gray-100">
             {/* Time */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs font-semibold text-gray-500">Time</span>
-              <span className="text-sm font-bold text-gray-800 ml-2">
+              <span className="text-xs md:text-base font-semibold text-gray-500">Time</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
                 {meeting.meeting_time ? meeting.meeting_time.slice(0,5) : 'No time'}
               </span>
             </div>
 
             {/* Manager */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs font-semibold text-gray-500">Manager</span>
-              <span className="text-sm font-bold text-gray-800 ml-2">
+              <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
                 {lead.manager || meeting.meeting_manager || '---'}
               </span>
             </div>
 
             {/* Category */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs font-semibold text-gray-500">Category</span>
-              <span className="text-sm font-bold text-gray-800 ml-2">{lead.category || meeting.category || 'N/A'}</span>
+              <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">{lead.category || meeting.category || 'N/A'}</span>
             </div>
 
             {/* Amount */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs font-semibold text-gray-500">Amount</span>
-              <span className="text-sm font-bold text-gray-800 ml-2">
+              <span className="text-xs md:text-base font-semibold text-gray-500">Amount</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
                 {typeof lead.balance === 'number'
                   ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
                   : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '₪0')}
@@ -916,24 +916,24 @@ const CalendarPage: React.FC = () => {
 
             {/* Expert */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs font-semibold text-gray-500">Expert</span>
-              <span className="text-sm font-bold text-gray-800 ml-2">
+              <span className="text-xs md:text-base font-semibold text-gray-500">Expert</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
                 {lead.expert || meeting.expert || 'N/A'}
               </span>
             </div>
 
             {/* Location */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs font-semibold text-gray-500">Location</span>
-              <span className="text-sm font-bold text-gray-800 ml-2">
+              <span className="text-xs md:text-base font-semibold text-gray-500">Location</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
                 {meeting.location || meeting.meeting_location || 'N/A'}
               </span>
             </div>
 
             {/* Probability */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs font-semibold text-gray-500">Probability</span>
-              <span className={`text-sm font-bold ml-2 ${probabilityColor}`}>
+              <span className="text-xs md:text-base font-semibold text-gray-500">Probability</span>
+              <span className={`text-sm md:text-lg font-bold ml-2 ${probabilityColor}`}>
                 {typeof probability === 'number' ? `${probability}%` : 'N/A'}
               </span>
             </div>
@@ -941,66 +941,64 @@ const CalendarPage: React.FC = () => {
 
           {/* Meeting Date (if available) */}
           {lead.meetings && lead.meetings.length > 0 && (
-            <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
-              <CalendarIcon className="w-4 h-4" />
+            <div className="mt-3 flex items-center gap-2 text-xs md:text-base text-gray-500">
+              <CalendarIcon className="w-4 h-4 md:w-5 md:h-5" />
               <span>Meeting: {lead.meetings[0].meeting_date}</span>
             </div>
           )}
         </div>
 
         {/* Action Buttons */}
-        <div className="mt-4 flex justify-end">
-          <div className="flex gap-2">
-            <button 
-              className="btn btn-outline btn-primary btn-sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                const url = getValidTeamsLink(meeting.teams_meeting_url);
-                if (url) {
-                  window.open(url, '_blank');
-                } else {
-                  alert('No meeting URL available');
-                }
-              }}
-              title="Teams Meeting"
-            >
-              <VideoCameraIcon className="w-4 h-4" />
-            </button>
-            {lead.phone && (
-              <button
-                className="btn btn-outline btn-success btn-sm"
-                title="WhatsApp"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleWhatsAppClick(lead, meeting);
-                }}
-              >
-                <FaWhatsapp className="w-4 h-4" />
-              </button>
-            )}
-            {(lead.lead_number || meeting.lead_number) && (
-              <button
-                className="btn btn-outline btn-info btn-sm"
-                title="Email"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleEmailClick(lead, meeting);
-                }}
-              >
-                <EnvelopeIcon className="w-4 h-4" />
-              </button>
-            )}
+        <div className="mt-4 flex flex-row gap-2 justify-end">
+          <button 
+            className="btn btn-outline btn-primary btn-sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              const url = getValidTeamsLink(meeting.teams_meeting_url);
+              if (url) {
+                window.open(url, '_blank');
+              } else {
+                alert('No meeting URL available');
+              }
+            }}
+            title="Teams Meeting"
+          >
+            <VideoCameraIcon className="w-4 h-4" />
+          </button>
+          {lead.phone && (
             <button
-              className="btn btn-outline btn-warning btn-sm"
+              className="btn btn-outline btn-success btn-sm"
+              title="WhatsApp"
               onClick={(e) => {
                 e.stopPropagation();
-                setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+                handleWhatsAppClick(lead, meeting);
               }}
             >
-              {isExpanded ? 'Show Less' : 'Show More'}
-              <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+              <FaWhatsapp className="w-4 h-4" />
             </button>
-          </div>
+          )}
+          {(lead.lead_number || meeting.lead_number) && (
+            <button
+              className="btn btn-outline btn-info btn-sm"
+              title="Email"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleEmailClick(lead, meeting);
+              }}
+            >
+              <EnvelopeIcon className="w-4 h-4" />
+            </button>
+          )}
+          <button
+            className="btn btn-outline btn-warning btn-sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+            }}
+          >
+            {isExpanded ? 'Show Less' : 'Show More'}
+            <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+          </button>
         </div>
 
         {/* Expanded Details */}
@@ -1132,7 +1130,7 @@ const CalendarPage: React.FC = () => {
           </td>
           <td>{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
-            <div className="flex flex-col items-center gap-2">
+            <div className="flex flex-row items-center gap-2">
               <button 
                 className="btn btn-primary btn-sm"
                 onClick={() => {
@@ -1430,7 +1428,7 @@ const CalendarPage: React.FC = () => {
       {/* Department Tables - Accordion Style */}
       {DEPARTMENT_CATEGORIES.map(({ name: deptName }) => {
         const deptMeetings = departmentMeetings[deptName] || [];
-        const totalAmount = deptMeetings.reduce((sum, meeting) => {
+        const totalAmount = deptMeetings.reduce((sum: number, meeting: any) => {
           const lead = meeting.lead || {};
           if (typeof lead.balance === 'number') {
             return sum + lead.balance;

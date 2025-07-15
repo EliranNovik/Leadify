@@ -109,6 +109,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   });
   const [isAdvancedSearching, setIsAdvancedSearching] = useState(false);
   const [searchDropdownStyle, setSearchDropdownStyle] = useState({ top: 0, left: 0, width: 0 });
+  const [isSearchAnimationDone, setIsSearchAnimationDone] = useState(false);
+  const searchHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -246,6 +248,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setSearchDropdownStyle({ top: rect.bottom + window.scrollY, left: rect.left + window.scrollX, width: rect.width });
     }
   }, [isSearchActive, showFilterDropdown, searchResults.length, searchValue]);
+
+  // Animation effect for searchbar open/close
+  useEffect(() => {
+    let timeout: NodeJS.Timeout;
+    if (isSearchActive) {
+      timeout = setTimeout(() => setIsSearchAnimationDone(true), 700);
+    } else {
+      setIsSearchAnimationDone(false);
+    }
+    return () => clearTimeout(timeout);
+  }, [isSearchActive]);
 
   const handleSearchFocus = () => {
     setIsSearchActive(true);
@@ -389,16 +402,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         </div>
         
         {/* Search bar */}
-        <div className="flex-1 justify-center flex relative ml-0 md:ml-[-48px]">
-          <div 
+        <div className="flex-1 relative">
+          <div
             ref={searchContainerRef}
-            className={`relative ${isSearchActive ? 'w-full max-w-2xl md:max-w-sm' : 'w-1'} transition-all duration-500 ease-out`}
+            className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 min-w-12 min-h-[56px] ${isSearchActive ? 'w-full max-w-xl md:max-w-xl' : 'w-1'} transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0`}
             onMouseEnter={!isMobile ? () => {
+              if (searchHoverTimeoutRef.current) {
+                clearTimeout(searchHoverTimeoutRef.current);
+                searchHoverTimeoutRef.current = null;
+              }
               setIsSearchActive(true);
               setTimeout(() => searchInputRef.current?.focus(), 100);
             } : undefined}
+            onMouseLeave={!isMobile ? () => {
+              if (searchHoverTimeoutRef.current) {
+                clearTimeout(searchHoverTimeoutRef.current);
+              }
+              searchHoverTimeoutRef.current = setTimeout(() => {
+                if (!searchValue.trim() && searchResults.length === 0) {
+                  setIsSearchActive(false);
+                }
+              }, 600);
+            } : undefined}
+            style={{ background: 'transparent', width: isMobile ? '100%' : undefined }}
           >
-            <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-500 ease-out`}>
+            <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-[700ms] ease-in-out`}>
               {/* Large search icon (always visible) */}
               <button 
                 className={`absolute left-3 flex items-center h-full z-10 transition-opacity duration-300 ${isSearchActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
@@ -430,7 +458,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : 'pr-4'}
                 `}
                 style={{ 
-                  height: isMobile ? 36 : 32, 
+                  height: isMobile ? 48 : 44, 
                   fontSize: isMobile ? 16 : 14, 
                   fontWeight: 500, 
                   letterSpacing: '-0.01em', 
@@ -438,7 +466,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }}
               />
               {/* Filter button inside input */}
-              {isSearchActive && (
+              {isSearchActive && isSearchAnimationDone && (
                 <button
                   type="button"
                   className="absolute right-8 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm hidden md:block"
@@ -743,11 +771,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           border-radius: 1rem;
         }
         .search-input-placeholder::placeholder {
-          font-size: 14px !important;
+          font-size: 16px !important;
         }
         @media (min-width: 768px) {
           .search-input-placeholder::placeholder {
-            font-size: 12px !important;
+            font-size: 18px !important;
           }
         }
       `}</style>

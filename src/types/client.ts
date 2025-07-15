@@ -27,6 +27,9 @@ export interface Client extends Lead {
   anchor_last_edited_at?: string;
   facts_last_edited_by?: string;
   facts_last_edited_at?: string;
+  last_stage_changed_by?: string;
+  last_stage_changed_at?: string;
+  updated_at?: string;
 }
 
 export interface ClientTabProps {

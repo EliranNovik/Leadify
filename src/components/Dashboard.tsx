@@ -699,7 +699,7 @@ const Dashboard: React.FC = () => {
 
         {/* Action Required */}
         <div
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden p-3 md:p-6"
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-3 md:p-6"
         >
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
@@ -1542,7 +1542,7 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
         {/* Top Handler */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white h-full min-h-[180px] md:min-h-0">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white h-full min-h-[180px] md:min-h-0">
           <div className="flex items-center gap-2 mb-2">
             <UserGroupIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
             <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Handlers</span>

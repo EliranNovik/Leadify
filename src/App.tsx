@@ -30,6 +30,8 @@ import MyPerformancePage from './pages/MyPerformancePage';
 import ProformaViewPage from './pages/ProformaViewPage';
 import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
+import TimelinePage from './components/TimelinePage';
+import HistoryPage from './components/HistoryPage';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -159,6 +161,8 @@ const AppContent: React.FC = () => {
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />
                     <Route path="/reports" element={<ReportsPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
+                    <Route path="/clients/:lead_number/timeline" element={<TimelinePage />} />
+                    <Route path="/clients/:lead_number/history" element={<HistoryPage />} />
                   </Routes>
                 </main>
               </div>

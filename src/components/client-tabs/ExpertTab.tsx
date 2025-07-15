@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { 
   AcademicCapIcon, 
   ShareIcon, 
@@ -754,6 +755,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         clientName={client.name || ''}
         onDocumentCountChange={handleDocumentCountChange}
       />
+      
+      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

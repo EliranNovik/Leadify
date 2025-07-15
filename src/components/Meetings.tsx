@@ -44,6 +44,45 @@ interface MeetingRecord {
   };
 }
 
+// Meeting invitation email template for Notify Client
+export const meetingInvitationEmailTemplate = ({
+  clientName,
+  meetingDate,
+  meetingTime,
+  location,
+  category,
+  topic,
+  joinLink,
+  senderName
+}: {
+  clientName: string;
+  meetingDate: string;
+  meetingTime: string;
+  location: string;
+  category: string;
+  topic: string;
+  joinLink: string;
+  senderName: string;
+}) => `
+  <div style="font-family: system-ui, Arial, sans-serif; font-size: 16px; color: #222;">
+    <p>Dear ${clientName},</p>
+    <p>You are invited to a meeting with our office. Please find the details below:</p>
+    <ul style="margin-bottom: 18px;">
+      <li><strong>Date:</strong> ${meetingDate}</li>
+      <li><strong>Time:</strong> ${meetingTime}</li>
+      <li><strong>Location:</strong> ${location}</li>
+      <li><strong>Category:</strong> ${category}</li>
+      <li><strong>Topic:</strong> ${topic}</li>
+    </ul>
+    <div style="margin: 24px 0;">
+      <a href="${joinLink}" target="_blank" style="display: inline-block; background: #3b28c7; color: #fff; font-weight: 600; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-size: 17px; letter-spacing: 0.5px;">Join Meeting</a>
+    </div>
+    <p>If you have any questions or need to reschedule, please let us know.</p>
+    <br />
+    <p>Best regards,<br />${senderName}<br />Decker Pex Levi Law Offices</p>
+  </div>
+`;
+
 const Meetings: React.FC = () => {
   const [todayMeetings, setTodayMeetings] = useState<Meeting[]>([]);
   const [tomorrowMeetings, setTomorrowMeetings] = useState<Meeting[]>([]);
@@ -203,6 +242,7 @@ const Meetings: React.FC = () => {
             <th>Expert</th>
             <th>Helper</th>
             <th>Staff</th>
+            <th>Scheduler</th>
             <th>Time</th>
             <th>Value</th>
             <th>Location</th>
@@ -225,6 +265,7 @@ const Meetings: React.FC = () => {
               <td>{meeting.expert}</td>
               <td>{meeting.staff[1] || '---'}</td>
               <td>{meeting.leadManager || '---'}</td>
+              <td>{meeting.manager || '---'}</td>
               <td>
                 <div className="flex items-center gap-1">
                   <ClockIcon className="w-4 h-4" />
@@ -291,6 +332,10 @@ const Meetings: React.FC = () => {
           <div className="flex items-center gap-2 text-base-content/70 text-sm">
             <span className="font-semibold">Value:</span>
             <span className="text-success font-bold">{meeting.value}</span>
+          </div>
+          <div className="flex items-center gap-2 text-base-content/70 text-sm">
+            <span className="font-semibold">Scheduler:</span>
+            <span>{meeting.manager || '---'}</span>
           </div>
           {getValidTeamsLink(meeting.link) && (
             <a

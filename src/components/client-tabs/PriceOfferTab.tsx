@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { ClientTabProps } from '../../types/client';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { CurrencyDollarIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 
 const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
   // Use values from client, fallback to defaults if missing
-  const total = client?.proposal_total ?? 17000.0;
+  const total = client?.proposal_total;
   const currency = client?.proposal_currency ?? 'NIS';
   const closer = client?.closer || '---';
-  const proposal = client?.proposal_text ?? `Dear Client,\n\nWe are pleased to present you with the following price offer for our professional services regarding your case:\n\n- Comprehensive case review and documentation\n- Legal representation throughout the process\n- Ongoing support and communication\n\nOur team is committed to providing you with the highest level of service and expertise. Should you have any questions or require further clarification, please do not hesitate to contact us.\n\nWe look forward to working with you and achieving the best possible outcome for your case.\n\nBest regards,\nThe Law Firm Team`;
+  const proposal = client?.proposal_text ?? '';
 
   const [isEditing, setIsEditing] = useState(false);
   const [editTotal, setEditTotal] = useState(total);
@@ -38,7 +39,8 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
         <span className="text-xl font-semibold">Total:</span>
         <span className="inline-flex items-center gap-2 bg-base-300 text-base-content font-bold rounded-lg px-4 py-2 text-lg tracking-wide shadow">
           <span className="text-base-content/70 text-base">₪</span>
-          {total?.toLocaleString?.() ?? total} {currency && (
+          {typeof total === 'number' && !isNaN(total) ? total.toLocaleString() : '--'}
+          {currency && (
             <span className="ml-2 text-base-content/80 font-medium">{currency}</span>
           )}
         </span>
@@ -48,6 +50,7 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
         <textarea
           className="w-full min-h-[350px] max-h-[600px] border border-base-300 rounded-xl p-4 text-base font-medium bg-base-100 focus:outline-primary resize-none shadow"
           value={proposal}
+          placeholder="Enter your price offer proposal here..."
           readOnly
         />
       </div>
@@ -84,6 +87,8 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
           Edit Total
         </button>
       )}
+      
+      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

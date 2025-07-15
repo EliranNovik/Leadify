@@ -4,6 +4,7 @@ import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, DocumentTextIcon, XMarkIco
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 
 interface ContactEntry {
   id: number;
@@ -573,6 +574,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             })}
           </div>
         </div>
+        
+        <TimelineHistoryButtons client={client} />
       </div>
       {/* Drawer UI rendered via portal */}
       {drawerOpen && typeof window !== 'undefined' && createPortal(

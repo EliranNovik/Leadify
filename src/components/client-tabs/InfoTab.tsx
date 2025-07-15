@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
 import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 
 const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   if (!client) {
@@ -620,6 +621,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       </div>
+      
+      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

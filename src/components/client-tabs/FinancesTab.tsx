@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
@@ -994,6 +995,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           </div>
         </div>, document.body)
       }
+      
+      <TimelineHistoryButtons client={client} />
     </>
   );
 };

@@ -156,6 +156,22 @@ async function fetchOutlookSignature(accessToken: string): Promise<string | null
   }
 }
 
+// Helper to get current user's full name from Supabase
+async function fetchCurrentUserFullName() {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (user && user.email) {
+    const { data, error } = await supabase
+      .from('users')
+      .select('full_name')
+      .eq('email', user.email)
+      .single();
+    if (!error && data?.full_name) {
+      return data.full_name;
+    }
+  }
+  return null;
+}
+
 const Clients: React.FC<ClientsProps> = ({
   selectedClient,
   setSelectedClient,
@@ -610,19 +626,18 @@ const Clients: React.FC<ClientsProps> = ({
       }
 
       // Get current user's full_name from database to match scheduler dropdown values
-      let currentUserFullName = account.name; // fallback to account name
+      let currentUserFullName = '';
       try {
         const { data: userData } = await supabase
           .from('users')
           .select('full_name')
           .eq('email', account.username)
           .single();
-        
         if (userData?.full_name) {
           currentUserFullName = userData.full_name;
         }
       } catch (error) {
-        console.log('Could not fetch user full_name, using account.name as fallback');
+        console.log('Could not fetch user full_name');
       }
 
       console.log('Meeting creation debug:', {
@@ -674,16 +689,16 @@ const Clients: React.FC<ClientsProps> = ({
         meeting_date: meetingFormData.date,
         meeting_time: meetingFormData.time,
         meeting_location: meetingFormData.location,
-        meeting_manager: meetingFormData.manager || account.name,
+        meeting_manager: meetingFormData.manager || '',
         meeting_currency: 'NIS',
         meeting_amount: 0,
         expert: selectedClient.expert || '---',
         helper: meetingFormData.helper || '---',
         teams_meeting_url: teamsMeetingUrl,
         meeting_brief: '',
-        scheduler: currentUserFullName, // Add logged-in user as scheduler using full_name
+        scheduler: currentUserFullName, // Always use Supabase user's full_name
         last_edited_timestamp: new Date().toISOString(),
-        last_edited_by: account.name,
+        last_edited_by: currentUserFullName,
       };
 
       console.log('Attempting to insert meeting data:', meetingData);
@@ -878,7 +893,8 @@ const Clients: React.FC<ClientsProps> = ({
         setOfferSending(false);
         return;
       }
-      let closerName = account.name || 'Current User';
+      // Use Supabase user's full_name as closer
+      const closerName = (await fetchCurrentUserFullName()) || 'Current User';
       try {
         const response = await instance.acquireTokenSilent({ ...loginRequest, account });
         accessToken = response.accessToken;
@@ -908,6 +924,23 @@ const Clients: React.FC<ClientsProps> = ({
           balance_currency: offerCurrency
         })
         .eq('id', selectedClient.id);
+      // --- Upsert sent offer email to emails table for Interactions tab ---
+      const now = new Date();
+      await supabase.from('emails').upsert([
+        {
+          message_id: `offer_${now.getTime()}`,
+          client_id: selectedClient.id,
+          thread_id: null,
+          sender_name: closerName,
+          sender_email: selectedClient.email, // or use the user's email if available
+          recipient_list: selectedClient.email,
+          subject: offerSubject,
+          body_preview: offerBody.replace(/\n/g, '<br>'),
+          sent_at: now.toISOString(),
+          direction: 'outgoing',
+          attachments: null,
+        }
+      ], { onConflict: 'message_id' });
       toast.success('Offer email sent!');
       setShowSendOfferDrawer(false);
       await onClientUpdate();
@@ -1464,19 +1497,19 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
             Schedule Meeting
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowLeadSummaryDrawer(true)}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <DocumentTextIcon className="w-5 h-5 text-black" />
             Lead summary
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => updateLeadStage('payment_request_sent')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('payment_request_sent'); (document.activeElement as HTMLElement)?.blur(); }}>
             <CurrencyDollarIcon className="w-5 h-5 text-black" />
             Payment request sent
           </a>
@@ -1493,13 +1526,13 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
             Schedule Meeting
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowLeadSummaryDrawer(true)}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <DocumentTextIcon className="w-5 h-5 text-black" />
             Lead summary
           </a>
@@ -1511,7 +1544,7 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => updateLeadStage('finances_and_payments_plan')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('finances_and_payments_plan'); (document.activeElement as HTMLElement)?.blur(); }}>
             <BanknotesIcon className="w-5 h-5 text-black" />
             Finances & Payments plan
           </a>
@@ -1524,13 +1557,13 @@ const Clients: React.FC<ClientsProps> = ({
         {selectedClient.stage === 'meeting_scheduled' ? (
           <>
             <li>
-              <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
                 <CalendarDaysIcon className="w-5 h-5 text-black" />
                 Schedule Meeting
               </a>
             </li>
             <li>
-              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowRescheduleDrawer(true)}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowRescheduleDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
                 <ArrowPathIcon className="w-5 h-5 text-black" />
                 Meeting ReScheduling
               </a>
@@ -1578,7 +1611,7 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
             Schedule Meeting
           </a>
@@ -1596,15 +1629,15 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowLeadSummaryDrawer(true)}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <DocumentTextIcon className="w-5 h-5 text-black" />
             Lead summary
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => updateLeadStage('revised_offer')}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('revised_offer'); (document.activeElement as HTMLElement)?.blur(); }}>
             <PencilSquareIcon className="w-5 h-5 text-black" />
             Revised price offer
           </a>
@@ -1802,7 +1835,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <li key={scheduler}>
                         <a 
                           className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                          onClick={() => updateScheduler(scheduler)}
+                          onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
                         >
                           <UserIcon className="w-5 h-5 text-primary" />
                           <span className="font-medium">{scheduler}</span>
@@ -1827,8 +1860,8 @@ const Clients: React.FC<ClientsProps> = ({
                     </a>
                   </li>
                   <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => setShowEditLeadDrawer(true)}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => setShowSubLeadDrawer(true)}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                 </ul>
               </div>
             </div>
@@ -1909,7 +1942,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <li key={scheduler}>
                         <a 
                           className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                          onClick={() => updateScheduler(scheduler)}
+                          onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
                         >
                           <UserIcon className="w-5 h-5 text-primary" />
                           <span className="font-medium">{scheduler}</span>
@@ -1928,7 +1961,7 @@ const Clients: React.FC<ClientsProps> = ({
                   <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
                   <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                   <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => setShowSubLeadDrawer(true)}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                 </ul>
               </div>
             </div>

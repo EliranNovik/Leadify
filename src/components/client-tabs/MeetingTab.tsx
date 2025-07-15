@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { 
   CalendarIcon, 
   PencilSquareIcon, 
@@ -22,6 +23,7 @@ import { supabase } from '../../lib/supabase';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../../msalConfig';
 import { createTeamsMeeting, sendEmail } from '../../lib/graph';
+import { meetingInvitationEmailTemplate } from '../Meetings';
 
 const fakeNames = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'];
 
@@ -245,9 +247,48 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const handleSendEmail = async (meeting: Meeting) => {
     setIsSendingEmail(true);
     try {
-      // This is a placeholder for the actual email sending logic
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (!client.email || !instance) throw new Error('Client email or MSAL instance missing');
+      const accounts = instance.getAllAccounts();
+      if (!accounts.length) throw new Error('No Microsoft account found');
+      const account = accounts[0];
+      const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account });
+      const senderName = account?.name || 'Your Team';
+      const now = new Date();
+      // Compose subject and HTML body using the template
+      const subject = `Meeting Invitation: ${meeting.date} at ${meeting.time}`;
+      const joinLink = getValidTeamsLink(meeting.link);
+      const category = client.category || '---';
+      const topic = client.topic || '---';
+      const htmlBody = meetingInvitationEmailTemplate({
+        clientName: client.name,
+        meetingDate: meeting.date,
+        meetingTime: meeting.time,
+        location: meeting.location,
+        category,
+        topic,
+        joinLink,
+        senderName: senderName + ' - אלירן נוביק',
+      });
+      // Send email via Graph API
+      await sendEmail(tokenResponse.accessToken, { to: client.email, subject, body: htmlBody });
       toast.success(`Email sent for meeting on ${meeting.date}`);
+      // --- Optimistic upsert to emails table ---
+      await supabase.from('emails').upsert([
+        {
+          message_id: `optimistic_${now.getTime()}`,
+          client_id: client.id,
+          thread_id: null,
+          sender_name: senderName,
+          sender_email: account.username || account.name || 'Me',
+          recipient_list: client.email,
+          subject,
+          body_preview: htmlBody,
+          sent_at: now.toISOString(),
+          direction: 'outgoing',
+          attachments: null,
+        }
+      ], { onConflict: 'message_id' });
+      if (onClientUpdate) await onClientUpdate();
     } catch (error) {
       toast.error('Failed to send email.');
       console.error(error);
@@ -432,6 +473,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="flex items-center gap-2">
                   <UserIcon className="w-4 h-4 text-purple-400" />
                   <span className="text-sm text-gray-900">{meeting.manager || '---'}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-purple-600 uppercase tracking-wide">Scheduler</label>
+                <div className="flex items-center gap-2">
+                  <UserCircleIcon className="w-4 h-4 text-purple-400" />
+                  <span className="text-sm text-gray-900">{meeting.scheduler || '---'}</span>
                 </div>
               </div>
               <div className="space-y-2">
@@ -711,6 +759,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       )}
+      
+      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

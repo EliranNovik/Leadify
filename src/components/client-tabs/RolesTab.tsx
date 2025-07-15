@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
@@ -233,6 +234,8 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </button>
         </div>
       </div>
+      
+      <TimelineHistoryButtons client={client} />
     </div>
   );
 };

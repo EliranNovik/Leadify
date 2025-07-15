@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, Fragment } from 'react';
 import { ClientTabProps } from '../../types/client';
+import TimelineHistoryButtons from './TimelineHistoryButtons';
 import {
   ChatBubbleLeftRightIcon,
   EnvelopeIcon,
@@ -455,6 +456,27 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const sortedInteractions = [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
   const lastEmailIdx = sortedInteractions.map(row => row.kind).lastIndexOf('email');
 
+  // --- Add: handler for clicking an interaction to jump to message in modal ---
+  const handleInteractionClick = (row: Interaction, idx: number) => {
+    if (row.kind === 'email') {
+      setIsEmailModalOpen(true);
+      setActiveEmailId(row.id.toString());
+      setTimeout(() => {
+        const el = document.querySelector(`[data-email-id="${row.id}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.add('ring-2', 'ring-primary');
+          setTimeout(() => el.classList.remove('ring-2', 'ring-primary'), 1200);
+        }
+      }, 300);
+    } else if (row.kind === 'whatsapp') {
+      setIsWhatsAppOpen(true);
+      setActiveWhatsAppId(row.id.toString());
+    } else {
+      openEditDrawer(idx);
+    }
+  };
+
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     if (params.get('focus') === 'email' && lastEmailIdx !== -1) {
@@ -816,7 +838,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       const senderName = account?.name || 'Your Team';
 
       // 1. Send email via Graph API.
-      await sendClientEmail(
+      const sentEmail = await sendClientEmail(
         tokenResponse.accessToken, 
         composeSubject, 
         composeBody, 
@@ -825,7 +847,57 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         composeAttachments
       );
       toast.success('Email sent and saved!');
-      
+
+      // --- Optimistic update: add sent email to local state ---
+      const now = new Date();
+      const optimisticEmail = {
+        id: sentEmail.id || `optimistic_${now.getTime()}`,
+        message_id: sentEmail.id || `optimistic_${now.getTime()}`,
+        subject: composeSubject,
+        from: account.username || account.name || 'Me',
+        to: client.email,
+        date: now.toISOString(),
+        bodyPreview: composeBody,
+        direction: 'outgoing',
+        attachments: composeAttachments,
+      };
+      setEmails(prev => [...prev, optimisticEmail]);
+      setInteractions(prev => [
+        {
+          id: optimisticEmail.message_id,
+          date: now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+          time: now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+          raw_date: now.toISOString(),
+          employee: senderName,
+          direction: 'out',
+          kind: 'email',
+          length: '',
+          content: composeBody,
+          subject: composeSubject,
+          observation: '',
+          editable: true,
+          status: undefined,
+        },
+        ...prev
+      ]);
+
+      // --- Upsert sent email directly to Supabase ---
+      await supabase.from('emails').upsert([
+        {
+          message_id: optimisticEmail.message_id,
+          client_id: client.id,
+          thread_id: sentEmail.conversationId || null,
+          sender_name: senderName,
+          sender_email: account.username || account.name || 'Me',
+          recipient_list: client.email,
+          subject: composeSubject,
+          body_preview: composeBody,
+          sent_at: now.toISOString(),
+          direction: 'outgoing',
+          attachments: composeAttachments,
+        }
+      ], { onConflict: 'message_id' });
+
       // After sending, trigger a sync to get the new email
       await runGraphSync();
 
@@ -1127,6 +1199,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   }, [isWhatsAppOpen, whatsAppMessages, client.id]);
 
+  // Effect: when WhatsApp modal opens and activeWhatsAppId is set, scroll to and highlight the message
+  React.useEffect(() => {
+    if (isWhatsAppOpen && activeWhatsAppId) {
+      setTimeout(() => {
+        const el = document.querySelector(`[data-whatsapp-id="${activeWhatsAppId}"]`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          (el.firstChild as HTMLElement)?.classList?.add('ring-2', 'ring-primary');
+          setTimeout(() => (el.firstChild as HTMLElement)?.classList?.remove('ring-2', 'ring-primary'), 1200);
+        }
+      }, 300);
+    }
+  }, [isWhatsAppOpen, activeWhatsAppId]);
 
   return (
     <div className="p-3 md:p-8 flex flex-col lg:flex-row gap-4 md:gap-8 items-start min-h-screen">
@@ -1251,7 +1336,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   key={row.id}
                   ref={idx === lastEmailIdx ? lastEmailRef : null}
                   className="relative pl-16 md:pl-20 cursor-pointer group"
-                  onClick={async () => { await openEditDrawer(idx); }}
+                  onClick={() => handleInteractionClick(row, idx)}
                 >
                   {/* Timeline dot and icon, large, left-aligned */}
                   <div className="absolute -left-6 md:-left-8 top-0" style={{ zIndex: 2 }}>
@@ -1320,6 +1405,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               );
             })}
           </div>
+        </div>
+        
+        {/* Timeline and History Buttons at bottom */}
+        <div className="mt-8 pt-6 border-t border-base-200">
+          <TimelineHistoryButtons client={client} />
         </div>
       </div>
       {/* Right-side AI summary panel (hidden on mobile, sticky on desktop) */}
@@ -1618,7 +1708,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             </button>
           </div>
           {/* Chat Messages */}
-          <div className="flex-1 overflow-y-auto flex flex-col w-full min-h-20 p-8">
+          <div className="flex-1 overflow-y-auto flex flex-col w-full min-h-20 p-8" id="whatsapp-modal-messages">
             {whatsAppMessages.length === 0 ? (
               <div className="text-center p-8 text-base-content/70">
                 No WhatsApp messages found for this client.<br/>
@@ -1626,13 +1716,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               </div>
             ) : (
               whatsAppMessages.map((msg: any, idx: number) => (
-                <div key={msg.id || idx} className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'} w-full mb-2`}>
-                  <div className={
-                    `rounded-2xl px-6 py-3 shadow text-base max-w-[70%] break-words ` +
-                    (msg.direction === 'out'
-                      ? 'bg-primary text-white self-end'
-                      : 'bg-base-200 text-black self-start border border-base-200')
-                  }>
+                <div
+                  key={msg.id || idx}
+                  data-whatsapp-id={msg.id}
+                  className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'} w-full mb-2`}
+                >
+                  <div
+                    className={
+                      `rounded-2xl px-6 py-3 shadow text-base max-w-[70%] break-words ` +
+                      (msg.direction === 'out'
+                        ? 'bg-primary text-white self-end'
+                        : 'bg-base-200 text-black self-start border border-base-200')
+                    }
+                    style={activeWhatsAppId && msg.id && activeWhatsAppId === msg.id.toString() ? { boxShadow: '0 0 0 3px #3b28c7' } : {}}
+                  >
                     {msg.message}
                     <div className="flex items-center gap-1 mt-2 text-xs opacity-70 justify-end">
                       <span>{msg.time || (msg.sent_at ? new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')}</span>
