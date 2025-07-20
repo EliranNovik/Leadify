@@ -266,7 +266,7 @@ const CollectionPage: React.FC = () => {
       // Fetch all payment_plans with a proforma, join to leads for lead_number and name
       const { data, error } = await supabase
         .from('payment_plans')
-        .select('id, lead_id, due_date, value, value_vat, proforma, payment_order, paid, leads:lead_id(lead_number, name)')
+        .select('id, lead_id, due_date, value, value_vat, proforma, payment_order, paid, client_name, leads:lead_id(lead_number, name)')
         .not('proforma', 'is', null)
         .order('due_date', { ascending: true });
       if (error) {
@@ -278,23 +278,24 @@ const CollectionPage: React.FC = () => {
       const mapped = (data || [])
         .filter((row: any) => !row.paid)
         .map((row: any) => {
-          let proformaName = 'Proforma';
-          if (row.proforma) {
-            try {
-              const parsed = JSON.parse(row.proforma);
-              proformaName = parsed.proformaName || 'Proforma';
-            } catch {}
-          }
-          return {
-            id: row.id,
-            lead_number: row.leads?.lead_number || '',
-            name: row.leads?.name || '',
-            date: row.due_date,
-            total_amount: Number(row.value) + Number(row.value_vat),
-            proformaName,
-            order: row.payment_order || '',
-          };
-        });
+        let proformaName = 'Proforma';
+        if (row.proforma) {
+          try {
+            const parsed = JSON.parse(row.proforma);
+            proformaName = parsed.proformaName || 'Proforma';
+          } catch {}
+        }
+        return {
+          id: row.id,
+          lead_number: row.leads?.lead_number || '',
+          name: row.leads?.name || '',
+          contact_name: row.client_name || row.leads?.name || '',
+          date: row.due_date,
+          total_amount: Number(row.value) + Number(row.value_vat),
+          proformaName,
+          order: row.payment_order || '',
+        };
+      });
       setAwaitingPayments(mapped);
       setLoading(false);
     };
@@ -577,6 +578,7 @@ const CollectionPage: React.FC = () => {
                     <th className="text-lg font-bold">&nbsp;</th>
                     <th className="text-lg font-bold">Lead</th>
                     <th className="text-lg font-bold">Client Name</th>
+                    <th className="text-lg font-bold">Contact Name</th>
                     <th className="text-lg font-bold">Date</th>
                     <th className="text-lg font-bold">Total Amount</th>
                     <th className="text-lg font-bold">Order</th>
@@ -594,6 +596,7 @@ const CollectionPage: React.FC = () => {
                       </td>
                       <td className="font-bold text-primary">{row.lead_number}</td>
                       <td>{row.name}</td>
+                      <td className="font-semibold text-purple-600">{row.contact_name}</td>
                       <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
                       <td>{row.total_amount ? `₪${row.total_amount.toLocaleString()}` : '-'}</td>
                       <td>{row.order || '-'}</td>
@@ -640,6 +643,11 @@ const CollectionPage: React.FC = () => {
                       <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{row.name}</span>
                     </div>
                     <div className="space-y-2 divide-y divide-gray-100">
+                      {/* Contact Name */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Contact</span>
+                        <span className="text-sm font-bold text-purple-600 ml-2">{row.contact_name}</span>
+                      </div>
                       {/* Date */}
                       <div className="flex justify-between items-center py-1">
                         <span className="text-xs font-semibold text-gray-500">Date</span>

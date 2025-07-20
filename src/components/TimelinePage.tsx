@@ -40,15 +40,14 @@ const TimelinePage: React.FC = () => {
       setClient(clientData);
 
       // Fetch timeline data (stage changes)
-      // Note: This assumes you have a stage_history table or similar
-      // For now, we'll create a mock timeline based on available data
+      // Create timeline based on available data
       const mockTimeline: TimelineEntry[] = [
         {
           id: '1',
           stage: 'created',
-          changed_by: 'System',
+          changed_by: clientData.created_by || 'System',
           changed_at: clientData.created_at,
-          user_full_name: 'System'
+          user_full_name: clientData.created_by_full_name || 'System'
         }
       ];
 
@@ -57,9 +56,9 @@ const TimelinePage: React.FC = () => {
         mockTimeline.push({
           id: '2',
           stage: clientData.stage,
-          changed_by: clientData.last_stage_changed_by || 'Unknown',
-          changed_at: clientData.last_stage_changed_at || clientData.updated_at || clientData.created_at,
-          user_full_name: clientData.last_stage_changed_by || 'Unknown'
+          changed_by: clientData.stage_changed_by || 'Unknown',
+          changed_at: clientData.stage_changed_at || clientData.updated_at || clientData.created_at,
+          user_full_name: clientData.stage_changed_by || 'Unknown'
         });
       }
 

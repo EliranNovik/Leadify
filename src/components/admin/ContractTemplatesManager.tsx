@@ -18,6 +18,8 @@ import { JSONContent } from '@tiptap/core';
 
 const DYNAMIC_FIELDS = [
   { label: 'Client Name', tag: '{{client_name}}' },
+  { label: 'Client Phone', tag: '{{client_phone}}' },
+  { label: 'Client Email', tag: '{{client_email}}' },
   { label: 'Signature', tag: '{{signature}}' },
   { label: 'Date', tag: '{{date}}' },
 ];
@@ -27,18 +29,43 @@ const FIELD_TYPES = [
   { label: 'Signature Field', tag: '{{signature}}' },
 ];
 
+// New field types for the custom_pricing system
+const PRICING_FIELDS = [
+  { label: 'Applicant Count', tag: '{{applicant_count}}' },
+  { label: 'Price Per Applicant', tag: '{{price_per_applicant}}' },
+  { label: 'Total Amount', tag: '{{total_amount}}' },
+  { label: 'Discount Percentage', tag: '{{discount_percentage}}' },
+  { label: 'Discount Amount', tag: '{{discount_amount}}' },
+  { label: 'Final Amount', tag: '{{final_amount}}' },
+  { label: 'Currency', tag: '{{currency}}' },
+  { label: 'Client Country', tag: '{{client_country}}' },
+];
+
+const PAYMENT_PLAN_FIELDS = [
+  { label: 'Payment Plan Row', tag: '{{payment_plan_row}}' },
+  { label: 'Payment Percent', tag: '{{payment_percent}}' },
+  { label: 'Payment Due', tag: '{{payment_due}}' },
+  { label: 'Payment Amount', tag: '{{payment_amount}}' },
+];
+
 const FONT_FAMILIES = [
   'Arial', 'Georgia', 'Times New Roman', 'Courier New', 'Verdana', 'Tahoma', 'Trebuchet MS', 'Impact', 'Comic Sans MS'
 ];
 const FONT_SIZES = ['12px', '14px', '16px', '18px', '20px', '24px', '28px', '32px'];
 
 const SAMPLE_TEMPLATE = {
-  name: 'Simple Service Contract',
+  name: 'Citizenship Service Contract',
   content: {
     type: 'doc',
     content: [
-      { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Service Agreement' }] },
+      { type: 'heading', attrs: { level: 2 }, content: [{ type: 'text', text: 'Citizenship Service Agreement' }] },
       { type: 'paragraph', content: [{ type: 'text', text: 'This contract is made between ' }, { type: 'text', text: '{{client_name}}', marks: [{ type: 'bold' }] }, { type: 'text', text: ' and the Service Provider.' }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Client Contact: ' }, { type: 'text', text: '{{client_phone}}', marks: [{ type: 'italic' }] }, { type: 'text', text: ' / ' }, { type: 'text', text: '{{client_email}}', marks: [{ type: 'italic' }] }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Number of Applicants: ' }, { type: 'text', text: '{{applicant_count}}', marks: [{ type: 'bold' }] }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Price per Applicant: ' }, { type: 'text', text: '{{currency}} {{price_per_applicant}}', marks: [{ type: 'bold' }] }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Total Amount: ' }, { type: 'text', text: '{{currency}} {{total_amount}}', marks: [{ type: 'bold' }] }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Discount: ' }, { type: 'text', text: '{{discount_percentage}}% ({{currency}} {{discount_amount}})', marks: [{ type: 'italic' }] }] },
+      { type: 'paragraph', content: [{ type: 'text', text: 'Final Amount: ' }, { type: 'text', text: '{{currency}} {{final_amount}}', marks: [{ type: 'bold' }] }] },
       { type: 'paragraph', content: [{ type: 'text', text: 'Date: ' }, { type: 'text', text: '{{date}}', marks: [{ type: 'italic' }] }] },
       { type: 'paragraph', content: [{ type: 'text', text: 'Signature: ' }, { type: 'text', text: '{{signature}}', marks: [{ type: 'underline' }] }] },
     ],
@@ -102,7 +129,20 @@ const ContractTemplatesManager: React.FC = () => {
   const [name, setName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isPreview, setIsPreview] = useState(false);
-  const [previewData, setPreviewData] = useState({ client_name: 'John Doe', date: '2024-06-01' });
+  const [previewData, setPreviewData] = useState({ 
+    client_name: 'John Doe', 
+    client_phone: '+1-555-0123',
+    client_email: 'john.doe@example.com',
+    date: '2024-06-01',
+    applicant_count: 2,
+    price_per_applicant: 2500,
+    total_amount: 5000,
+    discount_percentage: 10,
+    discount_amount: 500,
+    final_amount: 4500,
+    currency: 'USD',
+    client_country: 'US'
+  });
   const [dynamicFields, setDynamicFields] = useState<{ [key: string]: string }>({});
   const [signatureData, setSignatureData] = useState<{ [key: string]: string }>({});
   const signatureRefs = React.useRef<{ [key: string]: SignatureCanvas | null }>({});
@@ -196,13 +236,21 @@ const ContractTemplatesManager: React.FC = () => {
     let textFieldIdx = 0;
     let signatureFieldIdx = 0;
 
+    // Calculate pricing based on preview data
+    const calculatedPricing = {
+      ...previewData,
+      total_amount: previewData.applicant_count * previewData.price_per_applicant,
+      discount_amount: Math.round((previewData.applicant_count * previewData.price_per_applicant) * (previewData.discount_percentage / 100)),
+    };
+    calculatedPricing.final_amount = calculatedPricing.total_amount - calculatedPricing.discount_amount;
+
     // Helper to recursively render TipTap JSON nodes
     const renderNode = (node: any, key: string | number): React.ReactNode => {
       if (node.type === 'text') {
         let text = node.text;
-        // Replace {{client_name}}, {{date}}, etc. with previewData
-        Object.entries(previewData).forEach(([k, v]) => {
-          text = text.replaceAll(`{{${k}}}`, v);
+        // Replace {{client_name}}, {{date}}, etc. with previewData and calculatedPricing
+        Object.entries({ ...previewData, ...calculatedPricing }).forEach(([k, v]) => {
+          text = text.replaceAll(`{{${k}}}`, String(v));
         });
         // Replace {{text}} and {{signature}} with React fields
         if (text.includes('{{text}}')) {
@@ -323,9 +371,38 @@ const ContractTemplatesManager: React.FC = () => {
             placeholder="Template Name"
           />
           <div className="flex gap-2 ml-4">
-            {FIELD_TYPES.map(f => (
-              <button key={f.tag} className="btn btn-sm btn-outline" onClick={() => insertField(f.tag)}>{f.label}</button>
-            ))}
+            <div className="dropdown dropdown-bottom">
+              <button className="btn btn-sm btn-outline">Client Fields</button>
+              <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+                {DYNAMIC_FIELDS.map(f => (
+                  <li key={f.tag}><button onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                ))}
+              </ul>
+            </div>
+            <div className="dropdown dropdown-bottom">
+              <button className="btn btn-sm btn-outline">Pricing Fields</button>
+              <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+                {PRICING_FIELDS.map(f => (
+                  <li key={f.tag}><button onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                ))}
+              </ul>
+            </div>
+            <div className="dropdown dropdown-bottom">
+              <button className="btn btn-sm btn-outline">Payment Fields</button>
+              <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+                {PAYMENT_PLAN_FIELDS.map(f => (
+                  <li key={f.tag}><button onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                ))}
+              </ul>
+            </div>
+            <div className="dropdown dropdown-bottom">
+              <button className="btn btn-sm btn-outline">Input Fields</button>
+              <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+                {FIELD_TYPES.map(f => (
+                  <li key={f.tag}><button onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                ))}
+              </ul>
+            </div>
           </div>
           <div className="flex gap-2 ml-auto">
             <button className="btn btn-sm btn-outline" onClick={() => setIsPreview(p => !p)}>{isPreview ? 'Edit' : 'Preview as Client'}</button>
@@ -338,8 +415,149 @@ const ContractTemplatesManager: React.FC = () => {
           {!isPreview ? (
             <EditorContent editor={editor} className="prose max-w-full min-h-[300px] border border-base-300 rounded-xl bg-white p-4 text-black" />
           ) : (
-            <div className="bg-base-200 rounded-xl p-6 border border-base-300">
-              {renderPreview()}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              {/* Preview Data Editor */}
+              <div className="lg:col-span-1">
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body p-4">
+                    <h3 className="text-lg font-semibold mb-4">Preview Data</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Client Name</span>
+                        </label>
+                        <input
+                          type="text"
+                          className="input input-bordered input-sm w-full"
+                          value={previewData.client_name}
+                          onChange={e => setPreviewData(prev => ({ ...prev, client_name: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Client Phone</span>
+                        </label>
+                        <input
+                          type="text"
+                          className="input input-bordered input-sm w-full"
+                          value={previewData.client_phone}
+                          onChange={e => setPreviewData(prev => ({ ...prev, client_phone: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Client Email</span>
+                        </label>
+                        <input
+                          type="email"
+                          className="input input-bordered input-sm w-full"
+                          value={previewData.client_email}
+                          onChange={e => setPreviewData(prev => ({ ...prev, client_email: e.target.value }))}
+                        />
+                      </div>
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Applicant Count</span>
+                        </label>
+                        <input
+                          type="number"
+                          className="input input-bordered input-sm w-full"
+                          value={previewData.applicant_count}
+                          onChange={e => {
+                            const newCount = Number(e.target.value);
+                            const newTotal = newCount * previewData.price_per_applicant;
+                            const newDiscount = Math.round(newTotal * (previewData.discount_percentage / 100));
+                            setPreviewData(prev => ({ 
+                              ...prev, 
+                              applicant_count: newCount,
+                              total_amount: newTotal,
+                              discount_amount: newDiscount,
+                              final_amount: newTotal - newDiscount
+                            }));
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Price Per Applicant</span>
+                        </label>
+                        <input
+                          type="number"
+                          className="input input-bordered input-sm w-full"
+                          value={previewData.price_per_applicant}
+                          onChange={e => {
+                            const newPrice = Number(e.target.value);
+                            const newTotal = previewData.applicant_count * newPrice;
+                            const newDiscount = Math.round(newTotal * (previewData.discount_percentage / 100));
+                            setPreviewData(prev => ({ 
+                              ...prev, 
+                              price_per_applicant: newPrice,
+                              total_amount: newTotal,
+                              discount_amount: newDiscount,
+                              final_amount: newTotal - newDiscount
+                            }));
+                          }}
+                        />
+                      </div>
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Currency</span>
+                        </label>
+                        <select
+                          className="select select-bordered select-sm w-full"
+                          value={previewData.currency}
+                          onChange={e => setPreviewData(prev => ({ ...prev, currency: e.target.value }))}
+                        >
+                          <option value="USD">USD</option>
+                          <option value="NIS">NIS</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Discount %</span>
+                        </label>
+                        <input
+                          type="number"
+                          className="input input-bordered input-sm w-full"
+                          value={previewData.discount_percentage}
+                          onChange={e => {
+                            const newDiscount = Number(e.target.value);
+                            const newDiscountAmount = Math.round(previewData.total_amount * (newDiscount / 100));
+                            setPreviewData(prev => ({ 
+                              ...prev, 
+                              discount_percentage: newDiscount,
+                              discount_amount: newDiscountAmount,
+                              final_amount: previewData.total_amount - newDiscountAmount
+                            }));
+                          }}
+                        />
+                      </div>
+                      {/* Calculated Values Display */}
+                      <div className="divider my-2"></div>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-base-content/70">Total Amount:</span>
+                          <span className="font-semibold">{previewData.currency} {previewData.total_amount?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-base-content/70">Discount Amount:</span>
+                          <span className="font-semibold">{previewData.currency} {previewData.discount_amount?.toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-base-content/70">Final Amount:</span>
+                          <span className="font-semibold text-primary">{previewData.currency} {previewData.final_amount?.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {/* Contract Preview */}
+              <div className="lg:col-span-2">
+                <div className="bg-base-200 rounded-xl p-6 border border-base-300">
+                  {renderPreview()}
+                </div>
+              </div>
             </div>
           )}
         </div>

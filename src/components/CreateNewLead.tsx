@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { useMsal } from '@azure/msal-react';
 
 const sources = [
   '',
@@ -23,7 +24,7 @@ const languages = [
 ];
 
 interface NewLeadResult {
-  id: string;
+  id: string; // This will be a UUID string
   lead_number: string;
   name: string;
   email: string;
@@ -31,6 +32,7 @@ interface NewLeadResult {
 
 const CreateNewLead: React.FC = () => {
   const navigate = useNavigate();
+  const { instance } = useMsal();
   const [isLoading, setIsLoading] = useState(false);
   const [form, setForm] = useState({
     name: '',
@@ -46,11 +48,18 @@ const CreateNewLead: React.FC = () => {
 
   useEffect(() => {
     const fetchUser = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setCurrentUserEmail(user?.email || null);
+      // Get current user from MSAL
+      const account = instance?.getAllAccounts()[0];
+      if (account?.username) {
+        setCurrentUserEmail(account.username);
+      } else {
+        // Fallback to Supabase auth if MSAL is not available
+        const { data: { user } } = await supabase.auth.getUser();
+        setCurrentUserEmail(user?.email || null);
+      }
     };
     fetchUser();
-  }, []);
+  }, [instance]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -62,14 +71,14 @@ const CreateNewLead: React.FC = () => {
 
     try {
       // Call the new database function to create the lead
-      const { data, error } = await supabase.rpc('create_new_lead_v2', {
-        lead_name: form.name,
-        lead_email: form.email,
-        lead_phone: form.phone,
-        lead_topic: form.topic,
-        lead_language: form.language,
-        lead_source: form.source,
-        created_by: currentUserEmail,
+      const { data, error } = await supabase.rpc('create_new_lead_v3', {
+        p_lead_name: form.name,
+        p_lead_email: form.email,
+        p_lead_phone: form.phone,
+        p_lead_topic: form.topic,
+        p_lead_language: form.language,
+        p_lead_source: form.source,
+        p_created_by: currentUserEmail,
       });
 
       if (error) throw error;

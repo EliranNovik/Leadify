@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
+import { useMsal } from '@azure/msal-react';
 
 const schedulers = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', 'Yael', 'Michael R'];
 
@@ -85,13 +86,46 @@ const NewCasesPage: React.FC = () => {
 
   const assignScheduler = async (leadId: string, scheduler: string) => {
     setAssigningId(leadId);
-    await supabase
-      .from('leads')
-      .update({ scheduler, stage: 'scheduler_assigned' })
-      .eq('id', leadId);
-    setLeads(leads.filter(l => l.id !== leadId));
-    setAssigningId(null);
-    setOpenDropdown(null);
+    
+    try {
+      // Get current user info from MSAL
+      const { instance } = useMsal();
+      const account = instance?.getAllAccounts()[0];
+      let currentUserFullName = account?.name || 'Unknown User';
+      
+      // Try to get full_name from database
+      if (account?.username) {
+        try {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', account.username)
+            .single();
+          
+          if (userData?.full_name) {
+            currentUserFullName = userData.full_name;
+          }
+        } catch (error) {
+          console.log('Could not fetch user full_name, using account.name as fallback');
+        }
+      }
+
+      await supabase
+        .from('leads')
+        .update({ 
+          scheduler, 
+          stage: 'scheduler_assigned',
+          stage_changed_by: currentUserFullName,
+          stage_changed_at: new Date().toISOString()
+        })
+        .eq('id', leadId);
+      setLeads(leads.filter(l => l.id !== leadId));
+      setAssigningId(null);
+      setOpenDropdown(null);
+    } catch (error) {
+      console.error('Error assigning scheduler:', error);
+      alert('Failed to assign scheduler. Please try again.');
+    }
   };
 
   // Filter leads based on category and date

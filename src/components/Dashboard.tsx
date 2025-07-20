@@ -731,57 +731,57 @@ const Dashboard: React.FC = () => {
               ) : todayMeetings.length === 0 ? (
                 <div className="text-center py-8 text-base-content/70">No meetings scheduled for today</div>
               ) : (
-                <div className="grid grid-cols-1 gap-4">
+              <div className="grid grid-cols-1 gap-4">
                   {todayMeetings.map((meeting, index) => (
                     <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
-                      <div className="flex-1 cursor-pointer flex flex-col">
-                        {/* Lead Number and Name */}
-                        <div className="mb-3 flex items-center gap-2">
+                    <div className="flex-1 cursor-pointer flex flex-col">
+                      {/* Lead Number and Name */}
+                      <div className="mb-3 flex items-center gap-2">
                           <span className="text-xs font-semibold text-gray-400 tracking-widest">{meeting.lead}</span>
-                          <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                          <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
-                        </div>
-                        {/* Stage */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Stage</span>
-                          <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
+                      </div>
+                      {/* Stage */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Stage</span>
+                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
                             {meeting.stage ? meeting.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()) : 'Meeting Scheduled'}
-                          </span>
+                        </span>
+                      </div>
+                      <div className="space-y-2 divide-y divide-gray-100">
+                        {/* Time */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Time</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.time}</span>
                         </div>
-                        <div className="space-y-2 divide-y divide-gray-100">
-                          {/* Time */}
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-xs font-semibold text-gray-500">Time</span>
-                            <span className="text-sm font-bold text-gray-800">{meeting.time}</span>
-                          </div>
-                          {/* Manager */}
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-xs font-semibold text-gray-500">Manager</span>
-                            <span className="text-sm font-bold text-gray-800">{meeting.manager}</span>
-                          </div>
+                        {/* Manager */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Manager</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.manager}</span>
+                        </div>
                           {/* Topic */}
-                          <div className="flex justify-between items-center py-1">
+                        <div className="flex justify-between items-center py-1">
                             <span className="text-xs font-semibold text-gray-500">Topic</span>
                             <span className="text-sm font-bold text-gray-800">{meeting.topic}</span>
-                          </div>
-                          {/* Amount */}
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-xs font-semibold text-gray-500">Amount</span>
+                        </div>
+                        {/* Amount */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Amount</span>
                             <span className="text-sm font-bold text-green-600">{meeting.value}</span>
-                          </div>
-                          {/* Expert */}
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-xs font-semibold text-gray-500">Expert</span>
-                            <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
-                          </div>
-                          {/* Location */}
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-xs font-semibold text-gray-500">Location</span>
-                            <span className="text-sm font-bold text-gray-800">{meeting.location}</span>
-                          </div>
+                        </div>
+                        {/* Expert */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Expert</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
+                        </div>
+                        {/* Location */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Location</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.location}</span>
+                        </div>
                         </div>
                       </div>
-                      {/* Action Buttons */}
+                    {/* Action Buttons */}
                       <div className="absolute bottom-4 left-4 right-4">
                         {/* Join Meeting (Teams) */}
                         <a
@@ -790,13 +790,13 @@ const Dashboard: React.FC = () => {
                           target="_blank"
                           rel="noopener noreferrer"
                         >
-                          <VideoCameraIcon className="w-4 h-4" />
-                          Join Meeting
+                        <VideoCameraIcon className="w-4 h-4" />
+                        Join Meeting
                         </a>
-                      </div>
                     </div>
-                  ))}
-                </div>
+                  </div>
+                ))}
+              </div>
               )}
             </div>
           </div>

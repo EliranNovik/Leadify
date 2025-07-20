@@ -62,39 +62,38 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="p-2 bg-orange-100 rounded-lg">
-          <MegaphoneIcon className="w-6 h-6 text-orange-600" />
+        <div className="p-2 bg-blue-100 rounded-lg">
+          <MegaphoneIcon className="w-6 h-6 text-blue-600" />
         </div>
         <div>
-          <h3 className="text-2xl font-bold text-gray-900">Marketing Information</h3>
+          <h2 className="text-2xl font-bold">Marketing Information</h2>
           <p className="text-sm text-gray-500">Client potential and source tracking</p>
         </div>
       </div>
 
       {/* Potential Section */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
           <div className="flex items-center justify-between">
-            <h4 className="text-lg font-semibold text-gray-900">Client Potential</h4>
+            <h4 className="text-lg font-semibold text-black">Client Potential</h4>
             {isEditingPotential ? (
               <div className="flex gap-2">
-                <button className="btn btn-ghost btn-sm hover:bg-green-50" onClick={handleSavePotential}>
-                  <CheckIcon className="w-4 h-4 text-green-600" />
+                <button className="btn btn-ghost btn-sm hover:bg-green-50 bg-transparent" onClick={handleSavePotential}>
+                  <CheckIcon className="w-4 h-4 text-black" />
                 </button>
-                <button className="btn btn-ghost btn-sm hover:bg-red-50" onClick={() => { setIsEditingPotential(false); setPotentialMetrics(client.potential_metrics || defaultPotentialMetrics); }}>
-                  <XMarkIcon className="w-4 h-4 text-red-600" />
+                <button className="btn btn-ghost btn-sm hover:bg-red-50 bg-transparent" onClick={() => { setIsEditingPotential(false); setPotentialMetrics(client.potential_metrics || defaultPotentialMetrics); }}>
+                  <XMarkIcon className="w-4 h-4 text-black" />
                 </button>
               </div>
             ) : (
               <button 
-                className="btn btn-square btn-sm"
-                style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
                 onClick={() => setIsEditingPotential(true)}
               >
-                <PencilSquareIcon className="w-4 h-4" />
+                <PencilSquareIcon className="w-5 h-5 text-black" />
               </button>
             )}
           </div>
@@ -156,26 +155,25 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Desired Location Section */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
           <div className="flex items-center justify-between">
-            <h4 className="text-lg font-semibold text-gray-900">Desired Location</h4>
+            <h4 className="text-lg font-semibold text-black">Desired Location</h4>
             {isEditingLocation ? (
               <div className="flex gap-2">
-                <button className="btn btn-ghost btn-sm hover:bg-green-50" onClick={handleSaveLocation}>
-                  <CheckIcon className="w-4 h-4 text-green-600" />
+                <button className="btn btn-ghost btn-sm hover:bg-green-50 bg-transparent" onClick={handleSaveLocation}>
+                  <CheckIcon className="w-4 h-4 text-black" />
                 </button>
-                <button className="btn btn-ghost btn-sm hover:bg-red-50" onClick={() => { setIsEditingLocation(false); setLocation(client.desired_location || ''); }}>
-                  <XMarkIcon className="w-4 h-4 text-red-600" />
+                <button className="btn btn-ghost btn-sm hover:bg-red-50 bg-transparent" onClick={() => { setIsEditingLocation(false); setLocation(client.desired_location || ''); }}>
+                  <XMarkIcon className="w-4 h-4 text-black" />
                 </button>
               </div>
             ) : (
               <button 
-                className="btn btn-square btn-sm"
-                style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
                 onClick={() => setIsEditingLocation(true)}
               >
-                <PencilSquareIcon className="w-4 h-4" />
+                <PencilSquareIcon className="w-5 h-5 text-black" />
               </button>
             )}
           </div>
@@ -202,26 +200,25 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Source Section */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
           <div className="flex items-center justify-between">
-            <h4 className="text-lg font-semibold text-gray-900">Lead Source</h4>
+            <h4 className="text-lg font-semibold text-black">Lead Source</h4>
             {isEditingSource ? (
               <div className="flex gap-2">
-                <button className="btn btn-ghost btn-sm hover:bg-green-50" onClick={handleSaveSource}>
-                  <CheckIcon className="w-4 h-4 text-green-600" />
+                <button className="btn btn-ghost btn-sm hover:bg-green-50 bg-transparent" onClick={handleSaveSource}>
+                  <CheckIcon className="w-4 h-4 text-black" />
                 </button>
-                <button className="btn btn-ghost btn-sm hover:bg-red-50" onClick={() => { setIsEditingSource(false); setSource(client.source || ''); }}>
-                  <XMarkIcon className="w-4 h-4 text-red-600" />
+                <button className="btn btn-ghost btn-sm hover:bg-red-50 bg-transparent" onClick={() => { setIsEditingSource(false); setSource(client.source || ''); }}>
+                  <XMarkIcon className="w-4 h-4 text-black" />
                 </button>
               </div>
             ) : (
               <button 
-                className="btn btn-square btn-sm"
-                style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
                 onClick={() => setIsEditingSource(true)}
               >
-                <PencilSquareIcon className="w-4 h-4" />
+                <PencilSquareIcon className="w-5 h-5 text-black" />
               </button>
             )}
           </div>
@@ -249,8 +246,8 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Facts of Case Section */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-          <h4 className="text-lg font-semibold text-gray-900">Facts of Case</h4>
+        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+          <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
         </div>
         <div className="p-6">
           {client.facts && client.facts.trim() !== '' ? (

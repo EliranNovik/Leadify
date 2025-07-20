@@ -897,7 +897,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           attachments: composeAttachments,
         }
       ], { onConflict: 'message_id' });
-
+      
       // After sending, trigger a sync to get the new email
       await runGraphSync();
 
@@ -1110,13 +1110,35 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const handleSaveContact = async () => {
     if (!client) return;
 
+    // Ensure we have the current user's full name
+    let userFullName = currentUserFullName;
+    if (!userFullName) {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.email) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('full_name, name')
+            .eq('email', user.email)
+            .single();
+          if (userData?.full_name) {
+            userFullName = userData.full_name;
+          } else if (userData?.name) {
+            userFullName = userData.name;
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user info:', error);
+      }
+    }
+
     const now = new Date();
     const newInteraction: Interaction = {
       id: `manual_${now.getTime()}`,
       date: newContact.date || now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
       time: newContact.time || now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
       raw_date: now.toISOString(),
-      employee: currentUserFullName || 'You',
+      employee: userFullName || 'You',
       direction: 'out',
       kind: newContact.method,
       length: newContact.length ? `${newContact.length}m` : '',
@@ -1723,10 +1745,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 >
                   <div
                     className={
-                      `rounded-2xl px-6 py-3 shadow text-base max-w-[70%] break-words ` +
-                      (msg.direction === 'out'
-                        ? 'bg-primary text-white self-end'
-                        : 'bg-base-200 text-black self-start border border-base-200')
+                    `rounded-2xl px-6 py-3 shadow text-base max-w-[70%] break-words ` +
+                    (msg.direction === 'out'
+                      ? 'bg-primary text-white self-end'
+                      : 'bg-base-200 text-black self-start border border-base-200')
                     }
                     style={activeWhatsAppId && msg.id && activeWhatsAppId === msg.id.toString() ? { boxShadow: '0 0 0 3px #3b28c7' } : {}}
                   >

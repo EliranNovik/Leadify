@@ -3,6 +3,7 @@ import { XMarkIcon, PaperAirplaneIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { FaRobot } from 'react-icons/fa';
+import { useMsal } from '@azure/msal-react';
 
 interface AIChatWindowProps {
   isOpen: boolean;
@@ -19,7 +20,7 @@ interface Message {
 }
 
 interface NewLeadResult {
-  id: string;
+  id: string; // This will be a UUID string
   lead_number: string;
   name: string;
   email: string;
@@ -33,12 +34,18 @@ const executeTool = async (tool_call: any, onClientUpdate?: () => void) => {
 
   try {
     if (functionName === 'create_lead') {
-      const { data, error } = await supabase.rpc('create_new_lead_v2', {
-        lead_name: args.name,
-        lead_email: args.email || null,
-        lead_phone: args.phone || null,
-        lead_topic: args.topic,
-        lead_language: args.language || 'English',
+      // Get current user info from MSAL
+      const { instance } = useMsal();
+      const account = instance?.getAllAccounts()[0];
+      let currentUserEmail = account?.username || null;
+      
+      const { data, error } = await supabase.rpc('create_new_lead_v3', {
+        p_lead_name: args.name,
+        p_lead_email: args.email || null,
+        p_lead_phone: args.phone || null,
+        p_lead_topic: args.topic,
+        p_lead_language: args.language || 'English',
+        p_created_by: currentUserEmail,
       });
       
       if (error) throw error;

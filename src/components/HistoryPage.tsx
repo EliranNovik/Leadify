@@ -6,7 +6,7 @@ import { Client } from '../types/client';
 
 interface HistoryEntry {
   id: string;
-  type: 'edit' | 'interaction' | 'stage_change';
+  type: 'edit' | 'interaction' | 'stage_change' | 'lead_created';
   field?: string;
   old_value?: string;
   new_value?: string;
@@ -24,7 +24,7 @@ const HistoryPage: React.FC = () => {
   const [client, setClient] = useState<Client | null>(null);
   const [historyData, setHistoryData] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterType, setFilterType] = useState<'all' | 'edits' | 'interactions' | 'stage_changes'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'edits' | 'interactions' | 'stage_changes' | 'lead_created'>('all');
 
   useEffect(() => {
     if (lead_number) {
@@ -36,10 +36,14 @@ const HistoryPage: React.FC = () => {
     try {
       setLoading(true);
       
-      // Fetch client data
+      // Fetch client data with related interactions
       const { data: clientData, error: clientError } = await supabase
         .from('leads')
-        .select('*')
+        .select(`
+          *,
+          emails (*),
+          whatsapp_messages (*)
+        `)
         .eq('lead_number', lead_number)
         .single();
 
@@ -48,6 +52,15 @@ const HistoryPage: React.FC = () => {
 
       // Build history from available data
       const historyEntries: HistoryEntry[] = [];
+
+      // Add lead creation event
+      historyEntries.push({
+        id: 'lead_created',
+        type: 'lead_created',
+        changed_by: clientData.created_by || 'System',
+        changed_at: clientData.created_at,
+        user_full_name: clientData.created_by_full_name || 'System'
+      });
 
       // Add field edit history
       const fieldEditHistory = [
@@ -97,14 +110,14 @@ const HistoryPage: React.FC = () => {
       });
 
       // Add stage change history
-      if (clientData.last_stage_changed_by && clientData.last_stage_changed_at) {
+      if (clientData.stage_changed_by && clientData.stage_changed_at) {
         historyEntries.push({
           id: 'stage_change',
           type: 'stage_change',
           field: 'stage',
           new_value: clientData.stage,
-          changed_by: clientData.last_stage_changed_by,
-          changed_at: clientData.last_stage_changed_at
+          changed_by: clientData.stage_changed_by,
+          changed_at: clientData.stage_changed_at
         });
       }
 
@@ -118,7 +131,41 @@ const HistoryPage: React.FC = () => {
             changed_at: `${interaction.date} ${interaction.time}`,
             interaction_type: interaction.kind?.toLowerCase() || 'unknown',
             interaction_content: interaction.content || interaction.observation || 'No content',
-            interaction_direction: interaction.direction || 'outgoing'
+            interaction_direction: interaction.direction || 'outgoing',
+            user_full_name: interaction.employee || 'Unknown' // Use employee name directly
+          });
+        });
+      }
+
+      // Add email interactions
+      if (clientData.emails && Array.isArray(clientData.emails)) {
+        clientData.emails.forEach((email: any, index: number) => {
+          const emailDate = new Date(email.sent_at);
+          historyEntries.push({
+            id: `email_${index}`,
+            type: 'interaction',
+            changed_by: email.direction === 'outgoing' ? 'You' : clientData.name,
+            changed_at: email.sent_at,
+            interaction_type: 'email',
+            interaction_content: email.subject || email.body_preview || 'No content',
+            interaction_direction: email.direction || 'outgoing',
+            user_full_name: email.direction === 'outgoing' ? 'You' : clientData.name
+          });
+        });
+      }
+
+      // Add WhatsApp interactions
+      if (clientData.whatsapp_messages && Array.isArray(clientData.whatsapp_messages)) {
+        clientData.whatsapp_messages.forEach((msg: any, index: number) => {
+          historyEntries.push({
+            id: `whatsapp_${index}`,
+            type: 'interaction',
+            changed_by: msg.direction === 'out' ? msg.sender_name || 'You' : clientData.name,
+            changed_at: msg.sent_at,
+            interaction_type: 'whatsapp',
+            interaction_content: msg.message || 'No content',
+            interaction_direction: msg.direction === 'out' ? 'outgoing' : 'incoming',
+            user_full_name: msg.direction === 'out' ? msg.sender_name || 'You' : clientData.name
           });
         });
       }
@@ -189,6 +236,8 @@ const HistoryPage: React.FC = () => {
         return getInteractionIcon(entry.interaction_type || 'unknown');
       case 'stage_change':
         return <DocumentTextIcon className="w-4 h-4 text-green-500" />;
+      case 'lead_created':
+        return <DocumentTextIcon className="w-4 h-4 text-blue-500" />;
       default:
         return <DocumentTextIcon className="w-4 h-4 text-gray-500" />;
     }
@@ -211,6 +260,7 @@ const HistoryPage: React.FC = () => {
 
   const filteredHistory = historyData.filter(entry => {
     if (filterType === 'all') return true;
+    if (filterType === 'lead_created') return entry.type === 'lead_created';
     if (filterType === 'edits') return entry.type === 'edit';
     if (filterType === 'interactions') return entry.type === 'interaction';
     if (filterType === 'stage_changes') return entry.type === 'stage_change';
@@ -266,8 +316,9 @@ const HistoryPage: React.FC = () => {
                 className="select select-bordered select-sm"
               >
                 <option value="all">All Changes</option>
+                <option value="lead_created">Lead Creation</option>
                 <option value="edits">Field Edits</option>
-                <option value="interactions">Interactions</option>
+                <option value="interactions">All Interactions</option>
                 <option value="stage_changes">Stage Changes</option>
               </select>
             </div>
@@ -299,6 +350,7 @@ const HistoryPage: React.FC = () => {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-2">
                           <span className="font-medium text-gray-900">
+                            {entry.type === 'lead_created' && 'Lead Created'}
                             {entry.type === 'edit' && `Updated ${getFieldDisplayName(entry.field || '')}`}
                             {entry.type === 'interaction' && `${entry.interaction_type?.toUpperCase()} ${entry.interaction_direction}`}
                             {entry.type === 'stage_change' && 'Stage Changed'}

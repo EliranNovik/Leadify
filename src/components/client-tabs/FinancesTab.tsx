@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
-import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
+import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import { useMsal } from '@azure/msal-react';
@@ -12,6 +12,8 @@ import { BanknotesIcon as BanknotesIconSolid } from '@heroicons/react/24/solid';
 import { PencilLine, Trash2 } from 'lucide-react';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
 import { generateProformaName } from '../../lib/proforma';
+import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
+import { ArrowPathIcon } from '@heroicons/react/24/outline';
 
 interface PaymentPlan {
   id: string | number;
@@ -51,6 +53,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [showProformaDrawer, setShowProformaDrawer] = useState(false);
   const [proformaData, setProformaData] = useState<any>(null);
   const [generatedProformaName, setGeneratedProformaName] = useState<string>('');
+
+  // Contract state
+  const [contracts, setContracts] = useState<any[]>([]);
+  const [selectedContract, setSelectedContract] = useState<any>(null);
+  const [contacts, setContacts] = useState<any[]>([]);
 
   // Add state and handler for editing subtotal at the top of the component:
   const [isEditingSubtotal, setIsEditingSubtotal] = useState(false);
@@ -108,14 +115,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Fetch payment plans when component mounts or client changes
   useEffect(() => {
     const fetchPaymentPlans = async () => {
-      if (!client?.id) return;
+      console.log('fetchPaymentPlans called with client:', client);
+      if (!client?.id) {
+        console.log('fetchPaymentPlans: No client.id, returning early');
+        return;
+      }
       
       try {
+        console.log('fetchPaymentPlans: Querying payment_plans for lead_id:', client.id);
         const { data, error } = await supabase
           .from('payment_plans')
           .select('*')
           .eq('lead_id', client.id)
           .order('due_date', { ascending: true });
+
+        console.log('fetchPaymentPlans: Query result:', { data, error });
 
         if (error) {
           console.error('Error fetching payment plans:', error);
@@ -142,12 +156,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             paid_by: plan.paid_by || null,
           }));
 
+          console.log('fetchPaymentPlans: Transformed payments:', payments);
+
           setFinancePlan({
             total: Math.round(total * 100) / 100,
             vat: Math.round(vat * 100) / 100,
             payments: payments,
           });
         } else {
+          console.log('fetchPaymentPlans: No payment plans found, setting financePlan to null');
           setFinancePlan(null);
         }
       } catch (error) {
@@ -155,7 +172,79 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     };
 
+    const fetchContracts = async () => {
+      console.log('fetchContracts called with client:', client);
+      if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) {
+        console.log('fetchContracts: Invalid client.id, returning early');
+        return;
+      }
+      try {
+        console.log('fetchContracts: Calling getClientContracts with clientId:', client.id);
+        const contractData = await getClientContracts(client.id);
+        console.log('fetchContracts: Received contract data:', contractData);
+        
+        // Log contact_id values for debugging
+        if (contractData && contractData.length > 0) {
+          contractData.forEach((contract: any, index: number) => {
+            console.log(`Contract ${index + 1}:`, {
+              id: contract.id,
+              contact_id: contract.contact_id,
+              template_name: contract.contract_templates?.name
+            });
+          });
+        }
+        
+        setContracts(contractData || []);
+      } catch (error) {
+        console.error('Error fetching contracts:', error);
+      }
+    };
+
+    const fetchContacts = async () => {
+      if (!client?.id) return;
+      try {
+        // First check if client already has additional_contacts
+        if (client.additional_contacts && Array.isArray(client.additional_contacts)) {
+          console.log('fetchContacts - using client.additional_contacts:', client.additional_contacts);
+          const contactsWithIds = client.additional_contacts.map((contact: any, index: number) => ({
+            id: index + 1, // Use index + 1 as ID to match contact_id
+            ...contact
+          }));
+          console.log('fetchContacts - contactsWithIds from client:', contactsWithIds);
+          setContacts(contactsWithIds);
+          return;
+        }
+        
+        // If not, fetch from database
+        const { data: leadData, error } = await supabase
+          .from('leads')
+          .select('additional_contacts')
+          .eq('id', client.id)
+          .single();
+        
+        console.log('fetchContacts - leadData from DB:', leadData);
+        
+        if (!error && leadData?.additional_contacts) {
+          // Transform additional_contacts to include IDs
+          const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
+            id: index + 1, // Use index + 1 as ID to match contact_id
+            ...contact
+          }));
+          console.log('fetchContacts - contactsWithIds from DB:', contactsWithIds);
+          setContacts(contactsWithIds);
+        } else {
+          console.log('fetchContacts - no additional_contacts found');
+          setContacts([]);
+        }
+      } catch (error) {
+        console.error('Error fetching contacts:', error);
+        setContacts([]);
+      }
+    };
+
     fetchPaymentPlans();
+    fetchContracts();
+    fetchContacts();
   }, [client?.id]);
 
   const refreshPaymentPlans = async () => {
@@ -195,6 +284,80 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     } catch (error) {
       toast.error('Failed to refresh payment plans.');
     }
+  };
+
+  // Add a refresh function for contracts
+  const refreshContracts = async () => {
+    if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) return;
+    try {
+      const contractData = await getClientContracts(client.id);
+      setContracts(contractData || []);
+    } catch (error) {
+      console.error('Error refreshing contracts:', error);
+    }
+  };
+
+  // Combined refresh function
+  const refreshAllData = async () => {
+    await Promise.all([refreshPaymentPlans(), refreshContracts()]);
+  };
+
+  // Update client balance to match finance plan total
+  const updateClientBalance = async (newBalance: number) => {
+    if (!client?.id) return;
+    try {
+      const { error } = await supabase
+        .from('leads')
+        .update({ balance: newBalance })
+        .eq('id', client.id);
+      
+      if (error) {
+        console.error('Error updating client balance:', error);
+        toast.error('Failed to update client balance');
+      } else {
+        // Update local client state
+        if (onClientUpdate) {
+          await onClientUpdate();
+        }
+        toast.success('Client balance updated');
+      }
+    } catch (error) {
+      console.error('Error updating client balance:', error);
+      toast.error('Failed to update client balance');
+    }
+  };
+
+  // Helper function to get contact name by contact_id
+  const getContactName = (contactId: number, contract?: any) => {
+    console.log('getContactName called with contactId:', contactId, 'contract:', contract, 'contacts:', contacts);
+    
+    // If contract has contact_name, use it directly
+    if (contract?.contact_name) {
+      return contract.contact_name;
+    }
+    
+    // If contactId is null, undefined, or 0, return main contact name
+    if (!contactId || contactId === 0) {
+      return client?.name || 'Main Contact';
+    }
+    
+    // Try to find the contact by ID
+    const contact = contacts.find(c => c.id === contactId);
+    if (contact?.name) {
+      return contact.name;
+    }
+    
+    // If not found, try to get from additional_contacts array
+    if (client?.additional_contacts && Array.isArray(client.additional_contacts)) {
+      // contact_id might be the index in the additional_contacts array
+      const contactIndex = contactId - 1; // Assuming contact_id starts from 1
+      if (client.additional_contacts[contactIndex]) {
+        return client.additional_contacts[contactIndex].name || `Contact ${contactId}`;
+      }
+    }
+    
+    // Fallback
+    return `Contact ${contactId}`;
   };
 
   const handleEditPayment = (row: PaymentPlan) => {
@@ -419,320 +582,588 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   return (
     <>
       <div className="overflow-x-auto w-full">
-        {/* Title and Total */}
-        <div className="mb-10 mt-8">
-          <div className="flex flex-col sm:flex-row items-start sm:items-end gap-2 sm:gap-6 w-full">
-            <span className="inline-flex items-center gap-2 sm:gap-3 text-2xl sm:text-4xl font-black text-primary tracking-tight leading-tight drop-shadow-sm">
-              <BanknotesIconSolid className="w-8 h-8 sm:w-10 sm:h-10 text-success/80" />
-              Payments Plan
-            </span>
-            <span className="text-xl sm:text-3xl font-extrabold text-primary">
-              ₪{total.toLocaleString()} <span className="text-black font-bold text-lg sm:text-2xl ml-2 sm:ml-4">+ VAT {vat.toLocaleString()}</span>
-            </span>
-            <span className="text-base sm:text-lg font-semibold text-gray-700 ml-0 sm:ml-2">Total</span>
-          </div>
-        </div>
-        {/* View toggle button */}
-        <div className="flex justify-end mb-4">
-          <button
-            className={`btn btn-outline btn-primary btn-sm flex items-center gap-2 ${viewMode === 'boxes' ? '' : ''}`}
-            onClick={() => setViewMode(viewMode === 'table' ? 'boxes' : 'table')}
-            title={viewMode === 'table' ? 'Switch to Box View' : 'Switch to Table View'}
-          >
-            {viewMode === 'table' ? (
-              <Squares2X2Icon className="w-5 h-5" />
-            ) : (
-              <Bars3Icon className="w-5 h-5" />
-            )}
-            <span className="hidden md:inline">{viewMode === 'table' ? 'Box View' : 'Table View'}</span>
-          </button>
-        </div>
-        {/* Table or Box view */}
-        {viewMode === 'table' ? (
-          <div className="bg-white rounded-2xl shadow-xl p-4 mb-12 border border-base-200 overflow-x-auto">
-            <table className="min-w-full rounded-xl overflow-hidden">
-              <thead className="bg-base-200 sticky top-0 z-10">
-                <tr>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Client</th>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
-                  <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
-                  <th className="px-4 py-3 text-center"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {financePlan.payments.map((p: PaymentPlan, idx: number) => {
-                  const isPaid = p.paid;
-                  return (
-                    <tr
-                      key={p.id || idx}
-                      className={`transition-all duration-200 ${
-                        isPaid
-                          ? 'bg-green-50 border-l-4 border-green-400'
-                          : idx % 2 === 0
-                            ? 'bg-white border-l-4 border-transparent'
-                            : 'bg-base-100 border-l-4 border-transparent'
-                      } hover:bg-blue-50 rounded-xl shadow-sm`}
-                      style={{ verticalAlign: 'middle', position: 'relative' }}
-                    >
-                      {/* Paid Watermark */}
-                      {isPaid && (
-                        <td colSpan={9} style={{
-                          position: 'absolute',
-                          top: '50%',
-                          left: '50%',
-                          transform: 'translate(-50%, -50%) rotate(-20deg)',
-                          fontSize: '2.5rem',
-                          color: 'rgba(34,197,94,0.13)',
-                          fontWeight: 900,
-                          letterSpacing: 2,
-                          pointerEvents: 'none',
-                          zIndex: 10,
-                          textShadow: '0 2px 8px rgba(34,197,94,0.2)'
-                        }}>PAID</td>
-                      )}
-                      {/* Each column in correct order: */}
-                      <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">{p.duePercent}</td>
-                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</td>
-                      <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span className='text-gray-500 font-bold'>+ {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></td>
-                      <td className="text-primary font-semibold align-middle text-center px-4 py-3 whitespace-nowrap">{p.client}</td>
-                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">---</td>
-                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.order}</td>
-                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                        {p.proforma && p.proforma.trim() !== '' ? (
-                          <button 
-                            className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
-                            title="View Proforma" 
-                            onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
-                          >
-                            {getProformaName(p.proforma)}
-                          </button>
-                        ) : (
-                          <button 
-                            className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
-                            title="Create Proforma" 
-                            onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
-                          >
-                            Create Proforma
-                          </button>
+        {/* Contract Information Section */}
+        {contracts.length > 0 ? (
+          <div className="mb-8">
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+              {/* Header */}
+              <div className="px-6 py-4 border-b border-gray-200">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <DocumentTextIcon className="w-6 h-6 text-purple-600" />
+                    <div>
+                      <h3 className="text-xl font-bold text-gray-900">Contract Information</h3>
+                      <p className="text-gray-500 text-sm">Active contracts and details</p>
+                    </div>
+                  </div>
+                  <button 
+                    className="btn btn-sm btn-outline"
+                    onClick={refreshAllData}
+                    title="Refresh data"
+                  >
+                    <ArrowPathIcon className="w-4 h-4" />
+                    Refresh
+                  </button>
+                </div>
+              </div>
+              
+              {/* Contract Cards */}
+              <div className="p-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {contracts.map((contract) => (
+                    <div key={contract.id} className="group relative bg-gradient-to-br from-gray-50 to-white rounded-xl p-6 border border-gray-200 hover:border-blue-300 hover:shadow-lg transition-all duration-300 hover:scale-[1.02]">
+                      {/* Status badge */}
+                      <div className="absolute top-4 right-4">
+                        <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${
+                          contract.status === 'signed' 
+                            ? 'bg-green-100 text-green-800 border border-green-200' 
+                            : 'bg-yellow-100 text-yellow-800 border border-yellow-200'
+                        }`}>
+                          {contract.status === 'signed' ? '✓ Signed' : '📝 Draft'}
+                        </span>
+                      </div>
+                      
+                      {/* Contract title */}
+                      <div className="mb-4">
+                        <h4 className="text-lg font-bold text-gray-900 mb-1">
+                          {contract.contract_templates?.name || 'Contract'}
+                        </h4>
+                        {contract.contact_id && (
+                          <p className="text-sm text-purple-600 font-medium mb-1">
+                            📋 {getContactName(contract.contact_id, contract)}
+                          </p>
                         )}
-                      </td>
-                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.notes}</td>
-                      <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
-                        {p.id ? (
-                          <>
-                            {/* Dollar icon (small) */}
-                            {p.proforma && !isPaid && (
-                              <button
-                                className="btn btn-xs btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
-                                title="Mark as Paid"
-                                onClick={() => handleMarkAsPaid(p.id)}
-                                style={{ padding: 0 }}
-                              >
-                                <CurrencyDollarIcon className="w-4 h-4" />
-                              </button>
-                            )}
-                            {/* Edit icon (small) */}
-                            <button
-                              className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                              title="Edit"
-                              onClick={() => handleEditPayment(p)}
-                              style={{ padding: 0 }}
-                            >
-                              <PencilIcon className="w-4 h-4" />
-                            </button>
-                            {/* Delete icon (small) */}
-                            <button
-                              className="btn btn-xs btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                              title="Delete"
-                              onClick={() => handleDeletePayment(p)}
-                              style={{ padding: 0 }}
-                            >
-                              <TrashIcon className="w-4 h-4" />
-                            </button>
-                          </>
-                        ) : (
-                          <span className="text-gray-400">—</span>
+                        <div className="w-12 h-1 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full"></div>
+                      </div>
+                      
+                      {/* Contract details */}
+                      <div className="space-y-3">
+                        {/* Contact Name */}
+                        {contract.contact_id && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-sm font-medium text-gray-500">Contact</span>
+                            <span className="text-sm font-bold text-gray-900">
+                              {getContactName(contract.contact_id, contract)}
+                            </span>
+                          </div>
                         )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <div className="mt-10 flex justify-start">
-              <button className="btn btn-primary btn-lg px-10 shadow-lg hover:scale-105 transition-transform">Add new payment</button>
+                        
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-gray-500">Applicants</span>
+                          <span className="text-sm font-bold text-gray-900">{contract.applicant_count}</span>
+                        </div>
+                        
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm font-medium text-gray-500">Country</span>
+                          <span className="text-sm font-bold text-gray-900">
+                            {contract.client_country === 'IL' ? '🇮🇱 Israel' : '🌍 Other'}
+                          </span>
+                        </div>
+                        
+                        {contract.total_amount && (
+                          <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                            <span className="text-sm font-medium text-gray-500">Total Amount</span>
+                            <span className="text-lg font-bold text-blue-600">
+                              {contract.client_country === 'IL' ? '₪' : '$'}{contract.total_amount.toLocaleString()}
+                            </span>
+                          </div>
+                        )}
+                        
+                        {contract.signed_at && (
+                          <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                            <span className="text-sm font-medium text-gray-500">Signed Date</span>
+                            <span className="text-sm font-bold text-gray-900">
+                              {new Date(contract.signed_at).toLocaleDateString()}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Hover effect overlay */}
+                      <div className="absolute inset-0 bg-gradient-to-br from-blue-500/5 to-purple-500/5 rounded-xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"></div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-12">
-            {financePlan.payments.map((p: PaymentPlan, idx: number) => {
-              const isPaid = p.paid;
-              return (
-                <div
-                  key={p.id || idx}
-                  className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border flex flex-col gap-0 relative group min-h-[460px] ${isPaid ? 'border-green-500 ring-2 ring-green-400' : 'border-base-200'}`}
-                  style={{ position: 'relative', overflow: 'hidden' }}
-                >
-                  {/* Paid Watermark */}
-                  {isPaid && (
-                    <div style={{
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: 'translate(-50%, -50%) rotate(-20deg)',
-                      fontSize: '3rem',
-                      color: 'rgba(34,197,94,0.15)',
-                      fontWeight: 900,
-                      letterSpacing: 2,
-                      pointerEvents: 'none',
-                      zIndex: 10,
-                      textShadow: '0 2px 8px rgba(34,197,94,0.2)'
-                    }}>PAID</div>
-                  )}
-                  {/* Due Badge */}
-                  {p.proforma && !isPaid && (
-                    <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
-                  )}
-                  {/* Card content */}
-                  {editingPaymentId === p.id ? (
-                    <div className="flex flex-col gap-0 divide-y divide-base-200">
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
-                        <input className="input input-bordered w-40 text-right" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} />
-                      </div>
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
-                        <input className="input input-bordered w-48 text-right" type="date" value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''} onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))} />
-                      </div>
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
-                        <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.value} onChange={e => setEditPaymentData((d: any) => ({ ...d, value: e.target.value }))} />
-                      </div>
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
-                        <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.valueVat} onChange={e => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value }))} />
-                      </div>
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
-                        <input className="input input-bordered w-48 text-right" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} />
-                      </div>
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                        <input className="input input-bordered w-48 text-right" value={editPaymentData.order} onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))} />
-                      </div>
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
-                        <input className="input input-bordered w-48 text-right" value={editPaymentData.notes} onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} />
-                      </div>
-                      <div className="flex gap-2 justify-end pt-4">
-                        <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
-                        <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
-                      </div>
+          <div className="mb-8">
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+              {/* Header */}
+              <div className="px-6 py-4 border-b border-gray-200">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <DocumentTextIcon className="w-6 h-6 text-purple-600" />
+                    <div>
+                      <h3 className="text-xl font-bold text-gray-900">Contract Information</h3>
+                      <p className="text-gray-500 text-sm">Active contracts and details</p>
                     </div>
-                  ) : (
-                    <div className="flex flex-col gap-0 divide-y divide-base-200">
-                      {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
-                      <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
-                        {/* Order (left) */}
-                        <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
-                        {/* Percent (center) */}
-                        <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
-                          {totalBalanceWithVat > 0 ? ((Number(p.value || 0) + Number(p.valueVat || 0)) / totalBalanceWithVat * 100).toFixed(1) : '0'}%
-                        </span>
-                        {/* Actions (right) */}
-                        <div className="flex gap-2 items-center ml-4">
-                          {p.id ? (
-                            <>
-                              <button
-                                className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                title="Delete"
-                                onClick={() => handleDeletePayment(p)}
-                                style={{ padding: 0 }}
-                              >
-                                <Trash2 className="w-4 h-4 text-primary" />
-                              </button>
-                              <button
-                                className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                title="Edit"
-                                onClick={() => handleEditPayment(p)}
-                                style={{ padding: 0 }}
-                              >
-                                <PencilLine className="w-4 h-4 text-primary" />
-                              </button>
-                            </>
-                          ) : (
-                            <span className="text-primary/50">—</span>
-                          )}
-                        </div>
-                      </div>
-                      {/* Due Date */}
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
-                        <span className="font-semibold text-black">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</span>
-                      </div>
-                      {/* Value */}
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
-                        <span className="font-bold text-lg text-primary">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                      </div>
-                      {/* VAT */}
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
-                        <span className="font-bold text-black">{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                      </div>
-                      {/* Client */}
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
-                        <span className="font-semibold text-black">{p.client}</span>
-                      </div>
-                      {/* Proforma */}
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Proforma</span>
-                        {p.proforma && p.proforma.trim() !== '' ? (
-                          <button 
-                            className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
-                            title="View Proforma" 
-                            onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
-                          >
-                            {getProformaName(p.proforma)}
-                          </button>
-                        ) : (
-                          <button 
-                            className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
-                            title="Create Proforma" 
-                            onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
-                          >
-                            Create Proforma
-                          </button>
-                        )}
-                      </div>
-                      {/* Notes */}
-                      <div className="flex items-center justify-between py-3">
-                        <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
-                        <span className="text-right max-w-[60%] text-black">{p.notes}</span>
-                      </div>
-                    </div>
-                  )}
-                  {/* Dollar Icon Button at bottom right */}
-                  {p.proforma && !isPaid && (
-                    <button
-                      className="absolute bottom-4 right-4 bg-green-100 hover:bg-green-200 text-green-700 rounded-full p-2 shadow-lg z-20 border-2 border-green-300 transition-transform hover:scale-110"
-                      title="Mark as Paid"
-                      onClick={() => handleMarkAsPaid(p.id)}
-                    >
-                      <CurrencyDollarIcon className="w-6 h-6" />
-                    </button>
-                  )}
+                  </div>
+                  <button 
+                    className="btn btn-sm btn-outline"
+                    onClick={refreshAllData}
+                    title="Refresh data"
+                  >
+                    <ArrowPathIcon className="w-4 h-4" />
+                    Refresh
+                  </button>
                 </div>
-              );
-            })}
+              </div>
+              
+              {/* Empty state */}
+              <div className="p-12 text-center">
+                <div className="w-20 h-20 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <DocumentTextIcon className="w-10 h-10 text-gray-400" />
+                </div>
+                <h4 className="text-lg font-bold text-gray-800 mb-2">No Contracts Found</h4>
+                <p className="text-gray-500 mb-4">This client doesn't have any contracts yet.</p>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-md mx-auto">
+                  <p className="text-sm text-blue-800">
+                    💡 <strong>Tip:</strong> Create a contract in the Contact Info tab to see it displayed here.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         )}
+
+        {/* Payments Plan Section */}
+        <div className="mb-8">
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <BanknotesIconSolid className="w-6 h-6 text-green-600" />
+                  <div>
+                    <h3 className="text-xl font-bold text-gray-900">Payments Plan</h3>
+                    <p className="text-gray-500 text-sm">Payment schedule and financial overview</p>
+                  </div>
+                </div>
+                                  <div className="flex items-center gap-4">
+                    {/* Total Amount Display */}
+                    <div className="text-right">
+                      <div className="text-lg font-bold text-gray-900">
+                        ₪{total.toLocaleString()} <span className="text-gray-500 font-medium text-sm">+ VAT {vat.toLocaleString()}</span>
+                      </div>
+                      <div className="text-xs text-gray-500">Total Amount</div>
+                    </div>
+                    
+                    {/* Sync Balance Button */}
+                    {financePlan && client?.balance !== total && (
+                      <button
+                        className="btn btn-sm btn-primary"
+                        onClick={() => updateClientBalance(total)}
+                        title="Sync client balance with finance plan total"
+                      >
+                        <ArrowPathIcon className="w-4 h-4" />
+                        <span className="hidden md:inline ml-1">Sync Balance</span>
+                      </button>
+                    )}
+                    
+                    {/* View Toggle Button */}
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => setViewMode(viewMode === 'table' ? 'boxes' : 'table')}
+                      title={viewMode === 'table' ? 'Switch to Box View' : 'Switch to Table View'}
+                    >
+                      {viewMode === 'table' ? (
+                        <Squares2X2Icon className="w-4 h-4" />
+                      ) : (
+                        <Bars3Icon className="w-4 h-4" />
+                      )}
+                      <span className="hidden md:inline ml-1">{viewMode === 'table' ? 'Box View' : 'Table View'}</span>
+                    </button>
+                  </div>
+              </div>
+            </div>
+            
+            {/* Contact Information Banner */}
+            {contracts.length > 0 && (
+              <div className="px-6 py-3 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-purple-100">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
+                      <UserIcon className="w-4 h-4 text-white" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-semibold text-gray-900">Contract Signer</h4>
+                      <p className="text-xs text-gray-600">Primary contact for this finance plan</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {contracts.map((contract, index) => {
+                      const contactName = getContactName(contract.contact_id, contract);
+                      return (
+                        <div key={contract.id} className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 bg-white rounded-lg px-3 py-2 border border-purple-200 shadow-sm">
+                            <div className="w-6 h-6 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
+                              <span className="text-xs font-bold text-white">{index + 1}</span>
+                            </div>
+                            <div className="text-right">
+                              <div className="text-sm font-semibold text-gray-900">{contactName}</div>
+                              <div className="text-xs text-gray-500">
+                                {contract.contract_templates?.name || 'Contract'} • {contract.status === 'signed' ? '✓ Signed' : '📝 Draft'}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            {/* Content */}
+            <div className="p-6">
+              {/* Group payments by contact */}
+              {(() => {
+                // Group payments by client name
+                const paymentsByContact = financePlan.payments.reduce((acc: { [key: string]: PaymentPlan[] }, payment: PaymentPlan) => {
+                  const contactName = payment.client;
+                  if (!acc[contactName]) {
+                    acc[contactName] = [];
+                  }
+                  acc[contactName].push(payment);
+                  return acc;
+                }, {});
+
+                return Object.entries(paymentsByContact).map(([contactName, payments], contactIndex) => (
+                  <div key={contactName} className="mb-8">
+                    {/* Contact Header */}
+                    <div className="mb-4">
+                      <div className="flex items-center gap-3 bg-gradient-to-r from-purple-50 to-blue-50 rounded-lg p-4 border border-purple-200">
+                        <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
+                          <UserIcon className="w-5 h-5 text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-lg font-bold text-gray-900">{contactName}</h3>
+                          <p className="text-sm text-gray-600">Finance Plan</p>
+                        </div>
+                        <div className="ml-auto text-right">
+                          <div className="text-lg font-bold text-gray-900">
+                            ₪{payments.reduce((sum, p) => sum + p.value + p.valueVat, 0).toLocaleString()}
+                          </div>
+                          <div className="text-xs text-gray-500">Total for {contactName}</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Table or Box view for this contact */}
+                    {viewMode === 'table' ? (
+                      <div className="bg-white rounded-xl p-4 border border-gray-200 overflow-x-auto">
+                        <table className="min-w-full rounded-xl overflow-hidden">
+                          <thead className="bg-base-200 sticky top-0 z-10">
+                            <tr>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Contact</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
+                              <th className="px-4 py-3 text-center"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {payments.map((p: PaymentPlan, idx: number) => {
+                              const isPaid = p.paid;
+                              return (
+                                <tr
+                                  key={p.id || idx}
+                                  className={`transition-all duration-200 ${
+                                    isPaid
+                                      ? 'bg-green-50 border-l-4 border-green-400'
+                                      : idx % 2 === 0
+                                        ? 'bg-white border-l-4 border-transparent'
+                                        : 'bg-base-100 border-l-4 border-transparent'
+                                  } hover:bg-blue-50 rounded-xl shadow-sm`}
+                                  style={{ verticalAlign: 'middle', position: 'relative' }}
+                                >
+                                  {/* Paid Watermark */}
+                                  {isPaid && (
+                                    <td colSpan={9} style={{
+                                      position: 'absolute',
+                                      top: '50%',
+                                      left: '50%',
+                                      transform: 'translate(-50%, -50%) rotate(-20deg)',
+                                      fontSize: '2.5rem',
+                                      color: 'rgba(34,197,94,0.13)',
+                                      fontWeight: 900,
+                                      letterSpacing: 2,
+                                      pointerEvents: 'none',
+                                      zIndex: 10,
+                                      textShadow: '0 2px 8px rgba(34,197,94,0.2)'
+                                    }}>PAID</td>
+                                  )}
+                                  {/* Each column in correct order: */}
+                                  <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">{p.duePercent}</td>
+                                  <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</td>
+                                  <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })} <span className='text-gray-500 font-bold'>+ {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span></td>
+                                  <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                    <div className="flex items-center justify-center gap-2">
+                                      <div className="w-6 h-6 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
+                                        <UserIcon className="w-3 h-3 text-white" />
+                                      </div>
+                                      <div className="text-left">
+                                        <div className="text-sm font-semibold text-gray-900">
+                                          {p.client}
+                                        </div>
+                                        <div className="text-xs text-gray-500">
+                                          {contracts.find(c => getContactName(c.contact_id, c) === p.client)?.contract_templates?.name || 'Contract'}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="align-middle text-center px-4 py-3 whitespace-nowrap">---</td>
+                                  <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.order}</td>
+                                  <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                    {p.proforma && p.proforma.trim() !== '' ? (
+                                      <button 
+                                        className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
+                                        title="View Proforma" 
+                                        onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
+                                      >
+                                        {getProformaName(p.proforma)}
+                                      </button>
+                                    ) : (
+                                      <button 
+                                        className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
+                                        title="Create Proforma" 
+                                        onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
+                                      >
+                                        Create Proforma
+                                      </button>
+                                    )}
+                                  </td>
+                                  <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.notes}</td>
+                                  <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
+                                    {p.id ? (
+                                      <>
+                                        {/* Dollar icon (small) */}
+                                        {p.proforma && !isPaid && (
+                                          <button
+                                            className="btn btn-xs btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                                            title="Mark as Paid"
+                                            onClick={() => handleMarkAsPaid(p.id)}
+                                            style={{ padding: 0 }}
+                                          >
+                                            <CurrencyDollarIcon className="w-4 h-4" />
+                                          </button>
+                                        )}
+                                        {/* Edit icon (small) */}
+                                        <button
+                                          className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                          title="Edit"
+                                          onClick={() => handleEditPayment(p)}
+                                          style={{ padding: 0 }}
+                                        >
+                                          <PencilIcon className="w-4 h-4" />
+                                        </button>
+                                        {/* Delete icon (small) */}
+                                        <button
+                                          className="btn btn-xs btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                          title="Delete"
+                                          onClick={() => handleDeletePayment(p)}
+                                          style={{ padding: 0 }}
+                                        >
+                                          <TrashIcon className="w-4 h-4" />
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <span className="text-gray-400">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {payments.map((p: PaymentPlan, idx: number) => {
+                          const isPaid = p.paid;
+                          return (
+                            <div
+                              key={p.id || idx}
+                              className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border flex flex-col gap-0 relative group min-h-[480px] ${isPaid ? 'border-green-500 ring-2 ring-green-400' : 'border-base-200'}`}
+                              style={{ position: 'relative', overflow: 'hidden' }}
+                            >
+
+                              {/* Paid Watermark */}
+                              {isPaid && (
+                                <div style={{
+                                  position: 'absolute',
+                                  top: '50%',
+                                  left: '50%',
+                                  transform: 'translate(-50%, -50%) rotate(-20deg)',
+                                  fontSize: '3rem',
+                                  color: 'rgba(34,197,94,0.15)',
+                                  fontWeight: 900,
+                                  letterSpacing: 2,
+                                  pointerEvents: 'none',
+                                  zIndex: 10,
+                                  textShadow: '0 2px 8px rgba(34,197,94,0.2)'
+                                }}>PAID</div>
+                              )}
+                              {/* Due Badge */}
+                              {p.proforma && !isPaid && (
+                                <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
+                              )}
+                              {/* Card content */}
+                              {editingPaymentId === p.id ? (
+                                <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                  <div className="flex items-center justify-between py-3">
+                                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
+                                    <input className="input input-bordered w-40 text-right" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} />
+                                  </div>
+                                  <div className="flex items-center justify-between py-3">
+                                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
+                                    <input className="input input-bordered w-48 text-right" type="date" value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''} onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))} />
+                                  </div>
+                                  <div className="flex items-center justify-between py-3">
+                                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
+                                    <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.value} onChange={e => setEditPaymentData((d: any) => ({ ...d, value: e.target.value }))} />
+                                  </div>
+                                  <div className="flex items-center justify-between py-3">
+                                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
+                                    <input className="input input-bordered w-48 text-right" type="number" value={editPaymentData.valueVat} onChange={e => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value }))} />
+                                  </div>
+                                  <div className="flex items-center justify-between py-3">
+                                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
+                                    <input className="input input-bordered w-48 text-right" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} />
+                                  </div>
+                                  <div className="flex items-center justify-between py-3">
+                                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
+                                    <input className="input input-bordered w-48 text-right" value={editPaymentData.order} onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))} />
+                                  </div>
+                                  <div className="flex items-center justify-between py-3">
+                                    <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
+                                    <input className="input input-bordered w-48 text-right" value={editPaymentData.notes} onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} />
+                                  </div>
+                                  <div className="flex gap-2 justify-end pt-4">
+                                    <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
+                                    <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                  {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
+                                  <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
+                                    {/* Order (left) */}
+                                    <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
+                                    {/* Percent (center) */}
+                                    <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
+                                      {p.duePercent}%
+                                    </span>
+                                    {/* Actions (right) */}
+                                    <div className="flex gap-2 items-center ml-4">
+                                      {p.id ? (
+                                        <>
+                                          <button
+                                            className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                            title="Delete"
+                                            onClick={() => handleDeletePayment(p)}
+                                            style={{ padding: 0 }}
+                                          >
+                                            <TrashIcon className="w-4 h-4" />
+                                          </button>
+                                          <button
+                                            className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                            title="Edit"
+                                            onClick={() => handleEditPayment(p)}
+                                            style={{ padding: 0 }}
+                                          >
+                                            <PencilIcon className="w-4 h-4" />
+                                          </button>
+                                        </>
+                                      ) : (
+                                        <span className="text-gray-400">—</span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Payment details */}
+                                  <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                    <div className="flex items-center justify-between py-3">
+                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
+                                      <span className="text-sm font-bold text-gray-900">{p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : ''}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-3">
+                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
+                                      <span className="text-sm font-bold text-gray-900">₪{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-3">
+                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
+                                      <span className="text-sm font-bold text-gray-900">{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-3">
+                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">CLIENT</span>
+                                      <span className="text-sm font-bold text-gray-900">{p.client}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-3">
+                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PROFORMA</span>
+                                      <div className="text-sm">
+                                        {p.proforma && p.proforma.trim() !== '' ? (
+                                          <button 
+                                            className="btn btn-xs btn-outline btn-success text-xs font-medium border-success/40" 
+                                            title="View Proforma" 
+                                            onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
+                                          >
+                                            {getProformaName(p.proforma)}
+                                          </button>
+                                        ) : (
+                                          <button 
+                                            className="btn btn-xs btn-outline btn-primary text-xs font-medium" 
+                                            title="Create Proforma" 
+                                            onClick={e => { e.preventDefault(); handleOpenProforma(p); }}
+                                          >
+                                            Create Proforma
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center justify-between py-3">
+                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>
+                                      <span className="text-sm font-bold text-gray-900">{p.notes}</span>
+                                    </div>
+                                  </div>
+                                  
+                                  {/* Payment status indicator */}
+                                  <div className="absolute bottom-4 right-4">
+                                    {p.proforma && !isPaid && (
+                                      <button
+                                        className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                                        title="Mark as Paid"
+                                        onClick={() => handleMarkAsPaid(p.id)}
+                                        style={{ padding: 0 }}
+                                      >
+                                        <CurrencyDollarIcon className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                ));
+              })()}
+              
+              {/* Add new payment button */}
+              <div className="mt-10 flex justify-start">
+                <button className="btn btn-primary btn-lg px-10 shadow-lg hover:scale-105 transition-transform">Add new payment</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Proforma Drawer */}

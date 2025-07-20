@@ -950,55 +950,55 @@ const CalendarPage: React.FC = () => {
 
         {/* Action Buttons */}
         <div className="mt-4 flex flex-row gap-2 justify-end">
-          <button 
-            className="btn btn-outline btn-primary btn-sm"
-            onClick={(e) => {
-              e.stopPropagation();
-              const url = getValidTeamsLink(meeting.teams_meeting_url);
-              if (url) {
-                window.open(url, '_blank');
-              } else {
-                alert('No meeting URL available');
-              }
-            }}
-            title="Teams Meeting"
-          >
-            <VideoCameraIcon className="w-4 h-4" />
-          </button>
-          {lead.phone && (
-            <button
-              className="btn btn-outline btn-success btn-sm"
-              title="WhatsApp"
+            <button 
+              className="btn btn-outline btn-primary btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
-                handleWhatsAppClick(lead, meeting);
+                const url = getValidTeamsLink(meeting.teams_meeting_url);
+                if (url) {
+                  window.open(url, '_blank');
+                } else {
+                  alert('No meeting URL available');
+                }
               }}
+              title="Teams Meeting"
             >
-              <FaWhatsapp className="w-4 h-4" />
+              <VideoCameraIcon className="w-4 h-4" />
             </button>
-          )}
-          {(lead.lead_number || meeting.lead_number) && (
+            {lead.phone && (
+              <button
+                className="btn btn-outline btn-success btn-sm"
+                title="WhatsApp"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleWhatsAppClick(lead, meeting);
+                }}
+              >
+                <FaWhatsapp className="w-4 h-4" />
+              </button>
+            )}
+            {(lead.lead_number || meeting.lead_number) && (
+              <button
+                className="btn btn-outline btn-info btn-sm"
+                title="Email"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleEmailClick(lead, meeting);
+                }}
+              >
+                <EnvelopeIcon className="w-4 h-4" />
+              </button>
+            )}
             <button
-              className="btn btn-outline btn-info btn-sm"
-              title="Email"
+              className="btn btn-outline btn-warning btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
-                handleEmailClick(lead, meeting);
+                setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
               }}
             >
-              <EnvelopeIcon className="w-4 h-4" />
+              {isExpanded ? 'Show Less' : 'Show More'}
+              <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
             </button>
-          )}
-          <button
-            className="btn btn-outline btn-warning btn-sm"
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
-            }}
-          >
-            {isExpanded ? 'Show Less' : 'Show More'}
-            <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-          </button>
         </div>
 
         {/* Expanded Details */}

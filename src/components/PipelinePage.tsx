@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { FileText, PencilLine } from 'lucide-react';
 import { format, parseISO } from 'date-fns';
@@ -120,6 +120,41 @@ const PipelinePage: React.FC = () => {
   const [highlightPanelOpen, setHighlightPanelOpen] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
+  const [showSignedAgreements, setShowSignedAgreements] = useState(false);
+  
+  // Helper function to check if a lead is a signed agreement or past that stage
+  const isSignedAgreementLead = (lead: LeadForPipeline) => {
+    const stage = lead.stage || '';
+    const stageLower = stage.toLowerCase();
+    
+    // Check for signed agreement stages
+    const isSignedAgreement = 
+      stageLower.includes('client signed agreement') ||
+      stageLower.includes('client signed') ||
+      stage === 'Client signed agreement' ||
+      stage === 'Client Signed Agreement' ||
+      stage === 'client signed agreement' ||
+      stage === 'client signed' ||
+      stageLower.includes('signed agreement');
+    
+    // Check for stages that come after signed agreement (like success, completed, etc.)
+    const isPastSignedAgreement = 
+      stageLower.includes('success') ||
+      stageLower.includes('completed') ||
+      stageLower.includes('finished') ||
+      stageLower.includes('done') ||
+      stageLower.includes('closed') ||
+      stageLower.includes('finalized') ||
+      stage === 'Success' ||
+      stage === 'Completed' ||
+      stage === 'Finished' ||
+      stage === 'Done' ||
+      stage === 'Closed' ||
+      stage === 'Finalized';
+    
+    return isSignedAgreement || isPastSignedAgreement;
+  };
+
   // Dynamically collect all unique stages from leads
   const stageOptions = useMemo(() => {
     const stages = new Set<string>();
@@ -132,15 +167,15 @@ const PipelinePage: React.FC = () => {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    // Contracts signed in last 30 days (stage === 'signed')
-    const contractsSignedLeads = leads.filter(lead =>
-      lead.stage === 'signed' &&
-      new Date(lead.created_at) >= thirtyDaysAgo
+    // Contracts signed in last 30 days (stage includes 'Client signed agreement')
+    const contractsSignedLeads = leads.filter(lead => 
+      isSignedAgreementLead(lead) && new Date(lead.created_at) >= thirtyDaysAgo
     );
     const contractsSigned = contractsSignedLeads.length;
 
-    // Count total leads in pipeline
-    const totalLeads = leads.length;
+    // Count total leads in pipeline (excluding signed agreements)
+    const pipelineLeads = leads.filter(lead => !isSignedAgreementLead(lead));
+    const totalLeads = pipelineLeads.length;
 
     // Calculate top worker (expert with most contracts signed in last 30 days)
     const expertCounts: Record<string, number> = {};
@@ -212,8 +247,34 @@ const PipelinePage: React.FC = () => {
     fetchLeads();
   }, []);
 
+  // Get signed agreement leads
+  const signedAgreementLeads = useMemo(() => {
+    return leads.filter(isSignedAgreementLead);
+  }, [leads]);
+
   const filteredLeads = useMemo(() => {
-    let filtered = leads.filter(lead => {
+    // Debug logging to see what's being filtered
+    console.log('Pipeline filtering:', {
+      showSignedAgreements,
+      totalLeads: leads.length,
+      signedAgreements: signedAgreementLeads.length,
+      signedStages: signedAgreementLeads.map(lead => ({ name: lead.name, stage: lead.stage }))
+    });
+
+    // If showing signed agreements, return all signed agreement leads
+    if (showSignedAgreements) {
+      console.log('Showing signed agreements:', signedAgreementLeads);
+      return signedAgreementLeads;
+    }
+    
+    // Otherwise, exclude leads with "Client signed agreement" stage from the pipeline
+    let filtered = leads.filter(lead => !isSignedAgreementLead(lead));
+    console.log('Showing pipeline leads (excluding signed agreements):', filtered.length);
+    
+    return filtered;
+    
+    // Then apply other filters
+    filtered = filtered.filter(lead => {
       const leadNameLower = lead.name.toLowerCase();
       const leadNumberLower = lead.lead_number.toLowerCase();
       const searchLower = searchQuery.toLowerCase();
@@ -264,7 +325,7 @@ const PipelinePage: React.FC = () => {
         .slice(0, 10);
     }
     return filtered;
-  }, [leads, searchQuery, filterCreatedDateFrom, filterCreatedDateTo, filterBalanceMin, filterBy, labelFilter]);
+  }, [leads, showSignedAgreements, searchQuery, filterCreatedDateFrom, filterCreatedDateTo, filterBalanceMin, filterBy, labelFilter]);
 
   const handleSort = (column: 'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up') => {
     if (sortColumn === column) {
@@ -276,6 +337,7 @@ const PipelinePage: React.FC = () => {
   };
 
   const sortedLeads = useMemo(() => {
+    console.log('sortedLeads useMemo - filteredLeads:', filteredLeads.length, 'showSignedAgreements:', showSignedAgreements);
     let leadsToSort = [...filteredLeads];
     if (sortColumn) {
       leadsToSort.sort((a, b) => {
@@ -374,12 +436,32 @@ const PipelinePage: React.FC = () => {
     if (!selectedLead) return;
 
     const now = new Date();
+    // Get current user's full name
+    let currentUserFullName = 'Current User';
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.email) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('full_name, name')
+          .eq('email', user.email)
+          .single();
+        if (userData?.full_name) {
+          currentUserFullName = userData.full_name;
+        } else if (userData?.name) {
+          currentUserFullName = userData.name;
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching user info:', error);
+    }
+
     const newInteraction = {
       id: `manual_${now.getTime()}`,
       date: newContact.date || now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
       time: newContact.time || now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
       raw_date: now.toISOString(),
-      employee: 'Current User',
+      employee: currentUserFullName,
       direction: 'out',
       kind: newContact.method,
       length: newContact.length ? `${newContact.length}m` : '',
@@ -711,7 +793,7 @@ const PipelinePage: React.FC = () => {
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
         <h1 className="text-3xl font-bold flex items-center gap-3">
           <ChartBarIcon className="w-8 h-8 text-primary" />
-          Pipeline
+          {showSignedAgreements ? 'Signed Agreements' : 'Pipeline'}
         </h1>
       </div>
       {/* Filters and Search */}
@@ -800,7 +882,13 @@ const PipelinePage: React.FC = () => {
       {/* Summary Statistics Cards */}
       <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* Contracts Signed */}
-        <div className="bg-gradient-to-br from-green-400 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
+        <div 
+          className="bg-gradient-to-br from-green-400 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 cursor-pointer"
+          onClick={() => {
+            console.log('Contracts Signed box clicked! Current state:', showSignedAgreements);
+            setShowSignedAgreements(!showSignedAgreements);
+          }}
+        >
           <div className="flex items-center justify-between">
             <div>
               <p className="text-green-100 text-sm font-medium">Contracts Signed</p>

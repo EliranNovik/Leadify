@@ -30,7 +30,7 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
   };
 
   return (
-    <div className="p-8">
+    <div className="p-2 sm:p-4 md:p-8">
       <h2 className="text-3xl font-bold mb-2">Price offer</h2>
       <div className="text-lg mb-4 text-base-content/80">
         <span className="font-semibold">Closer:</span> {closer}

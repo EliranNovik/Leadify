@@ -534,11 +534,11 @@ const Clients: React.FC<ClientsProps> = ({
       // Prepare update data
       const updateData: any = { 
         stage,
-        last_stage_changed_by: currentUserFullName,
-        last_stage_changed_at: new Date().toISOString()
+        stage_changed_by: currentUserFullName,
+        stage_changed_at: new Date().toISOString()
       };
 
-      // Add specific tracking for important stages
+      // Add specific tracking for important stages (keeping existing logic for backward compatibility)
       if (stage === 'communication_started') {
         updateData.communication_started_by = currentUserFullName;
         updateData.communication_started_at = new Date().toISOString();
@@ -569,9 +569,35 @@ const Clients: React.FC<ClientsProps> = ({
     if (!selectedClient) return;
     
     try {
+      // Get current user info
+      const account = instance?.getAllAccounts()[0];
+      let currentUserFullName = account?.name || 'Unknown User';
+      
+      // Try to get full_name from database
+      if (account?.username) {
+        try {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', account.username)
+            .single();
+          
+          if (userData?.full_name) {
+            currentUserFullName = userData.full_name;
+          }
+        } catch (error) {
+          console.log('Could not fetch user full_name, using account.name as fallback');
+        }
+      }
+
       const { error } = await supabase
         .from('leads')
-        .update({ scheduler: scheduler, stage: 'scheduler_assigned' })
+        .update({ 
+          scheduler: scheduler, 
+          stage: 'scheduler_assigned',
+          stage_changed_by: currentUserFullName,
+          stage_changed_at: new Date().toISOString()
+        })
         .eq('id', selectedClient.id);
       
       if (error) throw error;
@@ -984,12 +1010,44 @@ const Clients: React.FC<ClientsProps> = ({
 
   const handleSaveSignedDrawer = async () => {
     if (!selectedClient) return;
-    await supabase
-      .from('leads')
-      .update({ stage: 'Client signed agreement', date_signed: signedDate })
-      .eq('id', selectedClient.id);
-    setShowSignedDrawer(false);
-    await onClientUpdate();
+    
+    try {
+      // Get current user info
+      const account = instance?.getAllAccounts()[0];
+      let currentUserFullName = account?.name || 'Unknown User';
+      
+      // Try to get full_name from database
+      if (account?.username) {
+        try {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', account.username)
+            .single();
+          
+          if (userData?.full_name) {
+            currentUserFullName = userData.full_name;
+          }
+        } catch (error) {
+          console.log('Could not fetch user full_name, using account.name as fallback');
+        }
+      }
+
+      await supabase
+        .from('leads')
+        .update({ 
+          stage: 'Client signed agreement', 
+          date_signed: signedDate,
+          stage_changed_by: currentUserFullName,
+          stage_changed_at: new Date().toISOString()
+        })
+        .eq('id', selectedClient.id);
+      setShowSignedDrawer(false);
+      await onClientUpdate();
+    } catch (error) {
+      console.error('Error updating signed agreement:', error);
+      alert('Failed to update signed agreement. Please try again.');
+    }
   };
 
   const handleOpenDeclinedDrawer = () => {
@@ -1869,14 +1927,12 @@ const Clients: React.FC<ClientsProps> = ({
         </div>
       </div>
       {/* Vibrant 'Lead is cold' badge, top right, same height as Stages/Actions */}
-      <div className="relative hidden md:block">
+      <div className="hidden md:flex w-full justify-center mt-2 mb-2">
         {isLeadCold && (
-          <div className="absolute right-4 top-0 z-20 flex items-center">
-            <span className="rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20">
-              <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-              Lead is cold: {coldLeadText}
-            </span>
-          </div>
+          <span className="rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20">
+            <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+            Lead is cold: {coldLeadText}
+          </span>
         )}
       </div>
       {/* Client Details Section (desktop) */}
@@ -2134,7 +2190,7 @@ const Clients: React.FC<ClientsProps> = ({
         <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
           <div
             key={activeTab}
-            className="p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
+            className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
           >
             {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} />}
           </div>
@@ -2194,7 +2250,7 @@ const Clients: React.FC<ClientsProps> = ({
             <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
               <div
                 key={activeTab}
-                className="p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
+                className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
               >
                 {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} />}
               </div>

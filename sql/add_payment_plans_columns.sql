@@ -1,0 +1,4 @@
+ALTER TABLE payment_plans
+  ADD COLUMN IF NOT EXISTS contract_id UUID,
+  ADD COLUMN IF NOT EXISTS percent NUMERIC,
+  ADD COLUMN IF NOT EXISTS currency TEXT; 

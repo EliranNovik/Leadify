@@ -634,14 +634,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="p-2 bg-green-100 rounded-lg">
-          <CalendarIcon className="w-6 h-6 text-green-600" />
+        <div className="p-2 bg-blue-100 rounded-lg">
+          <CalendarIcon className="w-6 h-6 text-blue-600" />
         </div>
         <div>
-          <h3 className="text-2xl font-bold text-gray-900">Meeting Management</h3>
+          <h2 className="text-2xl font-bold">Meeting Management</h2>
           <p className="text-sm text-gray-500">Schedule and track client meetings</p>
         </div>
       </div>
@@ -691,49 +691,47 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       )}
 
-      {meetings.length > 0 ? (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          {/* Upcoming Meetings */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-              <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
-            </div>
-            <div className="p-6">
-              <div className="space-y-4">
-                {upcomingMeetings.length > 0 ? (
-                  upcomingMeetings.map(renderMeetingCard)
-                ) : (
-                  <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                    <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                    <p className="font-medium">No upcoming meetings</p>
-                    <p className="text-sm">Schedule a meeting to get started</p>
-                  </div>
-                )}
+      {/* Upcoming Meetings */}
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
+        </div>
+        <div className="p-6">
+          <div className="space-y-4">
+            {upcomingMeetings.length > 0 ? (
+              upcomingMeetings.map(renderMeetingCard)
+            ) : (
+              <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
+                <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                <p className="font-medium">No upcoming meetings</p>
+                <p className="text-sm">Schedule a meeting to get started</p>
               </div>
-            </div>
-          </div>
-
-          {/* Past Meetings */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-              <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
-            </div>
-            <div className="p-6">
-              <div className="space-y-4">
-                {pastMeetings.length > 0 ? (
-                  pastMeetings.map(renderMeetingCard)
-                ) : (
-                  <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                    <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                    <p className="font-medium">No past meetings</p>
-                    <p className="text-sm">Completed meetings will appear here</p>
-                  </div>
-                )}
-              </div>
-            </div>
+            )}
           </div>
         </div>
-      ) : (
+      </div>
+
+      {/* Past Meetings */}
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
+        </div>
+        <div className="p-6">
+          <div className="space-y-4">
+            {pastMeetings.length > 0 ? (
+              pastMeetings.map(renderMeetingCard)
+            ) : (
+              <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
+                <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                <p className="font-medium">No past meetings</p>
+                <p className="text-sm">Completed meetings will appear here</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {meetings.length === 0 && (
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
           <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
             <h4 className="text-lg font-semibold text-gray-900">Meetings</h4>

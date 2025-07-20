@@ -32,6 +32,8 @@ import ReportsPage from './pages/ReportsPage';
 import SettingsPage from './pages/SettingsPage';
 import TimelinePage from './components/TimelinePage';
 import HistoryPage from './components/HistoryPage';
+import ContractPage from './components/ContractPage';
+import PublicContractView from './pages/PublicContractView';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -119,6 +121,7 @@ const AppContent: React.FC = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
       <Route
         path="/*"
         element={
@@ -145,6 +148,9 @@ const AppContent: React.FC = () => {
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
+                    <Route path="/clients/:lead_number/contract" element={<ContractPage />} />
+                    <Route path="/clients/:lead_number/timeline" element={<TimelinePage />} />
+                    <Route path="/clients/:lead_number/history" element={<HistoryPage />} />
                     <Route path="/clients/:lead_number/*" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
                     <Route path="/calendar" element={<CalendarPage />} />
                     <Route path="/outlook-calendar" element={<OutlookCalendarPage />} />
@@ -161,8 +167,6 @@ const AppContent: React.FC = () => {
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />
                     <Route path="/reports" element={<ReportsPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
-                    <Route path="/clients/:lead_number/timeline" element={<TimelinePage />} />
-                    <Route path="/clients/:lead_number/history" element={<HistoryPage />} />
                   </Routes>
                 </main>
               </div>

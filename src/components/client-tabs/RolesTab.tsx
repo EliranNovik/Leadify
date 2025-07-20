@@ -130,7 +130,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="p-6">
+    <div className="p-2 sm:p-4 md:p-6">
       <div className="flex items-center gap-2 mb-6">
         <UserGroupIcon className="w-6 h-6 text-primary" />
         <h3 className="text-2xl font-semibold">Roles</h3>

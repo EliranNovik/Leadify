@@ -143,3 +143,405 @@ body, html, #root {
   overflow: visible !important;
   display: block;
 }
+
+/* --- CSS Variables for Dark Mode --- */
+:root {
+  /* Light mode colors */
+  --primary-color: #4c6fff;
+  --accent-color: #f7a800;
+  --text-color: #1a1a1a;
+  --bg-light: #ffffff;
+  --bg-dark: #f5f7fa;
+  --border-radius: 12px;
+  --font-main: 'Inter', sans-serif;
+  
+  /* Dark mode colors */
+  --dark-bg-primary: #0f0f0f;
+  --dark-bg-secondary: #1a1a1a;
+  --dark-bg-card: #111111;
+  --dark-sidebar: #4c6fff;
+  --dark-accent: #6c82ff;
+  --dark-text: #ffffff;
+  --dark-text-secondary: #e5e7eb;
+  --dark-border: #374151;
+  --dark-border-accent: #6c82ff;
+  --dark-shadow: rgba(76, 111, 255, 0.1);
+}
+
+/* --- Global Dark Mode Background and Box Styling --- */
+@layer utilities {
+  /* Smooth transitions for theme switching */
+  body, html, #root {
+    transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: var(--font-main), 'Saira', sans-serif !important;
+    font-optical-sizing: auto;
+    font-weight: 500;
+  }
+  
+  /* Set the main background with subtle gradient */
+  .dark body, .dark html, .dark #root {
+    background: linear-gradient(135deg, var(--dark-bg-primary) 0%, var(--dark-bg-secondary) 100%) !important;
+    color: var(--dark-text) !important;
+    min-height: 100vh;
+  }
+  
+  /* Main containers - clean backgrounds */
+  .dark .bg-white,
+  .dark .bg-base-100,
+  .dark .bg-gray-50,
+  .dark .bg-slate-50,
+  .dark .bg-gray-100,
+  .dark .bg-base-200,
+  .dark .bg-base-300 {
+    background: var(--dark-bg-primary) !important;
+    color: var(--dark-text) !important;
+    border: none !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  /* Cards with modern styling and subtle borders */
+  .dark .card,
+  .dark .glass-card,
+  .dark .suggestion-card,
+  .dark .rounded-2xl,
+  .dark .rounded-xl,
+  .dark .rounded-lg {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border-accent) !important;
+    border-radius: var(--border-radius) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 12px var(--dark-shadow) !important;
+  }
+  
+  /* Card hover effects */
+  .dark .card:hover,
+  .dark .glass-card:hover,
+  .dark .suggestion-card:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 24px var(--dark-shadow) !important;
+    border-color: var(--dark-accent) !important;
+  }
+  
+  /* Secondary containers */
+  .dark .bg-gray-200,
+  .dark .bg-slate-100,
+  .dark .bg-slate-200 {
+    background: var(--dark-bg-secondary) !important;
+    color: var(--dark-text) !important;
+    border: none !important;
+  }
+  
+  /* Enhanced shadows with blue accent */
+  .dark .shadow,
+  .dark .shadow-md,
+  .dark .shadow-lg,
+  .dark .shadow-xl {
+    box-shadow: 0 4px 12px var(--dark-shadow), 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+  }
+  
+  /* Ensure text is white in dark mode for all content */
+  .dark .bg-white *,
+  .dark .bg-base-100 *,
+  .dark .bg-gray-50 *,
+  .dark .bg-slate-50 *,
+  .dark .bg-gray-100 *,
+  .dark .bg-base-200 *,
+  .dark .bg-base-300 *,
+  .dark .card *,
+  .dark .glass-card *,
+  .dark .suggestion-card *,
+  .dark .rounded-2xl *,
+  .dark .rounded-xl *,
+  .dark .rounded-lg * {
+    color: #ffffff !important;
+    transition: color 0.3s ease;
+  }
+  
+  /* Override DaisyUI card backgrounds in dark mode */
+  .dark .card {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border-accent) !important;
+    border-radius: var(--border-radius) !important;
+  }
+  
+  /* Override DaisyUI modal backgrounds in dark mode */
+  .dark .modal-box {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border-accent) !important;
+    border-radius: var(--border-radius) !important;
+    box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3) !important;
+  }
+  
+  /* Modern input fields */
+  .dark input,
+  .dark textarea,
+  .dark select {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border) !important;
+    border-radius: var(--border-radius) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-family: var(--font-main), 'Saira', sans-serif !important;
+  }
+  
+  /* Input focus states with blue accent */
+  .dark input:focus,
+  .dark textarea:focus,
+  .dark select:focus {
+    background: var(--dark-bg-card) !important;
+    border: 2px solid var(--dark-accent) !important;
+    outline: none !important;
+    box-shadow: 0 0 0 3px rgba(108, 130, 255, 0.1) !important;
+  }
+  
+  /* Modern placeholder styling */
+  .dark input::placeholder,
+  .dark textarea::placeholder {
+    color: var(--dark-text-secondary) !important;
+    opacity: 0.7;
+  }
+  
+  /* Modern button styling */
+  .dark .btn {
+    background: linear-gradient(135deg, var(--dark-accent) 0%, var(--primary-color) 100%) !important;
+    color: var(--dark-text) !important;
+    border: none !important;
+    border-radius: var(--border-radius) !important;
+    font-weight: 600 !important;
+    font-family: var(--font-main), 'Saira', sans-serif !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 12px var(--dark-shadow) !important;
+  }
+  
+  .dark .btn:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 24px var(--dark-shadow) !important;
+    background: linear-gradient(135deg, var(--primary-color) 0%, var(--dark-accent) 100%) !important;
+  }
+  
+  /* Clean navigation styling */
+  .dark .navbar,
+  .dark .menu {
+    background: var(--dark-bg-primary) !important;
+    border: none !important;
+    backdrop-filter: blur(10px) !important;
+  }
+  
+  /* Modern sidebar with gradient - no outline */
+  .dark .drawer-side {
+    background: linear-gradient(180deg, var(--dark-sidebar) 0%, var(--dark-accent) 100%) !important;
+    border: none !important;
+    outline: none !important;
+  }
+  
+  /* Remove sidebar container outline */
+  .dark .drawer-side > * {
+    border: none !important;
+    outline: none !important;
+  }
+  
+  /* Navigation elements */
+  .dark .navbar .btn,
+  .dark .navbar .dropdown-content,
+  .dark .navbar .menu-item {
+    background: var(--dark-bg-primary) !important;
+    border: none !important;
+    color: var(--dark-text) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .dark .navbar .btn:hover {
+    background: var(--dark-bg-secondary) !important;
+    transform: translateY(-1px) !important;
+  }
+  
+  /* Modern table styling */
+  .dark .table,
+  .dark .table-zebra tbody tr:nth-child(even) {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border) !important;
+  }
+  
+  .dark .table-zebra tbody tr:nth-child(odd) {
+    background: var(--dark-bg-secondary) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border) !important;
+  }
+  
+  /* Clean toast notifications */
+  .dark .toast {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border-accent) !important;
+    border-radius: var(--border-radius) !important;
+    box-shadow: 0 8px 24px var(--dark-shadow) !important;
+  }
+  
+  /* Subtle divider styling */
+  .dark .divider {
+    border-color: var(--dark-border) !important;
+  }
+  
+  /* Modern dropdown styling */
+  .dark .dropdown-content {
+    background: var(--dark-bg-card) !important;
+    border: 1px solid var(--dark-border) !important;
+    border-radius: var(--border-radius) !important;
+    box-shadow: 0 8px 24px var(--dark-shadow) !important;
+  }
+  
+  /* Clean badge styling */
+  .dark .badge {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border-accent) !important;
+    border-radius: var(--border-radius) !important;
+  }
+  
+  /* Performance percentage badges */
+  .dark .badge-success,
+  .dark .badge-primary,
+  .dark .badge-secondary,
+  .dark .badge-accent,
+  .dark .badge-info,
+  .dark .badge-warning,
+  .dark .badge-error {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border-accent) !important;
+    border-radius: var(--border-radius) !important;
+  }
+  
+  /* Percentage badges with specific colors */
+  .dark .badge-success {
+    background: rgba(34, 197, 94, 0.1) !important;
+    color: #4ade80 !important;
+    border-color: #4ade80 !important;
+  }
+  
+  .dark .badge-warning {
+    background: rgba(251, 191, 36, 0.1) !important;
+    color: #fbbf24 !important;
+    border-color: #fbbf24 !important;
+  }
+  
+  .dark .badge-error {
+    background: rgba(239, 68, 68, 0.1) !important;
+    color: #f87171 !important;
+    border-color: #f87171 !important;
+  }
+  
+  /* Modern progress bar */
+  .dark .progress {
+    background: var(--dark-bg-secondary) !important;
+    border: 1px solid var(--dark-border) !important;
+    border-radius: var(--border-radius) !important;
+  }
+  
+  .dark .progress::-webkit-progress-value {
+    background: linear-gradient(90deg, var(--dark-accent) 0%, var(--primary-color) 100%) !important;
+  }
+  
+  /* Clean tab styling */
+  .dark .tabs .tab {
+    color: var(--dark-text-secondary) !important;
+    background: var(--dark-bg-primary) !important;
+    border: 1px solid var(--dark-border) !important;
+    border-radius: var(--border-radius) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .dark .tabs .tab-active {
+    color: var(--dark-text) !important;
+    background: var(--dark-bg-card) !important;
+    border: 2px solid var(--dark-accent) !important;
+    box-shadow: 0 4px 12px var(--dark-shadow) !important;
+  }
+  
+  /* AI Chat Window Styling */
+  .dark .ai-chat-window,
+  .dark .chat-window,
+  .dark .chat-container {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border-accent) !important;
+    border-radius: var(--border-radius) !important;
+    box-shadow: 0 8px 24px var(--dark-shadow) !important;
+  }
+  
+  /* AI Chat messages */
+  .dark .chat-message,
+  .dark .message-bubble,
+  .dark .ai-message,
+  .dark .user-message {
+    background: var(--dark-bg-secondary) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border) !important;
+    border-radius: var(--border-radius) !important;
+  }
+  
+  /* AI Chat input */
+  .dark .chat-input,
+  .dark .ai-chat-input {
+    background: var(--dark-bg-card) !important;
+    color: var(--dark-text) !important;
+    border: 1px solid var(--dark-border) !important;
+    border-radius: var(--border-radius) !important;
+  }
+  
+  /* AI Chat buttons */
+  .dark .chat-send-btn,
+  .dark .ai-chat-btn {
+    background: linear-gradient(135deg, var(--dark-accent) 0%, var(--primary-color) 100%) !important;
+    color: var(--dark-text) !important;
+    border: none !important;
+    border-radius: var(--border-radius) !important;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  
+  .dark .chat-send-btn:hover,
+  .dark .ai-chat-btn:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 8px 24px var(--dark-shadow) !important;
+  }
+  
+  /* AI Chat header */
+  .dark .chat-header,
+  .dark .ai-chat-header {
+    background: var(--dark-bg-primary) !important;
+    color: var(--dark-text) !important;
+    border-bottom: 1px solid var(--dark-border) !important;
+  }
+  
+  /* AI Chat scrollbar */
+  .dark .chat-messages::-webkit-scrollbar {
+    width: 8px;
+  }
+  
+  .dark .chat-messages::-webkit-scrollbar-track {
+    background: var(--dark-bg-secondary) !important;
+    border-radius: 4px;
+  }
+  
+  .dark .chat-messages::-webkit-scrollbar-thumb {
+    background: var(--dark-border-accent) !important;
+    border-radius: 4px;
+  }
+  
+  .dark .chat-messages::-webkit-scrollbar-thumb:hover {
+    background: var(--dark-accent) !important;
+  }
+}
+
+input[type=number].no-arrows::-webkit-inner-spin-button, 
+input[type=number].no-arrows::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number].no-arrows {
+  -moz-appearance: textfield;
+}

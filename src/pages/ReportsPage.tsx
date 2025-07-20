@@ -2100,8 +2100,8 @@ const ScheduledReport = () => {
         communication_started_at,
         unactivated_by,
         unactivated_at,
-        last_stage_changed_by,
-        last_stage_changed_at
+        stage_changed_by,
+        stage_changed_at
       `);
       if (filters.fromDate) leadsQuery = leadsQuery.gte('created_at', filters.fromDate);
       if (filters.toDate) leadsQuery = leadsQuery.lte('created_at', filters.toDate);

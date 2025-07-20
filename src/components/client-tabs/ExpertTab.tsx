@@ -330,22 +330,22 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
         <div className="p-2 bg-blue-100 rounded-lg">
           <AcademicCapIcon className="w-6 h-6 text-blue-600" />
         </div>
         <div>
-          <h3 className="text-2xl font-bold text-gray-900">Expert Assignment</h3>
-          <p className="text-base text-gray-500">Case evaluation and expert opinions</p>
+          <h2 className="text-2xl font-bold">Expert Assignment</h2>
+          <p className="text-sm text-gray-500">Case evaluation and expert opinions</p>
         </div>
       </div>
 
       {/* Expert Information */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-          <h4 className="text-xl font-semibold text-gray-900">Expert Information</h4>
+        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+          <h4 className="text-lg font-semibold text-black">Expert Information</h4>
         </div>
         <div className="p-6">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -405,12 +405,12 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
 
-      {/* Two Column Layout for Section and Expert Notes */}
+      {/* Section Eligibility and Expert Notes Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Section Eligibility */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-            <h4 className="text-xl font-semibold text-gray-900">Section Eligibility</h4>
+          <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <h4 className="text-lg font-semibold text-black">Section Eligibility</h4>
           </div>
           <div className="p-6">
             <div className="space-y-4">
@@ -470,20 +470,19 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         {/* Expert Opinion Notes */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
             <div className="flex items-center justify-between">
-              <h4 className="text-xl font-semibold text-gray-900">Expert Notes</h4>
+              <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
               {!isAddingExpertNote && !editingExpertNoteId && (
                 <button 
-                  className="btn btn-sm"
-                  style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                  className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
                   onClick={() => {
                     setIsAddingExpertNote(true);
                     setNewExpertNoteContent('');
                   }}
                 >
-                  <PencilSquareIcon className="w-4 h-4" />
-                  Add Note
+                  <PencilSquareIcon className="w-5 h-5 text-black" />
+                
                 </button>
               )}
             </div>
@@ -561,23 +560,24 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Handler Opinion Section */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xl font-semibold text-gray-900">Handler Notes</h4>
-            {!isAddingHandlerNote && !editingHandlerNoteId && (
-              <button 
-                className="btn btn-sm"
-                style={{ backgroundColor: '#3b28c7', color: 'white' }}
-                onClick={() => {
+        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl flex items-center justify-between">
+          <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
+          {!isAddingHandlerNote && !editingHandlerNoteId && (
+            <button
+              className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
+              onClick={() => {
+                if (handlerNotes.length > 0) {
+                  handleEditHandlerNote(handlerNotes[handlerNotes.length - 1]);
+                } else {
                   setIsAddingHandlerNote(true);
                   setNewHandlerNoteContent('');
-                }}
-              >
-                <PencilSquareIcon className="w-4 h-4" />
-                Add Note
-              </button>
-            )}
-          </div>
+                }
+              }}
+              title="Edit Handler Note"
+            >
+              <PencilSquareIcon className="w-5 h-5 text-black" />
+            </button>
+          )}
         </div>
         <div className="p-6">
           {/* Add/Edit Handler Note Form */}
@@ -616,10 +616,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               handlerNotes.map((note) => (
                 <div 
                   key={note.id} 
-                  className={`bg-gray-50 rounded-lg p-4 ${
-                    editingHandlerNoteId === note.id ? 'ring-2' : ''
-                  }`}
-                  style={editingHandlerNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } : {}}
+                  className={`bg-gray-50 rounded-lg p-4 relative ${editingHandlerNoteId === note.id ? 'ring-2 ring-[#3b28c7]/20' : ''}`}
                 >
                   {editingHandlerNoteId === note.id ? (
                     <textarea
@@ -629,9 +626,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     />
                   ) : (
                     <>
-                      <div className="text-sm text-gray-400 mb-2">
-                        {note.timestamp}
-                      </div>
+                      <div className="text-sm text-gray-400 mb-2">{note.timestamp}</div>
                       <p className="text-base text-gray-900 whitespace-pre-wrap">{note.content}</p>
                     </>
                   )}
@@ -651,8 +646,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Document Upload Section */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-          <h4 className="text-xl font-semibold text-gray-900">Document Upload</h4>
+        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+          <h4 className="text-lg font-semibold text-black">Document Upload</h4>
         </div>
         <div className="p-6">
           <div className="space-y-4">

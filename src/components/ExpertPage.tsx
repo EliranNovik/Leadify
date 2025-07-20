@@ -35,6 +35,7 @@ const ExpertPage: React.FC = () => {
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [overdueOpen, setOverdueOpen] = useState(false);
   const [meetingSort, setMeetingSort] = useState<'upcoming' | 'past'>('upcoming');
+  const [viewMode, setViewMode] = useState<'box' | 'list'>('box');
 
   useEffect(() => {
     const fetchLeads = async () => {
@@ -313,52 +314,70 @@ const ExpertPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+      {/* View toggle button */}
+      <div className="flex justify-end mb-4">
+        <button
+          className={`btn btn-sm mr-2 ${viewMode === 'box' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setViewMode('box')}
+        >
+          Box View
+        </button>
+        <button
+          className={`btn btn-sm ${viewMode === 'list' ? 'btn-primary' : 'btn-outline'}`}
+          onClick={() => setViewMode('list')}
+        >
+          List View
+        </button>
+      </div>
+
+      {/* Lead grid/list rendering */}
         {isLoading ? (
           <div className="col-span-full text-center p-8">
             <div className="loading loading-spinner loading-lg"></div>
             <p className="mt-4 text-base-content/60">Loading leads...</p>
           </div>
-        ) : meetingSortedLeads.length > 0 ? (
+      ) : viewMode === 'box' ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+          {meetingSortedLeads.length > 0 ? (
           meetingSortedLeads.map((lead) => (
             <div
               key={lead.id}
               onClick={() => handleRowClick(lead)}
-              className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 cursor-pointer border border-gray-100 group"
+                className="bg-white rounded-2xl p-6 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 cursor-pointer border border-gray-100 group"
             >
               {/* Lead Number and Name */}
               <div className="mb-3 flex items-center gap-2">
-                <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                  <span className="text-sm font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
                 <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                  <h3 className="text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
               </div>
               <div className="space-y-2 divide-y divide-gray-100">
                 {/* Expert */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs font-semibold text-gray-500">Expert</span>
-                  <span className="text-sm font-bold text-gray-800 ml-2">{lead.expert || 'N/A'}</span>
+                    <span className="text-base font-semibold text-gray-500">Expert</span>
+                    <span className="text-lg font-bold text-gray-800 ml-2">{lead.expert || 'N/A'}</span>
                 </div>
                 {/* Stage */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs font-semibold text-gray-500">Stage</span>
-                  <span className={'text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white'}>
+                    <span className="text-base font-semibold text-gray-500">Stage</span>
+                    <span className={'text-base font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white'}>
                     {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}
                   </span>
                 </div>
                 {/* Category */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs font-semibold text-gray-500">Category</span>
-                  <span className="text-sm font-bold text-gray-800 ml-2">{lead.topic || 'N/A'}</span>
+                    <span className="text-base font-semibold text-gray-500">Category</span>
+                    <span className="text-lg font-bold text-gray-800 ml-2">{lead.topic || 'N/A'}</span>
                 </div>
                 {/* Date Created */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs font-semibold text-gray-500">Date Created</span>
-                  <span className="text-sm font-bold text-gray-800 ml-2">{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</span>
+                    <span className="text-base font-semibold text-gray-500">Date Created</span>
+                    <span className="text-lg font-bold text-gray-800 ml-2">{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</span>
                 </div>
                 {/* Probability */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs font-semibold text-gray-500">Probability</span>
-                  <span className={`text-sm font-bold ml-2 ${
+                    <span className="text-base font-semibold text-gray-500">Probability</span>
+                    <span className={`text-lg font-bold ml-2 ${
                     (lead.probability || 0) >= 80 ? 'text-green-600' :
                     (lead.probability || 0) >= 60 ? 'text-yellow-600' :
                     (lead.probability || 0) >= 40 ? 'text-orange-600' :
@@ -369,15 +388,15 @@ const ExpertPage: React.FC = () => {
                 </div>
                 {/* Total Applicants */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs font-semibold text-gray-500">Total Applicants</span>
-                  <span className="text-sm font-bold text-gray-800 ml-2">
+                    <span className="text-base font-semibold text-gray-500">Total Applicants</span>
+                    <span className="text-lg font-bold text-gray-800 ml-2">
                     {lead.number_of_applicants_meeting ?? 'N/A'}
                   </span>
                 </div>
                 {/* Meeting Date */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs font-semibold text-gray-500">Meeting Date</span>
-                  <span className={`text-xs font-bold ml-2 px-2 py-1 rounded ${meetingSort === 'past' ? 'bg-purple-600 text-white' : 'bg-[#22c55e] text-white'}`}> 
+                    <span className="text-base font-semibold text-gray-500">Meeting Date</span>
+                    <span className={`text-base font-bold ml-2 px-2 py-1 rounded ${meetingSort === 'past' ? 'bg-purple-600 text-white' : 'bg-[#22c55e] text-white'}`}> 
                     {lead._latestMeetingDate && !isNaN(lead._latestMeetingDate.getTime()) ? format(lead._latestMeetingDate, 'yyyy-MM-dd') : 'N/A'}
                   </span>
                 </div>
@@ -394,6 +413,41 @@ const ExpertPage: React.FC = () => {
           </div>
         )}
       </div>
+      ) : (
+        // List view rendering
+        <div className="overflow-x-auto w-full">
+          <table className="table table-zebra w-full text-lg">
+            <thead>
+              <tr>
+                <th>Lead #</th>
+                <th>Name</th>
+                <th>Expert</th>
+                <th>Stage</th>
+                <th>Category</th>
+                <th>Date Created</th>
+                <th>Probability</th>
+                <th>Applicants</th>
+                <th>Meeting Date</th>
+              </tr>
+            </thead>
+            <tbody>
+              {meetingSortedLeads.map((lead) => (
+                <tr key={lead.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleRowClick(lead)}>
+                  <td>{lead.lead_number}</td>
+                  <td className="font-bold">{lead.name}</td>
+                  <td>{lead.expert || 'N/A'}</td>
+                  <td>{lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}</td>
+                  <td>{lead.topic || 'N/A'}</td>
+                  <td>{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</td>
+                  <td>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</td>
+                  <td>{lead.number_of_applicants_meeting ?? 'N/A'}</td>
+                  <td>{lead.meetings && lead.meetings.length > 0 ? [...lead.meetings].sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())[0].meeting_date : 'N/A'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Drawer for lead summary */}
       {drawerOpen && selectedLead && !isDocumentModalOpen && (
