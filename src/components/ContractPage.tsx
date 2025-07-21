@@ -196,6 +196,13 @@ const ContractPage: React.FC = () => {
           setClient(leadData);
           setLoading(false);
 
+          // If contract is signed, ensure we have the latest data including filled-in client inputs
+          if (contractData.status === 'signed' && contractData.custom_content) {
+            console.log('Contract is signed, displaying filled-in content:', contractData.custom_content);
+            console.log('Full contract data:', contractData);
+            console.log('Custom content details:', JSON.stringify(contractData.custom_content, null, 2));
+          }
+
           // Initialize customPricing with tier-based pricing structure
           if (!contractData.custom_pricing) {
             const applicantCount = contractData.applicant_count || 1;
@@ -323,6 +330,18 @@ const ContractPage: React.FC = () => {
     })();
     return () => { mounted = false; };
   }, [leadNumber]);
+
+  // Auto-refresh signed contracts to ensure we have the latest filled-in content
+  useEffect(() => {
+    if (contract && contract.status === 'signed' && !loading) {
+      // Only refresh once when the contract is first loaded as signed
+      const timer = setTimeout(() => {
+        handleRefreshContract();
+      }, 1000);
+      
+      return () => clearTimeout(timer);
+    }
+  }, [contract?.id]); // Only depend on contract ID, not status or loading
 
   // Update editor content when switching between edit/view modes
   useEffect(() => {
@@ -1076,6 +1095,240 @@ const ContractPage: React.FC = () => {
     navigate(`/clients/${leadNumber}`);
   };
 
+  // Render signed contract content (already filled-in by client)
+  const renderSignedContractContent = (content: any, keyPrefix = ''): React.ReactNode => {
+    if (!content) return null;
+    if (Array.isArray(content)) {
+      return content.map((n, i) => renderSignedContractContent(n, keyPrefix + '-' + i));
+    }
+    if (content.type === 'text') {
+      let text = content.text;
+      
+      // Handle {{text:ID}} and {{signature:ID}} placeholders that might still be in signed contracts
+      if (text && /\{\{(text|signature):[^}]+\}\}/.test(text)) {
+        const parts = [];
+        let lastIndex = 0;
+        const regex = /({{text:[^}]+}}|{{signature:[^}]+}}|\n)/g;
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          if (match.index > lastIndex) {
+            const normalText = text.slice(lastIndex, match.index);
+            parts.push(normalText);
+          }
+          const placeholder = match[1];
+          const textMatch = placeholder.match(/^{{text:([^}]+)}}$/);
+          const sigMatch = placeholder.match(/^{{signature:([^}]+)}}$/);
+          if (textMatch) {
+            const id = textMatch[1];
+            // For signed contracts, show placeholder since we don't have the actual data
+            parts.push(
+              <span key={id} className="inline-block bg-yellow-50 border border-yellow-200 rounded px-2 py-1 mx-1 text-sm font-medium">
+                [Filled: {id}]
+              </span>
+            );
+          } else if (sigMatch) {
+            const id = sigMatch[1];
+            // For signed contracts, show placeholder since we don't have the actual signature
+            parts.push(
+              <span key={id} className="inline-block bg-yellow-50 border border-yellow-200 rounded px-2 py-1 mx-1 text-sm font-medium">
+                [Signed]
+              </span>
+            );
+          } else if (placeholder === '\n') {
+            parts.push(<br key={keyPrefix + '-br-' + match.index} />);
+          }
+          lastIndex = match.index + match[1].length;
+        }
+        if (lastIndex < text.length) {
+          parts.push(text.slice(lastIndex));
+        }
+        return parts;
+      }
+      
+      // Handle base64 image data that might be directly in the text (for signatures)
+      if (text && text.includes('data:image/png;base64,')) {
+        const parts = [];
+        let lastIndex = 0;
+        const regex = /(data:image\/png;base64,[A-Za-z0-9+/=]+)/g;
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          if (match.index > lastIndex) {
+            const normalText = text.slice(lastIndex, match.index);
+            parts.push(normalText);
+          }
+          const imageData = match[1];
+          parts.push(
+            <span key={keyPrefix + '-img-' + match.index} className="inline-block mx-1">
+              <img 
+                src={imageData} 
+                alt="Signature" 
+                style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }} 
+              />
+            </span>
+          );
+          lastIndex = match.index + match[1].length;
+        }
+        if (lastIndex < text.length) {
+          parts.push(text.slice(lastIndex));
+        }
+        return parts.length > 0 ? parts : text;
+      }
+      
+      // Handle payment plan placeholders
+      if (text && text.includes('{{payment_plan_row}}') && customPricing && customPricing.payment_plan) {
+        const parts = [];
+        let lastIndex = 0;
+        const regex = /\{\{payment_plan_row\}\}/g;
+        let match;
+        let rowIndex = 0;
+        while ((match = regex.exec(text)) !== null) {
+          if (match.index > lastIndex) {
+            parts.push(text.slice(lastIndex, match.index));
+          }
+          const row = customPricing.payment_plan[rowIndex];
+          if (row) {
+            parts.push(
+              <span key={keyPrefix + '-pprow-' + rowIndex} className="inline-block bg-blue-50 border border-blue-200 rounded-lg px-3 py-1 mx-1 text-sm font-medium">
+                {row.percent}% {row.due} = {customPricing.currency} {row.amount?.toLocaleString()}
+              </span>
+            );
+          }
+          rowIndex++;
+          lastIndex = match.index + match[0].length;
+        }
+        if (lastIndex < text.length) {
+          parts.push(text.slice(lastIndex));
+        }
+        return parts.length > 0 ? parts : text;
+      }
+      
+      // Replace pricing placeholders with actual values
+      if (text && customPricing && customPricing.pricing_tiers) {
+        const currency = customPricing.currency || 'USD';
+        const tierStructure = [
+          { key: '1', label: 'For one applicant' },
+          { key: '2', label: 'For 2 applicants' },
+          { key: '3', label: 'For 3 applicants' },
+          { key: '4-7', label: 'For 4-7 applicants' },
+          { key: '8-9', label: 'For 8-9 applicants' },
+          { key: '10-15', label: 'For 10-15 applicants' },
+          { key: '16+', label: 'For 16 applicants or more' }
+        ];
+        
+        tierStructure.forEach(tier => {
+          const lineRegex = new RegExp(`(${tier.label}[^\\n]*?):?\\s*\\{\\{price_per_applicant\\}\\}`, 'g');
+          text = text.replace(lineRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+        });
+      }
+      
+      // Replace other placeholders
+      text = fillAllPlaceholders(text, customPricing, client, contract);
+      
+      // Apply text formatting
+      if (content.marks && content.marks.length > 0) {
+        const formattedText = content.marks.reduce((acc: any, mark: any) => {
+          if (mark.type === 'bold') return <b key={keyPrefix}>{acc}</b>;
+          if (mark.type === 'italic') return <i key={keyPrefix}>{acc}</i>;
+          if (mark.type === 'underline') return <u key={keyPrefix}>{acc}</u>;
+          if (mark.type === 'strike') return <s key={keyPrefix}>{acc}</s>;
+          return acc;
+        }, text);
+        
+        // Handle line breaks after formatting
+        if (typeof formattedText === 'string' && formattedText.includes('\n')) {
+          const lines = formattedText.split('\n');
+          return lines.map((line: string, index: number) => (
+            <React.Fragment key={keyPrefix + '-line-' + index}>
+              {index > 0 && <br />}
+              {line}
+            </React.Fragment>
+          ));
+        }
+        return formattedText;
+      }
+      
+      // Handle line breaks in plain text
+      if (text && text.includes('\n')) {
+        const lines = text.split('\n');
+        return lines.map((line: string, index: number) => (
+          <React.Fragment key={keyPrefix + '-line-' + index}>
+            {index > 0 && <br />}
+            {line}
+          </React.Fragment>
+        ));
+      }
+      return text;
+    }
+    
+    switch (content.type) {
+      case 'paragraph':
+        const paragraphContent = renderSignedContractContent(content.content, keyPrefix + '-p');
+        if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
+          return <p key={keyPrefix} className="mb-2">{paragraphContent}</p>;
+        }
+        return null;
+      case 'heading':
+        const level = content.attrs?.level || 1;
+        const headingTags = ['h1','h2','h3','h4','h5','h6'];
+        const HeadingTag = headingTags[Math.max(0, Math.min(5, level-1))] || 'h1';
+        return React.createElement(
+          HeadingTag,
+          { key: keyPrefix },
+          renderSignedContractContent(content.content, keyPrefix + '-h')
+        );
+      case 'bulletList':
+        return <ul key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-ul')}</ul>;
+      case 'orderedList':
+        return <ol key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-ol')}</ol>;
+      case 'listItem':
+        return <li key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-li')}</li>;
+      case 'blockquote':
+        return <blockquote key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-bq')}</blockquote>;
+      case 'horizontalRule':
+        return <hr key={keyPrefix} />;
+      case 'hardBreak':
+        return <br key={keyPrefix} />;
+      default:
+        return renderSignedContractContent(content.content, keyPrefix + '-d');
+    }
+  };
+
+  // Refresh contract data to get the latest signed contract content
+  const handleRefreshContract = async () => {
+    if (!contract) return;
+    setLoading(true);
+    try {
+      const { data: refreshedContract, error } = await supabase
+        .from('contracts')
+        .select(`
+          *,
+          contract_templates (
+            id,
+            name,
+            content
+          )
+        `)
+        .eq('id', contract.id)
+        .single();
+      
+      if (error) throw error;
+      
+      setContract(refreshedContract);
+      setTemplate(refreshedContract.contract_templates);
+      setRenderKey(prev => prev + 1); // Force re-render
+      
+      if (refreshedContract.status === 'signed') {
+        console.log('Refreshed signed contract with filled-in content:', refreshedContract.custom_content);
+        console.log('Contract data:', refreshedContract);
+        console.log('Custom content details:', JSON.stringify(refreshedContract.custom_content, null, 2));
+      }
+    } catch (error) {
+      console.error('Error refreshing contract:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   if (loading) return (
     <div className="min-h-screen bg-white flex items-center justify-center">
       <div className="text-center">
@@ -1165,10 +1418,14 @@ const ContractPage: React.FC = () => {
                   </p>
                   {contract?.contact_name && contract.contact_name !== client?.name && (
                     <p className="text-xs sm:text-sm text-purple-600 font-medium truncate">
-                      📋 Contact: {contract.contact_name}
+                      Contact: {contract.contact_name}
                       {contract.contact_email && (
                         <span className="text-gray-500 ml-2">• {contract.contact_email}</span>
                       )}
+                    </p>
+                  )}
+                  {status === 'signed' && contract?.custom_content && (
+                    <p className="text-xs sm:text-sm text-green-600 font-medium truncate">
                     </p>
                   )}
                 </div>
@@ -1203,6 +1460,16 @@ const ContractPage: React.FC = () => {
                 <span className="hidden sm:inline">Share</span>
                 <span className="sm:hidden">S</span>
               </button>
+              {status === 'signed' && (
+                <button
+                  className="btn btn-outline btn-xs sm:btn-sm"
+                  onClick={handleRefreshContract}
+                  title="Refresh contract data"
+                >
+                  <span className="hidden sm:inline">Refresh</span>
+                  <span className="sm:hidden">R</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1222,7 +1489,7 @@ const ContractPage: React.FC = () => {
                 ) : contract.custom_content ? (
                   <div key={`contract-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`} className="prose max-w-none">
                     {status === 'signed'
-                      ? renderTiptapContent(contract.custom_content, '', false, undefined, undefined, undefined, true, { text: 0, signature: 0 })
+                      ? renderSignedContractContent(contract.custom_content)
                       : viewAsClient
                         ? renderTiptapContent(contract.custom_content, '', true, signaturePads, undefined, undefined, false, { text: 0, signature: 0 })
                         : renderTiptapContent(contract.custom_content, '', false, undefined, undefined, undefined, false, { text: 0, signature: 0 })

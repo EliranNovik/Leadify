@@ -53,6 +53,17 @@ const FONT_FAMILIES = [
 ];
 const FONT_SIZES = ['12px', '14px', '16px', '18px', '20px', '24px', '28px', '32px'];
 
+// Helper function to get current tier key based on applicant count
+const getCurrentTierKey = (count: number) => {
+  if (count === 1) return '1';
+  if (count === 2) return '2';
+  if (count === 3) return '3';
+  if (count >= 4 && count <= 7) return '4-7';
+  if (count >= 8 && count <= 9) return '8-9';
+  if (count >= 10 && count <= 15) return '10-15';
+  return '16+';
+};
+
 const SAMPLE_TEMPLATE = {
   name: 'Citizenship Service Contract',
   content: {
@@ -130,18 +141,19 @@ const ContractTemplatesManager: React.FC = () => {
   const [isSaving, setIsSaving] = useState(false);
   const [isPreview, setIsPreview] = useState(false);
   const [previewData, setPreviewData] = useState({ 
-    client_name: 'John Doe', 
-    client_phone: '+1-555-0123',
-    client_email: 'john.doe@example.com',
     date: '2024-06-01',
-    applicant_count: 2,
-    price_per_applicant: 2500,
-    total_amount: 5000,
     discount_percentage: 10,
-    discount_amount: 500,
-    final_amount: 4500,
     currency: 'USD',
-    client_country: 'US'
+    client_country: 'US',
+    pricing_tiers: {
+      '1': 2500,
+      '2': 2400,
+      '3': 2300,
+      '4-7': 2200,
+      '8-9': 2100,
+      '10-15': 2000,
+      '16+': 1900
+    }
   });
   const [dynamicFields, setDynamicFields] = useState<{ [key: string]: string }>({});
   const [signatureData, setSignatureData] = useState<{ [key: string]: string }>({});
@@ -187,6 +199,17 @@ const ContractTemplatesManager: React.FC = () => {
     if (editor && selectedTemplate) {
       editor.commands.setContent(selectedTemplate.content);
       setName(selectedTemplate.name);
+      
+      // Load default pricing tiers if they exist
+      if (selectedTemplate.default_pricing_tiers) {
+        setPreviewData(prev => ({
+          ...prev,
+          pricing_tiers: selectedTemplate.default_pricing_tiers,
+          currency: selectedTemplate.default_currency || prev.currency,
+          client_country: selectedTemplate.default_country || prev.client_country,
+          discount_percentage: prev.discount_percentage
+        }));
+      }
     }
   }, [selectedId, editor]);
 
@@ -202,13 +225,21 @@ const ContractTemplatesManager: React.FC = () => {
     if (!editor) return;
     setIsSaving(true);
     const content = editor.getJSON();
+    const templateData = {
+      name,
+      content,
+      default_pricing_tiers: previewData.pricing_tiers,
+      default_currency: previewData.currency,
+      default_country: previewData.client_country
+    };
+    
     if (selectedId) {
       // Update
-      await supabase.from('contract_templates').update({ name, content }).eq('id', selectedId);
+      await supabase.from('contract_templates').update(templateData).eq('id', selectedId);
     } else {
       // Create
       const id = uuidv4();
-      await supabase.from('contract_templates').insert([{ id, name, content }]);
+      await supabase.from('contract_templates').insert([{ id, ...templateData }]);
       setSelectedId(id);
     }
     await fetchTemplates();
@@ -235,23 +266,132 @@ const ContractTemplatesManager: React.FC = () => {
     const content: JSONContent = editor.getJSON();
     let textFieldIdx = 0;
     let signatureFieldIdx = 0;
+    
+    // Update existing pricing content in the template instead of adding new section
+    const updateExistingPricing = (content: JSONContent): JSONContent => {
+      if (!content.content) return content;
+      
+      const tierStructure = [
+        { key: '1', label: 'For one applicant' },
+        { key: '2', label: 'For 2 applicants' },
+        { key: '3', label: 'For 3 applicants' },
+        { key: '4-7', label: 'For 4-7 applicants' },
+        { key: '8-9', label: 'For 8-9 applicants' },
+        { key: '10-15', label: 'For 10-15 applicants' },
+        { key: '16+', label: 'For 16 applicants or more' }
+      ];
+      
+      // Recursively update content to replace pricing placeholders
+      const updateNode = (node: any): any => {
+        if (node.type === 'text' && node.text) {
+          let updatedText = node.text;
+          
+          // Replace pricing tier placeholders with actual values
+          tierStructure.forEach(tier => {
+            const price = previewData.pricing_tiers[tier.key as keyof typeof previewData.pricing_tiers] || 0;
+            const priceText = `${previewData.currency} ${price.toLocaleString()}`;
+            
+            // Replace {{price_per_applicant}} in the context of specific tier lines
+            const tierRegex = new RegExp(`(${tier.label}[^\\n]*?):?\\s*\\{\\{price_per_applicant\\}\\}`, 'g');
+            updatedText = updatedText.replace(tierRegex, `$1: ${priceText}`);
+            
+            // Also replace any general {{price_per_applicant}} with the first tier price
+            if (updatedText.includes('{{price_per_applicant}}')) {
+              const firstTierPrice = previewData.pricing_tiers['1'] || 0;
+              updatedText = updatedText.replace(/\{\{price_per_applicant\}\}/g, `${previewData.currency} ${firstTierPrice.toLocaleString()}`);
+            }
+          });
+          
+          return { ...node, text: updatedText };
+        }
+        
+        if (node.content) {
+          return { ...node, content: node.content.map(updateNode) };
+        }
+        
+        return node;
+      };
+      
+      return updateNode(content);
+    };
+    
+    // Update existing pricing content instead of adding new section
+    const contentWithUpdatedPricing = updateExistingPricing(content);
 
-    // Calculate pricing based on preview data
+    // Use preview data with pricing tiers for template preview
     const calculatedPricing = {
       ...previewData,
-      total_amount: previewData.applicant_count * previewData.price_per_applicant,
-      discount_amount: Math.round((previewData.applicant_count * previewData.price_per_applicant) * (previewData.discount_percentage / 100)),
+      price_per_applicant: 0, // Not used in template preview
+      total_amount: 0, // Not used in template preview
+      discount_amount: 0, // Not used in template preview
+      final_amount: 0, // Not used in template preview
+      pricing_tiers: previewData.pricing_tiers, // Use the actual pricing tiers from preview data
     };
-    calculatedPricing.final_amount = calculatedPricing.total_amount - calculatedPricing.discount_amount;
 
     // Helper to recursively render TipTap JSON nodes
     const renderNode = (node: any, key: string | number): React.ReactNode => {
       if (node.type === 'text') {
         let text = node.text;
-        // Replace {{client_name}}, {{date}}, etc. with previewData and calculatedPricing
+        // Replace {{date}}, etc. with previewData and calculatedPricing
         Object.entries({ ...previewData, ...calculatedPricing }).forEach(([k, v]) => {
           text = text.replaceAll(`{{${k}}}`, String(v));
         });
+        
+        // Handle client fields with placeholder values for preview
+        text = text.replaceAll('{{client_name}}', 'John Doe');
+        text = text.replaceAll('{{client_phone}}', '+1-555-0123');
+        text = text.replaceAll('{{client_email}}', 'john.doe@example.com');
+        
+                  // Handle pricing tier placeholders - using the same logic as ContractPage.tsx
+          if (text && calculatedPricing.pricing_tiers) {
+            const currency = calculatedPricing.currency || 'USD';
+            const tierStructure = [
+              { key: '1', label: 'For one applicant' },
+              { key: '2', label: 'For 2 applicants' },
+              { key: '3', label: 'For 3 applicants' },
+              { key: '4-7', label: 'For 4-7 applicants' },
+              { key: '8-9', label: 'For 8-9 applicants' },
+              { key: '10-15', label: 'For 10-15 applicants' },
+              { key: '16+', label: 'For 16 applicants or more' }
+            ];
+            
+            // Replace specific tier placeholders that we added to the template
+            tierStructure.forEach(tier => {
+              const price = calculatedPricing.pricing_tiers[tier.key as keyof typeof calculatedPricing.pricing_tiers] || 0;
+              const tierPlaceholder = `{{${tier.key}_tier_price}}`;
+              if (text.includes(tierPlaceholder)) {
+                text = text.replace(new RegExp(tierPlaceholder, 'g'), `${currency} ${price.toLocaleString()}`);
+              }
+            });
+            
+            // Handle individual pricing tier placeholders like in ContractPage.tsx
+            text = text.replace(/For one applicant-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+              `For one applicant- ${currency} ${(calculatedPricing.pricing_tiers['1'] || 0).toLocaleString()}`);
+            
+            text = text.replace(/For 2 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+              `For 2 applicants- ${currency} ${(calculatedPricing.pricing_tiers['2'] || 0).toLocaleString()}`);
+            
+            text = text.replace(/For 3 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+              `For 3 applicants- ${currency} ${(calculatedPricing.pricing_tiers['3'] || 0).toLocaleString()}`);
+            
+            text = text.replace(/For 4-7 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+              `For 4-7 applicants- ${currency} ${(calculatedPricing.pricing_tiers['4-7'] || 0).toLocaleString()}`);
+            
+            text = text.replace(/For 8-9 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+              `For 8-9 applicants- ${currency} ${(calculatedPricing.pricing_tiers['8-9'] || 0).toLocaleString()}`);
+            
+            text = text.replace(/For 10-15 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+              `For 10-15 applicants- ${currency} ${(calculatedPricing.pricing_tiers['10-15'] || 0).toLocaleString()}`);
+            
+            text = text.replace(/For 16 applicants or more-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+              `For 16 applicants or more- ${currency} ${(calculatedPricing.pricing_tiers['16+'] || 0).toLocaleString()}`);
+            
+            // Also replace any general price_per_applicant with the first tier price as fallback
+            if (text.includes('{{price_per_applicant}}')) {
+              const firstTierPrice = calculatedPricing.pricing_tiers['1'] || 0;
+              text = text.replace(/\{\{price_per_applicant\}\}/g, `${currency} ${firstTierPrice.toLocaleString()}`);
+            }
+          }
         // Replace {{text}} and {{signature}} with React fields
         if (text.includes('{{text}}')) {
           const parts = text.split(/(\{\{text\}\})/g);
@@ -335,7 +475,7 @@ const ContractTemplatesManager: React.FC = () => {
 
     return (
       <div className="prose max-w-full text-black min-h-[300px] space-y-2">
-        {content.content?.map((n, i) => renderNode(n, i))}
+        {contentWithUpdatedPricing.content?.map((n: any, i: number) => renderNode(n, i))}
       </div>
     );
   };
@@ -422,83 +562,8 @@ const ContractTemplatesManager: React.FC = () => {
                   <div className="card-body p-4">
                     <h3 className="text-lg font-semibold mb-4">Preview Data</h3>
                     <div className="space-y-3">
-                      <div>
-                        <label className="label">
-                          <span className="label-text">Client Name</span>
-                        </label>
-                        <input
-                          type="text"
-                          className="input input-bordered input-sm w-full"
-                          value={previewData.client_name}
-                          onChange={e => setPreviewData(prev => ({ ...prev, client_name: e.target.value }))}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">
-                          <span className="label-text">Client Phone</span>
-                        </label>
-                        <input
-                          type="text"
-                          className="input input-bordered input-sm w-full"
-                          value={previewData.client_phone}
-                          onChange={e => setPreviewData(prev => ({ ...prev, client_phone: e.target.value }))}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">
-                          <span className="label-text">Client Email</span>
-                        </label>
-                        <input
-                          type="email"
-                          className="input input-bordered input-sm w-full"
-                          value={previewData.client_email}
-                          onChange={e => setPreviewData(prev => ({ ...prev, client_email: e.target.value }))}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">
-                          <span className="label-text">Applicant Count</span>
-                        </label>
-                        <input
-                          type="number"
-                          className="input input-bordered input-sm w-full"
-                          value={previewData.applicant_count}
-                          onChange={e => {
-                            const newCount = Number(e.target.value);
-                            const newTotal = newCount * previewData.price_per_applicant;
-                            const newDiscount = Math.round(newTotal * (previewData.discount_percentage / 100));
-                            setPreviewData(prev => ({ 
-                              ...prev, 
-                              applicant_count: newCount,
-                              total_amount: newTotal,
-                              discount_amount: newDiscount,
-                              final_amount: newTotal - newDiscount
-                            }));
-                          }}
-                        />
-                      </div>
-                      <div>
-                        <label className="label">
-                          <span className="label-text">Price Per Applicant</span>
-                        </label>
-                        <input
-                          type="number"
-                          className="input input-bordered input-sm w-full"
-                          value={previewData.price_per_applicant}
-                          onChange={e => {
-                            const newPrice = Number(e.target.value);
-                            const newTotal = previewData.applicant_count * newPrice;
-                            const newDiscount = Math.round(newTotal * (previewData.discount_percentage / 100));
-                            setPreviewData(prev => ({ 
-                              ...prev, 
-                              price_per_applicant: newPrice,
-                              total_amount: newTotal,
-                              discount_amount: newDiscount,
-                              final_amount: newTotal - newDiscount
-                            }));
-                          }}
-                        />
-                      </div>
+
+
                       <div>
                         <label className="label">
                           <span className="label-text">Currency</span>
@@ -522,39 +587,65 @@ const ContractTemplatesManager: React.FC = () => {
                           value={previewData.discount_percentage}
                           onChange={e => {
                             const newDiscount = Number(e.target.value);
-                            const newDiscountAmount = Math.round(previewData.total_amount * (newDiscount / 100));
                             setPreviewData(prev => ({ 
                               ...prev, 
-                              discount_percentage: newDiscount,
-                              discount_amount: newDiscountAmount,
-                              final_amount: previewData.total_amount - newDiscountAmount
+                              discount_percentage: newDiscount
                             }));
                           }}
                         />
                       </div>
-                      {/* Calculated Values Display */}
-                      <div className="divider my-2"></div>
-                      <div className="space-y-2 text-sm">
-                        <div className="flex justify-between">
-                          <span className="text-base-content/70">Total Amount:</span>
-                          <span className="font-semibold">{previewData.currency} {previewData.total_amount?.toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-base-content/70">Discount Amount:</span>
-                          <span className="font-semibold">{previewData.currency} {previewData.discount_amount?.toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-base-content/70">Final Amount:</span>
-                          <span className="font-semibold text-primary">{previewData.currency} {previewData.final_amount?.toLocaleString()}</span>
+                      
+                      {/* Pricing Tiers */}
+                      <div>
+                        <label className="label">
+                          <span className="label-text">Pricing Tiers (Price per applicant)</span>
+                        </label>
+                        <div className="space-y-2">
+                          {(() => {
+                            // Define the correct order for pricing tiers
+                            const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
+                            return tierOrder.map(tierKey => {
+                              const price = previewData.pricing_tiers[tierKey as keyof typeof previewData.pricing_tiers] || 0;
+                              return (
+                                <div key={tierKey} className="flex items-center gap-2">
+                                  <span className="text-xs text-gray-600 w-16">
+                                    {tierKey === '1' ? '1 applicant' :
+                                     tierKey === '2' ? '2 applicants' :
+                                     tierKey === '3' ? '3 applicants' :
+                                     tierKey === '4-7' ? '4-7 applicants' :
+                                     tierKey === '8-9' ? '8-9 applicants' :
+                                     tierKey === '10-15' ? '10-15 applicants' :
+                                     tierKey === '16+' ? '16+ applicants' :
+                                     '16+ applicants'}
+                                  </span>
+                                  <input
+                                    type="number"
+                                    className="input input-bordered input-sm flex-1"
+                                    value={price}
+                                    onChange={e => {
+                                      const newPrice = Number(e.target.value);
+                                      const newPricingTiers = { ...previewData.pricing_tiers, [tierKey]: newPrice };
+                                      setPreviewData(prev => ({ 
+                                        ...prev, 
+                                        pricing_tiers: newPricingTiers
+                                      }));
+                                    }}
+                                  />
+                                  <span className="text-xs text-gray-600">{previewData.currency}</span>
+                                </div>
+                              );
+                            });
+                          })()}
                         </div>
                       </div>
+
                     </div>
                   </div>
                 </div>
               </div>
               {/* Contract Preview */}
               <div className="lg:col-span-2">
-                <div className="bg-base-200 rounded-xl p-6 border border-base-300">
+                <div className="bg-base-200 rounded-xl p-6 border border-base-300" key={JSON.stringify(previewData.pricing_tiers)}>
                   {renderPreview()}
                 </div>
               </div>

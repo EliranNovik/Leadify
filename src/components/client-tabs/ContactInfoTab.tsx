@@ -9,6 +9,17 @@ import { handleContractSigned } from '../../lib/contractAutomation';
 import { getPricePerApplicant } from '../../lib/contractPricing';
 import { useNavigate } from 'react-router-dom';
 
+// Helper function to get current tier key based on applicant count
+const getCurrentTierKey = (count: number) => {
+  if (count === 1) return '1';
+  if (count === 2) return '2';
+  if (count === 3) return '3';
+  if (count >= 4 && count <= 7) return '4-7';
+  if (count >= 8 && count <= 9) return '8-9';
+  if (count >= 10 && count <= 15) return '10-15';
+  return '16+';
+};
+
 interface ContactEntry {
   id: number;
   name: string;
@@ -23,6 +34,9 @@ interface ContractTemplate {
   id: string;
   name: string;
   content: any;
+  default_pricing_tiers?: { [key: string]: number };
+  default_currency?: string;
+  default_country?: string;
 }
 
 // Helper to render TipTap JSON as React elements, with support for dynamic fields in 'View as Client' mode
@@ -261,7 +275,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Fetch contract templates when component mounts
   useEffect(() => {
-    supabase.from('contract_templates').select('id, name, content').then(({ data }) => {
+    supabase.from('contract_templates').select('id, name, content, default_pricing_tiers, default_currency, default_country').then(({ data }) => {
       if (data) setContractTemplates(data);
     });
   }, []);
@@ -459,6 +473,62 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contactMobile = contact?.mobile || '';
       }
 
+      // Get the selected template to use its default pricing
+      const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
+      
+      // Initialize customPricing with correct currency based on country
+      const isIsraeli = contractForm.clientCountry === 'IL';
+      const currency = isIsraeli ? 'NIS' : 'USD';
+      
+      // Initialize pricing tiers - use template defaults if available, otherwise use system defaults
+      const pricingTiers: { [key: string]: number } = {};
+      const tierStructure = [
+        { key: '1', label: 'For one applicant', count: 1 },
+        { key: '2', label: 'For 2 applicants', count: 2 },
+        { key: '3', label: 'For 3 applicants', count: 3 },
+        { key: '4-7', label: 'For 4-7 applicants', count: 4 },
+        { key: '8-9', label: 'For 8-9 applicants', count: 8 },
+        { key: '10-15', label: 'For 10-15 applicants', count: 10 },
+        { key: '16+', label: 'For 16 applicants or more', count: 16 }
+      ];
+      
+      // Use template default pricing tiers if available, otherwise use system defaults
+      if (selectedTemplate?.default_pricing_tiers) {
+        Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers);
+      } else {
+        tierStructure.forEach(tier => {
+          const priceTier = getPricePerApplicant(tier.count, isIsraeli);
+          const pricePerApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
+          pricingTiers[tier.key] = pricePerApplicant;
+        });
+      }
+      
+      // Calculate initial totals
+      const currentTierKey = getCurrentTierKey(contractForm.applicantCount);
+      const currentPricePerApplicant = pricingTiers[currentTierKey];
+      const total = currentPricePerApplicant * contractForm.applicantCount;
+      const discount = 0;
+      const discountAmount = 0;
+      const finalAmount = total;
+      
+      // Default payment plan: 50/25/25
+      const paymentPlan = [
+        { percent: 50, due: 'On signing', amount: Math.round(finalAmount * 0.5) },
+        { percent: 25, due: '30 days', amount: Math.round(finalAmount * 0.25) },
+        { percent: 25, due: '60 days', amount: Math.round(finalAmount * 0.25) },
+      ];
+      
+      const initialCustomPricing = {
+        applicant_count: contractForm.applicantCount,
+        pricing_tiers: pricingTiers,
+        total_amount: total,
+        discount_percentage: discount,
+        discount_amount: discountAmount,
+        final_amount: finalAmount,
+        payment_plan: paymentPlan,
+        currency,
+      };
+
       // Create contract data with contact association
       const contractData = {
         client_id: client.id,
@@ -471,6 +541,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contact_mobile: contactMobile, // Save contact mobile
         applicant_count: contractForm.applicantCount,
         client_country: contractForm.clientCountry,
+        custom_pricing: initialCustomPricing, // Save initial customPricing with correct currency
       };
       console.log('handleCreateContract: Inserting contract data:', contractData);
       
@@ -504,8 +575,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contactId: null,
       });
 
-      // Show success message
-      alert('Contract created successfully for this contact! You can now send it for signature.');
+      // Automatically navigate to the contract page
+      if (contract && client.lead_number) {
+        navigate(`/clients/${client.lead_number}/contract?contractId=${contract.id}`);
+      }
     } catch (error) {
       console.error('Error creating contract:', error);
       alert('Failed to create contract. Please try again.');
@@ -513,6 +586,40 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   };
 
   // Handle contract signing (for testing/development)
+  const handleDeleteContract = async (contractId: string) => {
+    try {
+      console.log('handleDeleteContract called with contractId:', contractId);
+      
+      // Delete the contract from the database
+      const { error } = await supabase
+        .from('contracts')
+        .delete()
+        .eq('id', contractId);
+
+      if (error) throw error;
+
+      console.log('Contract deleted successfully');
+
+      // Update the local state to remove the contract
+      setContactContracts(prev => {
+        const updated = { ...prev };
+        // Find and remove the contract from the contactContracts
+        Object.keys(updated).forEach(contactId => {
+          if (updated[Number(contactId)]?.id === contractId) {
+            updated[Number(contactId)] = null;
+          }
+        });
+        return updated;
+      });
+
+      alert('Contract deleted successfully');
+
+    } catch (error) {
+      console.error('Error deleting contract:', error);
+      alert('Failed to delete contract. Please try again.');
+    }
+  };
+
   const handleSignContract = async (contractId: string) => {
     try {
       console.log('handleSignContract called with contractId:', contractId);
@@ -783,11 +890,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             </button>
                             {contactContracts[contact.id]?.status === 'draft' && (
                               <button 
-                                className="btn btn-outline btn-success btn-sm justify-start" 
-                                onClick={() => handleSignContract(contactContracts[contact.id]?.id!)}
+                                className="btn btn-outline btn-error btn-sm justify-start" 
+                                onClick={() => {
+                                  if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
+                                    handleDeleteContract(contactContracts[contact.id]?.id!);
+                                  }
+                                }}
                               >
-                                <CheckIcon className="w-4 h-4" />
-                                Sign Contract
+                                <TrashIcon className="w-4 h-4" />
+                                Delete Contract
                               </button>
                             )}
                           </div>

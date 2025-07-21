@@ -30,6 +30,7 @@ export interface Client extends Lead {
   last_stage_changed_by?: string;
   last_stage_changed_at?: string;
   updated_at?: string;
+  client_country?: string;
 }
 
 export interface ClientTabProps {

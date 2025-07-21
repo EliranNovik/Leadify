@@ -174,9 +174,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       </div>
 
       {/* Main Info Grid */}
-      <div className="space-y-6">
+      <div className="space-y-12">
         {/* Row 1: Case Probability, Follow-up Status, Eligibility Status */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 gap-y-12">
           {/* Case Probability */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
@@ -261,8 +261,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Row 2: Special Notes, General Notes, Facts of Case */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Row 2: Special Notes, General Notes, Tags */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 gap-y-12">
           {/* Special Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
@@ -407,6 +407,80 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
           </div>
 
+          {/* Tags */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+              <div className="flex items-center justify-between">
+                <h4 className="text-lg font-semibold text-black">Tags</h4>
+                <EditButtons
+                  isEditing={isEditingTags}
+                  onEdit={() => {
+                    setIsEditingTags(true);
+                    setEditedTags(tags);
+                  }}
+                  onSave={async () => {
+                    try {
+                      const userName = currentUserName;
+                      const { error } = await supabase
+                        .from('leads')
+                        .update({
+                          tags: editedTags,
+                          tags_last_edited_by: userName,
+                          tags_last_edited_at: new Date().toISOString(),
+                        })
+                        .eq('id', client.id);
+                      
+                      if (error) throw error;
+                      
+                      setTags(editedTags);
+                      setIsEditingTags(false);
+                      
+                      // Refresh client data in parent component
+                      if (onClientUpdate) {
+                        await onClientUpdate();
+                      }
+                    } catch (error) {
+                      console.error('Error updating tags:', error);
+                      alert('Failed to update tags');
+                    }
+                  }}
+                  onCancel={() => setIsEditingTags(false)}
+                  editButtonClassName="btn btn-ghost btn-sm"
+                  editIconClassName="w-5 h-5 text-black"
+                />
+              </div>
+            </div>
+            <div className="p-6">
+              {isEditingTags ? (
+                <textarea
+                  className="textarea textarea-bordered w-full h-32"
+                  value={editedTags}
+                  onChange={(e) => setEditedTags(e.target.value)}
+                  placeholder="Add tags here..."
+                />
+              ) : (
+                <div className="space-y-3">
+                  <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
+                    {tags ? (
+                      <p className="text-gray-900">{tags}</p>
+                    ) : (
+                      <span className="text-gray-500">No tags added</span>
+                    )}
+                  </div>
+                  {(client.tags_last_edited_by || client.tags_last_edited_at) && (
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>Last edited by {client.tags_last_edited_by || 'Unknown'}</span>
+                      <span>{client.tags_last_edited_at ? new Date(client.tags_last_edited_at).toLocaleString() : ''}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Row 3: Facts of Case, Anchor */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Facts of Case */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
@@ -473,80 +547,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     <div className="text-xs text-gray-400 flex justify-between">
                       <span>Last edited by {client.facts_last_edited_by || 'Unknown'}</span>
                       <span>{client.facts_last_edited_at ? new Date(client.facts_last_edited_at).toLocaleString() : ''}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Row 3: Tags and Anchor */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Tags */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">Tags</h4>
-                <EditButtons
-                  isEditing={isEditingTags}
-                  onEdit={() => {
-                    setIsEditingTags(true);
-                    setEditedTags(tags);
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const { error } = await supabase
-                        .from('leads')
-                        .update({
-                          tags: editedTags,
-                          tags_last_edited_by: userName,
-                          tags_last_edited_at: new Date().toISOString(),
-                        })
-                        .eq('id', client.id);
-                      
-                      if (error) throw error;
-                      
-                      setTags(editedTags);
-                      setIsEditingTags(false);
-                      
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating tags:', error);
-                      alert('Failed to update tags');
-                    }
-                  }}
-                  onCancel={() => setIsEditingTags(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
-              </div>
-            </div>
-            <div className="p-6">
-              {isEditingTags ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-32"
-                  value={editedTags}
-                  onChange={(e) => setEditedTags(e.target.value)}
-                  placeholder="Add tags here..."
-                />
-              ) : (
-                <div className="space-y-3">
-                  <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
-                    {tags ? (
-                      <p className="text-gray-900">{tags}</p>
-                    ) : (
-                      <span className="text-gray-500">No tags added</span>
-                    )}
-                  </div>
-                  {(client.tags_last_edited_by || client.tags_last_edited_at) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {client.tags_last_edited_by || 'Unknown'}</span>
-                      <span>{client.tags_last_edited_at ? new Date(client.tags_last_edited_at).toLocaleString() : ''}</span>
                     </div>
                   )}
                 </div>

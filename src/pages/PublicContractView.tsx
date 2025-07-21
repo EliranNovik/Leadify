@@ -80,15 +80,16 @@ const PublicContractView: React.FC = () => {
     if (content && typeof content === 'object') {
       if (content.type === 'text' && typeof content.text === 'string') {
         let text = content.text;
-        // Replace {{text}} fields
-        text = text.replace(/\{\{text\}\}/g, () => {
-          const idx = Object.keys(clientFields).length > 0 ? Object.keys(clientFields).shift() : undefined;
-          return idx ? clientFields[idx] || '' : '';
+        // Replace {{text:ID}} fields with actual client input values
+        text = text.replace(/\{\{text:([^}]+)\}\}/g, (match: string, id: string) => {
+          console.log(`Replacing {{text:${id}}} with:`, clientFields[id] || '');
+          return clientFields[id] || '';
         });
-        // Replace {{signature}} fields
-        if (clientSignature) {
-          text = text.replace(/\{\{signature\}\}/g, '[Signed]');
-        }
+        // Replace {{signature:ID}} fields with signature data
+        text = text.replace(/\{\{signature:([^}]+)\}\}/g, (match: string, id: string) => {
+          console.log(`Replacing {{signature:${id}}} with:`, clientSignature || '[Signed]');
+          return clientSignature || '[Signed]';
+        });
         return { ...content, text };
       }
       // Recursively fill in children
@@ -146,7 +147,13 @@ const PublicContractView: React.FC = () => {
     setIsSubmitting(true);
     try {
       // Fill in client fields in the contract content
+      console.log('Before filling - clientFields:', clientFields);
+      console.log('Before filling - clientSignature:', clientSignature);
+      console.log('Before filling - contract content:', contract.custom_content || template.content?.content);
+      
       const filledContent = fillClientFieldsInContent(contract.custom_content || template.content?.content);
+      console.log('After filling - filled content:', filledContent);
+      
       await supabase.from('contracts').update({
         custom_content: filledContent,
         status: 'signed',
@@ -310,6 +317,35 @@ const PublicContractView: React.FC = () => {
           result.push(text.slice(lastIdx));
         }
         return result.length > 0 ? result : text;
+      }
+      
+      // Handle base64 image data that might be directly in the text (for signatures)
+      if (text && text.includes('data:image/png;base64,')) {
+        const parts = [];
+        let lastIndex = 0;
+        const regex = /(data:image\/png;base64,[A-Za-z0-9+/=]+)/g;
+        let match;
+        while ((match = regex.exec(text)) !== null) {
+          if (match.index > lastIndex) {
+            const normalText = text.slice(lastIndex, match.index);
+            parts.push(normalText);
+          }
+          const imageData = match[1];
+          parts.push(
+            <span key={keyPrefix + '-img-' + match.index} className="inline-block mx-1">
+              <img 
+                src={imageData} 
+                alt="Signature" 
+                style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }} 
+              />
+            </span>
+          );
+          lastIndex = match.index + match[1].length;
+        }
+        if (lastIndex < text.length) {
+          parts.push(text.slice(lastIndex));
+        }
+        return parts.length > 0 ? parts : text;
       }
       
       // Handle line breaks in text content
