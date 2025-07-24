@@ -191,6 +191,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Add state for most recent contract (for backward compatibility)
   const [mostRecentContract, setMostRecentContract] = useState<any>(null);
 
+  // Add state for archival research option
+  const [archivalResearch, setArchivalResearch] = useState<'none' | 'with'>('none');
+
   // Fetch contracts for each contact
   useEffect(() => {
     if (!client?.id) return;
@@ -511,12 +514,41 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       const discountAmount = 0;
       const finalAmount = total;
       
-      // Default payment plan: 50/25/25
-      const paymentPlan = [
-        { percent: 50, due: 'On signing', amount: Math.round(finalAmount * 0.5) },
-        { percent: 25, due: '30 days', amount: Math.round(finalAmount * 0.25) },
-        { percent: 25, due: '60 days', amount: Math.round(finalAmount * 0.25) },
-      ];
+      // Calculate archivalFee before paymentPlan
+      const archivalFee = archivalResearch === 'with'
+        ? (contractForm.clientCountry === 'IL' ? 1650 : contractForm.clientCountry === 'US' ? 850 : 0)
+        : 0;
+
+      // Calculate due dates
+      const today = new Date();
+      const addDays = (days: number) => {
+        const d = new Date(today);
+        d.setDate(d.getDate() + days);
+        return d.toISOString().split('T')[0];
+      };
+
+      let paymentPlan;
+      if (archivalResearch === 'with' && archivalFee > 0) {
+        // First payment: 100% of archival research fee
+        // Remaining: default plan for the rest
+        const restAmount = total - archivalFee;
+        paymentPlan = [
+          { percent: 100, due_date: addDays(0), value: archivalFee, value_vat: 0, payment_order: 'Archival Research', notes: '', currency },
+        ];
+        if (restAmount > 0) {
+          paymentPlan = paymentPlan.concat([
+            { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Service Payment', notes: '', currency },
+            { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Second Service Payment', notes: '', currency },
+            { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Service Payment', notes: '', currency },
+          ]);
+        }
+      } else {
+        paymentPlan = [
+          { percent: 50, due_date: addDays(0), value: Math.round(finalAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
+          { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Second Payment', notes: '', currency },
+          { percent: 25, due_date: addDays(60), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
+        ];
+      }
       
       const initialCustomPricing = {
         applicant_count: contractForm.applicantCount,
@@ -527,6 +559,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         final_amount: finalAmount,
         payment_plan: paymentPlan,
         currency,
+        archival_research_fee: archivalFee,
       };
 
       // Create contract data with contact association
@@ -881,26 +914,28 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 {contactContracts[contact.id]?.status}
                               </span>
                             </div>
-                            <button 
-                              className="btn btn-outline btn-primary btn-sm justify-start" 
-                              onClick={() => handleViewContract(contactContracts[contact.id]?.id)}
-                            >
-                              <DocumentTextIcon className="w-4 h-4" />
-                              View Contract
-                            </button>
-                            {contactContracts[contact.id]?.status === 'draft' && (
+                            <div className="flex gap-2">
                               <button 
-                                className="btn btn-outline btn-error btn-sm justify-start" 
-                                onClick={() => {
-                                  if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
-                                    handleDeleteContract(contactContracts[contact.id]?.id!);
-                                  }
-                                }}
+                                className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start" 
+                                onClick={() => handleViewContract(contactContracts[contact.id]?.id)}
                               >
-                                <TrashIcon className="w-4 h-4" />
-                                Delete Contract
+                                <DocumentTextIcon className="w-4 h-4" />
+                                View Contract
                               </button>
-                            )}
+                              {contactContracts[contact.id]?.status === 'draft' && (
+                                <button 
+                                  className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start" 
+                                  onClick={() => {
+                                    if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
+                                      handleDeleteContract(contactContracts[contact.id]?.id!);
+                                    }
+                                  }}
+                                >
+                                  <TrashIcon className="w-4 h-4" />
+                                  Delete Contract
+                                </button>
+                              )}
+                            </div>
                           </div>
                         ) : (
                           <button 
@@ -971,9 +1006,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden border-dashed border-gray-300">
               <div className="p-6">
                 <div className="flex flex-col items-center justify-center py-8">
-                  <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mb-4">
-                    <PlusIcon className="w-8 h-8 text-blue-600" />
-                  </div>
+                  {/* Removed plus icon and circle */}
                   <h3 className="text-lg font-semibold text-gray-900 mb-2">Add New Contact</h3>
                   <p className="text-sm text-gray-500 text-center mb-4">
                     Create additional contacts for this client
@@ -1044,22 +1077,96 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               <div className="bg-gray-50 rounded-lg p-4">
                 <h3 className="text-lg font-semibold mb-3">Price Preview</h3>
                 {(() => {
+                  if (!contractForm.selectedTemplateId) {
+                    // No template selected: show zeroes
+                    const currency = contractForm.clientCountry === 'IL' ? 'NIS' : 'USD';
+                    return (
+                      <div className="space-y-2">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Per applicant:</span>
+                          <span className="font-semibold">{currency} 0</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Total ({contractForm.applicantCount} applicants):</span>
+                          <span className="font-bold text-lg text-primary">{currency} 0</span>
+                        </div>
+                      </div>
+                    );
+                  }
+                  // Template selected: use its pricing tiers if available
+                  const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
                   const isIsraeli = contractForm.clientCountry === 'IL';
-                  const priceTier = getPricePerApplicant(contractForm.applicantCount, isIsraeli);
-                  const perApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
-                  const total = (perApplicant as number) * contractForm.applicantCount;
-                  const currency = isIsraeli ? 'NIS' : 'USD';
+                  let perApplicant = 0;
+                  let currency = isIsraeli ? 'NIS' : 'USD';
+                  if (selectedTemplate?.default_currency) {
+                    currency = selectedTemplate.default_currency;
+                  }
+                  if (selectedTemplate?.default_pricing_tiers) {
+                    // Use template's pricing tiers
+                    const tierKey = getCurrentTierKey(contractForm.applicantCount);
+                    perApplicant = selectedTemplate.default_pricing_tiers[tierKey] || 0;
+                  } else {
+                    // Fallback to system pricing
+                    const priceTier = getPricePerApplicant(contractForm.applicantCount, isIsraeli);
+                    perApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
+                  }
+                  const total = perApplicant * contractForm.applicantCount;
+                  const discount = 0;
+                  const discountAmount = 0;
+                  const finalAmount = total;
+
+                  // Add state for archival research option
+                  const archivalFee = archivalResearch === 'with'
+                    ? (contractForm.clientCountry === 'IL' ? 1650 : contractForm.clientCountry === 'US' ? 850 : 0)
+                    : 0;
+
+                  // Calculate due dates
+                  const today = new Date();
+                  const addDays = (days: number) => {
+                    const d = new Date(today);
+                    d.setDate(d.getDate() + days);
+                    return d.toISOString().split('T')[0];
+                  };
+
+                  let paymentPlan;
+                  if (archivalResearch === 'with' && archivalFee > 0) {
+                    // First payment: 100% of archival research fee
+                    // Remaining: default plan for the rest
+                    const restAmount = total - archivalFee;
+                    paymentPlan = [
+                      { percent: 100, due_date: addDays(0), value: archivalFee, value_vat: 0, payment_order: 'Archival Research', notes: '', currency },
+                    ];
+                    if (restAmount > 0) {
+                      paymentPlan = paymentPlan.concat([
+                        { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Service Payment', notes: '', currency },
+                        { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Second Service Payment', notes: '', currency },
+                        { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Service Payment', notes: '', currency },
+                      ]);
+                    }
+                  } else {
+                    paymentPlan = [
+                      { percent: 50, due_date: addDays(0), value: Math.round(finalAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
+                      { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Second Payment', notes: '', currency },
+                      { percent: 25, due_date: addDays(60), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
+                    ];
+                  }
                   
                   return (
                     <div className="space-y-2">
                       <div className="flex justify-between">
                         <span className="text-gray-600">Per applicant:</span>
-                        <span className="font-semibold">{currency} {(perApplicant as number).toLocaleString()}</span>
+                        <span className="font-semibold">{currency} {perApplicant.toLocaleString()}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-600">Total ({contractForm.applicantCount} applicants):</span>
                         <span className="font-bold text-lg text-primary">{currency} {total.toLocaleString()}</span>
                       </div>
+                      {archivalResearch === 'with' && (
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Archival Research:</span>
+                          <span className="font-semibold">{contractForm.clientCountry === 'IL' ? 'NIS' : 'USD'} {archivalFee.toLocaleString()}</span>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}
@@ -1077,6 +1184,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   {contractTemplates.map(template => (
                     <option key={template.id} value={template.id}>{template.name}</option>
                   ))}
+                </select>
+              </div>
+
+              {/* Archival Research Option */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Archival Research</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={archivalResearch}
+                  onChange={e => setArchivalResearch(e.target.value as any)}
+                >
+                  <option value="none">Without archival research</option>
+                  <option value="with">With archival research</option>
                 </select>
               </div>
             </div>

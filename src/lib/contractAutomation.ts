@@ -16,6 +16,18 @@ interface Contract {
   contact_email?: string;
   contact_phone?: string;
   contact_mobile?: string;
+  custom_pricing?: {
+    payment_plan: {
+      percent: number;
+      due_date: string;
+      value: number;
+      value_vat: number;
+      label: string;
+      payment_order: string;
+      notes: string;
+    }[];
+    currency: string;
+  };
 }
 
 /**
@@ -32,11 +44,34 @@ export async function handleContractSigned(contract: Contract) {
     console.log('Client country:', contract.client_country, 'Is Israeli:', isIsraeli);
     console.log('Applicant count:', contract.applicant_count);
     
-    const totalValue = calculateTotalContractValue(contract.applicant_count, isIsraeli);
-    const currency = isIsraeli ? 'NIS' : 'USD';
-    
-    console.log(`Calculated total value: ${currency} ${totalValue} for ${contract.applicant_count} applicants`);
-    
+    // 3. Get client information (move this up so client.name is available)
+    const { data: client, error: clientError } = await supabase
+      .from('leads')
+      .select('id, name, lead_number')
+      .eq('id', contract.client_id)
+      .single();
+    if (clientError) {
+      console.error('Error fetching client:', clientError);
+      throw clientError;
+    }
+
+    // 4. Generate payment plan
+    let paymentPlan;
+    let currency;
+    let totalValue;
+    if (contract.custom_pricing && Array.isArray(contract.custom_pricing.payment_plan) && contract.custom_pricing.payment_plan.length > 0) {
+      paymentPlan = contract.custom_pricing.payment_plan;
+      currency = contract.custom_pricing.currency || (isIsraeli ? 'NIS' : 'USD');
+      // Calculate totalValue from payment plan rows
+      totalValue = paymentPlan.reduce((sum, row) => sum + (typeof row.value === 'number' ? row.value : 0), 0);
+      console.log('Using custom payment plan from contract.custom_pricing:', paymentPlan);
+    } else {
+      totalValue = calculateTotalContractValue(contract.applicant_count, isIsraeli);
+      currency = isIsraeli ? 'NIS' : 'USD';
+      paymentPlan = generatePaymentPlan(totalValue, currency);
+      console.log('Generated default payment plan:', paymentPlan);
+    }
+
     // 2. Update contract with total amount
     const { error: contractUpdateError } = await supabase
       .from('contracts')
@@ -46,38 +81,30 @@ export async function handleContractSigned(contract: Contract) {
         signed_at: new Date().toISOString()
       })
       .eq('id', contract.id);
-    
     if (contractUpdateError) {
       console.error('Error updating contract:', contractUpdateError);
       throw contractUpdateError;
     }
-    
-    // 3. Get client information
-    const { data: client, error: clientError } = await supabase
-      .from('leads')
-      .select('id, name, lead_number')
-      .eq('id', contract.client_id)
-      .single();
-    
-    if (clientError) {
-      console.error('Error fetching client:', clientError);
-      throw clientError;
-    }
-    
-    // 4. Generate payment plan
-    const paymentPlan = generatePaymentPlan(totalValue, currency);
-    console.log('Generated payment plan:', paymentPlan);
-    
+
     // 5. Insert payment plan entries
-    const paymentPlanEntries = paymentPlan.map(plan => ({
+    const today = new Date();
+    // Find the index of the first payment with 'archival' in payment_order or notes
+    const archivalIdx = paymentPlan.findIndex(plan => {
+      const str = `${plan.payment_order || ''} ${plan.notes || ''}`.toLowerCase();
+      return str.includes('archival');
+    });
+    // If no archival payment, use the first payment (idx 0)
+    const dueDateIdx = archivalIdx !== -1 ? archivalIdx : 0;
+    const paymentPlanEntries = paymentPlan.map((plan, idx) => ({
       lead_id: contract.client_id,
-      due_percent: plan.due_percent,
-      due_date: plan.due_date,
-      value: plan.value,
-      value_vat: plan.value_vat,
-      client_name: contract.contact_name || client.name, // Use contact name if available
-      payment_order: plan.payment_order,
-      notes: plan.notes,
+      due_percent: typeof (plan as any).percent !== 'undefined' ? (plan as any).percent : (plan as any).due_percent,
+      due_date: idx === dueDateIdx ? today.toISOString().split('T')[0] : null,
+      value: typeof plan.value !== 'undefined' ? plan.value : 0,
+      value_vat: typeof plan.value_vat !== 'undefined' ? plan.value_vat : 0,
+      client_name: contract.contact_name || client.name || '',
+      payment_order: plan.payment_order || `Payment ${idx + 1}`,
+      notes: plan.notes || '',
+      currency: currency,
     }));
     
     console.log('Payment plan entries to insert:', paymentPlanEntries);

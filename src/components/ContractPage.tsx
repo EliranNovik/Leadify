@@ -89,6 +89,27 @@ function convertTemplateToLineBreaks(content: any): any {
   return content;
 }
 
+// Helper to build correct payment plan
+function buildPaymentPlan(finalAmount: number, archivalFee: number) {
+  const plan = [];
+  if (archivalFee > 0) {
+    plan.push({
+      percent: 100,
+      due: 'On signing',
+      value: archivalFee,
+      label: 'Archival Research',
+    });
+  }
+  if (finalAmount > 0) {
+    plan.push(
+      { percent: 50, due: 'On signing', value: Math.round(finalAmount * 0.5), label: 'First Service Payment' },
+      { percent: 25, due: '30 days', value: Math.round(finalAmount * 0.25), label: 'Second Service Payment' },
+      { percent: 25, due: '60 days', value: Math.round(finalAmount * 0.25), label: 'Final Service Payment' }
+    );
+  }
+  return plan;
+}
+
 const ContractPage: React.FC = () => {
   const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber: string; contractId?: string }>();
   const location = useLocation();
@@ -413,6 +434,17 @@ const ContractPage: React.FC = () => {
       supabase.from('contracts').update({ custom_pricing: customPricing }).eq('id', contract.id);
     }
   }, [contract, customPricing]);
+
+  // When initializing or updating customPricing, use buildPaymentPlan
+  useEffect(() => {
+    if (!customPricing) return;
+    const archivalFee = customPricing.archival_research_fee || 0;
+    const finalAmount = customPricing.final_amount || 0;
+    const paymentPlan = buildPaymentPlan(finalAmount, archivalFee);
+    if (JSON.stringify(customPricing.payment_plan) !== JSON.stringify(paymentPlan)) {
+      setCustomPricing((prev: typeof customPricing) => ({ ...prev, payment_plan: paymentPlan }));
+    }
+  }, [customPricing?.final_amount, customPricing?.archival_research_fee]);
 
   // Discount options
   const discountOptions = [0, 5, 10, 15, 20];
@@ -848,7 +880,7 @@ const ContractPage: React.FC = () => {
           if (row) {
             result.push(
               <span className="inline-block bg-blue-50 border border-blue-200 rounded-lg px-3 py-1 mx-1 text-sm font-medium" key={keyPrefix + '-pprow-' + rowIndex}>
-                {row.percent}% {row.due} = {customPricing.currency} {row.amount?.toLocaleString()}
+                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {row.value?.toLocaleString()}
               </span>
             );
           } else {
@@ -921,8 +953,8 @@ const ContractPage: React.FC = () => {
                 <input
                   type="text"
                   className="input input-bordered input-sm w-32 text-center bg-white"
-                  value={row.due}
-                  onChange={e => handlePaymentPlanChange(rowIndex, 'due', e.target.value)}
+                  value={row.due_date}
+                  onChange={e => handlePaymentPlanChange(rowIndex, 'due_date', e.target.value)}
                   placeholder="When due"
                 />
                 <span className="text-sm font-medium">=</span>
@@ -930,8 +962,8 @@ const ContractPage: React.FC = () => {
                   type="number"
                   min={0}
                   className="input input-bordered input-sm w-24 text-center bg-white"
-                  value={row.amount}
-                  onChange={e => handlePaymentPlanChange(rowIndex, 'amount', Number(e.target.value))}
+                  value={row.value}
+                  onChange={e => handlePaymentPlanChange(rowIndex, 'value', Number(e.target.value))}
                   placeholder="Amount"
                 />
                 <span className="text-sm font-medium">{customPricing.currency}</span>
@@ -1189,7 +1221,7 @@ const ContractPage: React.FC = () => {
           if (row) {
             parts.push(
               <span key={keyPrefix + '-pprow-' + rowIndex} className="inline-block bg-blue-50 border border-blue-200 rounded-lg px-3 py-1 mx-1 text-sm font-medium">
-                {row.percent}% {row.due} = {customPricing.currency} {row.amount?.toLocaleString()}
+                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {row.value?.toLocaleString()}
               </span>
             );
           }
@@ -1394,6 +1426,17 @@ const ContractPage: React.FC = () => {
   );
 
   const status = contractStatuses[contract.id]?.status || contract.status;
+
+  // Before the return statement in ContractPage, define VAT logic
+  const archivalFee = customPricing?.archival_research_fee || 0;
+  const baseTotal = (customPricing?.total_amount || 0) + archivalFee;
+  const isIsraeli = contract?.client_country === 'IL' || customPricing?.currency === 'NIS';
+  const vatAmount = isIsraeli ? Math.round(baseTotal * 0.18 * 100) / 100 : 0;
+  const discountAmount = customPricing?.discount_amount || 0;
+  const finalAmountWithVat = baseTotal + vatAmount - discountAmount;
+
+  // In the side panel and contract, show total as final_amount + archival_research_fee
+  const totalWithArchival = (customPricing?.final_amount || 0) + (customPricing?.archival_research_fee || 0);
 
   return (
     <div className="min-h-screen bg-white">
@@ -1752,18 +1795,30 @@ const ContractPage: React.FC = () => {
 
                       {/* Totals */}
                       <div className="space-y-2 pt-3 border-t border-gray-200">
-                      <div className="flex items-center justify-between">
+                        <div className="flex items-center justify-between">
                           <span className="text-gray-600">Total:</span>
-                          <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.total_amount?.toLocaleString()}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
+                          <span className="font-semibold text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
+                        </div>
+                        {customPricing?.archival_research_fee && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600">Archival Research:</span>
+                            <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
+                          </div>
+                        )}
+                        {isIsraeli && (
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600">VAT (18%):</span>
+                            <span className="font-semibold text-gray-900">{customPricing.currency} {vatAmount.toLocaleString()}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between">
                           <span className="text-gray-600">Discount:</span>
-                          <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.discount_amount?.toLocaleString()}</span>
-                      </div>
-                      <div className="flex items-center justify-between">
+                          <span className="font-semibold text-gray-900">{customPricing.currency} {discountAmount.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
                           <span className="font-bold text-gray-900">Final Amount:</span>
-                          <span className="font-bold text-lg text-blue-600">{customPricing.currency} {customPricing.final_amount?.toLocaleString()}</span>
-                      </div>
+                          <span className="font-bold text-lg text-blue-600">{customPricing.currency} {totalWithArchival.toLocaleString()}</span>
+                        </div>
                       </div>
 
                       {/* Payment Plan Editor */}
@@ -1783,21 +1838,31 @@ const ContractPage: React.FC = () => {
                                 disabled={status === 'signed'}
                               />
                               <span className="text-xs">%</span>
-                              <input
-                                type="text"
-                                className="input input-bordered input-sm w-28 text-center bg-white"
-                                value={row.due}
-                                onChange={e => handlePaymentPlanChange(idx, 'due', e.target.value)}
-                                placeholder="When"
-                                disabled={status === 'signed'}
-                              />
+                              {idx === 0 ? (
+                                <input
+                                  type="text"
+                                  className="input input-bordered input-sm w-28 text-center bg-white"
+                                  value={row.due_date}
+                                  onChange={e => handlePaymentPlanChange(idx, 'due_date', e.target.value)}
+                                  placeholder="When"
+                                  disabled={status === 'signed'}
+                                />
+                              ) : (
+                                <input
+                                  type="text"
+                                  className="input input-bordered input-sm w-28 text-center bg-gray-100 text-gray-400"
+                                  value={''}
+                                  placeholder=""
+                                  disabled
+                                />
+                              )}
                               <span className="text-xs">=</span>
                               <input
                                 type="number"
                                 min={0}
                                 className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-3 py-2 rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-                                value={row.amount}
-                                onChange={e => handlePaymentPlanChange(idx, 'amount', Number(e.target.value))}
+                                value={row.value}
+                                onChange={e => handlePaymentPlanChange(idx, 'value', Number(e.target.value))}
                                 placeholder="Amount"
                                 disabled={status === 'signed'}
                               />

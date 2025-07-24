@@ -105,4 +105,33 @@ export async function searchLeads(query: string) {
   }
 
   return data || [];
+}
+
+export async function createPaymentLink({ paymentPlanId, clientId, value, valueVat, currency, order, clientName, leadNumber }) {
+  // Generate secure token
+  const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+  // Set expiration date (30 days from now)
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+  // Create payment link in database
+  const { data: paymentLink, error } = await supabase
+    .from('payment_links')
+    .insert({
+      payment_plan_id: paymentPlanId,
+      client_id: clientId,
+      secure_token: secureToken,
+      amount: value,
+      vat_amount: valueVat,
+      total_amount: value + valueVat,
+      currency: currency || '₪',
+      description: `${order} - ${clientName} (#${leadNumber})`,
+      status: 'pending',
+      expires_at: expiresAt.toISOString()
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  // Generate the payment URL
+  const paymentUrl = `${window.location.origin}/payment/${secureToken}`;
+  return paymentUrl;
 } 

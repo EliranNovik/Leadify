@@ -545,3 +545,20 @@ input[type=number].no-arrows::-webkit-outer-spin-button {
 input[type=number].no-arrows {
   -moz-appearance: textfield;
 }
+
+/* --- Print styles for ProformaViewPage --- */
+@media print {
+  * {
+    color: #222 !important;
+    background: #fff !important;
+    background-color: #fff !important;
+    box-shadow: none !important;
+  }
+  .text-primary, .text-purple-700, .text-primary-content {
+    color: #3b28c7 !important;
+  }
+  .bg-primary, .bg-purple-700, .bg-primary-content {
+    background: #3b28c7 !important;
+    background-color: #3b28c7 !important;
+  }
+}

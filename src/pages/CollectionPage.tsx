@@ -17,7 +17,7 @@ const COLLECTION_LABEL_OPTIONS = [
 const CollectionPage: React.FC = () => {
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<'no_payment' | 'awaiting' | 'paid'>('no_payment');
+  const [tab, setTab] = useState<'no_payment' | 'awaiting' | 'paid' | 'paid_cases'>('no_payment');
   const [viewMode, setViewMode] = useState<'list' | 'cards'>('cards');
   const navigate = useNavigate();
 
@@ -74,13 +74,7 @@ const CollectionPage: React.FC = () => {
   ]);
 
   // Mock data for paid by month (last 5 months)
-  const paidByMonth = [
-    { month: 'March', total: 7000 },
-    { month: 'April', total: 9500 },
-    { month: 'May', total: 8000 },
-    { month: 'June', total: 12000 },
-    { month: 'July', total: 15000 },
-  ];
+  // const paidByMonth = [ ... ];
 
   // Helper for currency symbol (copied from Clients.tsx)
   const getCurrencySymbol = (currencyCode?: string) => {
@@ -347,6 +341,216 @@ const CollectionPage: React.FC = () => {
     setSavingCollection(false);
   };
 
+  // 1. Add a new tab state for paid cases
+  const [paidCases, setPaidCases] = useState<any[]>([]);
+
+  // 3. Fetch paid cases when tab is selected
+  useEffect(() => {
+    if (tab === 'paid_cases') {
+      const fetchPaidCases = async () => {
+        setLoading(true);
+        // Fetch all paid payment_plans, join to leads for client info
+        const { data, error } = await supabase
+          .from('payment_plans')
+          .select('*, leads:lead_id(name, lead_number), proforma')
+          .eq('paid', true)
+          .order('paid_at', { ascending: false });
+        if (!error && data) {
+          setPaidCases(data);
+        } else {
+          setPaidCases([]);
+        }
+        setLoading(false);
+      };
+      fetchPaidCases();
+    }
+  }, [tab]);
+
+  // Add filter state for Awaiting Payment tab
+  const [awaitingStatusFilter, setAwaitingStatusFilter] = useState<'all' | 'due' | 'overdue' | 'due_soon'>('all');
+  const [awaitingDateFilter, setAwaitingDateFilter] = useState<string>('');
+  const [awaitingSearch, setAwaitingSearch] = useState('');
+
+  // Awaiting Payment tab date range filter
+  const [awaitingDateFrom, setAwaitingDateFrom] = useState('');
+  const [awaitingDateTo, setAwaitingDateTo] = useState('');
+
+  // Paid Cases tab date range filter
+  const [paidCasesDateFrom, setPaidCasesDateFrom] = useState('');
+  const [paidCasesDateTo, setPaidCasesDateTo] = useState('');
+
+  // Helper to determine if a payment is overdue
+  const isOverdue = (dueDate: string) => {
+    if (!dueDate) return false;
+    const due = new Date(dueDate);
+    const now = new Date();
+    const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+    return due < oneMonthAgo;
+  };
+
+  // Helper to determine if a payment is due soon (today or tomorrow)
+  const isDueSoon = (dueDate: string) => {
+    if (!dueDate) return false;
+    const due = new Date(dueDate);
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(now.getDate() + 1);
+    return (
+      due.toDateString() === now.toDateString() ||
+      due.toDateString() === tomorrow.toDateString()
+    );
+  };
+
+  // Calculate the number of due soon payments
+  const dueSoonCount = awaitingPayments.filter(row => isDueSoon(row.date)).length;
+
+  // Filtered awaiting payments
+  const filteredAwaitingPayments = awaitingPayments.filter(row => {
+    let statusMatch = true;
+    if (awaitingStatusFilter === 'due') statusMatch = !isOverdue(row.date) && !isDueSoon(row.date);
+    if (awaitingStatusFilter === 'overdue') statusMatch = isOverdue(row.date);
+    if (awaitingStatusFilter === 'due_soon') statusMatch = isDueSoon(row.date);
+    let dateMatch = true;
+    if (awaitingDateFrom || awaitingDateTo) {
+      const rowDate = row.date ? new Date(row.date) : null;
+      dateMatch = !!rowDate;
+      if (dateMatch && awaitingDateFrom && rowDate) {
+        const fromDate = new Date(awaitingDateFrom);
+        dateMatch = dateMatch && rowDate >= fromDate;
+      }
+      if (dateMatch && awaitingDateTo && rowDate) {
+        const toDate = new Date(awaitingDateTo);
+        dateMatch = dateMatch && rowDate <= toDate;
+      }
+    }
+    let searchMatch = true;
+    if (awaitingSearch.trim()) {
+      const q = awaitingSearch.trim().toLowerCase();
+      searchMatch = (
+        (row.lead_number && row.lead_number.toLowerCase().includes(q)) ||
+        (row.name && row.name.toLowerCase().includes(q)) ||
+        (row.contact_name && row.contact_name.toLowerCase().includes(q)) ||
+        (row.proformaName && row.proformaName.toLowerCase().includes(q))
+      );
+    }
+    return statusMatch && dateMatch && searchMatch;
+  });
+
+  // Calculate the number of overdue payments
+  const overdueCount = awaitingPayments.filter(row => {
+    if (!row.date) return false;
+    const due = new Date(row.date);
+    const now = new Date();
+    const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+    return due < oneMonthAgo;
+  }).length;
+
+  const [paidCasesOrderFilter, setPaidCasesOrderFilter] = useState('all');
+  const [paidCasesDateFilter, setPaidCasesDateFilter] = useState('');
+  const [paidCasesSearch, setPaidCasesSearch] = useState('');
+
+  const filteredPaidCases = paidCases.filter(row => {
+    let orderMatch = true;
+    if (paidCasesOrderFilter !== 'all') orderMatch = (row.payment_order || '').toLowerCase() === paidCasesOrderFilter.toLowerCase();
+    let dateMatch = true;
+    if (paidCasesDateFrom || paidCasesDateTo) {
+      const rowDate = row.paid_at ? new Date(row.paid_at) : null;
+      dateMatch = !!rowDate;
+      if (dateMatch && paidCasesDateFrom && rowDate) {
+        const fromDate = new Date(paidCasesDateFrom);
+        dateMatch = dateMatch && rowDate >= fromDate;
+      }
+      if (dateMatch && paidCasesDateTo && rowDate) {
+        const toDate = new Date(paidCasesDateTo);
+        dateMatch = dateMatch && rowDate <= toDate;
+      }
+    }
+    let searchMatch = true;
+    if (paidCasesSearch.trim()) {
+      const q = paidCasesSearch.trim().toLowerCase();
+      let proformaName = '';
+      if (row.proforma) {
+        try { proformaName = JSON.parse(row.proforma)?.proformaName?.toLowerCase() || ''; } catch {}
+      }
+      searchMatch = (
+        (row.leads?.name && row.leads.name.toLowerCase().includes(q)) ||
+        (row.leads?.lead_number && row.leads.lead_number.toLowerCase().includes(q)) ||
+        (row.client_name && row.client_name.toLowerCase().includes(q)) ||
+        (proformaName && proformaName.includes(q))
+      );
+    }
+    return orderMatch && dateMatch && searchMatch;
+  });
+
+  const [noPaymentDateFrom, setNoPaymentDateFrom] = useState('');
+  const [noPaymentDateTo, setNoPaymentDateTo] = useState('');
+  const [noPaymentLabel, setNoPaymentLabel] = useState('all');
+  const [noPaymentComments, setNoPaymentComments] = useState('all');
+  const [noPaymentSearch, setNoPaymentSearch] = useState('');
+
+  const filteredNoPaymentLeads = leads.filter(lead => {
+    let dateMatch = true;
+    if (noPaymentDateFrom || noPaymentDateTo) {
+      const rowDate = lead.date_signed ? new Date(lead.date_signed) : null;
+      dateMatch = !!rowDate;
+      if (dateMatch && noPaymentDateFrom && rowDate) {
+        const fromDate = new Date(noPaymentDateFrom);
+        dateMatch = dateMatch && rowDate >= fromDate;
+      }
+      if (dateMatch && noPaymentDateTo && rowDate) {
+        const toDate = new Date(noPaymentDateTo);
+        dateMatch = dateMatch && rowDate <= toDate;
+      }
+    }
+    let labelMatch = true;
+    if (noPaymentLabel !== 'all') labelMatch = lead.collection_label === noPaymentLabel;
+    let commentsMatch = true;
+    if (noPaymentComments === 'with') commentsMatch = Array.isArray(lead.collection_comments) && lead.collection_comments.length > 0;
+    if (noPaymentComments === 'without') commentsMatch = !Array.isArray(lead.collection_comments) || lead.collection_comments.length === 0;
+    let searchMatch = true;
+    if (noPaymentSearch.trim()) {
+      const q = noPaymentSearch.trim().toLowerCase();
+      searchMatch = (
+        (lead.lead_number && lead.lead_number.toLowerCase().includes(q)) ||
+        (lead.name && lead.name.toLowerCase().includes(q))
+      );
+    }
+    return dateMatch && labelMatch && commentsMatch && searchMatch;
+  });
+
+  // Calculate the real total paid this month from paidCases or payment_plans
+  const now = new Date();
+  const thisMonth = now.getMonth();
+  const thisYear = now.getFullYear();
+  const realTotalPaidThisMonth = paidCases
+    .filter(row => {
+      if (!row.paid_at) return false;
+      const d = new Date(row.paid_at);
+      return d.getMonth() === thisMonth && d.getFullYear() === thisYear;
+    })
+    .reduce((sum, row) => sum + (Number(row.value) + Number(row.value_vat)), 0);
+
+  // Calculate real paid by month for the last 5 months from paidCases
+  const getMonthLabel = (date: Date) => date.toLocaleString('default', { month: 'long' });
+  const paidByMonth = (() => {
+    const months: { month: string; total: number }[] = [];
+    const now = new Date();
+    for (let i = 4; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const month = getMonthLabel(d);
+      const year = d.getFullYear();
+      const total = paidCases
+        .filter(row => {
+          if (!row.paid_at) return false;
+          const paidDate = new Date(row.paid_at);
+          return paidDate.getMonth() === d.getMonth() && paidDate.getFullYear() === year;
+        })
+        .reduce((sum, row) => sum + (Number(row.value) + Number(row.value_vat)), 0);
+      months.push({ month, total });
+    }
+    return months;
+  })();
+
   return (
     <div className="p-4 md:p-6 lg:p-8 w-full">
       {/* Summary Boxes */}
@@ -361,33 +565,45 @@ const CollectionPage: React.FC = () => {
               <CurrencyDollarIcon className="w-7 h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-4xl font-extrabold text-white leading-tight">₪{totalPaid.toLocaleString()}</div>
+              <div className="text-4xl font-extrabold text-white leading-tight">₪{realTotalPaidThisMonth.toLocaleString()}</div>
               <div className="text-white/80 text-sm font-medium mt-1">Total Paid (This Month)</div>
             </div>
           </div>
           <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
         </div>
         {/* Due Soon */}
-        <div className="rounded-2xl transition-all duration-300 shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden">
+        <div
+          className="rounded-2xl transition-all duration-300 shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden cursor-pointer"
+          onClick={() => {
+            setTab('awaiting');
+            setAwaitingStatusFilter('due_soon');
+          }}
+        >
           <div className="flex items-center gap-4 p-6">
             <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
               <CalendarIcon className="w-7 h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-4xl font-extrabold text-white leading-tight">{dueSoon}</div>
+              <div className="text-4xl font-extrabold text-white leading-tight">{dueSoonCount}</div>
               <div className="text-white/80 text-sm font-medium mt-1">Due Soon</div>
             </div>
           </div>
-          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
+          <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
         </div>
         {/* Overdue */}
-        <div className="rounded-2xl transition-all duration-300 shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden">
+        <div
+          className="rounded-2xl transition-all duration-300 shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden cursor-pointer"
+          onClick={() => {
+            setTab('awaiting');
+            setAwaitingStatusFilter('overdue');
+          }}
+        >
           <div className="flex items-center gap-4 p-6">
             <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
               <ExclamationTriangleIcon className="w-7 h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-4xl font-extrabold text-white leading-tight">{overdue}</div>
+              <div className="text-4xl font-extrabold text-white leading-tight">{overdueCount}</div>
               <div className="text-white/80 text-sm font-medium mt-1">Overdue</div>
             </div>
           </div>
@@ -436,6 +652,14 @@ const CollectionPage: React.FC = () => {
         >
           Paid Meetings
         </button>
+        <button
+          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
+            ${tab === 'paid_cases' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
+          onClick={() => setTab('paid_cases')}
+          aria-current={tab === 'paid_cases' ? 'page' : undefined}
+        >
+          Paid Cases
+        </button>
       </div>
       {/* View Mode Toggle */}
       <div className="flex justify-end mb-4">
@@ -453,122 +677,210 @@ const CollectionPage: React.FC = () => {
         </button>
       </div>
       {tab === 'no_payment' && (
-        loading ? (
-          <div className="flex justify-center items-center h-40">
-            <span className="loading loading-spinner loading-lg text-primary"></span>
+        <>
+          <div className="flex flex-wrap gap-4 mb-4 items-center">
+            <label className="font-semibold">Date Signed From:</label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={noPaymentDateFrom}
+              onChange={e => setNoPaymentDateFrom(e.target.value)}
+            />
+            <label className="font-semibold ml-2">To:</label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={noPaymentDateTo}
+              onChange={e => setNoPaymentDateTo(e.target.value)}
+            />
+            <label className="font-semibold ml-4">Label:</label>
+            <select
+              className="select select-bordered"
+              value={noPaymentLabel}
+              onChange={e => setNoPaymentLabel(e.target.value)}
+            >
+              <option value="all">All</option>
+              {COLLECTION_LABEL_OPTIONS.map(opt => (
+                <option key={opt.value} value={opt.value}>{opt.value}</option>
+              ))}
+            </select>
+            <label className="font-semibold ml-4">Comments:</label>
+            <select
+              className="select select-bordered"
+              value={noPaymentComments}
+              onChange={e => setNoPaymentComments(e.target.value)}
+            >
+              <option value="all">All</option>
+              <option value="with">With Comments</option>
+              <option value="without">Without Comments</option>
+            </select>
+            <input
+              type="text"
+              className="input input-bordered ml-4"
+              placeholder="Search by lead #, client, contact..."
+              value={noPaymentSearch}
+              onChange={e => setNoPaymentSearch(e.target.value)}
+              style={{ minWidth: 220 }}
+            />
+            {noPaymentDateFrom || noPaymentDateTo || noPaymentLabel !== 'all' || noPaymentComments !== 'all' || noPaymentSearch ? (
+              <button className="btn btn-sm btn-outline ml-2" onClick={() => { setNoPaymentDateFrom(''); setNoPaymentDateTo(''); setNoPaymentLabel('all'); setNoPaymentComments('all'); setNoPaymentSearch(''); }}>Clear Filters</button>
+            ) : null}
           </div>
-        ) : leads.length === 0 ? (
-          <div className="text-center text-gray-500 mt-12">No leads found where the client has signed the contract.</div>
-        ) : viewMode === 'list' ? (
-          <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
-            <table className="table w-full">
-              <thead>
-                <tr>
-                  <th className="text-lg font-bold">&nbsp;</th>
-                  <th className="text-lg font-bold">Lead</th>
-                  <th className="text-lg font-bold">Client Name</th>
-                  <th className="text-lg font-bold">Date Signed</th>
-                  <th className="text-lg font-bold">Total Amount</th>
-                  <th className="text-lg font-bold">Label</th>
-                  <th className="text-lg font-bold">Comments</th>
-                </tr>
-              </thead>
-              <tbody className="text-base">
-                {leads.map((lead) => (
-                  <tr key={lead.id}>
-                    <td><span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-green-500 via-emerald-500 to-teal-400 text-white shadow">NEW!</span></td>
-                    <td className="font-bold text-primary">{lead.lead_number}</td>
-                    <td>{lead.name}</td>
-                    <td>{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : '-'}</td>
-                    <td>{lead.balance ? `₪${lead.balance.toLocaleString()}` : '-'}</td>
-                    <td>{lead.collection_label || '-'}</td>
-                    <td>{Array.isArray(lead.collection_comments) && lead.collection_comments.length > 0 ? lead.collection_comments[lead.collection_comments.length - 1].text : '-'}</td>
+          {loading ? (
+            <div className="flex justify-center items-center h-40">
+              <span className="loading loading-spinner loading-lg text-primary"></span>
+            </div>
+          ) : filteredNoPaymentLeads.length === 0 ? (
+            <div className="text-center text-gray-500 mt-12">No leads found where the client has signed the contract.</div>
+          ) : viewMode === 'list' ? (
+            <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
+              <table className="table w-full">
+                <thead>
+                  <tr>
+                    <th className="text-lg font-bold">&nbsp;</th>
+                    <th className="text-lg font-bold">Lead</th>
+                    <th className="text-lg font-bold">Client Name</th>
+                    <th className="text-lg font-bold">Date Signed</th>
+                    <th className="text-lg font-bold">Total Amount</th>
+                    <th className="text-lg font-bold">Label</th>
+                    <th className="text-lg font-bold">Comments</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
-            {leads.map((lead) => (
-              <div 
-                key={lead.id} 
-                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
-                onClick={() => handleOpenDrawer(lead)}
-              >
-                {lead.collection_label && (
-                  <div className="flex justify-end">
-                    <span className="mt-[-18px] mb-2 px-3 py-1 rounded-full font-bold text-xs shadow bg-white border-2 border-[#3b28c7] text-[#3b28c7]">
-                      {lead.collection_label}
-                    </span>
-                  </div>
-                )}
-                <div className="flex-1 flex flex-col">
-                  {/* Lead Number and Name */}
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-green-500 via-emerald-500 to-teal-400 text-white shadow">NEW!</span>
-                    <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
-                    <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                    <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</span>
-                  </div>
-                  {/* Stage */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs font-semibold text-gray-500">Stage</span>
-                    <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
-                      {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A'}
-                    </span>
-                  </div>
-                  <div className="space-y-2 divide-y divide-gray-100">
-                    {/* Date Signed */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Date Signed</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : '-'}</span>
-                    </div>
-                    {/* Total Amount */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Total Amount</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">
-                        {lead.balance !== undefined && lead.balance !== null
-                          ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
-                          : 'N/A'}
+                </thead>
+                <tbody className="text-base">
+                  {filteredNoPaymentLeads.map((lead) => (
+                    <tr key={lead.id}>
+                      <td><span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-green-500 via-emerald-500 to-teal-400 text-white shadow">NEW!</span></td>
+                      <td className="font-bold text-primary">{lead.lead_number}</td>
+                      <td>{lead.name}</td>
+                      <td>{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : '-'}</td>
+                      <td>{lead.balance ? `₪${lead.balance.toLocaleString()}` : '-'}</td>
+                      <td>{lead.collection_label || '-'}</td>
+                      <td>{Array.isArray(lead.collection_comments) && lead.collection_comments.length > 0 ? lead.collection_comments[lead.collection_comments.length - 1].text : '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
+              {filteredNoPaymentLeads.map((lead) => (
+                <div 
+                  key={lead.id} 
+                  className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
+                  onClick={() => handleOpenDrawer(lead)}
+                >
+                  {lead.collection_label && (
+                    <div className="flex justify-end">
+                      <span className="mt-[-18px] mb-2 px-3 py-1 rounded-full font-bold text-xs shadow bg-white border-2 border-[#3b28c7] text-[#3b28c7]">
+                        {lead.collection_label}
                       </span>
                     </div>
-                    {/* Details */}
+                  )}
+                  <div className="flex-1 flex flex-col">
+                    {/* Lead Number and Name */}
+                    <div className="mb-3 flex items-center gap-2">
+                      <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-green-500 via-emerald-500 to-teal-400 text-white shadow">NEW!</span>
+                      <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                      <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                      <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</span>
+                    </div>
+                    {/* Stage */}
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Details</span>
-                      <span className="flex items-center gap-2 text-sm font-bold text-gray-800 ml-2">
-                        Client signed contract <ExclamationTriangleIcon className="w-5 h-5 text-primary" />
+                      <span className="text-xs font-semibold text-gray-500">Stage</span>
+                      <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
+                        {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A'}
                       </span>
                     </div>
+                    <div className="space-y-2 divide-y divide-gray-100">
+                      {/* Date Signed */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Date Signed</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : '-'}</span>
+                      </div>
+                      {/* Total Amount */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Total Amount</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">
+                          {lead.balance !== undefined && lead.balance !== null
+                            ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
+                            : 'N/A'}
+                        </span>
+                      </div>
+                      {/* Details */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Details</span>
+                        <span className="flex items-center gap-2 text-sm font-bold text-gray-800 ml-2">
+                          Client signed contract <ExclamationTriangleIcon className="w-5 h-5 text-primary" />
+                        </span>
+                      </div>
+                    </div>
+                    {lead.collection_comments && lead.collection_comments.length > 0 && (
+                      <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
+                        <div className="flex items-start gap-2">
+                          <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
+                          </div>
+                          <div className="relative bg-white border border-base-200 rounded-2xl px-4 py-2 shadow-md text-sm text-base-content/90" style={{minWidth: '120px'}}>
+                            <div className="font-medium leading-snug max-w-xs truncate" title={lead.collection_comments[lead.collection_comments.length - 1].text}>{lead.collection_comments[lead.collection_comments.length - 1].text}</div>
+                            <div className="text-[11px] text-base-content/50 text-right mt-1">
+                              {lead.collection_comments[lead.collection_comments.length - 1].user} · {new Date(lead.collection_comments[lead.collection_comments.length - 1].timestamp).toLocaleString()}
+                            </div>
+                            <div className="absolute left-[-10px] bottom-2 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-white border-l-0"></div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
-                {lead.collection_comments && lead.collection_comments.length > 0 && (
-                  <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
-                    <div className="flex items-start gap-2">
-                      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
-                      </div>
-                      <div className="relative bg-white border border-base-200 rounded-2xl px-4 py-2 shadow-md text-sm text-base-content/90" style={{minWidth: '120px'}}>
-                        <div className="font-medium leading-snug max-w-xs truncate" title={lead.collection_comments[lead.collection_comments.length - 1].text}>{lead.collection_comments[lead.collection_comments.length - 1].text}</div>
-                        <div className="text-[11px] text-base-content/50 text-right mt-1">
-                          {lead.collection_comments[lead.collection_comments.length - 1].user} · {new Date(lead.collection_comments[lead.collection_comments.length - 1].timestamp).toLocaleString()}
-                        </div>
-                        <div className="absolute left-[-10px] bottom-2 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-white border-l-0"></div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )
+              ))}
+            </div>
+          )}
+        </>
       )}
       {/* Awaiting Payment Tab */}
       {tab === 'awaiting' && (
         <>
+          <div className="flex flex-wrap gap-4 mb-4 items-center">
+            <label className="font-semibold">Status:</label>
+            <select
+              className="select select-bordered"
+              value={awaitingStatusFilter}
+              onChange={e => setAwaitingStatusFilter(e.target.value as any)}
+            >
+              <option value="all">All</option>
+              <option value="due">Due</option>
+              <option value="due_soon">Due Soon</option>
+              <option value="overdue">Overdue</option>
+            </select>
+            <label className="font-semibold ml-4">Due Date From:</label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={awaitingDateFrom}
+              onChange={e => setAwaitingDateFrom(e.target.value)}
+            />
+            <label className="font-semibold ml-2">To:</label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={awaitingDateTo}
+              onChange={e => setAwaitingDateTo(e.target.value)}
+            />
+            <input
+              type="text"
+              className="input input-bordered ml-4"
+              placeholder="Search by lead #, client, contact, proforma..."
+              value={awaitingSearch}
+              onChange={e => setAwaitingSearch(e.target.value)}
+              style={{ minWidth: 220 }}
+            />
+            {awaitingStatusFilter !== 'all' || awaitingDateFrom || awaitingDateTo || awaitingSearch ? (
+              <button className="btn btn-sm btn-outline ml-2" onClick={() => { setAwaitingStatusFilter('all'); setAwaitingDateFrom(''); setAwaitingDateTo(''); setAwaitingSearch(''); }}>Clear Filters</button>
+            ) : null}
+          </div>
           {loading ? (
             <div className="text-center text-gray-500 mt-12">Loading...</div>
-          ) : awaitingPayments.length === 0 ? (
+          ) : filteredAwaitingPayments.length === 0 ? (
             <div className="text-center text-gray-500 mt-12">No payments awaiting.</div>
           ) : viewMode === 'list' ? (
             <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
@@ -587,11 +899,11 @@ const CollectionPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="text-base">
-                  {awaitingPayments.map((row) => (
+                  {filteredAwaitingPayments.map((row) => (
                     <tr key={row.id}>
                       <td>
-                        <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white shadow">
-                          <ExclamationTriangleIcon className="w-4 h-4 text-white" /> Due
+                        <span className={`flex items-center gap-1 px-3 py-1 rounded-full font-bold shadow ${isOverdue(row.date) ? 'bg-gradient-to-tr from-red-500 via-pink-500 to-orange-400 text-white' : isDueSoon(row.date) ? 'bg-gradient-to-tr from-yellow-400 via-orange-400 to-pink-400 text-white' : 'bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white'}`}>
+                          {isOverdue(row.date) ? 'Overdue' : isDueSoon(row.date) ? 'Due Soon' : 'Due'}
                         </span>
                       </td>
                       <td className="font-bold text-primary">{row.lead_number}</td>
@@ -626,7 +938,7 @@ const CollectionPage: React.FC = () => {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
-              {awaitingPayments.map((row) => (
+              {filteredAwaitingPayments.map((row) => (
                 <div 
                   key={row.id} 
                   className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
@@ -635,8 +947,8 @@ const CollectionPage: React.FC = () => {
                   <div className="flex-1 flex flex-col">
                     {/* Lead Number and Name */}
                     <div className="mb-3 flex items-center gap-2">
-                      <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white shadow">
-                        <ExclamationTriangleIcon className="w-4 h-4 text-white" /> Due
+                      <span className={`flex items-center gap-1 px-3 py-1 rounded-full font-bold shadow ${isOverdue(row.date) ? 'bg-gradient-to-tr from-red-500 via-pink-500 to-orange-400 text-white' : isDueSoon(row.date) ? 'bg-gradient-to-tr from-yellow-400 via-orange-400 to-pink-400 text-white' : 'bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white'}`}>
+                        {isOverdue(row.date) ? 'Overdue' : isDueSoon(row.date) ? 'Due Soon' : 'Due'}
                       </span>
                       <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.lead_number}</span>
                       <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
@@ -787,6 +1099,132 @@ const CollectionPage: React.FC = () => {
             ))}
           </div>
         )
+      )}
+      {tab === 'paid_cases' && (
+        <>
+          <div className="flex flex-wrap gap-4 mb-4 items-center">
+            <label className="font-semibold">Order:</label>
+            <select
+              className="select select-bordered"
+              value={paidCasesOrderFilter}
+              onChange={e => setPaidCasesOrderFilter(e.target.value)}
+            >
+              <option value="all">All</option>
+              <option value="first payment">First Payment</option>
+              <option value="second payment">Second Payment</option>
+              <option value="one payment">One Payment</option>
+              <option value="final payment">Final Payment</option>
+            </select>
+            <label className="font-semibold ml-4">Date Paid From:</label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={paidCasesDateFrom}
+              onChange={e => setPaidCasesDateFrom(e.target.value)}
+            />
+            <label className="font-semibold ml-2">To:</label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={paidCasesDateTo}
+              onChange={e => setPaidCasesDateTo(e.target.value)}
+            />
+            <input
+              type="text"
+              className="input input-bordered ml-4"
+              placeholder="Search by client, lead #, contact, invoice..."
+              value={paidCasesSearch}
+              onChange={e => setPaidCasesSearch(e.target.value)}
+              style={{ minWidth: 220 }}
+            />
+            {paidCasesOrderFilter !== 'all' || paidCasesDateFrom || paidCasesDateTo || paidCasesSearch ? (
+              <button className="btn btn-sm btn-outline ml-2" onClick={() => { setPaidCasesOrderFilter('all'); setPaidCasesDateFrom(''); setPaidCasesDateTo(''); setPaidCasesSearch(''); }}>Clear Filters</button>
+            ) : null}
+          </div>
+          {loading ? (
+            <div className="text-center text-gray-500 mt-12">Loading...</div>
+          ) : filteredPaidCases.length === 0 ? (
+            <div className="text-center text-gray-500 mt-12">No paid cases found.</div>
+          ) : viewMode === 'list' ? (
+            <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
+              <table className="table w-full">
+                <thead>
+                  <tr>
+                    <th className="text-lg font-bold">Lead</th>
+                    <th className="text-lg font-bold">Client Name</th>
+                    <th className="text-lg font-bold">Contact Name</th>
+                    <th className="text-lg font-bold">Date Paid</th>
+                    <th className="text-lg font-bold">Amount (with VAT)</th>
+                    <th className="text-lg font-bold">Order</th>
+                    <th className="text-lg font-bold">Invoice</th>
+                  </tr>
+                </thead>
+                <tbody className="text-base">
+                  {filteredPaidCases.map((row) => {
+                    let proforma = null;
+                    if (row.proforma) {
+                      try { proforma = JSON.parse(row.proforma); } catch {}
+                    }
+                    return (
+                      <tr key={row.id}>
+                        <td className="font-bold text-primary">{row.leads?.lead_number}</td>
+                        <td>{row.leads?.name}</td>
+                        <td className="font-semibold text-purple-600">{row.client_name}</td>
+                        <td>{row.paid_at ? new Date(row.paid_at).toLocaleDateString() : '-'}</td>
+                        <td>₪{(Number(row.value) + Number(row.value_vat)).toLocaleString()}</td>
+                        <td>{row.payment_order || '-'}</td>
+                        <td className="text-blue-600 font-bold">{proforma?.proformaName || 'N/A'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
+              {filteredPaidCases.map((row) => {
+                let proforma = null;
+                if (row.proforma) {
+                  try { proforma = JSON.parse(row.proforma); } catch {}
+                }
+                return (
+                  <div key={row.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-gray-100 group flex flex-col justify-between h-full min-h-[260px] relative pb-8 cursor-pointer">
+                    <div className="flex-1 flex flex-col">
+                      <div className="mb-3 flex items-center gap-2">
+                        <span className="flex items-center gap-1 px-3 py-1 rounded-full font-bold bg-gradient-to-tr from-green-500 via-emerald-500 to-teal-400 text-white shadow">PAID</span>
+                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.leads?.lead_number}</span>
+                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                        <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{row.leads?.name}</span>
+                      </div>
+                      <div className="space-y-2 divide-y divide-gray-100">
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Contact</span>
+                          <span className="text-sm font-bold text-purple-600 ml-2">{row.client_name}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Date Paid</span>
+                          <span className="text-sm font-bold text-gray-800 ml-2">{row.paid_at ? new Date(row.paid_at).toLocaleDateString() : '-'}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Amount (with VAT)</span>
+                          <span className="text-sm font-bold text-gray-800 ml-2">₪{(Number(row.value) + Number(row.value_vat)).toLocaleString()}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Order</span>
+                          <span className="text-sm font-bold text-gray-800 ml-2">{row.payment_order || '-'}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Invoice</span>
+                          <span className="text-sm font-bold text-blue-600 ml-2">{proforma?.proformaName || 'N/A'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
       {drawerOpen && (
         <div className="fixed inset-0 z-50 flex">

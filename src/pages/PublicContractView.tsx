@@ -303,9 +303,11 @@ const PublicContractView: React.FC = () => {
           const row = customPricing.payment_plan[rowIndex];
           paymentPlanIndex.current++;
           if (row) {
+            // Use row.value if defined, otherwise fallback to row.amount
+            const amount = typeof row.value !== 'undefined' ? row.value : row.amount;
             result.push(
               <span className="inline-block bg-blue-50 border border-blue-200 rounded-lg px-3 py-1 mx-1 text-sm font-medium" key={keyPrefix + '-pprow-' + rowIndex}>
-                {row.percent}% {row.due} = {customPricing.currency} {row.amount?.toLocaleString()}
+                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {amount?.toLocaleString()}
               </span>
             );
           } else {

@@ -416,7 +416,7 @@ const Clients: React.FC<ClientsProps> = ({
     // Manually refetch the client data to ensure it's up-to-date
     const { data, error } = await supabase
       .from('leads')
-      .select('*, emails (*)')
+      .select('*, emails (*), closer')
       .eq('id', selectedClient.id)
       .single();
 
@@ -435,7 +435,7 @@ const Clients: React.FC<ClientsProps> = ({
         console.log('Fetching client with lead_number:', fullLeadNumber);
         const { data, error } = await supabase
           .from('leads')
-          .select('*, emails (*), closer')
+          .select('*, client_country, emails (*), closer')
           .eq('lead_number', fullLeadNumber)
           .single();
 
@@ -449,7 +449,7 @@ const Clients: React.FC<ClientsProps> = ({
       } else {
         const { data, error } = await supabase
           .from('leads')
-          .select('*, emails (*)')
+          .select('*, client_country, emails (*)')
           .order('created_at', { ascending: false })
           .limit(1)
           .single();
