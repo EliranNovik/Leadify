@@ -80,6 +80,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Add state and handler for editing subtotal at the top of the component:
   const [isEditingSubtotal, setIsEditingSubtotal] = useState(false);
   const [editableSubtotal, setEditableSubtotal] = useState('');
+  
+  // Add state for stages dropdown and drawer
+  const [showStagesDrawer, setShowStagesDrawer] = useState(false);
+  const [autoPlanData, setAutoPlanData] = useState({
+    totalAmount: '',
+    currency: '₪',
+    numberOfPayments: 3,
+    firstPaymentPercent: 50,
+    includeVat: true
+  });
+  
   const saveSubtotal = () => {
     // Update the first row's total to match the edited subtotal
     if (proformaData && proformaData.rows && proformaData.rows.length > 0) {
@@ -243,7 +254,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             }
             return {
               id: plan.id,
-              duePercent: plan.due_percent,
+              duePercent: String(plan.due_percent || plan.percent || 0),
               dueDate: plan.due_date,
               value,
               valueVat,
@@ -370,7 +381,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
           return {
             id: plan.id,
-            duePercent: plan.due_percent,
+            duePercent: String(plan.due_percent || plan.percent || 0),
             dueDate: plan.due_date,
             value,
             valueVat,
@@ -714,37 +725,131 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Handler to save new payment
   const handleSaveNewPayment = async () => {
+    if (!newPaymentData.dueDate || !newPaymentData.value || !newPaymentData.client) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+
     setIsSavingPaymentRow(true);
     try {
-      const value = Number(newPaymentData.value);
-      const contractCountry = getContractCountryForContact(newPaymentData.client);
-      let vat = 0;
-      if (contractCountry === 'IL') {
-        vat = Math.round(value * 0.18 * 100) / 100;
-      }
-      const { error } = await supabase
+      const paymentData = {
+        lead_id: client?.id,
+        due_percent: Number(100),
+        percent: Number(100),
+        due_date: newPaymentData.dueDate,
+        value: Number(newPaymentData.value),
+        value_vat: 0,
+        client_name: newPaymentData.client,
+        payment_order: 'One-time Payment',
+        notes: newPaymentData.notes || '',
+        currency: newPaymentData.currency || '₪'
+      };
+      
+      console.log('Creating one-time payment with data:', paymentData);
+      
+      const { data, error } = await supabase
         .from('payment_plans')
-        .insert({
-          lead_id: client.id,
-          due_percent: 100,
-          due_date: newPaymentData.dueDate,
-          value: value,
-          value_vat: vat,
-          client_name: newPaymentData.client,
-          payment_order: 'One Payment',
-          notes: newPaymentData.notes,
-          paid: false,
-        });
+        .insert(paymentData)
+        .select();
+
+      console.log('Insert result:', { data, error });
+
       if (error) throw error;
-      toast.success('Payment row added!');
-      setAddingPaymentContact(null);
-      setNewPaymentData({});
-      await refreshPaymentPlans();
+
+      toast.success('Payment plan created successfully');
+      handleCancelNewPayment();
+      refreshPaymentPlans();
     } catch (error) {
-      toast.error('Failed to add payment row.');
+      console.error('Error creating payment plan:', error);
+      toast.error('Failed to create payment plan');
     } finally {
       setIsSavingPaymentRow(false);
     }
+  };
+
+  // Add handlers for auto plan functionality
+  const handleCreateAutoPlan = async () => {
+    if (!autoPlanData.totalAmount || !autoPlanData.numberOfPayments) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+
+    setIsSavingPaymentRow(true);
+    try {
+      const totalAmount = Number(autoPlanData.totalAmount);
+      const firstPaymentAmount = (totalAmount * autoPlanData.firstPaymentPercent) / 100;
+      const remainingAmount = totalAmount - firstPaymentAmount;
+      const remainingPayments = autoPlanData.numberOfPayments - 1;
+      const remainingPaymentAmount = remainingPayments > 0 ? remainingAmount / remainingPayments : 0;
+
+      const payments = [];
+      
+      // Create first payment
+      payments.push({
+        lead_id: client?.id,
+        due_percent: autoPlanData.firstPaymentPercent,
+        due_date: new Date().toISOString().split('T')[0], // Today's date
+        value: firstPaymentAmount,
+        value_vat: autoPlanData.includeVat && (autoPlanData.currency === '₪' || autoPlanData.currency === 'NIS' || autoPlanData.currency === 'ILS') ? Math.round(firstPaymentAmount * 0.18 * 100) / 100 : 0,
+        client_name: client?.name || 'Main Contact',
+        payment_order: 'First Payment',
+        notes: '',
+        currency: autoPlanData.currency
+      });
+
+      // Create remaining payments
+      for (let i = 1; i < autoPlanData.numberOfPayments; i++) {
+        const paymentPercent = remainingPayments > 0 ? (100 - autoPlanData.firstPaymentPercent) / remainingPayments : 0;
+        payments.push({
+          lead_id: client?.id,
+          due_percent: paymentPercent,
+          due_date: null, // No due date for subsequent payments
+          value: remainingPaymentAmount,
+          value_vat: autoPlanData.includeVat && (autoPlanData.currency === '₪' || autoPlanData.currency === 'NIS' || autoPlanData.currency === 'ILS') ? Math.round(remainingPaymentAmount * 0.18 * 100) / 100 : 0,
+          client_name: client?.name || 'Main Contact',
+          payment_order: i === 1 ? 'Second Payment' : i === 2 ? 'Third Payment' : `${i + 1}th Payment`,
+          notes: '',
+          currency: autoPlanData.currency
+        });
+      }
+
+      const { error } = await supabase
+        .from('payment_plans')
+        .insert(payments);
+
+      if (error) throw error;
+
+      toast.success('Auto finance plan created successfully');
+      setShowStagesDrawer(false);
+      setAutoPlanData({
+        totalAmount: '',
+        currency: '₪',
+        numberOfPayments: 3,
+        firstPaymentPercent: 50,
+        includeVat: true
+      });
+      refreshPaymentPlans();
+    } catch (error) {
+      console.error('Error creating auto plan:', error);
+      toast.error('Failed to create auto finance plan');
+    } finally {
+      setIsSavingPaymentRow(false);
+    }
+  };
+
+  const handleOpenStagesDrawer = () => {
+    setShowStagesDrawer(true);
+  };
+
+  const handleCloseStagesDrawer = () => {
+    setShowStagesDrawer(false);
+    setAutoPlanData({
+      totalAmount: '',
+      currency: '₪',
+      numberOfPayments: 3,
+      firstPaymentPercent: 50,
+      includeVat: true
+    });
   };
 
   // 1. Add state to track which contact's history is open
@@ -2008,6 +2113,145 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     Created by: {proformaData.createdBy}
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        </div>, document.body)
+      }
+      
+      {/* Stages Drawer */}
+      {showStagesDrawer && ReactDOM.createPortal(
+        <div className="fixed inset-0 z-[100] flex">
+          {/* Overlay */}
+          <div className="fixed inset-0 bg-black/30" onClick={handleCloseStagesDrawer} />
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-2xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-purple-700 to-blue-600 text-white p-6 border-b border-purple-200">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-bold mb-1">Finance Plan Stages</h2>
+                  <p className="text-purple-100">Client: {client?.name}</p>
+                </div>
+                <button className="btn btn-ghost btn-lg text-white hover:bg-white/20" onClick={handleCloseStagesDrawer}>
+                  <XMarkIcon className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+
+            {/* Main Content */}
+            <div className="flex-1 p-6 overflow-y-auto">
+              {/* Auto Plan Section */}
+              <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border border-purple-200">
+                <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                  <ChartPieIcon className="w-5 h-5 text-purple-600" />
+                  Create Auto Finance Plan
+                </h3>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Total Amount</span>
+                      </label>
+                      <input
+                        type="number"
+                        className="input input-bordered w-full"
+                        value={autoPlanData.totalAmount}
+                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, totalAmount: e.target.value }))}
+                        placeholder="Enter total amount"
+                      />
+                    </div>
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Currency</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={autoPlanData.currency}
+                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, currency: e.target.value }))}
+                      >
+                        <option value="₪">₪ (NIS)</option>
+                        <option value="$">$ (USD)</option>
+                        <option value="€">€ (EUR)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Number of Payments</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={autoPlanData.numberOfPayments}
+                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, numberOfPayments: Number(e.target.value) }))}
+                      >
+                        <option value={2}>2 Payments</option>
+                        <option value={3}>3 Payments</option>
+                        <option value={4}>4 Payments</option>
+                        <option value={5}>5 Payments</option>
+                      </select>
+                    </div>
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">First Payment %</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={autoPlanData.firstPaymentPercent}
+                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, firstPaymentPercent: Number(e.target.value) }))}
+                      >
+                        <option value={25}>25%</option>
+                        <option value={30}>30%</option>
+                        <option value={40}>40%</option>
+                        <option value={50}>50%</option>
+                        <option value={60}>60%</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="form-control">
+                    <label className="label cursor-pointer justify-start gap-3">
+                      <input
+                        type="checkbox"
+                        className="checkbox checkbox-primary"
+                        checked={autoPlanData.includeVat}
+                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, includeVat: e.target.checked }))}
+                      />
+                      <span className="label-text font-medium">Include VAT (18% for NIS)</span>
+                    </label>
+                  </div>
+                  <button
+                    className="btn btn-primary w-full"
+                    onClick={handleCreateAutoPlan}
+                    disabled={isSavingPaymentRow || !autoPlanData.totalAmount}
+                  >
+                    {isSavingPaymentRow ? (
+                      <span className="loading loading-spinner loading-sm"></span>
+                    ) : (
+                      <PlusIcon className="w-4 h-4 mr-2" />
+                    )}
+                    Create Auto Finance Plan
+                  </button>
+                </div>
+              </div>
+
+              {/* Add New Payment Section */}
+              <div className="bg-white rounded-xl shadow-lg p-6 border border-blue-200">
+                <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                  <PlusIcon className="w-5 h-5 text-blue-600" />
+                  Add New Payment
+                </h3>
+                <p className="text-gray-600 mb-4">Create a single payment plan for this client.</p>
+                <button
+                  className="btn btn-outline btn-primary w-full"
+                  onClick={() => {
+                    handleCloseStagesDrawer();
+                    handleAddNewPayment(client?.name || 'Main Contact');
+                  }}
+                >
+                  <PlusIcon className="w-4 h-4 mr-2" />
+                  Add New Payment
+                </button>
               </div>
             </div>
           </div>

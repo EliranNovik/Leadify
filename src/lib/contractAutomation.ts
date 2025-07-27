@@ -95,17 +95,22 @@ export async function handleContractSigned(contract: Contract) {
     });
     // If no archival payment, use the first payment (idx 0)
     const dueDateIdx = archivalIdx !== -1 ? archivalIdx : 0;
-    const paymentPlanEntries = paymentPlan.map((plan, idx) => ({
-      lead_id: contract.client_id,
-      due_percent: typeof (plan as any).percent !== 'undefined' ? (plan as any).percent : (plan as any).due_percent,
-      due_date: idx === dueDateIdx ? today.toISOString().split('T')[0] : null,
-      value: typeof plan.value !== 'undefined' ? plan.value : 0,
-      value_vat: typeof plan.value_vat !== 'undefined' ? plan.value_vat : 0,
-      client_name: contract.contact_name || client.name || '',
-      payment_order: plan.payment_order || `Payment ${idx + 1}`,
-      notes: plan.notes || '',
-      currency: currency,
-    }));
+    const paymentPlanEntries = paymentPlan.map((plan, idx) => {
+      const duePercent = (plan as any).due_percent || (plan as any).percent || 0;
+      console.log(`Payment ${idx + 1} due_percent:`, duePercent, 'from plan:', plan);
+      return {
+        lead_id: contract.client_id,
+        due_percent: duePercent,
+        percent: duePercent,
+        due_date: idx === dueDateIdx ? today.toISOString().split('T')[0] : null,
+        value: typeof plan.value !== 'undefined' ? plan.value : 0,
+        value_vat: typeof plan.value_vat !== 'undefined' ? plan.value_vat : 0,
+        client_name: contract.contact_name || client.name || '',
+        payment_order: plan.payment_order || `Payment ${idx + 1}`,
+        notes: plan.notes || '',
+        currency: currency,
+      };
+    });
     
     console.log('Payment plan entries to insert:', paymentPlanEntries);
     

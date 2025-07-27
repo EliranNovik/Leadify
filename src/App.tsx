@@ -36,6 +36,9 @@ import ContractPage from './components/ContractPage';
 import PublicContractView from './pages/PublicContractView';
 import PaymentPage from './pages/PaymentPage';
 import ProformaCreatePage from './pages/ProformaCreatePage';
+import AboutPage from './pages/AboutPage';
+import ContactPage from './pages/ContactPage';
+import HowItWorksPage from './pages/HowItWorksPage';
 
 
 const msalInstance = new PublicClientApplication(msalConfig);
@@ -123,6 +126,9 @@ const AppContent: React.FC = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/about" element={<AboutPage />} />
+      <Route path="/contact" element={<ContactPage />} />
+      <Route path="/how-it-works" element={<HowItWorksPage />} />
       <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
       <Route path="/payment/:token" element={<PaymentPage />} />
       <Route

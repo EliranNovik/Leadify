@@ -38,7 +38,7 @@ interface SidebarItem {
   subItems?: SidebarItem[];
 }
 
-const sidebarItems: SidebarItem[] = [
+const desktopSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
   {
     icon: CalendarIcon,
@@ -64,6 +64,37 @@ const sidebarItems: SidebarItem[] = [
   { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
   { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
+  { icon: Cog6ToothIcon, label: 'Admin Panel', path: '/admin' },
+];
+
+const mobileSidebarItems: SidebarItem[] = [
+  { icon: HomeIcon, label: 'Dashboard', path: '/' },
+  {
+    icon: CalendarIcon,
+    label: 'Calendar',
+    subItems: [
+      { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
+      { icon: CalendarIcon, label: 'Outlook Calendar', path: '/outlook-calendar' },
+    ],
+  },
+  { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
+  { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
+  { icon: UserIcon, label: 'Expert', path: '/expert' },
+  {
+    icon: MagnifyingGlassIcon,
+    label: 'Leads',
+    subItems: [
+      { icon: TagIcon, label: 'My Leads', path: '/my-leads' },
+      { icon: MagnifyingGlassIcon, label: 'Lead Search', path: '/lead-search' },
+      { icon: FolderPlusIcon, label: 'New Cases', path: '/new-cases' },
+      { icon: PlusCircleIcon, label: 'Create New', path: '/create' },
+    ],
+  },
+  { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
+  { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
+  { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
+  { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
+  { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
   { icon: Cog6ToothIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
@@ -140,7 +171,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
         >
           {/* Navigation Items */}
           <nav className="flex flex-col mt-8 gap-2 flex-1">
-            {sidebarItems.map((item, index) => {
+            {desktopSidebarItems.map((item, index) => {
               const Icon = item.icon;
               const hasSubItems = !!item.subItems;
               const isExpanded = expandedMenu === item.label;
@@ -272,7 +303,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             {/* Navigation */}
             <nav className="flex-1 overflow-y-auto py-4">
               <ul className="space-y-2 px-2">
-                {sidebarItems.map((item, index) => {
+                {mobileSidebarItems.map((item, index) => {
                   const Icon = item.icon;
                   const isActive = item.path && location.pathname === item.path;
                   const hasSubItems = !!item.subItems;

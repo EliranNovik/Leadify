@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDownIcon } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UserManagement from './UserManagement';
+import PaymentPlanRowsManager from './PaymentPlanRowsManager';
 
 const ADMIN_TABS = [
   {
@@ -356,6 +357,9 @@ const AdminPage: React.FC = () => {
           ) : ADMIN_TABS[selected.tab].label === 'Authentication' &&
           ADMIN_TABS[selected.tab].subcategories[selected.sub] === 'Users' ? (
             <div className="w-full"><UserManagement /></div>
+          ) : ADMIN_TABS[selected.tab].label === 'Finances' &&
+          ADMIN_TABS[selected.tab].subcategories[selected.sub] === 'Payment plan rows' ? (
+            <div className="w-full"><PaymentPlanRowsManager /></div>
           ) : (
             <div className="flex items-center justify-center text-xl font-semibold text-primary">
               {`${ADMIN_TABS[selected.tab].label} / ${ADMIN_TABS[selected.tab].subcategories[selected.sub]}`}

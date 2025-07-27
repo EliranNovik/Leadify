@@ -249,6 +249,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [isLoading, setIsLoading] = useState(false);
   const [isDragActive, setIsDragActive] = useState(false);
   const [aiIconAnim, setAiIconAnim] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -257,6 +259,43 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   };
 
   useEffect(scrollToBottom, [messages]);
+  
+  // Mobile detection and keyboard handling
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth <= 768);
+    };
+    
+    const handleResize = () => {
+      checkMobile();
+      // Reset keyboard state on resize
+      setKeyboardOpen(false);
+    };
+    
+    const handleVisualViewportChange = () => {
+      if (isMobile) {
+        const visualViewport = window.visualViewport;
+        if (visualViewport) {
+          const keyboardHeight = window.innerHeight - visualViewport.height;
+          setKeyboardOpen(keyboardHeight > 150); // Consider keyboard open if height difference > 150px
+        }
+      }
+    };
+    
+    checkMobile();
+    window.addEventListener('resize', handleResize);
+    
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', handleVisualViewportChange);
+    }
+    
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (window.visualViewport) {
+        window.visualViewport.removeEventListener('resize', handleVisualViewportChange);
+      }
+    };
+  }, [isMobile]);
   
   useEffect(() => {
     if (isOpen && messages.length === 0) {
@@ -412,7 +451,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   return (
     <div
       className={`fixed z-50 right-0 top-0 bottom-0 w-full max-w-2xl flex flex-col transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} ${isDragActive ? 'ring-4 ring-primary/40' : ''}`}
-      style={{ height: '100vh', minHeight: '100vh', maxHeight: '100vh', borderTopLeftRadius: 0, borderTopRightRadius: 0 }}
+      style={{ 
+        height: '100dvh', 
+        minHeight: '100dvh', 
+        maxHeight: '100dvh', 
+        borderTopLeftRadius: 0, 
+        borderTopRightRadius: 0
+      }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -471,8 +516,36 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         .animate-ai-pulse {
           animation: ai-pulse 0.6s cubic-bezier(.4,0,.2,1);
         }
+        
+        /* Mobile keyboard fixes */
+        @supports (height: 100dvh) {
+          .mobile-dvh {
+            height: 100dvh;
+            min-height: 100dvh;
+          }
+        }
+        
+        /* Safe area support for mobile */
+        .pb-safe {
+          padding-bottom: env(safe-area-inset-bottom, 1rem);
+        }
+        
+        /* Mobile input focus styles */
+        @media (max-width: 768px) {
+          .ai-input-area input:focus {
+            font-size: 16px; /* Prevents zoom on iOS */
+          }
+        }
       `}</style>
-      <div className="ai-glass flex flex-col h-full w-full">
+      <div 
+        className="ai-glass flex flex-col h-full w-full"
+        style={{
+          ...(isMobile && {
+            height: '100dvh',
+            minHeight: '100dvh'
+          })
+        }}
+      >
         {/* Header */}
         <div className="ai-header-gradient sticky top-0 z-20 p-4 flex items-center justify-between rounded-tl-2xl" style={{boxShadow:'0 2px 12px 0 rgba(31,38,135,0.07)'}}>
           <div className="flex items-center gap-3">
@@ -519,7 +592,14 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div 
+          className="flex-1 overflow-y-auto p-6 space-y-6"
+          style={{
+            ...(isMobile && keyboardOpen && {
+              paddingBottom: '120px' // Add space for fixed input
+            })
+          }}
+        >
           {messages.map((msg, idx) => (
             <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[70%] px-5 py-3 rounded-2xl shadow ai-bubble-${msg.role} mb-2`} style={{fontSize:'1.05rem', lineHeight:1.6}}>
@@ -558,7 +638,24 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         )}
 
         {/* Input */}
-        <div className="ai-input-area p-4 flex items-end gap-2 border-t border-base-200">
+        <div 
+          className={`ai-input-area p-4 flex items-end gap-2 border-t border-base-200 ${
+            isMobile && keyboardOpen ? 'pb-safe' : ''
+          }`}
+          style={{
+            ...(isMobile && keyboardOpen && {
+              position: 'fixed',
+              bottom: 0,
+              left: 0,
+              right: 0,
+              zIndex: 60,
+              backgroundColor: 'rgba(255,255,255,0.95)',
+              backdropFilter: 'blur(18px) saturate(1.2)',
+              borderTop: '1px solid #e0e7ef',
+              paddingBottom: 'env(safe-area-inset-bottom, 1rem)'
+            })
+          }}
+        >
           <input
             type="text"
             className="input input-bordered flex-1 bg-white/80 focus:bg-white/95 rounded-full px-5 py-3 text-base shadow-sm border border-base-200"

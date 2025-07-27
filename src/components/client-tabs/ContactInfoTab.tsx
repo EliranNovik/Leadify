@@ -194,6 +194,140 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Add state for archival research option
   const [archivalResearch, setArchivalResearch] = useState<'none' | 'with'>('none');
 
+  // Add country codes data
+  const countryCodes = [
+    { code: '+972', country: 'IL', name: 'Israel' },
+    { code: '+1', country: 'US', name: 'United States' },
+    { code: '+49', country: 'DE', name: 'Germany' },
+    { code: '+44', country: 'GB', name: 'United Kingdom' },
+    { code: '+33', country: 'FR', name: 'France' },
+    { code: '+39', country: 'IT', name: 'Italy' },
+    { code: '+34', country: 'ES', name: 'Spain' },
+    { code: '+31', country: 'NL', name: 'Netherlands' },
+    { code: '+32', country: 'BE', name: 'Belgium' },
+    { code: '+41', country: 'CH', name: 'Switzerland' },
+    { code: '+43', country: 'AT', name: 'Austria' },
+    { code: '+46', country: 'SE', name: 'Sweden' },
+    { code: '+47', country: 'NO', name: 'Norway' },
+    { code: '+45', country: 'DK', name: 'Denmark' },
+    { code: '+358', country: 'FI', name: 'Finland' },
+    { code: '+48', country: 'PL', name: 'Poland' },
+    { code: '+420', country: 'CZ', name: 'Czech Republic' },
+    { code: '+36', country: 'HU', name: 'Hungary' },
+    { code: '+40', country: 'RO', name: 'Romania' },
+    { code: '+380', country: 'UA', name: 'Ukraine' },
+    { code: '+7', country: 'RU', name: 'Russia' },
+    { code: '+90', country: 'TR', name: 'Turkey' },
+    { code: '+86', country: 'CN', name: 'China' },
+    { code: '+81', country: 'JP', name: 'Japan' },
+    { code: '+82', country: 'KR', name: 'South Korea' },
+    { code: '+91', country: 'IN', name: 'India' },
+    { code: '+61', country: 'AU', name: 'Australia' },
+    { code: '+64', country: 'NZ', name: 'New Zealand' },
+    { code: '+27', country: 'ZA', name: 'South Africa' },
+    { code: '+55', country: 'BR', name: 'Brazil' },
+    { code: '+52', country: 'MX', name: 'Mexico' },
+    { code: '+54', country: 'AR', name: 'Argentina' },
+    { code: '+56', country: 'CL', name: 'Chile' },
+    { code: '+57', country: 'CO', name: 'Colombia' },
+    { code: '+58', country: 'VE', name: 'Venezuela' },
+    { code: '+51', country: 'PE', name: 'Peru' },
+    { code: '+593', country: 'EC', name: 'Ecuador' },
+    { code: '+595', country: 'PY', name: 'Paraguay' },
+    { code: '+598', country: 'UY', name: 'Uruguay' },
+    { code: '+591', country: 'BO', name: 'Bolivia' },
+    { code: '+507', country: 'PA', name: 'Panama' },
+    { code: '+506', country: 'CR', name: 'Costa Rica' },
+    { code: '+502', country: 'GT', name: 'Guatemala' },
+    { code: '+503', country: 'SV', name: 'El Salvador' },
+    { code: '+504', country: 'HN', name: 'Honduras' },
+    { code: '+505', country: 'NI', name: 'Nicaragua' },
+    { code: '+501', country: 'BZ', name: 'Belize' },
+    { code: '+509', country: 'HT', name: 'Haiti' },
+    { code: '+1-809', country: 'DO', name: 'Dominican Republic' },
+    { code: '+1-787', country: 'PR', name: 'Puerto Rico' },
+    { code: '+1-242', country: 'BS', name: 'Bahamas' },
+    { code: '+1-246', country: 'BB', name: 'Barbados' },
+    { code: '+1-284', country: 'VG', name: 'British Virgin Islands' },
+    { code: '+1-345', country: 'KY', name: 'Cayman Islands' },
+    { code: '+1-441', country: 'BM', name: 'Bermuda' },
+    { code: '+1-473', country: 'GD', name: 'Grenada' },
+    { code: '+1-649', country: 'TC', name: 'Turks and Caicos' },
+    { code: '+1-664', country: 'MS', name: 'Montserrat' },
+    { code: '+1-721', country: 'SX', name: 'Sint Maarten' },
+    { code: '+1-758', country: 'LC', name: 'Saint Lucia' },
+    { code: '+1-784', country: 'VC', name: 'Saint Vincent' },
+    { code: '+1-868', country: 'TT', name: 'Trinidad and Tobago' },
+    { code: '+1-869', country: 'KN', name: 'Saint Kitts' },
+    { code: '+1-876', country: 'JM', name: 'Jamaica' },
+    { code: '+971', country: 'AE', name: 'United Arab Emirates' },
+    { code: '+966', country: 'SA', name: 'Saudi Arabia' },
+    { code: '+965', country: 'KW', name: 'Kuwait' },
+    { code: '+973', country: 'BH', name: 'Bahrain' },
+    { code: '+974', country: 'QA', name: 'Qatar' },
+    { code: '+968', country: 'OM', name: 'Oman' },
+    { code: '+967', country: 'YE', name: 'Yemen' },
+    { code: '+962', country: 'JO', name: 'Jordan' },
+    { code: '+961', country: 'LB', name: 'Lebanon' },
+    { code: '+963', country: 'SY', name: 'Syria' },
+    { code: '+964', country: 'IQ', name: 'Iraq' },
+    { code: '+98', country: 'IR', name: 'Iran' },
+    { code: '+93', country: 'AF', name: 'Afghanistan' },
+    { code: '+92', country: 'PK', name: 'Pakistan' },
+    { code: '+880', country: 'BD', name: 'Bangladesh' },
+    { code: '+94', country: 'LK', name: 'Sri Lanka' },
+    { code: '+95', country: 'MM', name: 'Myanmar' },
+    { code: '+66', country: 'TH', name: 'Thailand' },
+    { code: '+84', country: 'VN', name: 'Vietnam' },
+    { code: '+60', country: 'MY', name: 'Malaysia' },
+    { code: '+65', country: 'SG', name: 'Singapore' },
+    { code: '+63', country: 'PH', name: 'Philippines' },
+    { code: '+62', country: 'ID', name: 'Indonesia' },
+    { code: '+673', country: 'BN', name: 'Brunei' },
+    { code: '+856', country: 'LA', name: 'Laos' },
+    { code: '+855', country: 'KH', name: 'Cambodia' },
+    { code: '+976', country: 'MN', name: 'Mongolia' },
+    { code: '+977', country: 'NP', name: 'Nepal' },
+    { code: '+975', country: 'BT', name: 'Bhutan' },
+    { code: '+960', country: 'MV', name: 'Maldives' },
+    { code: '+967', country: 'YE', name: 'Yemen' },
+    { code: '+968', country: 'OM', name: 'Oman' },
+    { code: '+971', country: 'AE', name: 'United Arab Emirates' },
+    { code: '+972', country: 'IL', name: 'Israel' },
+    { code: '+973', country: 'BH', name: 'Bahrain' },
+    { code: '+974', country: 'QA', name: 'Qatar' },
+    { code: '+975', country: 'BT', name: 'Bhutan' },
+    { code: '+976', country: 'MN', name: 'Mongolia' },
+    { code: '+977', country: 'NP', name: 'Nepal' },
+    { code: '+978', country: 'XX', name: 'International' },
+    { code: '+979', country: 'XX', name: 'International' },
+    { code: '+98', country: 'IR', name: 'Iran' },
+    { code: '+99', country: 'XX', name: 'International' },
+  ];
+
+  // Helper function to extract country code and number from full phone number
+  const parsePhoneNumber = (fullNumber: string) => {
+    if (!fullNumber || fullNumber === '---') return { countryCode: '+972', number: '' };
+    
+    // Find matching country code
+    const matchedCode = countryCodes.find(code => fullNumber.startsWith(code.code));
+    if (matchedCode) {
+      return {
+        countryCode: matchedCode.code,
+        number: fullNumber.substring(matchedCode.code.length)
+      };
+    }
+    
+    // Default to Israel if no match found
+    return { countryCode: '+972', number: fullNumber };
+  };
+
+  // Helper function to format phone number for display
+  const formatPhoneNumber = (countryCode: string, number: string) => {
+    if (!number) return '---';
+    return `${countryCode}${number}`;
+  };
+
   // Fetch contracts for each contact
   useEffect(() => {
     if (!client?.id) return;
@@ -359,6 +493,16 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       email: client.email || ''
     });
     setIsEditingMainContact(false);
+  };
+
+  const handleCancelContact = (contact: ContactEntry) => {
+    // If this is a newly created contact (has isEditing flag), remove it from the list
+    if (contact.isEditing) {
+      setContacts(contacts.filter(c => c.id !== contact.id));
+    } else {
+      // If it's an existing contact, just exit edit mode
+      setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: false } : c));
+    }
   };
 
   const handleSaveContact = async (id: number, contact: ContactEntry) => {
@@ -783,172 +927,282 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
                   {/* Content */}
                   <div className="p-6">
-                    <div className="space-y-5">
+                    <div className="space-y-0">
                       {/* Name */}
-                      <div className="space-y-2">
+                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Name</label>
-                        {contact.isMain && isEditingMainContact ? (
-                          <input
-                            type="text"
-                            placeholder="Enter name"
-                            className="input input-bordered w-full"
-                            value={editedMainContact.name}
-                            onChange={(e) => setEditedMainContact({ ...editedMainContact, name: e.target.value })}
-                          />
-                        ) : contact.isEditing ? (
-                          <input
-                            type="text"
-                            placeholder="Enter name"
-                            className="input input-bordered w-full"
-                            value={contact.name}
-                            onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, name: e.target.value } : c))}
-                          />
-                        ) : (
-                          <div className="text-base font-semibold text-gray-900">{contact.name}</div>
-                        )}
+                        <div className="flex-1 ml-4">
+                          {contact.isMain && isEditingMainContact ? (
+                            <input
+                              type="text"
+                              placeholder="Enter name"
+                              className="input input-bordered w-full"
+                              value={editedMainContact.name}
+                              onChange={(e) => setEditedMainContact({ ...editedMainContact, name: e.target.value })}
+                            />
+                          ) : contact.isEditing ? (
+                            <input
+                              type="text"
+                              placeholder="Enter name"
+                              className="input input-bordered w-full"
+                              value={contact.name}
+                              onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, name: e.target.value } : c))}
+                            />
+                          ) : (
+                            <div className="text-base font-semibold text-gray-900 text-right">{contact.name}</div>
+                          )}
+                        </div>
                       </div>
 
                       {/* Mobile */}
-                      <div className="space-y-2">
+                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Mobile</label>
-                        {contact.isMain && isEditingMainContact ? (
-                          <input
-                            type="tel"
-                            placeholder="Enter mobile"
-                            className="input input-bordered w-full"
-                            value={editedMainContact.mobile}
-                            onChange={(e) => setEditedMainContact({ ...editedMainContact, mobile: e.target.value })}
-                          />
-                        ) : contact.isEditing ? (
-                          <input
-                            type="tel"
-                            placeholder="Enter mobile"
-                            className="input input-bordered w-full"
-                            value={contact.mobile}
-                            onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, mobile: e.target.value } : c))}
-                          />
-                        ) : (
-                          <div className="text-base text-gray-900 flex items-center gap-2">
-                            <PhoneIcon className="w-4 h-4 text-gray-400" />
-                            <span className="text-base font-medium">{contact.mobile}</span>
-                          </div>
-                        )}
+                        <div className="flex-1 ml-4">
+                          {contact.isMain && isEditingMainContact ? (
+                            <div className="flex gap-2">
+                              <select
+                                className="select select-bordered w-24"
+                                value={parsePhoneNumber(editedMainContact.mobile).countryCode}
+                                onChange={(e) => {
+                                  const { number } = parsePhoneNumber(editedMainContact.mobile);
+                                  setEditedMainContact({
+                                    ...editedMainContact,
+                                    mobile: formatPhoneNumber(e.target.value, number)
+                                  });
+                                }}
+                              >
+                                {countryCodes.map((code) => (
+                                  <option key={code.code} value={code.code}>
+                                    {code.code}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="tel"
+                                placeholder="Enter mobile"
+                                className="input input-bordered flex-1"
+                                value={parsePhoneNumber(editedMainContact.mobile).number}
+                                onChange={(e) => {
+                                  const { countryCode } = parsePhoneNumber(editedMainContact.mobile);
+                                  setEditedMainContact({
+                                    ...editedMainContact,
+                                    mobile: formatPhoneNumber(countryCode, e.target.value)
+                                  });
+                                }}
+                              />
+                            </div>
+                          ) : contact.isEditing ? (
+                            <div className="flex gap-2">
+                              <select
+                                className="select select-bordered w-24"
+                                value={parsePhoneNumber(contact.mobile).countryCode}
+                                onChange={(e) => {
+                                  const { number } = parsePhoneNumber(contact.mobile);
+                                  setContacts(contacts.map(c => c.id === contact.id ? {
+                                    ...c,
+                                    mobile: formatPhoneNumber(e.target.value, number)
+                                  } : c));
+                                }}
+                              >
+                                {countryCodes.map((code) => (
+                                  <option key={code.code} value={code.code}>
+                                    {code.code}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="tel"
+                                placeholder="Enter mobile"
+                                className="input input-bordered flex-1"
+                                value={parsePhoneNumber(contact.mobile).number}
+                                onChange={(e) => {
+                                  const { countryCode } = parsePhoneNumber(contact.mobile);
+                                  setContacts(contacts.map(c => c.id === contact.id ? {
+                                    ...c,
+                                    mobile: formatPhoneNumber(countryCode, e.target.value)
+                                  } : c));
+                                }}
+                              />
+                            </div>
+                          ) : (
+                            <div className="text-base text-gray-900 flex items-center justify-end gap-2">
+                              <PhoneIcon className="w-4 h-4 text-gray-400" />
+                              <span className="text-base font-medium">{contact.mobile}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       {/* Phone */}
-                      <div className="space-y-2">
+                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Phone</label>
-                        {contact.isMain && isEditingMainContact ? (
-                          <input
-                            type="tel"
-                            placeholder="Enter phone"
-                            className="input input-bordered w-full"
-                            value={editedMainContact.phone}
-                            onChange={(e) => setEditedMainContact({ ...editedMainContact, phone: e.target.value })}
-                          />
-                        ) : contact.isEditing ? (
-                          <input
-                            type="tel"
-                            placeholder="Enter phone"
-                            className="input input-bordered w-full"
-                            value={contact.phone}
-                            onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, phone: e.target.value } : c))}
-                          />
-                        ) : contact.phone && contact.phone !== '---' ? (
-                          <a href={`tel:${contact.phone}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center gap-2 transition-colors">
-                            <PhoneIcon className="w-4 h-4 text-gray-400" />
-                            <span className="text-base font-medium">{contact.phone}</span>
-                          </a>
-                        ) : (
-                          <div className="text-base text-gray-900 flex items-center gap-2">
-                            <PhoneIcon className="w-4 h-4 text-gray-400" />
-                            <span className="text-base font-medium">{contact.phone}</span>
-                          </div>
-                        )}
+                        <div className="flex-1 ml-4">
+                          {contact.isMain && isEditingMainContact ? (
+                            <div className="flex gap-2">
+                              <select
+                                className="select select-bordered w-24"
+                                value={parsePhoneNumber(editedMainContact.phone).countryCode}
+                                onChange={(e) => {
+                                  const { number } = parsePhoneNumber(editedMainContact.phone);
+                                  setEditedMainContact({
+                                    ...editedMainContact,
+                                    phone: formatPhoneNumber(e.target.value, number)
+                                  });
+                                }}
+                              >
+                                {countryCodes.map((code) => (
+                                  <option key={code.code} value={code.code}>
+                                    {code.code}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="tel"
+                                placeholder="Enter phone"
+                                className="input input-bordered flex-1"
+                                value={parsePhoneNumber(editedMainContact.phone).number}
+                                onChange={(e) => {
+                                  const { countryCode } = parsePhoneNumber(editedMainContact.phone);
+                                  setEditedMainContact({
+                                    ...editedMainContact,
+                                    phone: formatPhoneNumber(countryCode, e.target.value)
+                                  });
+                                }}
+                              />
+                            </div>
+                          ) : contact.isEditing ? (
+                            <div className="flex gap-2">
+                              <select
+                                className="select select-bordered w-24"
+                                value={parsePhoneNumber(contact.phone).countryCode}
+                                onChange={(e) => {
+                                  const { number } = parsePhoneNumber(contact.phone);
+                                  setContacts(contacts.map(c => c.id === contact.id ? {
+                                    ...c,
+                                    phone: formatPhoneNumber(e.target.value, number)
+                                  } : c));
+                                }}
+                              >
+                                {countryCodes.map((code) => (
+                                  <option key={code.code} value={code.code}>
+                                    {code.code}
+                                  </option>
+                                ))}
+                              </select>
+                              <input
+                                type="tel"
+                                placeholder="Enter phone"
+                                className="input input-bordered flex-1"
+                                value={parsePhoneNumber(contact.phone).number}
+                                onChange={(e) => {
+                                  const { countryCode } = parsePhoneNumber(contact.phone);
+                                  setContacts(contacts.map(c => c.id === contact.id ? {
+                                    ...c,
+                                    phone: formatPhoneNumber(countryCode, e.target.value)
+                                  } : c));
+                                }}
+                              />
+                            </div>
+                          ) : contact.phone && contact.phone !== '---' ? (
+                            <a href={`tel:${contact.phone}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors">
+                              <PhoneIcon className="w-4 h-4 text-gray-400" />
+                              <span className="text-base font-medium">{contact.phone}</span>
+                            </a>
+                          ) : (
+                            <div className="text-base text-gray-900 flex items-center justify-end gap-2">
+                              <PhoneIcon className="w-4 h-4 text-gray-400" />
+                              <span className="text-base font-medium">{contact.phone}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       {/* Email */}
-                      <div className="space-y-2">
+                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Email</label>
-                        {contact.isMain && isEditingMainContact ? (
-                          <input
-                            type="email"
-                            placeholder="Enter email"
-                            className="input input-bordered w-full"
-                            value={editedMainContact.email}
-                            onChange={(e) => setEditedMainContact({ ...editedMainContact, email: e.target.value })}
-                          />
-                        ) : contact.isEditing ? (
-                          <input
-                            type="email"
-                            placeholder="Enter email"
-                            className="input input-bordered w-full"
-                            value={contact.email}
-                            onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, email: e.target.value } : c))}
-                          />
-                        ) : contact.email && contact.email !== '---' ? (
-                          <a href={`mailto:${contact.email}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center gap-2 transition-colors">
-                            <EnvelopeIcon className="w-4 h-4 text-gray-400" />
-                            <span className="text-base font-medium">{contact.email}</span>
-                          </a>
-                        ) : (
-                          <div className="text-base text-gray-900 flex items-center gap-2">
-                            <EnvelopeIcon className="w-4 h-4 text-gray-400" />
-                            <span className="text-base font-medium">{contact.email}</span>
-                          </div>
-                        )}
+                        <div className="flex-1 ml-4">
+                          {contact.isMain && isEditingMainContact ? (
+                            <input
+                              type="email"
+                              placeholder="Enter email"
+                              className="input input-bordered w-full"
+                              value={editedMainContact.email}
+                              onChange={(e) => setEditedMainContact({ ...editedMainContact, email: e.target.value })}
+                            />
+                          ) : contact.isEditing ? (
+                            <input
+                              type="email"
+                              placeholder="Enter email"
+                              className="input input-bordered w-full"
+                              value={contact.email}
+                              onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, email: e.target.value } : c))}
+                            />
+                          ) : contact.email && contact.email !== '---' ? (
+                            <a href={`mailto:${contact.email}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors">
+                              <EnvelopeIcon className="w-4 h-4 text-gray-400" />
+                              <span className="text-base font-medium">{contact.email}</span>
+                            </a>
+                          ) : (
+                            <div className="text-base text-gray-900 flex items-center justify-end gap-2">
+                              <EnvelopeIcon className="w-4 h-4 text-gray-400" />
+                              <span className="text-base font-medium">{contact.email}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
 
                       {/* Contract */}
-                      <div className="space-y-2">
+                      <div className="flex items-center justify-between py-3">
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Contract</label>
-                        {contactContracts[contact.id] ? (
-                          <div className="flex flex-col gap-2">
-                            <div className="flex items-center justify-between">
-                              <span className="text-sm font-medium text-gray-700">
-                                {contactContracts[contact.id]?.name}
-                              </span>
-                              <span className={`badge badge-sm ${
-                                contactContracts[contact.id]?.status === 'signed' ? 'badge-success' : 'badge-warning'
-                              }`}>
-                                {contactContracts[contact.id]?.status}
-                              </span>
-                            </div>
-                            <div className="flex gap-2">
-                              <button 
-                                className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start" 
-                                onClick={() => handleViewContract(contactContracts[contact.id]?.id)}
-                              >
-                                <DocumentTextIcon className="w-4 h-4" />
-                                View Contract
-                              </button>
-                              {contactContracts[contact.id]?.status === 'draft' && (
+                        <div className="flex-1 ml-4">
+                          {contactContracts[contact.id] ? (
+                            <div className="flex flex-col gap-2 items-end">
+                              <div className="flex items-center justify-end gap-2">
+                                <span className="text-sm font-medium text-gray-700">
+                                  {contactContracts[contact.id]?.name}
+                                </span>
+                                <span className={`badge badge-sm ${
+                                  contactContracts[contact.id]?.status === 'signed' ? 'badge-success' : 'badge-warning'
+                                }`}>
+                                  {contactContracts[contact.id]?.status}
+                                </span>
+                              </div>
+                              <div className="flex gap-2">
                                 <button 
                                   className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start" 
-                                  onClick={() => {
-                                    if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
-                                      handleDeleteContract(contactContracts[contact.id]?.id!);
-                                    }
-                                  }}
+                                  onClick={() => handleViewContract(contactContracts[contact.id]?.id)}
                                 >
-                                  <TrashIcon className="w-4 h-4" />
-                                  Delete Contract
+                                  <DocumentTextIcon className="w-4 h-4" />
+                                  View Contract
                                 </button>
-                              )}
+                                {contactContracts[contact.id]?.status === 'draft' && (
+                                  <button 
+                                    className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start" 
+                                    onClick={() => {
+                                      if (window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) {
+                                        handleDeleteContract(contactContracts[contact.id]?.id!);
+                                      }
+                                    }}
+                                  >
+                                    <TrashIcon className="w-4 h-4" />
+                                    Delete Contract
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                        ) : (
-                          <button 
-                            className="btn btn-outline btn-primary btn-sm justify-start" 
-                            onClick={() => {
-                              setContractForm(prev => ({ ...prev, contactId: contact.id }));
-                              setShowContractCreation(true);
-                            }}
-                          >
-                            <PlusIcon className="w-4 h-4" />
-                            Create Contract
-                          </button>
-                        )}
+                          ) : (
+                            <button 
+                              className="btn btn-outline btn-primary btn-sm justify-start" 
+                              onClick={() => {
+                                setContractForm(prev => ({ ...prev, contactId: contact.id }));
+                                setShowContractCreation(true);
+                              }}
+                            >
+                              <PlusIcon className="w-4 h-4" />
+                              Create Contract
+                            </button>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -976,7 +1230,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           </button>
                           <button
                             className="btn btn-ghost btn-sm"
-                            onClick={() => contact.isMain ? handleCancelMainContact() : setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: false } : c))}
+                            onClick={() => contact.isMain ? handleCancelMainContact() : handleCancelContact(contact)}
                           >
                             <XMarkIcon className="w-4 h-4" />
                             Cancel

@@ -1757,7 +1757,7 @@ const Clients: React.FC<ClientsProps> = ({
         source: subLeadForm.source,
         language: subLeadForm.language,
         tags: subLeadForm.tags,
-        stage: 'new',
+        stage: 'Created',
         probability: 0,
         balance: 0,
         balance_currency: subLeadForm.currency || 'NIS',
@@ -3081,6 +3081,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <option>Intermediate Payment</option>
                       <option>First Payment</option>
                       <option>Final Payment</option>
+                      <option>One time payment</option>
                     </select>
                   </div>
                   <div>

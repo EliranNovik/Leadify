@@ -1202,6 +1202,17 @@ const PipelinePage: React.FC = () => {
           <div className="fixed inset-0 bg-black/30 transition-opacity duration-300" onClick={closeDrawer} />
           {/* Lead Summary Drawer */}
           <div className={`ml-auto w-full max-w-xl bg-white h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50 rounded-l-2xl relative`} style={{ boxShadow: '0 0 40px 0 rgba(0,0,0,0.2)' }}>
+            {/* Header with close button */}
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-800">Lead Details</h2>
+              <button
+                onClick={closeDrawer}
+                className="btn btn-ghost btn-sm btn-circle hover:bg-gray-100"
+                aria-label="Close drawer"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
             {/* Label at the top */}
             <div className="flex items-center gap-3 mb-2 relative">
               {selectedLead.label && (

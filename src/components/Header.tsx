@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
+import { createPortal } from 'react-dom';
 import { searchLeads } from '../lib/supabase';
 import { supabase } from '../lib/supabase';
 import type { Lead } from '../lib/supabase';
@@ -17,11 +18,12 @@ import {
   ArrowRightOnRectangleIcon,
   UserGroupIcon,
   FunnelIcon,
+  ChevronDownIcon,
+  BoltIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaRobot } from 'react-icons/fa';
-import { createPortal } from 'react-dom';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -111,6 +113,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [searchDropdownStyle, setSearchDropdownStyle] = useState({ top: 0, left: 0, width: 0 });
   const [isSearchAnimationDone, setIsSearchAnimationDone] = useState(false);
   const searchHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -119,7 +123,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   useEffect(() => {
     const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768);
+      const isMobileWidth = window.innerWidth < 768;
+      setIsMobile(isMobileWidth);
     };
     checkMobile();
     window.addEventListener('resize', checkMobile);
@@ -131,6 +136,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       label: 'Calendar',
       path: '/calendar',
       icon: CalendarIcon,
+    },
+    {
+      label: 'Lead Search',
+      path: '/lead-search',
+      icon: MagnifyingGlassIcon,
     },
     {
       label: 'Reports',
@@ -163,6 +173,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         !notificationsRef.current.contains(event.target as Node)
       ) {
         setShowNotifications(false);
+      }
+      // Close quick actions dropdown when clicking outside
+      const quickActionsDropdown = document.querySelector('[data-quick-actions-dropdown]');
+      const dropdownMenu = document.querySelector('[data-dropdown-menu]');
+      if (quickActionsDropdown && !quickActionsDropdown.contains(event.target as Node) && 
+          dropdownMenu && !dropdownMenu.contains(event.target as Node)) {
+        setShowQuickActionsDropdown(false);
       }
     };
 
@@ -359,7 +376,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
         {/* Left section with menu and logo */}
-        <div className="flex-1 justify-start flex items-center gap-4 overflow-hidden">
+        <div className={`flex-1 justify-start flex items-center gap-4 overflow-hidden transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
             {isMenuOpen ? (
               <XMarkIcon className="w-6 h-6" />
@@ -382,30 +399,68 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               <span className="md:ml-4 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
-          {/* Nav Tabs - Desktop only, filtered for mobile */}
-          <nav className="hidden md:flex gap-2 ml-4">
-            {navTabs.map(tab => {
-              const isActive = location.pathname === tab.path;
-              const Icon = tab.icon;
-              return (
-                <Link
-                  key={tab.path}
-                  to={tab.path}
-                  className={`flex items-center justify-center px-3 py-2 rounded-lg font-medium transition-colors duration-200 ${isActive ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
-                  title={tab.label}
-                >
-                  <Icon className={`w-6 h-6 ${isActive ? 'text-white' : ''}`} style={!isActive ? { color: '#3b28c7' } : {}} />
-                </Link>
-              );
-            })}
-          </nav>
+          {/* Quick Actions Dropdown - Desktop only */}
+          <div className="hidden md:block relative ml-4" data-quick-actions-dropdown>
+            <button
+              ref={buttonRef}
+              onClick={() => setShowQuickActionsDropdown(!showQuickActionsDropdown)}
+              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+            >
+              <BoltIcon className="w-5 h-5 text-white" />
+              <span className="text-sm font-semibold">Quick Actions</span>
+              <ChevronDownIcon className={`w-4 h-4 text-white transition-transform duration-200 ${showQuickActionsDropdown ? 'rotate-180' : ''}`} />
+            </button>
+            
+            {/* Dropdown Menu */}
+            {showQuickActionsDropdown && createPortal(
+              <div 
+                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
+                data-dropdown-menu
+                style={{
+                  top: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().bottom + 8}px` : '0px',
+                  left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
+                }}
+              >
+                {navTabs.map(tab => {
+                  const isActive = location.pathname === tab.path;
+                  const Icon = tab.icon;
+                  return (
+                    <Link
+                      key={tab.path}
+                      to={tab.path}
+                      onClick={() => setShowQuickActionsDropdown(false)}
+                      className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
+                    >
+                      <Icon className="w-5 h-5 text-gray-500" />
+                      <span className="text-sm font-medium">{tab.label}</span>
+                    </Link>
+                  );
+                })}
+              </div>,
+              document.body
+            )}
+          </div>
         </div>
         
         {/* Search bar */}
-        <div className="flex-1 relative">
+        <div className={`relative transition-all duration-300 ${isSearchActive && isMobile ? 'flex-1' : 'flex-1'}`}>
           <div
             ref={searchContainerRef}
-            className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 min-w-12 min-h-[56px] ${isSearchActive ? 'w-full max-w-xl md:max-w-xl' : 'w-1'} transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0`}
+            className={`min-w-12 min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${
+              isSearchActive 
+                ? isMobile 
+                  ? 'absolute top-1/2 -translate-y-1/2' 
+                  : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
+                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1'
+            }`}
+            style={{ 
+              background: 'transparent',
+              ...(isSearchActive && isMobile && { 
+                width: 'calc(100vw - 64px)',
+                left: '50%',
+                transform: 'translateX(-50%)'
+              })
+            }}
             onMouseEnter={!isMobile ? () => {
               if (searchHoverTimeoutRef.current) {
                 clearTimeout(searchHoverTimeoutRef.current);
@@ -424,7 +479,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
               }, 600);
             } : undefined}
-            style={{ background: 'transparent', width: isMobile ? '100%' : undefined }}
           >
             <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-[700ms] ease-in-out`}>
               {/* Large search icon (always visible) */}
@@ -433,7 +487,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 onClick={() => {
                   if (isMobile && !isSearchActive) {
                     setIsSearchActive(true);
-                    setTimeout(() => searchInputRef.current?.focus(), 100);
+                    setTimeout(() => {
+                      searchInputRef.current?.focus();
+                    }, 100);
                   }
                 }}
               >
@@ -465,6 +521,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined 
                 }}
               />
+              {/* Clear search button - visible on mobile when search is active */}
+              {(searchValue.trim() || searchResults.length > 0) && (
+                <button
+                  onClick={handleClearSearch}
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400 ${
+                    isMobile && isSearchActive ? 'flex' : 'hidden md:flex'
+                  }`}
+                  title="Clear search"
+                  style={{ background: 'rgba(255,255,255,0.10)' }}
+                >
+                  <XMarkIcon className="w-3 h-3" />
+                </button>
+              )}
               {/* Filter button inside input */}
               {isSearchActive && isSearchAnimationDone && (
                 <button
@@ -475,17 +544,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   title="Advanced Filters"
                 >
                   <FunnelIcon className="w-5 h-5 text-cyan-900" />
-                </button>
-              )}
-              {/* Clear search button (unchanged) */}
-              {(searchValue.trim() || searchResults.length > 0) && (
-                <button
-                  onClick={handleClearSearch}
-                  className="absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400 hidden md:flex"
-                  title="Clear search"
-                  style={{ background: 'rgba(255,255,255,0.10)' }}
-                >
-                  <XMarkIcon className="w-3 h-3" />
                 </button>
               )}
               {/* Advanced filter dropdown */}
@@ -668,7 +726,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         )}
 
         {/* Right section with notifications and user */}
-        <div className="flex-1 justify-end flex items-center gap-2 md:gap-4">
+        <div className={`flex-1 justify-end flex items-center gap-2 md:gap-4 transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           {/* Sign out button and Welcome message - desktop only */}
           {/* <button
             className="btn btn-ghost btn-circle btn-sm mr-2 hidden md:inline-flex"

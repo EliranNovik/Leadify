@@ -157,7 +157,7 @@ const LeadSearchPage: React.FC = () => {
       <h1 className="text-3xl font-bold mb-6">Leads Search</h1>
 
       {/* Search Form */}
-      <div className="card bg-base-200 shadow-lg p-6 mb-8">
+      <div className="card bg-white shadow-lg p-6 mb-8">
         <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
           {/* Column 1 */}
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
