@@ -24,16 +24,27 @@ const LoginPage: React.FC = () => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) setError(error.message);
     else {
-      // Try to fetch the user's full name from the users table
+      // Try to fetch the user's name from the users table or auth metadata
       let name = email;
       if (data?.user?.email) {
         const { data: userData, error: userError } = await supabase
           .from('users')
-          .select('full_name')
+          .select('first_name, last_name, full_name')
           .eq('email', data.user.email)
           .single();
-        if (!userError && userData?.full_name) {
-          name = userData.full_name;
+        
+        if (!userError && userData) {
+          // Use first_name + last_name if available, otherwise fall back to full_name
+          if (userData.first_name && userData.last_name && userData.first_name.trim() && userData.last_name.trim()) {
+            name = `${userData.first_name.trim()} ${userData.last_name.trim()}`;
+          } else if (userData.full_name && userData.full_name.trim()) {
+            name = userData.full_name.trim();
+          }
+        } else {
+          // Fallback to auth user metadata
+          if (data.user.user_metadata?.first_name || data.user.user_metadata?.full_name) {
+            name = data.user.user_metadata.first_name || data.user.user_metadata.full_name;
+          }
         }
       }
       setWelcomeName(name);

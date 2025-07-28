@@ -1,6 +1,7 @@
 import React from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { FaRobot } from 'react-icons/fa';
+import { useAdminRole } from '../hooks/useAdminRole';
 import {
   HomeIcon,
   UserGroupIcon,
@@ -101,6 +102,7 @@ const mobileSidebarItems: SidebarItem[] = [
 const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat }) => {
   const location = useLocation();
   const initials = userInitials || userName.split(' ').map(n => n[0]).join('');
+  const { isAdmin } = useAdminRole();
 
   // Responsive: shrink gap on small desktop heights
   const [isSmallGap, setIsSmallGap] = React.useState(false);
@@ -171,7 +173,8 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
         >
           {/* Navigation Items */}
           <nav className="flex flex-col mt-8 gap-2 flex-1">
-            {desktopSidebarItems.map((item, index) => {
+            {desktopSidebarItems
+              .map((item, index) => {
               const Icon = item.icon;
               const hasSubItems = !!item.subItems;
               const isExpanded = expandedMenu === item.label;
@@ -303,7 +306,8 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             {/* Navigation */}
             <nav className="flex-1 overflow-y-auto py-4">
               <ul className="space-y-2 px-2">
-                {mobileSidebarItems.map((item, index) => {
+                {mobileSidebarItems
+                  .map((item, index) => {
                   const Icon = item.icon;
                   const isActive = item.path && location.pathname === item.path;
                   const hasSubItems = !!item.subItems;

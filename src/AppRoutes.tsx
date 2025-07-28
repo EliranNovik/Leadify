@@ -9,6 +9,7 @@ import ExpertPage from './components/ExpertPage';
 import PipelinePage from './components/PipelinePage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
+import WhatsAppPage from './pages/WhatsAppPage';
 import ProformaViewPage from './pages/ProformaViewPage';
 import ReportsPage from './pages/ReportsPage';
 import PublicContractView from './pages/PublicContractView';
@@ -36,6 +37,7 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
     <Route path="/settings" element={<div>Settings</div>} />
     <Route path="/admin" element={<AdminPage />} />
     <Route path="/teams" element={<TeamsPage />} />
+    <Route path="/whatsapp" element={<WhatsAppPage />} />
     <Route path="/proforma/:id" element={<ProformaViewPage />} />
     <Route path="/reports" element={<ReportsPage />} />
     <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />

@@ -1,0 +1,75 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.14/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.14",
+  "version": "1.0.0",
+  "id": "e03ab8e9-4eb4-4bbc-8c6d-805021e089cd",
+  "packageName": "com.microsoft.teams.teamsmeetingapp",
+  "developer": {
+    "name": "Your Organization",
+    "websiteUrl": "https://yourwebsite.com",
+    "privacyUrl": "https://yourwebsite.com/privacy",
+    "termsOfUseUrl": "https://yourwebsite.com/terms"
+  },
+  "name": {
+    "short": "Teams Meeting App",
+    "full": "Teams Meeting App for Calling"
+  },
+  "description": {
+    "short": "Teams calling application",
+    "full": "Application for Teams calling functionality using Bot Framework"
+  },
+  "icons": {
+    "outline": "https://yourwebsite.com/icon-outline.png",
+    "color": "https://yourwebsite.com/icon-color.png"
+  },
+  "accentColor": "#FFFFFF",
+  "configurableTabs": [],
+  "staticTabs": [],
+  "bots": [
+    {
+      "botId": "e03ab8e9-4eb4-4bbc-8c6d-805021e089cd",
+      "scopes": [
+        "personal",
+        "team",
+        "groupchat"
+      ],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": [
+            "personal",
+            "team",
+            "groupchat"
+          ],
+          "commands": [
+            {
+              "id": "initiateCall",
+              "type": "action",
+              "context": [
+                "compose"
+              ],
+              "description": "Initiate a Teams call",
+              "title": "Call",
+              "fetchTask": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "connectors": [],
+  "composeExtensions": [],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "yourwebsite.com",
+    "localhost:3001"
+  ],
+  "webApplicationInfo": {
+    "id": "e03ab8e9-4eb4-4bbc-8c6d-805021e089cd",
+    "resource": "https://graph.microsoft.com"
+  }
+} 

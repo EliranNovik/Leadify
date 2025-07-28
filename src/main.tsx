@@ -2,7 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './index.css'
 import App from './App'
-import { PublicClientApplication, EventType, EventMessage, AuthenticationResult } from '@azure/msal-browser'
+import { PublicClientApplication, EventType, EventMessage, AuthenticationResult, AuthError } from '@azure/msal-browser'
 import { MsalProvider } from '@azure/msal-react'
 import { msalConfig } from './msalConfig'
 
@@ -26,16 +26,35 @@ msalInstance.initialize().then(() => {
   }
   
   msalInstance.addEventCallback((event: EventMessage) => {
-    if (
-      event.eventType === EventType.LOGIN_SUCCESS && 
-      event.payload && 
-      'account' in event.payload
-    ) {
+    console.log('MSAL Event:', event.eventType, event);
+    
+    if (event.eventType === EventType.LOGIN_SUCCESS && event.payload && 'account' in event.payload) {
       const payload = event.payload as AuthenticationResult;
       if (payload.account) {
-        console.log('Login successful');
+        console.log('Login successful, setting active account:', payload.account);
         msalInstance.setActiveAccount(payload.account);
       }
+    }
+    
+    if (event.eventType === EventType.LOGIN_FAILURE) {
+      console.error('Login failed:', event.error);
+      if (event.error && 'errorCode' in event.error) {
+        const authError = event.error as AuthError;
+        console.error('Error details:', {
+          errorCode: authError.errorCode,
+          errorMessage: authError.errorMessage,
+          subError: authError.subError,
+          correlationId: authError.correlationId
+        });
+      }
+    }
+    
+    if (event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) {
+      console.log('Token acquired successfully');
+    }
+    
+    if (event.eventType === EventType.ACQUIRE_TOKEN_FAILURE) {
+      console.error('Token acquisition failed:', event.error);
     }
   });
 

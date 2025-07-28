@@ -25,6 +25,7 @@ import NewCasesPage from './pages/NewCasesPage';
 import CaseManagerPage from './components/CaseManagerPage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
+import WhatsAppPage from './pages/WhatsAppPage';
 import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
 import ProformaViewPage from './pages/ProformaViewPage';
@@ -41,10 +42,9 @@ import ContactPage from './pages/ContactPage';
 import HowItWorksPage from './pages/HowItWorksPage';
 
 
-const msalInstance = new PublicClientApplication(msalConfig);
-
 const AppContent: React.FC = () => {
-  const { accounts } = useMsal();
+  const { accounts, instance } = useMsal();
+  const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -119,6 +119,8 @@ const AppContent: React.FC = () => {
     prevUser.current = user;
   }, [user]);
 
+  const authUser = user || msalAccount;
+
   if (isLoading) {
     return <div className="flex justify-center items-center min-h-screen"><span className="loading loading-spinner loading-lg text-primary"></span></div>;
   }
@@ -134,7 +136,7 @@ const AppContent: React.FC = () => {
       <Route
         path="/*"
         element={
-          <ProtectedRoute user={user}>
+          <ProtectedRoute user={authUser}>
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
               <Sidebar 
                 userName={userFullName || userName}
@@ -171,6 +173,7 @@ const AppContent: React.FC = () => {
                     <Route path="/case-manager" element={<CaseManagerPage />} />
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />
+                    <Route path="/whatsapp" element={<WhatsAppPage />} />
                     <Route path="/collection" element={<CollectionPage />} />
                     <Route path="/performance" element={<MyPerformancePage />} />
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />
@@ -196,7 +199,7 @@ const AppContent: React.FC = () => {
 
 const App: React.FC = () => {
   return (
-    <MsalProvider instance={msalInstance}>
+    <>
       <Router>
         <AppContent />
       </Router>
@@ -204,7 +207,7 @@ const App: React.FC = () => {
         position="top-center"
         reverseOrder={false}
       />
-    </MsalProvider>
+    </>
   );
 };
 

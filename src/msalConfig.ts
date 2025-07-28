@@ -13,7 +13,7 @@ export const msalConfig = {
     navigateToLoginRequestUrl: true,
   },
   cache: {
-    cacheLocation: "sessionStorage",
+    cacheLocation: "localStorage",
     storeAuthStateInCookie: false,
   },
   system: {
@@ -57,6 +57,33 @@ export const loginRequest = {
     "Mail.Read",
     "Files.Read",
     "OnlineMeetings.ReadWrite",
-    "Mail.ReadWrite"
+    "Mail.ReadWrite",
+    "Chat.Read",
+    "Chat.ReadWrite",
+    "ChatMessage.Read",
+    "ChatMessage.Send"
+  ],
+};
+
+// Fallback scopes for when calling permissions aren't available
+export const basicLoginRequest = {
+  scopes: [
+    "User.Read",
+    "openid",
+    "profile",
+    "email",
+    "offline_access",
+    "Calendars.Read",
+    "Calendars.Read.Shared",
+    "Calendars.ReadWrite",
+    "Calendars.ReadWrite.Shared",
+    "Mail.Read",
+    "Files.Read",
+    "OnlineMeetings.ReadWrite",
+    "Mail.ReadWrite",
+    "Chat.Read",
+    "Chat.ReadWrite",
+    "ChatMessage.Read",
+    "ChatMessage.Send"
   ],
 }; 

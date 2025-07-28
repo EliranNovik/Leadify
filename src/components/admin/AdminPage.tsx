@@ -3,45 +3,56 @@ import { ChevronDownIcon } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UserManagement from './UserManagement';
 import PaymentPlanRowsManager from './PaymentPlanRowsManager';
+import { useAdminRole } from '../../hooks/useAdminRole';
+import { useNavigate } from 'react-router-dom';
 
 const ADMIN_TABS = [
   {
     label: 'Accounting',
     subcategories: ['Currencies', 'Currency rates', 'Money accounts', 'Vats'],
+    requiresAdmin: true,
   },
   {
     label: 'Authentication',
     subcategories: ['Groups', 'Users'],
+    requiresAdmin: true,
   },
   {
     label: 'Finances',
     subcategories: ['Payment plan rows'],
+    requiresAdmin: true,
   },
   {
     label: 'Hooks',
     subcategories: ['Access Logs'],
+    requiresAdmin: true,
   },
   {
     label: 'Leads',
     subcategories: ['Anchors', 'Contacts', 'Leads'],
+    requiresAdmin: true,
   },
   {
     label: 'Marketing',
     subcategories: ['Marketing expenses', 'Marketing suppliers', 'Sales team expenses'],
+    requiresAdmin: true,
   },
   {
     label: 'Misc',
     subcategories: [
       'Bonus formulas', 'Contract templates', 'Countries', 'Email Templates', 'Holidays', 'Languages', 'Lead Stage Reasons', 'Lead Sources', 'Lead Tags', 'Main Categories', 'Public messages', 'sub categories', 'whatsapp template olds'
     ],
+    requiresAdmin: false, // Everyone can access Misc
   },
   {
     label: 'Tenants',
     subcategories: ['Bank accounts', 'Departements', 'Employees', 'Firms', 'Meeting Locations'],
+    requiresAdmin: true,
   },
   {
     label: 'Whatsapp',
     subcategories: ['Whatsapp numbers', 'Whats app templates'],
+    requiresAdmin: true,
   },
 ];
 
@@ -49,6 +60,8 @@ const ADMIN_TABS = [
 type Lead = { id: number; name: string; email: string; phone: string; stage: string; number: string };
 
 const AdminPage: React.FC = () => {
+  const { isAdmin, isLoading, refreshAdminStatus } = useAdminRole();
+  const navigate = useNavigate();
   const [openTab, setOpenTab] = useState<number | null>(null);
   const [selected, setSelected] = useState<{ tab: number | null; sub: number | null }>({ tab: null, sub: null });
   const tabBarRef = useRef<HTMLDivElement>(null);
@@ -131,6 +144,29 @@ const AdminPage: React.FC = () => {
   const [selectedLead, setSelectedLead] = React.useState<Lead | null>(null);
   const filteredLeads = leadSearch.length > 0 ? mockLeads.filter(l => l.name.toLowerCase().includes(leadSearch.toLowerCase()) || l.number.includes(leadSearch)) : [];
 
+  // No redirect - allow all users to access admin panel with limited tabs
+  useEffect(() => {
+    // Silent check - no logging needed
+  }, [isAdmin, isLoading]);
+
+
+
+  // Show loading state
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="loading loading-spinner loading-lg"></div>
+      </div>
+    );
+  }
+
+  // Show access denied only if user is not admin AND not staff AND not superuser
+  // But allow access to admin panel for all users, just with limited tabs
+  if (!isAdmin) {
+    // Don't block access completely, just show limited tabs
+    // Silent check - no logging needed
+  }
+
   return (
     <div className="p-6 w-full">
       <h1 className="text-3xl font-bold mb-8">Admin Panel</h1>
@@ -167,7 +203,12 @@ const AdminPage: React.FC = () => {
             height: 48,
           }}
         >
-          {ADMIN_TABS.map((tab, i) => {
+          {ADMIN_TABS
+            .filter(tab => {
+              const hasAccess = !tab.requiresAdmin || isAdmin;
+              return hasAccess;
+            }) // Only show tabs user has access to
+            .map((tab, i) => {
             const isOpen = openTab === i;
             return (
               <div key={tab.label} className="relative flex-shrink-0">
@@ -208,8 +249,8 @@ const AdminPage: React.FC = () => {
           })}
         </div>
       </div>
-      {/* Feature Boxes Row - only show if no subcategory is selected */}
-      {!(selected.tab !== null && selected.sub !== null) && (
+      {/* Feature Boxes Row - only show if no subcategory is selected and user is admin */}
+      {!(selected.tab !== null && selected.sub !== null) && isAdmin && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8 mb-8">
           {/* Users (Last 30 Days) */}
           <div className="card shadow-xl rounded-2xl hover:shadow-2xl transition-all duration-200 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden">
@@ -350,22 +391,51 @@ const AdminPage: React.FC = () => {
       )}
       {/* Content Area */}
       <div className="bg-base-100 rounded-xl shadow p-8 min-h-[200px] mt-8">
-        {selected.tab !== null && selected.sub !== null ? (
-          ADMIN_TABS[selected.tab].label === 'Misc' &&
-          ADMIN_TABS[selected.tab].subcategories[selected.sub] === 'Contract templates' ? (
-            <div className="w-full"><ContractTemplatesManager /></div>
-          ) : ADMIN_TABS[selected.tab].label === 'Authentication' &&
-          ADMIN_TABS[selected.tab].subcategories[selected.sub] === 'Users' ? (
-            <div className="w-full"><UserManagement /></div>
-          ) : ADMIN_TABS[selected.tab].label === 'Finances' &&
-          ADMIN_TABS[selected.tab].subcategories[selected.sub] === 'Payment plan rows' ? (
-            <div className="w-full"><PaymentPlanRowsManager /></div>
-          ) : (
-            <div className="flex items-center justify-center text-xl font-semibold text-primary">
-              {`${ADMIN_TABS[selected.tab].label} / ${ADMIN_TABS[selected.tab].subcategories[selected.sub]}`}
-              <span className="ml-4 text-base text-base-content/60 font-normal">(Placeholder content)</span>
+        {/* Welcome message for non-admin users */}
+        {!isAdmin && selected.tab === null && selected.sub === null && (
+          <div className="text-center py-8">
+            <div className="mb-4">
+              <svg className="w-16 h-16 mx-auto text-primary mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <h2 className="text-2xl font-bold text-primary mb-2">Welcome to Admin Panel</h2>
+              <p className="text-base-content/70 mb-4">You have limited access to the admin panel.</p>
             </div>
-          )
+          </div>
+        )}
+        
+        {selected.tab !== null && selected.sub !== null ? (
+          // Check if user has access to this tab
+          (() => {
+            const filteredTabs = ADMIN_TABS.filter(tab => !tab.requiresAdmin || isAdmin);
+            const selectedTab = filteredTabs[selected.tab];
+            
+            // If user is not admin and trying to access admin-only content, show access denied
+            if (selectedTab && selectedTab.requiresAdmin && !isAdmin) {
+              return (
+                <div className="flex items-center justify-center text-xl font-semibold text-red-600">
+                  <span className="text-base text-base-content/60 font-normal">Access Denied - Admin privileges required</span>
+                </div>
+              );
+            }
+            
+            // Render content based on selected tab
+            return selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Contract templates' ? (
+              <div className="w-full"><ContractTemplatesManager /></div>
+            ) : selectedTab?.label === 'Authentication' &&
+            selectedTab?.subcategories[selected.sub] === 'Users' ? (
+              <div className="w-full"><UserManagement /></div>
+            ) : selectedTab?.label === 'Finances' &&
+            selectedTab?.subcategories[selected.sub] === 'Payment plan rows' ? (
+              <div className="w-full"><PaymentPlanRowsManager /></div>
+            ) : (
+              <div className="flex items-center justify-center text-xl font-semibold text-primary">
+                {`${selectedTab?.label} / ${selectedTab?.subcategories[selected.sub]}`}
+                <span className="ml-4 text-base text-base-content/60 font-normal">(Placeholder content)</span>
+              </div>
+            );
+          })()
         ) : openTab !== null ? (
           <div className="flex items-center justify-center text-xl font-semibold text-primary">
             <span className="text-base text-base-content/60 font-normal">Select a subcategory</span>

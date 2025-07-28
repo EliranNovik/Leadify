@@ -24,6 +24,7 @@ import {
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaRobot } from 'react-icons/fa';
+import { FaWhatsapp } from 'react-icons/fa';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -114,6 +115,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isSearchAnimationDone, setIsSearchAnimationDone] = useState(false);
   const searchHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
+  const [showSignOutModal, setShowSignOutModal] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   const unreadCount = notifications.filter(n => !n.read).length;
@@ -151,6 +153,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       label: 'Teams',
       path: '/teams',
       icon: UserGroupIcon,
+    },
+    {
+      label: 'WhatsApp',
+      path: '/whatsapp',
+      icon: FaWhatsapp,
     },
   ];
 
@@ -242,21 +249,48 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [instance]);
 
   useEffect(() => {
-    // Fetch the current user's full name from Supabase users table
-    const fetchUserFullName = async () => {
+    // Fetch the current user's name from Supabase users table
+    const fetchUserName = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user && user.email) {
         const { data, error } = await supabase
           .from('users')
-          .select('full_name')
+          .select('first_name, last_name, full_name')
           .eq('email', user.email)
           .single();
-        if (!error && data?.full_name) {
-          setUserFullName(data.full_name);
+        if (!error && data) {
+          // Use first_name + last_name if available, otherwise fall back to full_name
+          if (data.first_name && data.last_name && data.first_name.trim() && data.last_name.trim()) {
+            const fullName = `${data.first_name.trim()} ${data.last_name.trim()}`;
+            setUserFullName(fullName);
+          } else if (data.full_name && data.full_name.trim()) {
+            setUserFullName(data.full_name.trim());
+          } else {
+            // Fallback to email if no name is available
+            setUserFullName(user.email);
+          }
+        } else {
+          // Try to get name from auth user metadata as fallback
+          if (user.user_metadata?.first_name || user.user_metadata?.full_name) {
+            const authName = user.user_metadata.first_name || user.user_metadata.full_name;
+            setUserFullName(authName);
+            
+            // Try to sync user to custom table
+            try {
+              const { data: syncResult, error: syncError } = await supabase.rpc('sync_or_update_auth_user', {
+                user_email: user.email
+              });
+              // Silent sync - no logging
+            } catch (syncErr) {
+              // Silent error handling
+            }
+          } else {
+            setUserFullName(user.email);
+          }
         }
       }
     };
-    fetchUserFullName();
+    fetchUserName();
   }, []);
 
   useEffect(() => {
@@ -329,7 +363,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const handleMicrosoftSignIn = async () => {
     if (!instance || !isMsalInitialized) {
-      console.error('MSAL is not initialized yet');
+      return;
+    }
+
+    // If user is already signed in, show sign out confirmation
+    if (userAccount) {
+      setShowSignOutModal(true);
       return;
     }
 
@@ -340,16 +379,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         await instance.loginRedirect(loginRequest);
       } else {
         const loginResponse = await instance.loginPopup(loginRequest);
-        console.log('Login successful:', loginResponse);
         const account = instance.getAllAccounts()[0];
         setUserAccount(account);
       }
     } catch (error) {
       if (error instanceof Error && error.message.includes('interaction_in_progress')) {
-        console.log('Interaction already in progress, ignoring...');
         return;
       }
-      console.error('MSAL login error:', error);
     } finally {
       setIsMsalLoading(false);
     }
@@ -358,6 +394,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const handleSignOut = async () => {
     await supabase.auth.signOut();
     window.location.reload();
+  };
+
+  const handleMicrosoftSignOut = async () => {
+    if (!instance) return;
+    
+    try {
+      await instance.logoutPopup();
+      setUserAccount(null);
+      setShowSignOutModal(false);
+    } catch (error) {
+      // Silent error handling
+    }
   };
 
   // Add missing dropdown options and fields for advanced filters
@@ -748,23 +796,29 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             <FaRobot className="w-7 h-7 text-primary" />
           </button>
 
-          {/* Microsoft sign in button */}
+          {/* Microsoft sign in/out button */}
           <button 
-            className="btn btn-outline btn-sm gap-2 hidden md:flex" 
+            className={`btn btn-sm gap-2 hidden md:flex ${userAccount ? 'btn-primary' : 'btn-outline'}`} 
             onClick={handleMicrosoftSignIn} 
-            disabled={isMsalLoading || !!userAccount || !isMsalInitialized}
+            disabled={isMsalLoading || !isMsalInitialized}
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
               <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
             </svg>
-            {!userAccount && (isMsalLoading ? 'Signing in...' : 'Sign in')}
+            {userAccount ? (() => {
+              const fullName = userAccount.name || userAccount.username || 'Signed in';
+              // Extract only the English name before the dash
+              const englishName = fullName.split(' - ')[0].split(' – ')[0];
+              return englishName;
+            })() : (isMsalLoading ? 'Signing in...' : 'Sign in')}
           </button>
 
-          {/* Microsoft sign in - mobile only */}
+          {/* Microsoft sign in/out - mobile only */}
           <button 
-            className="btn btn-outline btn-sm btn-square md:hidden" 
+            className={`btn btn-sm btn-square md:hidden ${userAccount ? 'btn-primary' : 'btn-outline'}`} 
             onClick={handleMicrosoftSignIn} 
-            disabled={isMsalLoading || !!userAccount || !isMsalInitialized}
+            disabled={isMsalLoading || !isMsalInitialized}
+            title={userAccount ? 'Sign out' : 'Sign in with Microsoft'}
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
               <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
@@ -819,6 +873,46 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </div>
         </div>
       </div>
+      {/* Sign Out Confirmation Modal */}
+      {showSignOutModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center">
+                <svg className="w-6 h-6 text-white" viewBox="0 0 24 24">
+                  <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-semibold">Sign Out</h3>
+                <p className="text-sm text-gray-600">
+                  Ready to sign out as <span className="font-medium">{(() => {
+                    const fullName = userAccount?.name || userAccount?.username || 'Microsoft User';
+                    // Extract only the English name before the dash
+                    const englishName = fullName.split(' - ')[0].split(' – ')[0];
+                    return englishName;
+                  })()}</span>?
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button 
+                className="btn btn-outline btn-sm"
+                onClick={() => setShowSignOutModal(false)}
+              >
+                No, Cancel
+              </button>
+              <button 
+                className="btn btn-primary btn-sm"
+                onClick={handleMicrosoftSignOut}
+              >
+                Yes, Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Spacer to prevent content from being hidden behind the fixed header */}
       <div className="h-16 w-full" />
       <style>{`

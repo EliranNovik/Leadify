@@ -1,0 +1,100 @@
+-- Function to sync or update a single auth user to custom table (handles auth_id conflicts)
+CREATE OR REPLACE FUNCTION sync_or_update_auth_user_v2(user_email TEXT)
+RETURNS JSON AS $$
+DECLARE
+    auth_user_record RECORD;
+    existing_user_by_email RECORD;
+    existing_user_by_auth_id RECORD;
+BEGIN
+    -- Get auth user
+    SELECT * INTO auth_user_record FROM auth.users WHERE email = user_email;
+    
+    IF auth_user_record IS NULL THEN
+        RETURN json_build_object('success', false, 'message', 'User not found in auth.users');
+    END IF;
+    
+    -- Check if user exists by email
+    SELECT * INTO existing_user_by_email FROM users WHERE email = user_email;
+    
+    -- Check if user exists by auth_id
+    SELECT * INTO existing_user_by_auth_id FROM users WHERE auth_id = auth_user_record.id;
+    
+    IF existing_user_by_email IS NOT NULL THEN
+        -- User exists by email, update their data
+        UPDATE users SET
+            auth_id = auth_user_record.id,
+            full_name = COALESCE(auth_user_record.raw_user_meta_data->>'full_name', split_part(auth_user_record.email, '@', 1)),
+            first_name = auth_user_record.raw_user_meta_data->>'first_name',
+            last_name = auth_user_record.raw_user_meta_data->>'last_name',
+            updated_at = auth_user_record.updated_at
+        WHERE email = user_email;
+        
+        RETURN json_build_object(
+            'success', true,
+            'message', 'User updated successfully by email',
+            'user_id', auth_user_record.id,
+            'email', auth_user_record.email,
+            'action', 'updated_by_email'
+        );
+    ELSIF existing_user_by_auth_id IS NOT NULL THEN
+        -- User exists by auth_id but different email, update email
+        UPDATE users SET
+            email = auth_user_record.email,
+            full_name = COALESCE(auth_user_record.raw_user_meta_data->>'full_name', split_part(auth_user_record.email, '@', 1)),
+            first_name = auth_user_record.raw_user_meta_data->>'first_name',
+            last_name = auth_user_record.raw_user_meta_data->>'last_name',
+            updated_at = auth_user_record.updated_at
+        WHERE auth_id = auth_user_record.id;
+        
+        RETURN json_build_object(
+            'success', true,
+            'message', 'User updated successfully by auth_id',
+            'user_id', auth_user_record.id,
+            'email', auth_user_record.email,
+            'action', 'updated_by_auth_id'
+        );
+    ELSE
+        -- User doesn't exist, insert new user
+        INSERT INTO users (
+            id,
+            auth_id,
+            email,
+            full_name,
+            first_name,
+            last_name,
+            role,
+            is_active,
+            is_staff,
+            is_superuser,
+            created_at,
+            updated_at
+        ) VALUES (
+            gen_random_uuid(),
+            auth_user_record.id,
+            auth_user_record.email,
+            COALESCE(auth_user_record.raw_user_meta_data->>'full_name', split_part(auth_user_record.email, '@', 1)),
+            auth_user_record.raw_user_meta_data->>'first_name',
+            auth_user_record.raw_user_meta_data->>'last_name',
+            'user',
+            true,
+            false,
+            false,
+            auth_user_record.created_at,
+            auth_user_record.updated_at
+        );
+        
+        RETURN json_build_object(
+            'success', true,
+            'message', 'User synced successfully',
+            'user_id', auth_user_record.id,
+            'email', auth_user_record.email,
+            'action', 'created'
+        );
+    END IF;
+EXCEPTION WHEN OTHERS THEN
+    RETURN json_build_object('success', false, 'message', 'Error syncing user: ' || SQLERRM);
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Grant execute permissions
+GRANT EXECUTE ON FUNCTION sync_or_update_auth_user_v2(TEXT) TO authenticated; 
