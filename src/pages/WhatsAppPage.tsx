@@ -275,7 +275,7 @@ const WhatsAppPage: React.FC = () => {
   };
 
   return (
-    <div className={`fixed inset-0 flex bg-gray-100 ${isMobile ? '' : ''}`} style={isMobile ? {} : { top: '64px', left: '96px', right: '0px', bottom: '0px' }}>
+    <div className={`fixed inset-0 flex bg-gray-100 ${isMobile ? '' : ''}`} style={isMobile ? { top: '64px' } : { top: '64px', left: '96px', right: '0px', bottom: '0px' }}>
       {/* Left Panel - Client List */}
       <div className={`${isMobile ? 'w-full' : 'w-1/3'} bg-white border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
         {/* Header - Fixed */}
@@ -403,27 +403,27 @@ const WhatsAppPage: React.FC = () => {
                 </div>
                 <div className="flex-1">
                   <h3 className="font-semibold text-gray-900">{selectedClient.name}</h3>
-                  {(selectedClient.closer || selectedClient.scheduler || selectedClient.next_followup || selectedClient.probability || selectedClient.balance || selectedClient.total_applicants) && (
+                  {(selectedClient.closer || selectedClient.scheduler || selectedClient.next_followup || selectedClient.probability || selectedClient.balance || selectedClient.potential_applicants) && (
                     <div className="mt-1 pt-1 border-t border-gray-200">
-                      <div className="flex items-center gap-3 text-sm text-purple-600">
+                      <div className={`flex items-start gap-2 text-xs text-purple-600 ${isMobile ? 'flex-wrap' : ''}`}>
                         <span className="text-gray-500">{selectedClient.lead_number}</span>
                         {selectedClient.closer && (
-                          <span><span className="text-black">•</span> Closer: {selectedClient.closer}</span>
+                          <span className="whitespace-nowrap"><span className="text-black">•</span> Closer: {selectedClient.closer}</span>
                         )}
                         {selectedClient.scheduler && (
-                          <span><span className="text-black">•</span> Scheduler: {selectedClient.scheduler}</span>
+                          <span className="whitespace-nowrap"><span className="text-black">•</span> Scheduler: {selectedClient.scheduler}</span>
                         )}
-                        {selectedClient.next_followup && (
-                          <span><span className="text-black">•</span> Follow-up: {new Date(selectedClient.next_followup).toLocaleDateString()}</span>
+                        {!isMobile && selectedClient.next_followup && (
+                          <span className="whitespace-nowrap"><span className="text-black">•</span> Follow-up: {new Date(selectedClient.next_followup).toLocaleDateString()}</span>
                         )}
-                        {selectedClient.probability && (
-                          <span><span className="text-black">•</span> Probability: {selectedClient.probability}%</span>
+                        {!isMobile && selectedClient.probability && (
+                          <span className="whitespace-nowrap"><span className="text-black">•</span> Probability: {selectedClient.probability}%</span>
                         )}
-                        {selectedClient.balance && (
-                          <span><span className="text-black">•</span> Balance: ${selectedClient.balance.toLocaleString()}</span>
+                        {!isMobile && selectedClient.balance && (
+                          <span className="whitespace-nowrap"><span className="text-black">•</span> Balance: ${selectedClient.balance.toLocaleString()}</span>
                         )}
-                        {selectedClient.total_applicants && (
-                          <span><span className="text-black">•</span> Applicants: {selectedClient.total_applicants}</span>
+                        {!isMobile && selectedClient.potential_applicants && (
+                          <span className="whitespace-nowrap"><span className="text-black">•</span> Applicants: {selectedClient.potential_applicants}</span>
                         )}
                       </div>
                     </div>

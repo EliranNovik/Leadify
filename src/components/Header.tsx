@@ -115,6 +115,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isSearchAnimationDone, setIsSearchAnimationDone] = useState(false);
   const searchHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
+  const [showMobileQuickActionsDropdown, setShowMobileQuickActionsDropdown] = useState(false);
   const [showSignOutModal, setShowSignOutModal] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
@@ -187,6 +188,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (quickActionsDropdown && !quickActionsDropdown.contains(event.target as Node) && 
           dropdownMenu && !dropdownMenu.contains(event.target as Node)) {
         setShowQuickActionsDropdown(false);
+        setShowMobileQuickActionsDropdown(false);
       }
     };
 
@@ -433,14 +435,46 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </button>
           
-          {/* Calendar icon - Mobile only, positioned near hamburger */}
-          <Link
-            to="/calendar"
-            className={`md:hidden flex items-center justify-center p-2 rounded-lg font-medium transition-colors duration-200 ${location.pathname === '/calendar' ? 'bg-primary text-white shadow' : 'hover:bg-base-200 text-base-content/80'}`}
-            title="Calendar"
-          >
-            <CalendarIcon className={`w-6 h-6 ${location.pathname === '/calendar' ? 'text-white' : ''}`} style={location.pathname !== '/calendar' ? { color: '#3b28c7' } : {}} />
-          </Link>
+          {/* Quick Actions Dropdown - Mobile only */}
+          <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
+            <button
+              onClick={() => setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown)}
+              className="flex items-center gap-1 px-3 py-2 rounded-lg font-medium transition-all duration-300 shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+            >
+              <BoltIcon className="w-4 h-4 text-white" />
+              <ChevronDownIcon className={`w-3 h-3 text-white transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
+            </button>
+            
+            {/* Dropdown Menu */}
+            {showMobileQuickActionsDropdown && createPortal(
+              <div 
+                className="fixed w-40 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
+                data-dropdown-menu
+                style={{
+                  top: '64px',
+                  left: '8px',
+                  right: '8px'
+                }}
+              >
+                {navTabs.map(tab => {
+                  const isActive = location.pathname === tab.path;
+                  const Icon = tab.icon;
+                  return (
+                    <Link
+                      key={tab.path}
+                      to={tab.path}
+                      onClick={() => setShowMobileQuickActionsDropdown(false)}
+                      className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
+                    >
+                      <Icon className="w-5 h-5 text-gray-500" />
+                      <span className="text-sm font-medium">{tab.label}</span>
+                    </Link>
+                  );
+                })}
+              </div>,
+              document.body
+            )}
+          </div>
           
           <div className="h-16 flex items-center">
             <Link to="/" className="hidden md:block">

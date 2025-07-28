@@ -627,39 +627,125 @@ const CollectionPage: React.FC = () => {
           </div>
         </div>
       )}
-      <div className="flex gap-4 mb-10 mt-2">
-        <button
-          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
-            ${tab === 'no_payment' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
-          onClick={() => setTab('no_payment')}
-          aria-current={tab === 'no_payment' ? 'page' : undefined}
-        >
-          No Payment Plan
-        </button>
-        <button
-          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
-            ${tab === 'awaiting' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
-          onClick={() => setTab('awaiting')}
-          aria-current={tab === 'awaiting' ? 'page' : undefined}
-        >
-          Awaiting Payment
-        </button>
-        <button
-          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
-            ${tab === 'paid' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
-          onClick={() => setTab('paid')}
-          aria-current={tab === 'paid' ? 'page' : undefined}
-        >
-          Paid Meetings
-        </button>
-        <button
-          className={`px-7 py-3 rounded-full text-lg font-bold transition-all duration-200 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/40
-            ${tab === 'paid_cases' ? 'bg-primary text-white' : 'bg-white text-primary hover:bg-primary/10 hover:text-primary'}`}
-          onClick={() => setTab('paid_cases')}
-          aria-current={tab === 'paid_cases' ? 'page' : undefined}
-        >
-          Paid Cases
-        </button>
+      <div className="bg-white dark:bg-gray-800">
+        <div className="w-full">
+          {/* Desktop version */}
+          <div className="hidden md:flex items-center px-4 py-4">
+            <div className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-hidden w-full">
+              <button
+                className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
+                  tab === 'no_payment'
+                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                }`}
+                onClick={() => setTab('no_payment')}
+              >
+                <span className={`whitespace-nowrap saira-light font-bold ${tab === 'no_payment' ? 'text-white' : 'text-gray-600'}`}>No Payment Plan</span>
+                {tab === 'no_payment' && (
+                  <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                )}
+              </button>
+              <button
+                className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
+                  tab === 'awaiting'
+                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                }`}
+                onClick={() => setTab('awaiting')}
+              >
+                <span className={`whitespace-nowrap saira-light font-bold ${tab === 'awaiting' ? 'text-white' : 'text-gray-600'}`}>Awaiting Payment</span>
+                {tab === 'awaiting' && (
+                  <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                )}
+              </button>
+              <button
+                className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
+                  tab === 'paid'
+                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                }`}
+                onClick={() => setTab('paid')}
+              >
+                <span className={`whitespace-nowrap saira-light font-bold ${tab === 'paid' ? 'text-white' : 'text-gray-600'}`}>Paid Meetings</span>
+                {tab === 'paid' && (
+                  <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                )}
+              </button>
+              <button
+                className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
+                  tab === 'paid_cases'
+                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                }`}
+                onClick={() => setTab('paid_cases')}
+              >
+                <span className={`whitespace-nowrap saira-light font-bold ${tab === 'paid_cases' ? 'text-white' : 'text-gray-600'}`}>Paid Cases</span>
+                {tab === 'paid_cases' && (
+                  <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                )}
+              </button>
+            </div>
+          </div>
+          {/* Mobile version: modern card-based design */}
+          <div className="md:hidden px-6 py-4">
+            <div className="overflow-x-auto scrollbar-hide bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 dark:border-gray-700 p-3 w-full" style={{ WebkitOverflowScrolling: 'touch' }}>
+              <div className="flex gap-2 pb-1">
+                <button
+                  className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
+                    tab === 'no_payment'
+                      ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                  }`}
+                  onClick={() => setTab('no_payment')}
+                >
+                  <span className={`text-xs font-semibold truncate max-w-[70px] ${tab === 'no_payment' ? 'text-white' : 'text-gray-600'}`}>No Payment</span>
+                  {tab === 'no_payment' && (
+                    <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
+                  )}
+                </button>
+                <button
+                  className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
+                    tab === 'awaiting'
+                      ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                  }`}
+                  onClick={() => setTab('awaiting')}
+                >
+                  <span className={`text-xs font-semibold truncate max-w-[70px] ${tab === 'awaiting' ? 'text-white' : 'text-gray-600'}`}>Awaiting</span>
+                  {tab === 'awaiting' && (
+                    <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
+                  )}
+                </button>
+                <button
+                  className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
+                    tab === 'paid'
+                      ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                  }`}
+                  onClick={() => setTab('paid')}
+                >
+                  <span className={`text-xs font-semibold truncate max-w-[70px] ${tab === 'paid' ? 'text-white' : 'text-gray-600'}`}>Paid Meetings</span>
+                  {tab === 'paid' && (
+                    <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
+                  )}
+                </button>
+                <button
+                  className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
+                    tab === 'paid_cases'
+                      ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                  }`}
+                  onClick={() => setTab('paid_cases')}
+                >
+                  <span className={`text-xs font-semibold truncate max-w-[70px] ${tab === 'paid_cases' ? 'text-white' : 'text-gray-600'}`}>Paid Cases</span>
+                  {tab === 'paid_cases' && (
+                    <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
       {/* View Mode Toggle */}
       <div className="flex justify-end mb-4">
@@ -678,53 +764,88 @@ const CollectionPage: React.FC = () => {
       </div>
       {tab === 'no_payment' && (
         <>
-          <div className="flex flex-wrap gap-4 mb-4 items-center">
-            <label className="font-semibold">Date Signed From:</label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={noPaymentDateFrom}
-              onChange={e => setNoPaymentDateFrom(e.target.value)}
-            />
-            <label className="font-semibold ml-2">To:</label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={noPaymentDateTo}
-              onChange={e => setNoPaymentDateTo(e.target.value)}
-            />
-            <label className="font-semibold ml-4">Label:</label>
-            <select
-              className="select select-bordered"
-              value={noPaymentLabel}
-              onChange={e => setNoPaymentLabel(e.target.value)}
-            >
-              <option value="all">All</option>
-              {COLLECTION_LABEL_OPTIONS.map(opt => (
-                <option key={opt.value} value={opt.value}>{opt.value}</option>
-              ))}
-            </select>
-            <label className="font-semibold ml-4">Comments:</label>
-            <select
-              className="select select-bordered"
-              value={noPaymentComments}
-              onChange={e => setNoPaymentComments(e.target.value)}
-            >
-              <option value="all">All</option>
-              <option value="with">With Comments</option>
-              <option value="without">Without Comments</option>
-            </select>
-            <input
-              type="text"
-              className="input input-bordered ml-4"
-              placeholder="Search by lead #, client, contact..."
-              value={noPaymentSearch}
-              onChange={e => setNoPaymentSearch(e.target.value)}
-              style={{ minWidth: 220 }}
-            />
-            {noPaymentDateFrom || noPaymentDateTo || noPaymentLabel !== 'all' || noPaymentComments !== 'all' || noPaymentSearch ? (
-              <button className="btn btn-sm btn-outline ml-2" onClick={() => { setNoPaymentDateFrom(''); setNoPaymentDateTo(''); setNoPaymentLabel('all'); setNoPaymentComments('all'); setNoPaymentSearch(''); }}>Clear Filters</button>
-            ) : null}
+          <div className="space-y-4 mb-6">
+            {/* Date Range */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Date Signed:</label>
+              <div className="flex flex-col sm:flex-row gap-2 w-full">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+                  <span className="text-xs text-gray-500 sm:hidden">From:</span>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={noPaymentDateFrom}
+                    onChange={e => setNoPaymentDateFrom(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+                  <span className="text-xs text-gray-500 sm:hidden">To:</span>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={noPaymentDateTo}
+                    onChange={e => setNoPaymentDateTo(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+            
+            {/* Filters Row */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+                <label className="font-semibold text-sm whitespace-nowrap">Label:</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={noPaymentLabel}
+                  onChange={e => setNoPaymentLabel(e.target.value)}
+                >
+                  <option value="all">All</option>
+                  {COLLECTION_LABEL_OPTIONS.map(opt => (
+                    <option key={opt.value} value={opt.value}>{opt.value}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+                <label className="font-semibold text-sm whitespace-nowrap">Comments:</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={noPaymentComments}
+                  onChange={e => setNoPaymentComments(e.target.value)}
+                >
+                  <option value="all">All</option>
+                  <option value="with">With Comments</option>
+                  <option value="without">Without Comments</option>
+                </select>
+              </div>
+            </div>
+            
+            {/* Search Bar */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
+              <input
+                type="text"
+                className="input input-bordered w-full"
+                placeholder="Search by lead #, client, contact, proforma..."
+                value={noPaymentSearch}
+                onChange={e => setNoPaymentSearch(e.target.value)}
+              />
+            </div>
+            
+            {/* Clear Filters Button */}
+            <div className="flex justify-start">
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  setNoPaymentDateFrom('');
+                  setNoPaymentDateTo('');
+                  setNoPaymentLabel('all');
+                  setNoPaymentComments('all');
+                  setNoPaymentSearch('');
+                }}
+              >
+                Clear Filters
+              </button>
+            </div>
           </div>
           {loading ? (
             <div className="flex justify-center items-center h-40">
@@ -840,43 +961,73 @@ const CollectionPage: React.FC = () => {
       {/* Awaiting Payment Tab */}
       {tab === 'awaiting' && (
         <>
-          <div className="flex flex-wrap gap-4 mb-4 items-center">
-            <label className="font-semibold">Status:</label>
-            <select
-              className="select select-bordered"
-              value={awaitingStatusFilter}
-              onChange={e => setAwaitingStatusFilter(e.target.value as any)}
-            >
-              <option value="all">All</option>
-              <option value="due">Due</option>
-              <option value="due_soon">Due Soon</option>
-              <option value="overdue">Overdue</option>
-            </select>
-            <label className="font-semibold ml-4">Due Date From:</label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={awaitingDateFrom}
-              onChange={e => setAwaitingDateFrom(e.target.value)}
-            />
-            <label className="font-semibold ml-2">To:</label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={awaitingDateTo}
-              onChange={e => setAwaitingDateTo(e.target.value)}
-            />
-            <input
-              type="text"
-              className="input input-bordered ml-4"
-              placeholder="Search by lead #, client, contact, proforma..."
-              value={awaitingSearch}
-              onChange={e => setAwaitingSearch(e.target.value)}
-              style={{ minWidth: 220 }}
-            />
-            {awaitingStatusFilter !== 'all' || awaitingDateFrom || awaitingDateTo || awaitingSearch ? (
-              <button className="btn btn-sm btn-outline ml-2" onClick={() => { setAwaitingStatusFilter('all'); setAwaitingDateFrom(''); setAwaitingDateTo(''); setAwaitingSearch(''); }}>Clear Filters</button>
-            ) : null}
+          <div className="space-y-4 mb-6">
+            {/* Status Filter */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Status:</label>
+              <select
+                className="select select-bordered w-full md:w-auto"
+                value={awaitingStatusFilter}
+                onChange={e => setAwaitingStatusFilter(e.target.value as any)}
+              >
+                <option value="all">All</option>
+                <option value="due">Due</option>
+                <option value="due_soon">Due Soon</option>
+                <option value="overdue">Overdue</option>
+              </select>
+            </div>
+            
+            {/* Date Range */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Due Date:</label>
+              <div className="flex flex-col sm:flex-row gap-2 w-full">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+                  <span className="text-xs text-gray-500 sm:hidden">From:</span>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={awaitingDateFrom}
+                    onChange={e => setAwaitingDateFrom(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+                  <span className="text-xs text-gray-500 sm:hidden">To:</span>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={awaitingDateTo}
+                    onChange={e => setAwaitingDateTo(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+            
+            {/* Search Bar */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
+              <input
+                type="text"
+                className="input input-bordered w-full"
+                placeholder="Search by lead #, client, contact, proforma..."
+                value={awaitingSearch}
+                onChange={e => setAwaitingSearch(e.target.value)}
+              />
+            </div>
+            
+            {/* Clear Filters Button */}
+            <div className="flex justify-start">
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  setAwaitingStatusFilter('all');
+                  setAwaitingDateFrom('');
+                  setAwaitingDateTo('');
+                  setAwaitingSearch('');
+                }}
+              >
+                Clear Filters
+              </button>
+            </div>
           </div>
           {loading ? (
             <div className="text-center text-gray-500 mt-12">Loading...</div>
@@ -1102,44 +1253,74 @@ const CollectionPage: React.FC = () => {
       )}
       {tab === 'paid_cases' && (
         <>
-          <div className="flex flex-wrap gap-4 mb-4 items-center">
-            <label className="font-semibold">Order:</label>
-            <select
-              className="select select-bordered"
-              value={paidCasesOrderFilter}
-              onChange={e => setPaidCasesOrderFilter(e.target.value)}
-            >
-              <option value="all">All</option>
-              <option value="first payment">First Payment</option>
-              <option value="second payment">Second Payment</option>
-              <option value="one payment">One Payment</option>
-              <option value="final payment">Final Payment</option>
-            </select>
-            <label className="font-semibold ml-4">Date Paid From:</label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={paidCasesDateFrom}
-              onChange={e => setPaidCasesDateFrom(e.target.value)}
-            />
-            <label className="font-semibold ml-2">To:</label>
-            <input
-              type="date"
-              className="input input-bordered"
-              value={paidCasesDateTo}
-              onChange={e => setPaidCasesDateTo(e.target.value)}
-            />
-            <input
-              type="text"
-              className="input input-bordered ml-4"
-              placeholder="Search by client, lead #, contact, invoice..."
-              value={paidCasesSearch}
-              onChange={e => setPaidCasesSearch(e.target.value)}
-              style={{ minWidth: 220 }}
-            />
-            {paidCasesOrderFilter !== 'all' || paidCasesDateFrom || paidCasesDateTo || paidCasesSearch ? (
-              <button className="btn btn-sm btn-outline ml-2" onClick={() => { setPaidCasesOrderFilter('all'); setPaidCasesDateFrom(''); setPaidCasesDateTo(''); setPaidCasesSearch(''); }}>Clear Filters</button>
-            ) : null}
+          <div className="space-y-4 mb-6">
+            {/* Order Filter */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Order:</label>
+              <select
+                className="select select-bordered w-full md:w-auto"
+                value={paidCasesOrderFilter}
+                onChange={e => setPaidCasesOrderFilter(e.target.value)}
+              >
+                <option value="all">All</option>
+                <option value="first payment">First Payment</option>
+                <option value="second payment">Second Payment</option>
+                <option value="one payment">One Payment</option>
+                <option value="final payment">Final Payment</option>
+              </select>
+            </div>
+            
+            {/* Date Range */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Date Paid:</label>
+              <div className="flex flex-col sm:flex-row gap-2 w-full">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+                  <span className="text-xs text-gray-500 sm:hidden">From:</span>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={paidCasesDateFrom}
+                    onChange={e => setPaidCasesDateFrom(e.target.value)}
+                  />
+                </div>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+                  <span className="text-xs text-gray-500 sm:hidden">To:</span>
+                  <input
+                    type="date"
+                    className="input input-bordered input-sm w-full"
+                    value={paidCasesDateTo}
+                    onChange={e => setPaidCasesDateTo(e.target.value)}
+                  />
+                </div>
+              </div>
+            </div>
+            
+            {/* Search Bar */}
+            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+              <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
+              <input
+                type="text"
+                className="input input-bordered w-full"
+                placeholder="Search by lead #, client, contact, proforma..."
+                value={paidCasesSearch}
+                onChange={e => setPaidCasesSearch(e.target.value)}
+              />
+            </div>
+            
+            {/* Clear Filters Button */}
+            <div className="flex justify-start">
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => {
+                  setPaidCasesOrderFilter('all');
+                  setPaidCasesDateFrom('');
+                  setPaidCasesDateTo('');
+                  setPaidCasesSearch('');
+                }}
+              >
+                Clear Filters
+              </button>
+            </div>
           </div>
           {loading ? (
             <div className="text-center text-gray-500 mt-12">Loading...</div>
