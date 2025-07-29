@@ -169,37 +169,56 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     
     if (onPaymentMarkedPaid) onPaymentMarkedPaid(id);
     
-    let paidBy = 'Unknown';
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user && user.email) {
-        const { data: userData, error } = await supabase
-          .from('users')
-          .select('full_name')
-          .eq('email', user.email)
-          .single();
-        if (!error && userData?.full_name) {
-          paidBy = userData.full_name;
-        } else {
-          paidBy = user.email;
-        }
-      }
-    } catch {}
-    
-    // Update DB
-    const { error } = await supabase
-      .from('payment_plans')
-      .update({
-        paid: true,
-        paid_at: new Date().toISOString(),
-        paid_by: paidBy,
-      })
-      .eq('id', id);
+      const currentUserName = await getCurrentUserName();
       
-    if (!error) {
-      toast.success('Payment marked as paid!');
-    } else {
-      // Revert the UI state if database update fails
+      // Log the payment marked as paid
+      const { error: historyError } = await supabase
+        .from('finance_changes_history')
+        .insert({
+          lead_id: client?.id,
+          change_type: 'payment_marked_paid',
+          table_name: 'payment_plans',
+          record_id: id,
+          old_values: { paid: false },
+          new_values: { paid: true, paid_at: new Date().toISOString(), paid_by: currentUserName },
+          changed_by: currentUserName,
+          notes: `Payment marked as paid by ${currentUserName}`
+        });
+      
+      if (historyError) console.error('Error logging payment marked as paid:', historyError);
+      
+      // Update DB
+      const { error } = await supabase
+        .from('payment_plans')
+        .update({
+          paid: true,
+          paid_at: new Date().toISOString(),
+          paid_by: currentUserName,
+        })
+        .eq('id', id);
+        
+      if (!error) {
+        toast.success('Payment marked as paid!');
+      } else {
+        // Revert the UI state if database update fails
+        setPaidMap(prev => ({ ...prev, [id]: false }));
+        setFinancePlan(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            payments: prev.payments.map(payment => 
+              payment.id === id 
+                ? { ...payment, paid: false, paid_at: undefined }
+                : payment
+            )
+          };
+        });
+        toast.error('Failed to mark as paid.');
+      }
+    } catch (error) {
+      console.error('Error marking payment as paid:', error);
+      // Revert the UI state if there's an error
       setPaidMap(prev => ({ ...prev, [id]: false }));
       setFinancePlan(prev => {
         if (!prev) return prev;
@@ -483,19 +502,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   const handleEditPayment = (row: PaymentPlan) => {
-    // Find the contract for this contact
-    const contract = contracts.find(c => getContactName(c.contact_id, c) === row.client);
-    const totalAmount = contract ? Number(contract.total_amount) || 0 : 0;
-    let vatRate = 0;
-    if (contract) {
-      vatRate = contract.client_country === 'IL' ? 0.17 : 0.0;
-    } else if (client && client.client_country === 'IL') {
-      vatRate = 0.17;
-    }
-    const newValue = Math.round((Number(row.duePercent) / 100) * totalAmount * 100) / 100;
-    const newVat = Math.round(newValue * vatRate * 100) / 100;
     setEditingPaymentId(row.id);
-    setEditPaymentData({ ...row, value: newValue, valueVat: newVat });
+    // Preserve the original values instead of recalculating
+    setEditPaymentData({ ...row });
   };
 
   const handleCancelEditPayment = () => {
@@ -506,6 +515,128 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const handleSaveEditPayment = async () => {
     setIsSavingPaymentRow(true);
     try {
+      const currentUserName = await getCurrentUserName();
+      
+      // Get the original payment data to compare changes
+      const { data: originalPayment } = await supabase
+        .from('payment_plans')
+        .select('*')
+        .eq('id', editPaymentData.id)
+        .single();
+      
+      if (!originalPayment) {
+        throw new Error('Original payment not found');
+      }
+      
+      console.log('Original payment:', originalPayment);
+      console.log('Edit payment data:', editPaymentData);
+      
+      // Track changes for each field
+      const changes = [];
+      
+      // Convert both original and edit values to numbers for proper comparison
+      const originalDuePercent = Number(originalPayment.due_percent);
+      const editDuePercent = Number(editPaymentData.duePercent);
+      const originalValue = Number(originalPayment.value);
+      const editValue = Number(editPaymentData.value);
+      const originalValueVat = Number(originalPayment.value_vat);
+      const editValueVat = Number(editPaymentData.valueVat);
+      
+      console.log('Comparing due_percent:', originalDuePercent, 'vs', editDuePercent, 'types:', typeof originalDuePercent, typeof editDuePercent);
+      if (originalDuePercent !== editDuePercent) {
+        console.log('due_percent changed:', originalDuePercent, '->', editDuePercent);
+        changes.push({
+          payment_plan_id: editPaymentData.id,
+          field_name: 'due_percent',
+          old_value: originalPayment.due_percent?.toString() || '',
+          new_value: editPaymentData.duePercent?.toString() || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+      
+      console.log('Comparing due_date:', originalPayment.due_date, 'vs', editPaymentData.dueDate);
+      if (originalPayment.due_date !== editPaymentData.dueDate) {
+        console.log('due_date changed:', originalPayment.due_date, '->', editPaymentData.dueDate);
+        changes.push({
+          payment_plan_id: editPaymentData.id,
+          field_name: 'due_date',
+          old_value: originalPayment.due_date || '',
+          new_value: editPaymentData.dueDate || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+      
+      console.log('Comparing value:', originalValue, 'vs', editValue, 'types:', typeof originalValue, typeof editValue);
+      if (originalValue !== editValue) {
+        console.log('value changed:', originalValue, '->', editValue);
+        changes.push({
+          payment_plan_id: editPaymentData.id,
+          field_name: 'value',
+          old_value: originalPayment.value?.toString() || '',
+          new_value: editPaymentData.value?.toString() || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+      
+      console.log('Comparing value_vat:', originalValueVat, 'vs', editValueVat, 'types:', typeof originalValueVat, typeof editValueVat);
+      if (originalValueVat !== editValueVat) {
+        console.log('value_vat changed:', originalValueVat, '->', editValueVat);
+        changes.push({
+          payment_plan_id: editPaymentData.id,
+          field_name: 'value_vat',
+          old_value: originalPayment.value_vat?.toString() || '',
+          new_value: editPaymentData.valueVat?.toString() || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+      
+      console.log('Comparing client_name:', originalPayment.client_name, 'vs', editPaymentData.client);
+      if (originalPayment.client_name !== editPaymentData.client) {
+        console.log('client_name changed:', originalPayment.client_name, '->', editPaymentData.client);
+        changes.push({
+          payment_plan_id: editPaymentData.id,
+          field_name: 'client_name',
+          old_value: originalPayment.client_name || '',
+          new_value: editPaymentData.client || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+      
+      console.log('Comparing payment_order:', originalPayment.payment_order, 'vs', editPaymentData.order);
+      if (originalPayment.payment_order !== editPaymentData.order) {
+        console.log('payment_order changed:', originalPayment.payment_order, '->', editPaymentData.order);
+        changes.push({
+          payment_plan_id: editPaymentData.id,
+          field_name: 'payment_order',
+          old_value: originalPayment.payment_order || '',
+          new_value: editPaymentData.order || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+      
+      console.log('Comparing notes:', originalPayment.notes, 'vs', editPaymentData.notes);
+      if (originalPayment.notes !== editPaymentData.notes) {
+        console.log('notes changed:', originalPayment.notes, '->', editPaymentData.notes);
+        changes.push({
+          payment_plan_id: editPaymentData.id,
+          field_name: 'notes',
+          old_value: originalPayment.notes || '',
+          new_value: editPaymentData.notes || '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      }
+      
+      console.log('Total changes detected:', changes.length);
+      console.log('Changes to insert:', changes);
+      
+      // Update the payment plan
       const { error } = await supabase
         .from('payment_plans')
         .update({
@@ -519,11 +650,34 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         })
         .eq('id', editPaymentData.id);
       if (error) throw error;
+      
+      // Insert all changes into payment_plan_changes table
+      if (changes.length > 0) {
+        // Add lead_id to each change record
+        const changesWithLeadId = changes.map(change => ({
+          ...change,
+          lead_id: client?.id
+        }));
+        
+        const { error: changesError } = await supabase
+          .from('payment_plan_changes')
+          .insert(changesWithLeadId);
+        
+        if (changesError) {
+          console.error('Error logging changes:', changesError);
+        } else {
+          console.log(`Logged ${changes.length} field changes`);
+        }
+      }
+      
+      console.log('Payment updated successfully with user:', currentUserName);
+      
       toast.success('Payment row updated!');
       setEditingPaymentId(null);
       setEditPaymentData({});
       await refreshPaymentPlans();
     } catch (error) {
+      console.error('Error updating payment:', error);
       toast.error('Failed to update payment row.');
     } finally {
       setIsSavingPaymentRow(false);
@@ -533,14 +687,50 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const handleDeletePayment = async (row: PaymentPlan) => {
     if (!window.confirm('Are you sure you want to delete this payment row?')) return;
     try {
+      const currentUserName = await getCurrentUserName();
+      
+      // Log the deletion in payment_plan_changes table
+      const { error: historyError } = await supabase
+        .from('payment_plan_changes')
+        .insert({
+          payment_plan_id: null, // Set to null since we're deleting it
+          lead_id: client?.id, // Use lead_id to link to the client
+          field_name: 'payment_deleted',
+          old_value: JSON.stringify({
+            id: row.id,
+            due_percent: row.duePercent,
+            due_date: row.dueDate,
+            value: row.value,
+            value_vat: row.valueVat,
+            client_name: row.client,
+            payment_order: row.order,
+            notes: row.notes
+          }),
+          new_value: '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      
+      if (historyError) {
+        console.error('Error logging deletion:', historyError);
+        toast.error('Failed to log deletion history.');
+        return;
+      }
+      
+      console.log('Deletion logged successfully');
+      
+      // Delete the payment plan
       const { error } = await supabase
         .from('payment_plans')
         .delete()
         .eq('id', row.id);
       if (error) throw error;
+      
+      console.log('Payment plan deleted successfully');
       toast.success('Payment row deleted!');
       await refreshPaymentPlans();
     } catch (error) {
+      console.error('Error deleting payment:', error);
       toast.error('Failed to delete payment row.');
     }
   };
@@ -732,6 +922,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     setIsSavingPaymentRow(true);
     try {
+      const currentUserName = await getCurrentUserName();
+      
       const paymentData = {
         lead_id: client?.id,
         due_percent: Number(100),
@@ -742,7 +934,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         client_name: newPaymentData.client,
         payment_order: 'One-time Payment',
         notes: newPaymentData.notes || '',
-        currency: newPaymentData.currency || '₪'
+        currency: newPaymentData.currency || '₪',
+        created_by: currentUserName,
       };
       
       console.log('Creating one-time payment with data:', paymentData);
@@ -755,6 +948,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       console.log('Insert result:', { data, error });
 
       if (error) throw error;
+
+      console.log('Payment created successfully with user:', currentUserName);
 
       toast.success('Payment plan created successfully');
       handleCancelNewPayment();
@@ -776,6 +971,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     setIsSavingPaymentRow(true);
     try {
+      const currentUserName = await getCurrentUserName();
       const totalAmount = Number(autoPlanData.totalAmount);
       const firstPaymentAmount = (totalAmount * autoPlanData.firstPaymentPercent) / 100;
       const remainingAmount = totalAmount - firstPaymentAmount;
@@ -794,7 +990,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         client_name: client?.name || 'Main Contact',
         payment_order: 'First Payment',
         notes: '',
-        currency: autoPlanData.currency
+        currency: autoPlanData.currency,
+        created_by: currentUserName,
       });
 
       // Create remaining payments
@@ -809,15 +1006,50 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           client_name: client?.name || 'Main Contact',
           payment_order: i === 1 ? 'Second Payment' : i === 2 ? 'Third Payment' : `${i + 1}th Payment`,
           notes: '',
-          currency: autoPlanData.currency
+          currency: autoPlanData.currency,
+          created_by: currentUserName,
         });
       }
 
-      const { error } = await supabase
-        .from('payment_plans')
-        .insert(payments);
+      // Log the auto plan creation in payment_plan_changes table
+      const changesToInsert = payments.map(payment => ({
+        lead_id: client?.id,
+        payment_plan_id: null, // Will be set after insertion
+        field_name: 'auto_plan_created',
+        old_value: null,
+        new_value: JSON.stringify({
+          payment_order: payment.payment_order,
+          value: payment.value,
+          due_date: payment.due_date,
+          client_name: payment.client_name,
+          total_amount: totalAmount,
+          currency: autoPlanData.currency
+        }),
+        changed_by: currentUserName,
+        changed_at: new Date().toISOString()
+      }));
 
-      if (error) throw error;
+      // Insert the payment plans first
+      const { data: insertedPayments, error: paymentInsertError } = await supabase
+        .from('payment_plans')
+        .insert(payments)
+        .select('id');
+
+      if (paymentInsertError) throw paymentInsertError;
+
+      // Now update the payment_plan_id in the changes records
+      if (insertedPayments && insertedPayments.length > 0) {
+        const updatedChanges = changesToInsert.map((change, index) => ({
+          ...change,
+          payment_plan_id: insertedPayments[index]?.id || null
+        }));
+
+        const { error: historyError } = await supabase
+          .from('payment_plan_changes')
+          .insert(updatedChanges);
+        
+        if (historyError) console.error('Error logging auto plan creation:', historyError);
+      }
 
       toast.success('Auto finance plan created successfully');
       setShowStagesDrawer(false);
@@ -887,6 +1119,60 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       setOpenHistoryContact(contactName);
     } catch (error) {
       toast.error('Failed to fetch payment history');
+    }
+  };
+
+  // Helper function to get current user's full name from Supabase users table
+  const getCurrentUserName = async (): Promise<string> => {
+    try {
+      // Get current user from Supabase auth
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user?.email) {
+        console.log('No authenticated user found');
+        return 'System User';
+      }
+      
+      console.log('Current user email:', user.email);
+      
+      // Get user from users table
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('full_name, first_name, last_name, email')
+        .eq('email', user.email)
+        .single();
+      
+      if (error) {
+        console.log('Error fetching user from users table:', error);
+        return user.email;
+      }
+      
+      if (userData) {
+        console.log('User data from DB:', userData);
+        if (userData.full_name) {
+          console.log('Using full_name:', userData.full_name);
+          return userData.full_name;
+        } else if (userData.first_name && userData.last_name) {
+          const name = `${userData.first_name} ${userData.last_name}`;
+          console.log('Using first_name + last_name:', name);
+          return name;
+        } else if (userData.first_name) {
+          console.log('Using first_name:', userData.first_name);
+          return userData.first_name;
+        } else if (userData.last_name) {
+          console.log('Using last_name:', userData.last_name);
+          return userData.last_name;
+        } else {
+          console.log('Using email as fallback:', userData.email);
+          return userData.email;
+        }
+      }
+      
+      console.log('No user data found, using email:', user.email);
+      return user.email;
+    } catch (error) {
+      console.error('Error getting current user name:', error);
+      return 'System User';
     }
   };
 
@@ -1314,17 +1600,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       value={editPaymentData.duePercent}
       onChange={e => {
         const newDuePercent = Number(e.target.value);
-        const contract = contracts.find(c => getContactName(c.contact_id, c) === p.client);
-        const totalAmount = contract ? Number(contract.total_amount) || 0 : 0;
-        let vatRate = 0;
-        if (contract) {
-          vatRate = contract.client_country === 'IL' ? 0.17 : 0.0;
-        } else if (client && client.client_country === 'IL') {
-          vatRate = 0.17;
-        }
-        const newValue = Math.round((newDuePercent / 100) * totalAmount * 100) / 100;
-        const newVat = Math.round(newValue * vatRate * 100) / 100;
-        setEditPaymentData((d: any) => ({ ...d, duePercent: newDuePercent, value: newValue, valueVat: newVat }));
+        setEditPaymentData((d: any) => ({ ...d, duePercent: newDuePercent }));
       }}
     />
   ) : (

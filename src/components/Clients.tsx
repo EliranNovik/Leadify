@@ -158,18 +158,56 @@ async function fetchOutlookSignature(accessToken: string): Promise<string | null
 
 // Helper to get current user's full name from Supabase
 async function fetchCurrentUserFullName() {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (user && user.email) {
-    const { data, error } = await supabase
+  try {
+    // Get current user name from Supabase auth and users table
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user?.email) {
+      console.log('No authenticated user found');
+      return 'System User';
+    }
+    
+    console.log('Current user email:', user.email);
+    
+    // Get user from users table
+    const { data: userData, error } = await supabase
       .from('users')
-      .select('full_name')
+      .select('full_name, first_name, last_name, email')
       .eq('email', user.email)
       .single();
-    if (!error && data?.full_name) {
-      return data.full_name;
+    
+    if (error) {
+      console.log('Error fetching user from users table:', error);
+      return user.email;
     }
+    
+    if (userData) {
+      console.log('User data from DB:', userData);
+      if (userData.full_name) {
+        console.log('Using full_name:', userData.full_name);
+        return userData.full_name;
+      } else if (userData.first_name && userData.last_name) {
+        const name = `${userData.first_name} ${userData.last_name}`;
+        console.log('Using first_name + last_name:', name);
+        return name;
+      } else if (userData.first_name) {
+        console.log('Using first_name:', userData.first_name);
+        return userData.first_name;
+      } else if (userData.last_name) {
+        console.log('Using last_name:', userData.last_name);
+        return userData.last_name;
+      } else {
+        console.log('Using email as fallback:', userData.email);
+        return userData.email;
+      }
+    }
+    
+    console.log('No user data found, using email:', user.email);
+    return user.email;
+  } catch (error) {
+    console.error('Error getting current user name:', error);
+    return 'System User';
   }
-  return null;
 }
 
 const Clients: React.FC<ClientsProps> = ({
@@ -435,7 +473,7 @@ const Clients: React.FC<ClientsProps> = ({
         console.log('Fetching client with lead_number:', fullLeadNumber);
         const { data, error } = await supabase
           .from('leads')
-          .select('*, client_country, emails (*), closer')
+          .select('*, client_country, emails (*), closer, handler')
           .eq('lead_number', fullLeadNumber)
           .single();
 
@@ -1086,30 +1124,92 @@ const Clients: React.FC<ClientsProps> = ({
 
   const handleSaveEditLead = async () => {
     if (!selectedClient) return;
-    const updateData = {
-      tags: editLeadData.tags,
-      source: editLeadData.source,
-      name: editLeadData.name,
-      language: editLeadData.language,
-      category: editLeadData.category,
-      topic: editLeadData.topic,
-      special_notes: editLeadData.special_notes,
-      probability: Number(editLeadData.probability),
-      number_of_applicants_meeting: editLeadData.number_of_applicants_meeting,
-      potential_applicants_meeting: editLeadData.potential_applicants_meeting,
-      balance: editLeadData.balance,
-      next_followup: editLeadData.next_followup,
-      balance_currency: editLeadData.balance_currency,
-    };
-    const { error } = await supabase
-      .from('leads')
-      .update(updateData)
-      .eq('id', selectedClient.id);
-    if (!error) {
+    
+    try {
+      // Get current user name from Supabase users table
+      const currentUserName = await fetchCurrentUserFullName();
+      
+      console.log('Current user for lead edit:', currentUserName);
+      
+      const updateData = {
+        tags: editLeadData.tags,
+        source: editLeadData.source,
+        name: editLeadData.name,
+        language: editLeadData.language,
+        category: editLeadData.category,
+        topic: editLeadData.topic,
+        special_notes: editLeadData.special_notes,
+        probability: Number(editLeadData.probability),
+        number_of_applicants_meeting: editLeadData.number_of_applicants_meeting,
+        potential_applicants_meeting: editLeadData.potential_applicants_meeting,
+        balance: editLeadData.balance,
+        next_followup: editLeadData.next_followup,
+        balance_currency: editLeadData.balance_currency,
+      };
+      
+      // Track changes by comparing old and new values
+      const changesToInsert = [];
+      const fieldsToTrack = [
+        'tags', 'source', 'name', 'language', 'category', 'topic', 
+        'special_notes', 'probability', 'number_of_applicants_meeting', 
+        'potential_applicants_meeting', 'balance', 'next_followup', 'balance_currency'
+      ];
+      
+      for (const field of fieldsToTrack) {
+        const oldValue = selectedClient[field as keyof typeof selectedClient] || '';
+        const newValue = updateData[field as keyof typeof updateData] || '';
+        
+        // Convert to strings for comparison
+        const oldValueStr = String(oldValue);
+        const newValueStr = String(newValue);
+        
+        if (oldValueStr !== newValueStr) {
+          console.log(`${field} changed: ${oldValueStr} -> ${newValueStr}`);
+          changesToInsert.push({
+            lead_id: selectedClient.id,
+            field_name: field,
+            old_value: oldValueStr,
+            new_value: newValueStr,
+            changed_by: currentUserName,
+            changed_at: new Date().toISOString()
+          });
+        }
+      }
+      
+      console.log('Total changes detected:', changesToInsert.length);
+      console.log('Changes to insert:', changesToInsert);
+      
+      // Update the lead first
+      const { error: updateError } = await supabase
+        .from('leads')
+        .update(updateData)
+        .eq('id', selectedClient.id);
+        
+      if (updateError) {
+        console.error('Error updating lead:', updateError);
+        toast.error('Failed to update lead.');
+        return;
+      }
+      
+      // Log the changes to lead_changes table
+      if (changesToInsert.length > 0) {
+        const { error: historyError } = await supabase
+          .from('lead_changes')
+          .insert(changesToInsert);
+        
+        if (historyError) {
+          console.error('Error logging lead changes:', historyError);
+        } else {
+          console.log('Logged', changesToInsert.length, 'field changes');
+        }
+      }
+      
       setShowEditLeadDrawer(false);
       if (onClientUpdate) await onClientUpdate();
       toast.success('Lead updated!');
-    } else {
+      
+    } catch (error) {
+      console.error('Error in handleSaveEditLead:', error);
       toast.error('Failed to update lead.');
     }
   };
@@ -1265,6 +1365,11 @@ const Clients: React.FC<ClientsProps> = ({
     toast.success('Payment plan saved!');
 
     try {
+      // Get current user name from Supabase users table
+      const currentUserName = await fetchCurrentUserFullName();
+      
+      console.log('Current user for payment plan creation:', currentUserName);
+
       // Delete and insert in the background
       const { error: deleteError } = await supabase
         .from('payment_plans')
@@ -1281,11 +1386,47 @@ const Clients: React.FC<ClientsProps> = ({
         client_name: payment.client,
         payment_order: payment.order,
         notes: payment.notes,
+        created_by: currentUserName,
       }));
-      const { error: insertError } = await supabase
+      
+      // Log the payment plan creation in payment_plan_changes table
+      const changesToInsert = paymentPlansToInsert.map(payment => ({
+        lead_id: selectedClient.id,
+        payment_plan_id: null, // Will be set after insertion
+        field_name: 'payment_plan_created',
+        old_value: null,
+        new_value: JSON.stringify({
+          payment_order: payment.payment_order,
+          value: payment.value,
+          due_date: payment.due_date,
+          client_name: payment.client_name
+        }),
+        changed_by: currentUserName,
+        changed_at: new Date().toISOString()
+      }));
+
+      // Insert the payment plans first
+      const { data: insertedPayments, error: paymentInsertError } = await supabase
         .from('payment_plans')
-        .insert(paymentPlansToInsert);
-      if (insertError) throw insertError;
+        .insert(paymentPlansToInsert)
+        .select('id');
+
+      if (paymentInsertError) throw paymentInsertError;
+
+      // Now update the payment_plan_id in the changes records
+      if (insertedPayments && insertedPayments.length > 0) {
+        const updatedChanges = changesToInsert.map((change, index) => ({
+          ...change,
+          payment_plan_id: insertedPayments[index]?.id || null
+        }));
+
+        const { error: historyError } = await supabase
+          .from('payment_plan_changes')
+          .insert(updatedChanges);
+        
+        if (historyError) console.error('Error logging payment plan creation:', historyError);
+      }
+      
       // Optionally, refresh just the payment plans here if needed
       // await refreshPaymentPlans(selectedClient.id);
     } catch (error) {
@@ -1634,12 +1775,14 @@ const Clients: React.FC<ClientsProps> = ({
             </li>
           </>
         ) : (
-          <li>
-            <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
-              <CalendarDaysIcon className="w-5 h-5 text-black" />
-              Schedule Meeting
-            </a>
-          </li>
+          !['Success', 'handler_assigned'].includes(selectedClient.stage) && (
+            <li>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+                <CalendarDaysIcon className="w-5 h-5 text-black" />
+                Schedule Meeting
+              </a>
+            </li>
+          )
         )}
         {selectedClient.stage === 'waiting_for_mtng_sum' && (
           <li>
@@ -1649,7 +1792,7 @@ const Clients: React.FC<ClientsProps> = ({
             </a>
           </li>
         )}
-        {!['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started'].includes(selectedClient.stage) && (
+        {!['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned'].includes(selectedClient.stage) && (
           <li>
             <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Communication Started')}>
               <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
@@ -2063,12 +2206,18 @@ const Clients: React.FC<ClientsProps> = ({
                       <p className="text-base font-medium text-gray-900 saira-light">{selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}</p>
                     </div>
                   </div>
-                  {/* Right vertical stack: Closer */}
+                  {/* Right vertical stack: Closer and Handler */}
                   <div className="space-y-6 pl-6">
                     <div>
                       <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Closer</p>
                       <p className="text-base font-medium text-gray-900 saira-light">{selectedClient?.closer || 'Not assigned'}</p>
                     </div>
+                    {selectedClient?.stage === 'handler_assigned' && (
+                      <div>
+                        <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Handler</p>
+                        <p className="text-base font-medium text-gray-900 saira-light">{selectedClient?.handler || 'Not assigned'}</p>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
