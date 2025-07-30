@@ -78,7 +78,7 @@ const StageSearchReport = () => {
           {getStageBadge(lead.stage)}
         </div>
         
-        <p className="text-sm text-base-content/60 font-mono mb-4">#{lead.lead_number}</p>
+        <p className="text-sm text-base-content/600 font-mono mb-4">#{lead.lead_number}</p>
 
         <div className="divider my-0"></div>
 
@@ -255,7 +255,7 @@ const AnchorSearchReport = () => {
           {getStageBadge(lead.stage)}
         </div>
         
-        <p className="text-sm text-base-content/60 font-mono mb-4">#{lead.lead_number}</p>
+        <p className="text-sm text-base-content/600 font-mono mb-4">#{lead.lead_number}</p>
 
         <div className="divider my-0"></div>
 
@@ -525,7 +525,7 @@ const DuplicateSearchReport = () => {
           </div>
         </div>
         
-        <p className="text-sm text-base-content/60 font-mono mb-2">#{lead.lead_number}</p>
+        <p className="text-sm text-base-content/600 font-mono mb-2">#{lead.lead_number}</p>
         <p className="text-sm text-red-600 font-medium mb-4">
           Duplicate {lead.duplicateType}: {lead.duplicateValue}
           {lead.duplicateWith && (
@@ -1231,7 +1231,7 @@ const CategorySourceReport = () => {
       <div className="card bg-base-200 shadow-lg p-6 mb-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="form-control">
-            <label className="label mb-2"><span className="label-text">From Date</span></label>
+            <label className="label mb-2"><span className="label-text">From Signed Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -1239,7 +1239,7 @@ const CategorySourceReport = () => {
             />
           </div>
           <div className="form-control">
-            <label className="label mb-2"><span className="label-text">To Date</span></label>
+            <label className="label mb-2"><span className="label-text">To Signed Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -1852,7 +1852,7 @@ const ConvertionStepsReport = () => {
       <div className="card bg-base-200 shadow-lg p-6 mb-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="form-control">
-            <label className="label"><span className="label-text">From date</span></label>
+            <label className="label"><span className="label-text">From Signed Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -1861,7 +1861,7 @@ const ConvertionStepsReport = () => {
             />
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">To date</span></label>
+            <label className="label"><span className="label-text">To Signed Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -2233,7 +2233,7 @@ const ScheduledReport = () => {
       <div className="card bg-base-200 shadow-lg p-6 mb-8">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="form-control">
-            <label className="label"><span className="label-text">From date</span></label>
+            <label className="label"><span className="label-text">From Signed Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -2242,7 +2242,7 @@ const ScheduledReport = () => {
             />
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">To date</span></label>
+            <label className="label"><span className="label-text">To Signed Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -2417,7 +2417,443 @@ const ActualReport = () => <div className="p-6">Actual Sales Report Content</div
 const TargetReport = () => <div className="p-6">Target Sales Report Content</div>;
 const SignedReport = () => <div className="p-6">Signed Sales Report Content</div>;
 const SchedulingBonusesReport = () => <div className="p-6">Scheduling Bonuses Report Content</div>;
-const BonusesV4Report = () => <div className="p-6">Bonuses (v4) Report Content</div>;
+const BonusesV4Report = () => {
+  const [filters, setFilters] = useState({
+    fromDate: '',
+    toDate: '',
+    category: '',
+    employee: '',
+  });
+  const [totalBonusAmount, setTotalBonusAmount] = useState<number>(0);
+  const [results, setResults] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchPerformed, setSearchPerformed] = useState(false);
+
+  // Category options
+  const categoryOptions = ["German Citizenship", "Austrian Citizenship", "Immigration to Israel"];
+
+  // Load users on component mount
+  React.useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, full_name, role')
+          .order('full_name');
+        
+        if (error) throw error;
+        setUsers(data || []);
+      } catch (error) {
+        console.error('Error loading users:', error);
+      }
+    };
+    
+    loadUsers();
+  }, []);
+
+  const handleFilterChange = (field: string, value: any) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSearch = async () => {
+    setIsSearching(true);
+    setSearchPerformed(true);
+    try {
+      // Step 1: Test basic query without any filters
+      console.log('=== STEP 1: Basic query without filters ===');
+      let basicQuery = supabase.from('leads').select('*');
+      const { data: basicData, error: basicError } = await basicQuery;
+      console.log('Basic query results:', basicData?.length || 0, 'leads found');
+      if (basicError) console.error('Basic query error:', basicError);
+
+      // Step 2: Test stage filter
+      console.log('=== STEP 2: Stage filter ===');
+      const signedStages = [
+        'Client signed agreement',
+        'Mtng sum+Agreement sent'
+      ];
+      let stageQuery = supabase.from('leads').select('*').in('stage', signedStages);
+      const { data: stageData, error: stageError } = await stageQuery;
+      console.log('Stage filter results:', stageData?.length || 0, 'leads found');
+      if (stageError) console.error('Stage filter error:', stageError);
+
+      // Step 2.5: Check what stages actually exist
+      console.log('=== STEP 2.5: Check existing stages ===');
+      let stagesQuery = supabase.from('leads').select('stage');
+      const { data: stagesData, error: stagesError } = await stagesQuery;
+      if (stagesData) {
+        const uniqueStages = [...new Set(stagesData.map(lead => lead.stage))];
+        console.log('Existing stages in database:', uniqueStages);
+      }
+      if (stagesError) console.error('Stages query error:', stagesError);
+
+      // Step 3: Test employee filter
+      console.log('=== STEP 3: Employee filter ===');
+      if (filters.employee) {
+        let employeeQuery = supabase.from('leads').select('*').or(`scheduler.eq.${filters.employee},manager.eq.${filters.employee},expert.eq.${filters.employee},closer.eq.${filters.employee}`);
+        const { data: employeeData, error: employeeError } = await employeeQuery;
+        console.log('Employee filter results:', employeeData?.length || 0, 'leads found');
+        if (employeeError) console.error('Employee filter error:', employeeError);
+      }
+
+      // Step 4: Test date filter
+      console.log('=== STEP 4: Date filter ===');
+      if (filters.fromDate || filters.toDate) {
+        let dateQuery = supabase.from('leads').select('*');
+        if (filters.fromDate) dateQuery = dateQuery.gte('date_signed', filters.fromDate);
+        if (filters.toDate) dateQuery = dateQuery.lte('date_signed', filters.toDate);
+        const { data: dateData, error: dateError } = await dateQuery;
+        console.log('Date filter results:', dateData?.length || 0, 'leads found');
+        if (dateError) console.error('Date filter error:', dateError);
+      }
+
+      // Now run the full query
+      console.log('=== FINAL QUERY ===');
+      let query = supabase.from('leads').select('*');
+
+      // Filter for leads with stage "Client Signed Agreement" or higher
+      query = query.in('stage', signedStages);
+
+      // Apply date filters based on date_signed from leads table
+      if (filters.fromDate) query = query.gte('date_signed', filters.fromDate);
+      if (filters.toDate) query = query.lte('date_signed', filters.toDate);
+      if (filters.category) query = query.ilike('category', `%${filters.category}%`);
+
+      // Apply employee filter - only show leads where this employee has a role
+      if (filters.employee) {
+        query = query.or(`scheduler.eq.${filters.employee},manager.eq.${filters.employee},expert.eq.${filters.employee},closer.eq.${filters.employee}`);
+      }
+
+      console.log('Search filters:', filters);
+      const { data, error } = await query.order('date_signed', { ascending: false });
+
+      if (error) {
+        console.error('Supabase error:', error);
+        throw error;
+      }
+      
+      console.log('Raw data from Supabase:', data);
+      
+      // Calculate results with bonus information
+      const processedResults = (data || []).map(lead => {
+        const leadValue = lead.balance || 0;
+        const leadValueInNIS = lead.balance_currency === 'USD' ? leadValue * 3.7 : leadValue; // Assuming 1 USD = 3.7 NIS
+        
+        // Get roles for this lead
+        const roles = [];
+        if (lead.scheduler) roles.push({ role: 'scheduler', name: lead.scheduler });
+        if (lead.manager) roles.push({ role: 'manager', name: lead.manager });
+        if (lead.expert) roles.push({ role: 'expert', name: lead.expert });
+        if (lead.closer) roles.push({ role: 'closer', name: lead.closer });
+        
+        const roleCount = roles.length;
+        
+        // Calculate total value of all leads for proportion calculation
+        const totalValue = data.reduce((sum, l) => sum + (l.balance || 0), 0);
+        
+        // Calculate bonus as a percentage of the lead value itself
+        const totalBonus = leadValue * 0.17; // 17% of lead value as bonus
+        const bonusPerRole = roleCount > 0 ? totalBonus / roleCount : 0;
+        
+        return {
+          ...lead,
+          leadValueInNIS,
+          roles,
+          totalBonus,
+          bonusPerRole
+        };
+      });
+
+      console.log('Processed results:', processedResults);
+      setResults(processedResults);
+    } catch (error) {
+      console.error('Error searching leads:', error);
+      alert('Failed to search for leads.');
+      setResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const getTotalValue = (leads: any[]) => {
+    return leads.reduce((sum, lead) => sum + (lead.balance || 0), 0);
+  };
+
+  const getEmployeeBonus = (lead: any, selectedEmployee: string) => {
+    if (!selectedEmployee || !lead.roles) return 0;
+    
+    // Count how many roles this employee has in this lead
+    const employeeRoles = lead.roles.filter((role: any) => role.name === selectedEmployee);
+    const roleCount = employeeRoles.length;
+    
+    // Employee gets bonusPerRole for each role they have
+    return roleCount * (lead.bonusPerRole || 0);
+  };
+
+  // Calculate totals for the table
+  const calculateTotals = () => {
+    // Calculate total lead values (original currency)
+    const totalLeadValues = results.reduce((sum, lead) => {
+      const leadValue = lead.balance || 0;
+      return sum + leadValue;
+    }, 0);
+    
+    // Calculate total lead values in NIS
+    const totalLeadValuesNIS = results.reduce((sum, lead) => {
+      const leadValueInNIS = lead.leadValueInNIS || 0;
+      return sum + leadValueInNIS;
+    }, 0);
+    
+    // Calculate total bonuses by summing the actual values displayed in the Total Bonus column
+    const totalBonuses = results.reduce((sum, lead) => {
+      // Use the actual totalBonus value that's displayed in the table
+      const bonus = lead.totalBonus || 0;
+      return sum + bonus;
+    }, 0);
+    
+    // Calculate total employee bonuses by summing the actual values displayed in the Employee Bonus column
+    let totalEmployeeBonuses = 0;
+    if (filters.employee) {
+      // If specific employee is selected, sum only their bonuses
+      totalEmployeeBonuses = results.reduce((sum, lead) => {
+        const employeeBonus = getEmployeeBonus(lead, filters.employee);
+        return sum + employeeBonus;
+      }, 0);
+    } else {
+      // If no specific employee is selected, sum all employee bonuses from all leads
+      totalEmployeeBonuses = results.reduce((sum, lead) => {
+        // Sum bonuses for all employees in this lead
+        const leadEmployeeBonuses = lead.roles ? lead.roles.reduce((roleSum: number, role: any) => {
+          return roleSum + (lead.bonusPerRole || 0);
+        }, 0) : 0;
+        return sum + leadEmployeeBonuses;
+      }, 0);
+    }
+    
+    return { totalLeadValues, totalLeadValuesNIS, totalBonuses, totalEmployeeBonuses };
+  };
+
+  const getStageBadge = (stage: string) => {
+    const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    return (
+      <span 
+        className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
+        style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
+      >
+        {stageText}
+      </span>
+    );
+  };
+
+  const { totalLeadValues, totalLeadValuesNIS, totalBonuses, totalEmployeeBonuses } = calculateTotals();
+
+  return (
+    <div className="space-y-6">
+      {/* Filters Section */}
+      <div className="card bg-base-100 shadow-md">
+        <div className="card-body">
+          <h3 className="card-title text-lg font-semibold mb-4">Filters</h3>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
+            <div>
+              <label className="label">
+                <span className="label-text font-medium">From Signed Date</span>
+              </label>
+              <input
+                type="date"
+                className="input input-bordered w-full"
+                value={filters.fromDate}
+                onChange={(e) => handleFilterChange('fromDate', e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="label">
+                <span className="label-text font-medium">To Signed Date</span>
+              </label>
+              <input
+                type="date"
+                className="input input-bordered w-full"
+                value={filters.toDate}
+                onChange={(e) => handleFilterChange('toDate', e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="label">
+                <span className="label-text font-medium">Category</span>
+              </label>
+              <select
+                className="select select-bordered w-full"
+                value={filters.category}
+                onChange={(e) => handleFilterChange('category', e.target.value)}
+              >
+                <option value="">All Categories</option>
+                {categoryOptions.map(option => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="label">
+                <span className="label-text font-medium">Employee</span>
+              </label>
+              <select
+                className="select select-bordered w-full"
+                value={filters.employee}
+                onChange={(e) => handleFilterChange('employee', e.target.value)}
+              >
+                <option value="">All Employees</option>
+                {users.map(user => (
+                  <option key={user.id} value={user.full_name}>{user.full_name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="label">
+                <span className="label-text font-medium">Total Bonuses Amount (Base Calculation)</span>
+              </label>
+              <input
+                type="number"
+                className="input input-bordered w-full"
+                value={totalBonusAmount}
+                onChange={(e) => setTotalBonusAmount(parseFloat(e.target.value) || 0)}
+                placeholder="Enter total bonus amount"
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              className="btn btn-primary flex items-center gap-2"
+              onClick={handleSearch}
+              disabled={isSearching}
+            >
+              {isSearching ? (
+                <>
+                  <span className="loading loading-spinner loading-sm"></span>
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <MagnifyingGlassIcon className="w-4 h-4" />
+                  Search
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Results Section */}
+      {searchPerformed && (
+        <div className="card bg-base-100 shadow-md">
+          <div className="card-body">
+            <h3 className="card-title text-lg font-semibold mb-4">
+              Results ({results.length} leads found)
+            </h3>
+
+            {results.length > 0 ? (
+              <div className="overflow-x-auto">
+                <table className="table w-full">
+                  <thead>
+                    <tr>
+                      <th>Lead</th>
+                      <th>Stage</th>
+                      <th>Category</th>
+                      <th>Scheduler</th>
+                      <th>Manager</th>
+                      <th>Expert</th>
+                      <th>Closer</th>
+                      <th>Total Lead</th>
+                      <th>Total Lead (NIS)</th>
+                      <th>Total Bonus</th>
+                      <th>Employee Bonus</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {results.map((lead) => (
+                      <tr key={lead.id}>
+                        <td>
+                          <div>
+                            <div className="font-semibold">{lead.lead_number}</div>
+                            <div className="text-sm text-gray-600">{lead.name}</div>
+                          </div>
+                        </td>
+                        <td>{getStageBadge(lead.stage)}</td>
+                        <td>{lead.category || 'N/A'}</td>
+                        <td>{lead.scheduler || 'N/A'}</td>
+                        <td>{lead.manager || 'N/A'}</td>
+                        <td>{lead.expert || 'N/A'}</td>
+                        <td>{lead.closer || 'N/A'}</td>
+                        <td>
+                          {lead.balance ? 
+                            `${lead.balance.toLocaleString()} ${lead.balance_currency || 'USD'}` : 
+                            'N/A'
+                          }
+                        </td>
+                        <td>
+                          {lead.leadValueInNIS ? 
+                            `${lead.leadValueInNIS.toLocaleString()} NIS` : 
+                            'N/A'
+                          }
+                        </td>
+                        <td>
+                          {lead.totalBonus ? 
+                            `${lead.totalBonus.toFixed(2)} NIS` : 
+                            '0.00 NIS'
+                          }
+                        </td>
+                        <td>
+                          {filters.employee ? 
+                            `${getEmployeeBonus(lead, filters.employee).toFixed(2)} NIS` : 
+                            'Select Employee'
+                          }
+                        </td>
+                      </tr>
+                    ))}
+                    {/* Totals Row */}
+                    <tr className="bg-gray-50 border-t-2 border-gray-300">
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td></td>
+                      <td className="text-lg font-semibold text-gray-800 text-center">
+                        {totalLeadValuesNIS ? 
+                          `${totalLeadValuesNIS.toLocaleString()} NIS` : 
+                          '0 NIS'
+                        }
+                      </td>
+                      <td className="text-lg font-semibold text-gray-800 text-center">
+                        {totalBonuses.toFixed(2)} NIS
+                      </td>
+                      <td className="text-lg font-semibold text-gray-800 text-center">
+                        {filters.employee ? `${totalEmployeeBonuses.toFixed(2)} NIS` : 'N/A'}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-gray-500">
+                {isSearching ? 'Searching...' : 'No results found'}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 const GeneralSalesReport = () => <div className="p-6">General Sales Pipeline Report Content</div>;
 const EmployeeReport = () => <div className="p-6">Employee Pipeline Report Content</div>;
 const UnhandledReport = () => <div className="p-6">Unhandled Pipeline Report Content</div>;

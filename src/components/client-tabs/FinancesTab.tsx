@@ -290,6 +290,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
           console.log('fetchPaymentPlans: Transformed payments:', payments);
 
+          // Update paidMap to reflect the paid status from database
+          const newPaidMap: { [id: string]: boolean } = {};
+          payments.forEach(payment => {
+            newPaidMap[payment.id.toString()] = payment.paid || false;
+          });
+          setPaidMap(newPaidMap);
+
           setFinancePlan({
             total: Math.round(total * 100) / 100,
             vat: Math.round(vat * 100) / 100,
@@ -298,6 +305,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         } else {
           console.log('fetchPaymentPlans: No payment plans found, setting financePlan to null');
           setFinancePlan(null);
+          setPaidMap({});
         }
       } catch (error) {
         console.error('Error fetching payment plans:', error);
@@ -305,27 +313,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     };
 
     const fetchContracts = async () => {
-      console.log('fetchContracts called with client:', client);
-      if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) {
-        console.log('fetchContracts: Invalid client.id, returning early');
-        return;
-      }
+      if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) return;
       try {
-        console.log('fetchContracts: Calling getClientContracts with clientId:', client.id);
         const contractData = await getClientContracts(client.id);
-        console.log('fetchContracts: Received contract data:', contractData);
-        
-        // Log contact_id values for debugging
-        if (contractData && contractData.length > 0) {
-          contractData.forEach((contract: any, index: number) => {
-            console.log(`Contract ${index + 1}:`, {
-              id: contract.id,
-              contact_id: contract.contact_id,
-              template_name: contract.contract_templates?.name
-            });
-          });
-        }
-        
         setContracts(contractData || []);
       } catch (error) {
         console.error('Error fetching contracts:', error);
@@ -335,7 +325,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const fetchContacts = async () => {
       if (!client?.id) return;
       try {
-        // First check if client already has additional_contacts
+        // First check if we have additional_contacts in the client object
         if (client.additional_contacts && Array.isArray(client.additional_contacts)) {
           console.log('fetchContacts - using client.additional_contacts:', client.additional_contacts);
           const contactsWithIds = client.additional_contacts.map((contact: any, index: number) => ({
@@ -344,29 +334,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }));
           console.log('fetchContacts - contactsWithIds from client:', contactsWithIds);
           setContacts(contactsWithIds);
-          return;
-        }
-        
-        // If not, fetch from database
-        const { data: leadData, error } = await supabase
-          .from('leads')
-          .select('additional_contacts')
-          .eq('id', client.id)
-          .single();
-        
-        console.log('fetchContacts - leadData from DB:', leadData);
-        
-        if (!error && leadData?.additional_contacts) {
-          // Transform additional_contacts to include IDs
-          const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
-            id: index + 1, // Use index + 1 as ID to match contact_id
-            ...contact
-          }));
-          console.log('fetchContacts - contactsWithIds from DB:', contactsWithIds);
-          setContacts(contactsWithIds);
         } else {
-          console.log('fetchContacts - no additional_contacts found');
-          setContacts([]);
+          console.log('fetchContacts - no additional_contacts in client, fetching from DB');
+          // If not, fetch from database
+          const { data: leadData, error } = await supabase
+            .from('leads')
+            .select('additional_contacts')
+            .eq('id', client.id)
+            .single();
+          
+          console.log('fetchContacts - leadData from DB:', leadData);
+          
+          if (!error && leadData?.additional_contacts) {
+            // Transform additional_contacts to include IDs
+            const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
+              id: index + 1, // Use index + 1 as ID to match contact_id
+              ...contact
+            }));
+            console.log('fetchContacts - contactsWithIds from DB:', contactsWithIds);
+            setContacts(contactsWithIds);
+          } else {
+            console.log('fetchContacts - no additional_contacts found');
+            setContacts([]);
+          }
         }
       } catch (error) {
         console.error('Error fetching contacts:', error);
@@ -374,9 +364,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     };
 
+    // Add event listener for payment marked as paid
+    const handlePaymentMarkedPaid = (event: CustomEvent) => {
+      console.log('Payment marked as paid event received:', event.detail);
+      // Refresh payment plans to reflect the updated paid status
+      refreshPaymentPlans();
+    };
+
+    // Add the event listener
+    window.addEventListener('paymentMarkedPaid', handlePaymentMarkedPaid as EventListener);
+
     fetchPaymentPlans();
     fetchContracts();
     fetchContacts();
+
+    // Cleanup function to remove event listener
+    return () => {
+      window.removeEventListener('paymentMarkedPaid', handlePaymentMarkedPaid as EventListener);
+    };
   }, [client?.id]);
 
   const refreshPaymentPlans = async () => {
@@ -414,6 +419,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             currency,
           };
         });
+        
+        // Update paidMap to reflect the paid status from database
+        const newPaidMap: { [id: string]: boolean } = {};
+        payments.forEach(payment => {
+          newPaidMap[payment.id.toString()] = payment.paid || false;
+        });
+        setPaidMap(newPaidMap);
+        
         setFinancePlan({
           total: Math.round(total * 100) / 100,
           vat: Math.round(vat * 100) / 100,
@@ -421,6 +434,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         });
       } else {
         setFinancePlan(null);
+        setPaidMap({});
       }
     } catch (error) {
       toast.error('Failed to refresh payment plans.');
