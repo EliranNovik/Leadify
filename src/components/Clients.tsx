@@ -2253,11 +2253,11 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
         {/* Tabs Navigation */}
-        <div className="bg-white dark:bg-gray-800">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6">
           <div className="w-full">
             {/* Desktop version */}
             <div className="hidden md:flex items-center px-4 py-4">
-              <div className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-hidden w-full">
+              <div className="flex bg-gray-50 dark:bg-gray-700 p-1 gap-1 overflow-hidden w-full rounded-lg">
                                   {tabs.map((tab) => (
                     <button
                       key={tab.id}

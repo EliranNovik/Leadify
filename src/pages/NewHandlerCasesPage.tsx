@@ -88,7 +88,7 @@ const NewHandlerCasesPage: React.FC = () => {
     const fetchData = async () => {
       setLoading(true);
       
-      // Fetch leads with stage 'Success' and include contracts data
+      // Fetch leads with stage 'Client signed agreement' and include contracts data
       const { data: leadsData, error: leadsError } = await supabase
         .from('leads')
         .select(`
@@ -99,7 +99,7 @@ const NewHandlerCasesPage: React.FC = () => {
             applicant_count
           )
         `)
-        .eq('stage', 'Success')
+        .eq('stage', 'Client signed agreement')
         .order('created_at', { ascending: false });
       
       if (leadsError) {

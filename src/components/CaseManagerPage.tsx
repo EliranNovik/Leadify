@@ -37,6 +37,12 @@ import {
   XMarkIcon,
   ChevronRightIcon,
   ChevronLeftIcon,
+  ExclamationCircleIcon,
+  DocumentIcon,
+  ArrowTrendingUpIcon,
+  Squares2X2Icon,
+  ListBulletIcon,
+  CurrencyDollarIcon,
 } from '@heroicons/react/24/outline';
 import Tree from 'react-d3-tree';
 import { createPortal } from 'react-dom';
@@ -110,6 +116,10 @@ interface RequiredDocument {
   requested_by?: string;
   created_at: string;
   updated_at: string;
+  lead?: {
+    name: string;
+    lead_number: string;
+  };
 }
 
 interface DocumentTemplate {
@@ -184,6 +194,7 @@ const tabs: TabItem[] = [
   { id: 'contacts', label: 'Applicants', icon: UserGroupIcon },
   { id: 'documents', label: 'Documents', icon: DocumentTextIcon },
   { id: 'tasks', label: 'Tasks', icon: ClockIcon },
+  { id: 'finance', label: 'Finance', icon: ChartBarIcon },
   { id: 'status', label: 'Status', icon: CheckCircleIcon },
   { id: 'notes', label: 'Notes', icon: PencilIcon },
   { id: 'communications', label: 'Messages', icon: ChatBubbleLeftRightIcon },
@@ -194,12 +205,15 @@ type TabId = typeof tabs[number]['id'];
 // Dashboard Component
 interface DashboardTabProps extends HandlerTabProps {
   onCaseSelect: (lead: HandlerLead) => void;
+  showCaseCards: boolean;
+  setShowCaseCards: (show: boolean) => void;
 }
 
-const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCaseSelect }) => {
+const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCaseSelect, showCaseCards, setShowCaseCards }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
 
   // Filter leads based on search and date filters
   const filteredLeads = leads.filter(lead => {
@@ -249,12 +263,27 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCase
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
-          <h3 className="text-2xl font-bold text-gray-900">Case Dashboard</h3>
+          <h3 className="text-2xl font-bold text-gray-900">Case Handler Dashboard</h3>
           <p className="text-gray-600">Manage and monitor all your assigned cases</p>
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-600">Total Cases:</span>
-          <span className="badge badge-primary badge-lg">{filteredLeads.length}</span>
+          <span className="text-sm text-gray-600"></span>
+          <button
+            className="btn btn-sm btn-outline"
+            onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
+          >
+            {viewMode === 'cards' ? (
+              <>
+                <ListBulletIcon className="w-4 h-4" />
+                List
+              </>
+            ) : (
+              <>
+                <Squares2X2Icon className="w-4 h-4" />
+                Cards
+              </>
+            )}
+          </button>
         </div>
       </div>
 
@@ -315,124 +344,145 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCase
         )}
       </div>
 
-      {/* Cases Grid */}
-      {filteredLeads.length === 0 ? (
-        <div className="text-center py-12 bg-white rounded-2xl shadow-lg border border-gray-200">
-          <FolderIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-          <h4 className="text-lg font-medium text-gray-900 mb-2">No Cases Found</h4>
-          <p className="text-gray-600">
-            {leads.length === 0 ? 'No cases assigned to you yet.' : 'Try adjusting your search or date filters.'}
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredLeads.map((lead) => (
-            <div
-              key={lead.id}
-              className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group"
-              onClick={() => handleCaseClick(lead)}
-            >
-              <div className="card-body p-5">
-                <div className="flex justify-between items-start mb-2">
-                  <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
-                    {lead.name}
-                  </h2>
-                  <div className="flex flex-col items-end gap-1">
-                    {isNewCase(lead) && (
-                      <span className="badge bg-gradient-to-r from-green-500 to-emerald-500 text-white border-none text-xs">
-                        NEW
+      {/* Cases Grid/List - Show when showCaseCards is true OR when there are active search filters */}
+      {(showCaseCards || searchTerm || dateFrom || dateTo) && (
+        filteredLeads.length === 0 ? (
+          <div className="text-center py-12 bg-white rounded-2xl shadow-lg border border-gray-200">
+            <FolderIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+            <h4 className="text-lg font-medium text-gray-900 mb-2">No Cases Found</h4>
+            <p className="text-gray-600">
+              {leads.length === 0 ? 'No cases assigned to you yet.' : 'Try adjusting your search or date filters.'}
+            </p>
+          </div>
+        ) : viewMode === 'cards' ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {filteredLeads.map((lead) => (
+              <div
+                key={lead.id}
+                className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group"
+                onClick={() => handleCaseClick(lead)}
+              >
+                <div className="card-body p-5">
+                  <div className="flex justify-between items-start mb-2">
+                    <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors text-gray-700">
+                      {lead.name}
+                    </h2>
+                    <div className="flex flex-col items-end gap-1">
+                      {isNewCase(lead) && (
+                        <span className="badge bg-gradient-to-r from-green-500 to-emerald-500 text-white border-none text-xs">
+                          NEW
+                        </span>
+                      )}
+                      <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">
+                        {(lead.handler_stage || lead.stage).replace(/_/g, ' ')}
                       </span>
-                    )}
-                    <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">
-                      {(lead.handler_stage || lead.stage).replace(/_/g, ' ')}
-                    </span>
-                  </div>
-                </div>
-                
-                <p className="text-sm text-base-content/60 font-mono mb-4">#{lead.lead_number}</p>
-
-                <div className="divider my-0"></div>
-
-                <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Date Created</span>
-                    <span className="font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Category</span>
-                    <span className="font-medium">{lead.category || 'N/A'}</span>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Expert</span>
-                    <span className="font-medium">{lead.expert || 'N/A'}</span>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Handler</span>
-                    <span className="font-medium">{lead.handler || 'N/A'}</span>
-                  </div>
-                </div>
-
-                {/* Contact Info */}
-                {(lead.email || lead.phone) && (
-                  <div className="mt-4 pt-4 border-t border-base-200/50">
-                    <div className="space-y-2">
-                      {lead.email && (
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Email</span>
-                          <span className="text-sm font-medium text-blue-600 truncate" title={lead.email}>{lead.email}</span>
-                        </div>
-                      )}
-                      {lead.phone && (
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Phone</span>
-                          <span className="text-sm font-medium text-green-600">{lead.phone}</span>
-                        </div>
-                      )}
                     </div>
                   </div>
-                )}
+                  
+                  <p className="text-sm text-base-content/60 font-mono mb-4">#{lead.lead_number}</p>
 
-                {/* Balance Info */}
-                {lead.balance && (
-                  <div className="mt-4 pt-4 border-t border-base-200/50">
+                  <div className="divider my-0"></div>
+
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-base mt-4">
                     <div className="flex flex-col gap-1">
-                      <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Balance</span>
-                      <span className="text-lg font-bold text-emerald-600">
-                        {lead.balance_currency || '$'}{lead.balance}
-                      </span>
+                      <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Manager</span>
+                      <span className="font-medium text-base">{lead.manager || 'N/A'}</span>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Expert</span>
+                      <span className="font-medium text-base">{lead.expert || 'N/A'}</span>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Closer</span>
+                      <span className="font-medium text-base">{lead.closer || 'N/A'}</span>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Scheduler</span>
+                      <span className="font-medium text-base">{lead.scheduler || 'N/A'}</span>
                     </div>
                   </div>
-                )}
+                  
 
-                {/* Team Info */}
-                {(lead.manager || lead.closer || lead.scheduler) && (
-                  <div className="mt-4 pt-4 border-t border-base-200/50">
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                      {lead.manager && (
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Manager</span>
-                          <span className="font-medium">{lead.manager}</span>
-                        </div>
-                      )}
-                      {lead.closer && (
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Closer</span>
-                          <span className="font-medium">{lead.closer}</span>
-                        </div>
-                      )}
-                      {lead.scheduler && (
-                        <div className="flex flex-col gap-1">
-                          <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Scheduler</span>
-                          <span className="font-medium">{lead.scheduler}</span>
-                        </div>
-                      )}
+                  <div className="divider my-0"></div>
+
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-base mt-4">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Date Assigned</span>
+                      <span className="font-medium text-base">{new Date(lead.created_at).toLocaleDateString()}</span>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <span className="text-sm font-semibold text-gray-500 uppercase tracking-wide">Category</span>
+                      <span className="font-medium text-base">{lead.category || 'N/A'}</span>
                     </div>
                   </div>
-                )}
+
+                  {/* Contact Info - Removed email and phone */}
+
+                  {/* Balance Info */}
+                  {lead.balance && (
+                    <div className="mt-4 pt-4 border-t border-base-200/50">
+                      <div className="flex flex-col gap-1">
+                        <span className="text-xs font-semibold text-base-content/50 uppercase tracking-wide">Balance</span>
+                        <span className="text-lg font-bold text-purple-600">
+                          {lead.balance_currency || '$'} {lead.balance}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            {/* Table Header */}
+            <div className="bg-gray-50 px-6 py-4 border-b border-gray-200">
+              <div className="grid grid-cols-7 gap-4 text-sm font-semibold text-gray-700 uppercase tracking-wide">
+                <div>Case Name</div>
+                <div>Lead #</div>
+                <div>Handler</div>
+                <div>Expert</div>
+                <div>Category</div>
+                <div>Date Assigned</div>
+                <div>Status</div>
               </div>
             </div>
-          ))}
-        </div>
+            
+            {/* Table Body */}
+            <div className="divide-y divide-gray-200">
+              {filteredLeads.map((lead) => (
+                <div
+                  key={lead.id}
+                  className="px-6 py-4 hover:bg-gray-50 transition-colors duration-200 cursor-pointer"
+                  onClick={() => handleCaseClick(lead)}
+                >
+                  <div className="grid grid-cols-7 gap-4 items-center">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-gray-900">{lead.name}</span>
+                      {isNewCase(lead) && (
+                        <span className="badge bg-gradient-to-r from-green-500 to-emerald-500 text-white border-none text-xs">
+                          NEW
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-sm text-gray-500 font-mono">#{lead.lead_number}</div>
+                    <div className="text-sm text-gray-700">{lead.handler || 'N/A'}</div>
+                    <div className="text-sm text-gray-700">{lead.expert || 'N/A'}</div>
+                    <div className="text-sm text-gray-700">{lead.category || 'N/A'}</div>
+                    <div className="text-sm text-gray-700">{new Date(lead.created_at).toLocaleDateString()}</div>
+                    <div>
+                      <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none text-xs">
+                        {(lead.handler_stage || lead.stage).replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
       )}
     </div>
   );
@@ -872,7 +922,7 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
+        {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h3 className="text-xl font-bold text-gray-900">Applicants & Family Management</h3>
@@ -885,7 +935,7 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
           <UserPlusIcon className="w-4 h-4" />
           Add Applicant
         </button>
-      </div>
+        </div>
 
       {leads.length === 0 ? (
         <div className="text-center py-12 text-gray-500">
@@ -1044,6 +1094,8 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                                  </span>
                                </div>
                             </div>
+                            
+
                           </div>
                         </div>
                       </div>
@@ -1079,7 +1131,7 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Case *</label>
                   <select
                     className="select select-bordered w-full"
-                    value={selectedLead?.id || ''}
+                    value={selectedLead ? (selectedLead as HandlerLead).id : ''}
                     onChange={(e) => {
                       const lead = leads.find((l: HandlerLead) => l.id === e.target.value);
                       setSelectedLead(lead || null);
@@ -1408,1098 +1460,6 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
   );
 };
 
-// Documents Tab Component with full CRUD functionality
-const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploadingLeadId, uploadedFiles, isUploading, handleFileInput }) => {
-  const [requiredDocuments, setRequiredDocuments] = useState<RequiredDocument[]>([]);
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [documentTemplates, setDocumentTemplates] = useState<DocumentTemplate[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showAddDocModal, setShowAddDocModal] = useState(false);
-  const [selectedLead, setSelectedLead] = useState<HandlerLead | null>(null);
-  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
-  const [editingDocument, setEditingDocument] = useState<RequiredDocument | null>(null);
-  const [showDocumentModal, setShowDocumentModal] = useState(false);
-  const [selectedLeadForDocs, setSelectedLeadForDocs] = useState<HandlerLead | null>(null);
-  const [oneDriveFiles, setOneDriveFiles] = useState<any[]>([]);
-  const [loadingFiles, setLoadingFiles] = useState(false);
-  const [draggedFile, setDraggedFile] = useState<File | null>(null);
-  const [dragOverContact, setDragOverContact] = useState<string | null>(null);
-  const [expandedContact, setExpandedContact] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<{id: string, full_name: string} | null>(null);
-
-  // New document form state
-  const [newDocument, setNewDocument] = useState({
-    document_name: '',
-    document_type: 'identity',
-    due_date: '',
-    notes: '',
-    is_required: true
-  });
-
-  // Fetch current user information
-  const fetchCurrentUser = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data, error } = await supabase
-          .from('users')
-          .select('id, full_name')
-          .eq('email', user.email)
-          .single();
-        
-        if (error) {
-          console.error('Error fetching user info:', error);
-          // Fallback to email if full_name not found
-          setCurrentUser({ id: user.id, full_name: user.email || 'Unknown User' });
-        } else if (data) {
-          setCurrentUser({ id: data.id, full_name: data.full_name || user.email || 'Unknown User' });
-        }
-      }
-    } catch (err) {
-      console.error('Failed to fetch current user:', err);
-      setCurrentUser({ id: '00000000-0000-0000-0000-000000000000', full_name: 'System User' });
-    }
-  };
-
-  // Fetch required documents from database
-  const fetchRequiredDocuments = async () => {
-    setLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('lead_required_documents')
-        .select('*')
-        .in('lead_id', leads.length > 0 ? leads.map((lead: HandlerLead) => lead.id) : [])
-        .order('created_at', { ascending: false });
-      
-      if (error) {
-        toast.error('Error fetching documents: ' + error.message);
-      } else if (data) {
-        setRequiredDocuments(data);
-      }
-    } catch (err) {
-      toast.error('Failed to fetch documents');
-      console.error('Error fetching documents:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Fetch document templates
-  const fetchDocumentTemplates = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('document_templates')
-        .select('*')
-        .eq('is_active', true)
-        .order('category', { ascending: true });
-      
-      if (error) {
-        console.error('Error fetching templates:', error.message);
-      } else if (data) {
-        setDocumentTemplates(data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch templates:', err);
-    }
-  };
-
-  // Fetch contacts for this Documents tab
-  const fetchContacts = async () => {
-    if (leads.length === 0) return;
-    
-    try {
-      const { data, error } = await supabase
-        .from('contacts')
-        .select('*')
-        .in('lead_id', leads.map(lead => lead.id))
-        .order('is_main_applicant', { ascending: false })
-        .order('created_at', { ascending: true });
-      
-      if (error) {
-        console.error('Error fetching contacts:', error.message);
-      } else if (data) {
-        setContacts(data);
-      }
-    } catch (err) {
-      console.error('Failed to fetch contacts:', err);
-    }
-  };
-
-  // Fetch OneDrive files for a lead (using same approach as ExpertTab)
-  const fetchOneDriveFiles = async (lead: HandlerLead) => {
-    setLoadingFiles(true);
-    setSelectedLeadForDocs(lead);
-    setShowDocumentModal(true);
-    
-    try {
-      console.log('Fetching documents for lead:', lead.lead_number);
-      const { data, error } = await supabase.functions.invoke('list-onedrive-files', {
-        body: { leadNumber: lead.lead_number }
-      });
-
-      console.log('OneDrive response:', { data, error });
-
-      if (error) {
-        console.error('OneDrive error details:', error);
-        toast.error('Error fetching files: ' + (error.message || 'Unknown error'));
-        setOneDriveFiles([]);
-      } else if (data && data.success) {
-        console.log('Documents fetched successfully:', data.files);
-        setOneDriveFiles(data.files || []);
-        if (data.files && data.files.length > 0) {
-          toast.success(`Found ${data.files.length} document${data.files.length !== 1 ? 's' : ''}`);
-        }
-      } else {
-        console.log('No files returned from OneDrive function');
-        setOneDriveFiles([]);
-        toast.success('OneDrive folder accessed - no documents found');
-      }
-    } catch (err: any) {
-      console.error('Error fetching OneDrive files:', err);
-      toast.error('Failed to fetch OneDrive files: ' + (err.message || 'Network error'));
-      setOneDriveFiles([]);
-    } finally {
-      setLoadingFiles(false);
-    }
-  };
-
-  // Handle drag and drop
-  const handleDragOver = (e: React.DragEvent, contactId: string) => {
-    e.preventDefault();
-    setDragOverContact(contactId);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setDragOverContact(null);
-  };
-
-  const handleDrop = async (e: React.DragEvent, contact: Contact) => {
-    e.preventDefault();
-    setDragOverContact(null);
-    
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) {
-      const lead = leads.find(l => l.id === contact.lead_id);
-      if (lead) {
-        await uploadFiles(lead, files);
-      }
-    }
-  };
-
-  useEffect(() => {
-    fetchCurrentUser();
-    if (leads.length > 0) {
-      fetchRequiredDocuments();
-      fetchDocumentTemplates();
-      fetchContacts();
-    }
-  }, [leads]);
-
-  // Add new required document
-  const addRequiredDocument = async () => {
-    if (!newDocument.document_name.trim() || !selectedLead) {
-      toast.error('Document name and lead are required');
-      return;
-    }
-
-    try {
-      const documentData = {
-        ...newDocument,
-        lead_id: selectedLead.id,
-        contact_id: selectedContact?.id || null,
-        requested_by: 'current_user', // Replace with actual user
-        due_date: newDocument.due_date || null
-      };
-
-      const { error } = await supabase
-        .from('lead_required_documents')
-        .insert(documentData);
-      
-      if (error) {
-        toast.error('Error adding document: ' + error.message);
-      } else {
-        toast.success('Document added successfully');
-        setShowAddDocModal(false);
-        setNewDocument({
-          document_name: '',
-          document_type: 'identity',
-          due_date: '',
-          notes: '',
-          is_required: true
-        });
-        setSelectedLead(null);
-        await fetchRequiredDocuments();
-      }
-    } catch (err) {
-      toast.error('Failed to add document');
-      console.error('Error adding document:', err);
-    }
-  };
-
-  // Update document status with tracking
-  const updateDocumentStatus = async (documentId: string, status: string, changeReason?: string, notes?: string) => {
-    try {
-      if (!currentUser) {
-        toast.error('User not authenticated');
-        return;
-      }
-
-      // Use the stored procedure for tracking
-      const { error } = await supabase.rpc('update_document_status_with_tracking', {
-        p_document_id: documentId,
-        p_new_status: status,
-        p_changed_by: currentUser.id,
-        p_change_reason: changeReason || null,
-        p_notes: notes || null
-      });
-      
-      if (error) {
-        toast.error('Error updating document: ' + error.message);
-      } else {
-        toast.success(`Document status updated to ${status}`);
-        await fetchRequiredDocuments();
-      }
-    } catch (err) {
-      toast.error('Failed to update document');
-      console.error('Error updating document status:', err);
-    }
-  };
-
-  // Update document details
-  const updateDocument = async () => {
-    if (!editingDocument) return;
-
-    try {
-      const { error } = await supabase
-        .from('lead_required_documents')
-        .update({
-          document_name: editingDocument.document_name,
-          document_type: editingDocument.document_type,
-          due_date: editingDocument.due_date,
-          notes: editingDocument.notes,
-          is_required: editingDocument.is_required
-        })
-        .eq('id', editingDocument.id);
-      
-      if (error) {
-        toast.error('Error updating document: ' + error.message);
-      } else {
-        toast.success('Document updated successfully');
-        setEditingDocument(null);
-        await fetchRequiredDocuments();
-      }
-    } catch (err) {
-      toast.error('Failed to update document');
-    }
-  };
-
-  // Delete document
-  const deleteDocument = async (documentId: string) => {
-    if (!confirm('Are you sure you want to delete this required document?')) return;
-
-    try {
-      const { error } = await supabase
-        .from('lead_required_documents')
-        .delete()
-        .eq('id', documentId);
-      
-      if (error) {
-        toast.error('Error deleting document: ' + error.message);
-      } else {
-        toast.success('Document deleted successfully');
-        await fetchRequiredDocuments();
-      }
-    } catch (err) {
-      toast.error('Failed to delete document');
-    }
-  };
-
-  // Add template document to lead
-  const addTemplateDocument = async (leadId: string, template: DocumentTemplate) => {
-    try {
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + template.typical_due_days);
-
-      const documentData = {
-        lead_id: leadId,
-        document_name: template.name,
-        document_type: template.category,
-        due_date: dueDate.toISOString(),
-        notes: template.instructions,
-        requested_by: 'current_user'
-      };
-
-      const { error } = await supabase
-        .from('lead_required_documents')
-        .insert(documentData);
-      
-      if (error) {
-        toast.error('Error adding template document: ' + error.message);
-      } else {
-        toast.success(`${template.name} added to requirements`);
-        await fetchRequiredDocuments();
-      }
-    } catch (err) {
-      toast.error('Failed to add template document');
-    }
-  };
-
-  // Get status badge color - all purple
-  const getStatusBadgeColor = (status: string) => {
-    return 'badge-primary'; // All statuses use purple/primary color
-  };
-
-  // Get documents for a specific lead
-  const getLeadDocuments = (leadId: string) => {
-    return requiredDocuments.filter(doc => doc.lead_id === leadId);
-  };
-
-  if (loading) {
-    return (
-      <div className="text-center py-12">
-        <div className="loading loading-spinner loading-lg text-blue-600 mb-4"></div>
-        <p className="text-lg text-gray-600">Loading documents...</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-        <div>
-          <h3 className="text-xl font-bold text-gray-900">Document Management</h3>
-          <p className="text-gray-600">Manage required documents for all cases</p>
-        </div>
-        <button 
-          className="btn btn-primary gap-2"
-          onClick={() => setShowAddDocModal(true)}
-        >
-          <PlusIcon className="w-4 h-4" />
-          Add Document Requirement
-        </button>
-      </div>
-
-      {leads.length === 0 ? (
-        <div className="text-center py-12 text-gray-500">
-          <DocumentTextIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-          <p className="text-lg font-medium mb-1">No cases to manage documents</p>
-        </div>
-      ) : (
-        <div className="space-y-8">
-          {leads.map((lead) => {
-            const leadContacts = contacts.filter(contact => contact.lead_id === lead.id);
-            
-            return (
-              <div key={lead.id} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h4 className="text-lg font-bold text-gray-900">{lead.name}</h4>
-                    <p className="text-blue-600 font-medium">Lead #{lead.lead_number}</p>
-                    <p className="text-sm text-gray-500">{leadContacts.length} applicant(s)</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      className="btn btn-outline btn-sm"
-                      onClick={() => {
-                        setSelectedLead(lead);
-                        setShowAddDocModal(true);
-                      }}
-                    >
-                      <PlusIcon className="w-4 h-4" />
-                      Add Document
-                    </button>
-                    <label 
-                      className={`btn btn-outline btn-sm flex gap-2 items-center cursor-pointer ${
-                        isUploading && uploadingLeadId === lead.id ? 'btn-disabled' : ''
-                      }`}
-                      style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                    >
-                      <DocumentArrowUpIcon className="w-4 h-4" />
-                      Upload
-                      <input 
-                        type="file" 
-                        className="hidden" 
-                        multiple 
-                        onChange={(e) => handleFileInput(lead, e)}
-                        disabled={isUploading && uploadingLeadId === lead.id}
-                      />
-                    </label>
-                    {lead.onedrive_folder_link && (
-                      <>
-                        <button
-                          className="btn btn-outline btn-sm flex gap-2 items-center"
-                          onClick={() => fetchOneDriveFiles(lead)}
-                          disabled={loadingFiles}
-                        >
-                          <EyeIcon className="w-4 h-4" />
-                          {loadingFiles ? 'Loading...' : 'View Documents'}
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* Applicants Grid - Enhanced Stylish Design */}
-                {leadContacts.length === 0 ? (
-                  <div className="text-center py-12 text-gray-500">
-                    <UserGroupIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-                    <p className="text-lg font-medium mb-1">No applicants found</p>
-                    <p className="text-sm text-gray-400">Add applicants in the Applicants tab first</p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-8">
-                    {leadContacts.map((contact) => {
-                      const contactDocuments = requiredDocuments.filter(doc => doc.contact_id === contact.id);
-                      const completedDocs = contactDocuments.filter(doc => ['approved', 'received'].includes(doc.status)).length;
-                      const totalDocs = contactDocuments.length;
-                      const completionPercentage = totalDocs > 0 ? Math.round((completedDocs / totalDocs) * 100) : 0;
-                      
-                      const isExpanded = expandedContact === contact.id;
-                      
-                      return (
-                        <div 
-                          key={contact.id} 
-                          className={`relative bg-gradient-to-br from-white to-gray-50 rounded-3xl shadow-xl border-2 transition-all duration-300 hover:shadow-2xl ${
-                            dragOverContact === contact.id 
-                              ? 'border-blue-500 bg-blue-50 scale-105 shadow-2xl' 
-                              : 'border-gray-200 hover:border-blue-300'
-                          } ${isExpanded ? 'col-span-full' : ''}`}
-                          onDragOver={(e) => handleDragOver(e, contact.id)}
-                          onDragLeave={handleDragLeave}
-                          onDrop={(e) => handleDrop(e, contact)}
-                        >
-                          <div className={`flex ${isExpanded ? 'gap-6' : ''}`}>
-                            {/* Main Card Content */}
-                            <div className={`${isExpanded ? 'w-1/2' : 'w-full'} p-6 relative`}>
-                              {/* Completion Progress Ring */}
-                              <div className="absolute -top-4 -right-4">
-                            <div className={`radial-progress text-white text-xs font-bold ${
-                              completionPercentage >= 90 ? 'bg-green-500' :
-                              completionPercentage >= 70 ? 'bg-blue-500' :
-                              completionPercentage >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-                            }`} 
-                            style={{"--value": completionPercentage, "--size": "3rem"} as React.CSSProperties}
-                            role="progressbar">
-                              {completionPercentage}%
-                            </div>
-                          </div>
-
-                          {/* Contact Header */}
-                          <div className="mb-6">
-                            <div className="flex items-start justify-between mb-3">
-                              <div className="flex-1">
-                                <div className="flex items-center gap-3 mb-2">
-                                  <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
-                                    {contact.name.charAt(0).toUpperCase()}
-                                  </div>
-                                  <div>
-                                    <h5 className="text-lg font-bold text-gray-900">{contact.name}</h5>
-                                    <p className="text-sm text-gray-600">{contact.email || 'No email'}</p>
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                  <span className={`badge badge-outline ${
-                                    contact.relationship === 'persecuted_person' ? 'badge-primary' :
-                                    contact.relationship === 'spouse' ? 'badge-secondary' :
-                                    contact.relationship === 'child' ? 'badge-accent' : 'badge-neutral'
-                                  }`}>
-                                    {contact.relationship?.replace('_', ' ')}
-                                  </span>
-                                  {contact.is_persecuted && (
-                                    <span className="badge badge-error">⚠️ Persecuted</span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                            
-                            {/* Document Status Summary */}
-                            <div className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="text-sm font-medium text-gray-700">Document Progress</span>
-                                <span className="text-sm font-bold text-gray-900">{completedDocs}/{totalDocs}</span>
-                              </div>
-                              <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
-                                <div 
-                                  className={`h-2 rounded-full transition-all duration-500 ${
-                                    completionPercentage >= 90 ? 'bg-green-500' :
-                                    completionPercentage >= 70 ? 'bg-blue-500' :
-                                    completionPercentage >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-                                  }`}
-                                  style={{ width: `${completionPercentage}%` }}
-                                ></div>
-                              </div>
-                              <div className="flex justify-between text-xs text-gray-600">
-                                <span>Missing: {totalDocs - completedDocs}</span>
-                                <span>Complete: {completedDocs}</span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Drag & Drop Area - Compact */}
-                          <div className={`mb-4 p-3 border-2 border-dashed rounded-lg text-center transition-all duration-300 ${
-                            dragOverContact === contact.id 
-                              ? 'border-blue-500 bg-blue-100' 
-                              : 'border-gray-300 bg-gray-50 hover:border-blue-400'
-                          }`}>
-                            <DocumentArrowUpIcon className="w-6 h-6 mx-auto mb-1 text-blue-500" />
-                            <p className="text-xs text-gray-600">
-                              Drop files or 
-                              <label className="text-blue-600 cursor-pointer ml-1 hover:text-blue-700">
-                                browse
-                                <input 
-                                  type="file" 
-                                  className="hidden" 
-                                  multiple 
-                                  onChange={(e) => {
-                                    const files = Array.from(e.target.files || []);
-                                    if (files.length > 0) {
-                                      const lead = leads.find(l => l.id === contact.lead_id);
-                                      if (lead) {
-                                        uploadFiles(lead, files);
-                                      }
-                                    }
-                                  }}
-                                />
-                              </label>
-                            </p>
-                          </div>
-
-                          {/* Required Documents - Larger Section */}
-                          <div className="space-y-4 flex-1">
-                            <div className="flex items-center justify-between">
-                              <h6 className="text-lg font-bold text-gray-800">Required Documents</h6>
-                              <button
-                                className="btn btn-ghost btn-sm text-blue-600 hover:text-blue-700"
-                                onClick={() => {
-                                  setSelectedLead(lead);
-                                  setSelectedContact(contact);
-                                  setShowAddDocModal(true);
-                                }}
-                              >
-                                <PlusIcon className="w-5 h-5" />
-                                Add
-                              </button>
-                            </div>
-                            
-                            {contactDocuments.length === 0 ? (
-                              <div className="text-center py-8 bg-gray-50 rounded-xl">
-                                <DocumentTextIcon className="w-12 h-12 mx-auto mb-3 text-gray-300" />
-                                <p className="text-sm text-gray-500">No documents required</p>
-                              </div>
-                            ) : (
-                              <div className="space-y-3 max-h-64 overflow-y-auto">
-                                {contactDocuments.map((doc) => (
-                                  <div key={doc.id} className="bg-white rounded-xl p-4 border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                                    <div className="flex items-start justify-between mb-3">
-                                      <div className="flex-1">
-                                        <h6 className="text-base font-semibold text-gray-900 mb-1">{doc.document_name}</h6>
-                                        <span className="text-sm text-gray-600">{doc.document_type}</span>
-                                      </div>
-                                      <div className="flex items-center gap-2">
-                                        <button
-                                          className="btn btn-ghost btn-sm text-blue-600 hover:text-blue-700"
-                                          onClick={() => setEditingDocument(doc)}
-                                          title="Edit document"
-                                        >
-                                          <PencilIcon className="w-4 h-4" />
-                                        </button>
-                                        <button
-                                          className="btn btn-ghost btn-sm text-red-600 hover:text-red-700"
-                                          onClick={() => deleteDocument(doc.id)}
-                                          title="Delete document"
-                                        >
-                                          <TrashIcon className="w-4 h-4" />
-                                        </button>
-                                      </div>
-                                    </div>
-                                    
-                                    <div className="flex items-center gap-3 mb-2">
-                                      <span className={`badge ${getStatusBadgeColor(doc.status)}`}>
-                                        {doc.status}
-                                      </span>
-                                      <select 
-                                        className="select select-sm select-bordered flex-1"
-                                        value={doc.status}
-                                        onChange={(e) => updateDocumentStatus(doc.id, e.target.value)}
-                                      >
-                                        <option value="missing">Missing</option>
-                                        <option value="pending">Pending</option>
-                                        <option value="received">Received</option>
-                                        <option value="approved">Approved</option>
-                                        <option value="rejected">Rejected</option>
-                                      </select>
-                                    </div>
-                                    
-                                    {doc.due_date && (
-                                      <div className="text-sm text-gray-600 mt-2">
-                                        <strong>Due:</strong> {new Date(doc.due_date).toLocaleDateString()}
-                                      </div>
-                                    )}
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                            </div>
-                            
-                            {/* Expand/Collapse Button */}
-                            <button
-                              className="absolute top-1/2 -translate-y-1/2 -right-4 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-2 shadow-lg transition-all duration-300 z-10"
-                              onClick={() => setExpandedContact(isExpanded ? null : contact.id)}
-                            >
-                              {isExpanded ? (
-                                <ChevronLeftIcon className="w-5 h-5" />
-                              ) : (
-                                <ChevronRightIcon className="w-5 h-5" />
-                              )}
-                            </button>
-                            
-                            {/* Expanded Panel - Full Document List */}
-                            {isExpanded && (
-                              <div className="w-1/2 p-6 border-l border-gray-200 bg-white flex flex-col min-h-[600px]">
-                                <div className="flex items-center justify-between mb-4">
-                                  <h3 className="text-xl font-bold text-gray-900">Complete Document List</h3>
-                                  <span className="text-sm text-gray-500">{contact.name}</span>
-                                </div>
-                                
-                                <div className="space-y-4 max-h-[500px] overflow-y-auto flex-1">
-                                  {contactDocuments.length === 0 ? (
-                                    <div className="text-center py-8 bg-gray-50 rounded-xl">
-                                      <DocumentTextIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-                                      <p className="text-lg text-gray-500 mb-2">No documents required</p>
-                                      <p className="text-sm text-gray-400">Use the button below to add your first document</p>
-                                    </div>
-                                  ) : (
-                                    contactDocuments.map((doc) => (
-                                      <div key={doc.id} className="bg-gray-50 rounded-2xl p-5 border border-gray-100 hover:shadow-md transition-shadow">
-                                        <div className="flex items-start justify-between mb-4">
-                                          <div className="flex-1">
-                                            <h4 className="text-lg font-bold text-gray-900 mb-2">{doc.document_name}</h4>
-                                            <div className="flex items-center gap-3 mb-2">
-                                              <span className="text-sm text-gray-600">Type: {doc.document_type}</span>
-                                              <span className={`badge ${getStatusBadgeColor(doc.status)}`}>
-                                                {doc.status}
-                                              </span>
-                                            </div>
-                                            {doc.due_date && (
-                                              <p className="text-sm text-gray-600">
-                                                <strong>Due:</strong> {new Date(doc.due_date).toLocaleDateString()}
-                                              </p>
-                                            )}
-                                            {doc.notes && (
-                                              <p className="text-sm text-gray-600 mt-2">
-                                                <strong>Notes:</strong> {doc.notes}
-                                              </p>
-                                            )}
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                            <button
-                                              className="btn btn-ghost btn-sm text-blue-600 hover:text-blue-700"
-                                              onClick={() => setEditingDocument(doc)}
-                                              title="Edit document"
-                                            >
-                                              <PencilIcon className="w-4 h-4" />
-                                            </button>
-                                            <button
-                                              className="btn btn-ghost btn-sm text-red-600 hover:text-red-700"
-                                              onClick={() => deleteDocument(doc.id)}
-                                              title="Delete document"
-                                            >
-                                              <TrashIcon className="w-4 h-4" />
-                                            </button>
-                                          </div>
-                                        </div>
-                                        
-                                        <div className="flex items-center gap-3">
-                                          <span className="text-sm font-medium text-gray-700">Status:</span>
-                                          <select 
-                                            className="select select-bordered select-sm flex-1"
-                                            value={doc.status}
-                                            onChange={(e) => updateDocumentStatus(doc.id, e.target.value)}
-                                          >
-                                            <option value="missing">Missing</option>
-                                            <option value="pending">Pending</option>
-                                            <option value="received">Received</option>
-                                            <option value="approved">Approved</option>
-                                            <option value="rejected">Rejected</option>
-                                          </select>
-                                        </div>
-                                      </div>
-                                    ))
-                                  )}
-                                </div>
-                                
-                                <div className="mt-auto pt-4 border-t border-gray-200">
-                                  <button
-                                    className="btn btn-primary w-full"
-                                    onClick={() => {
-                                      setSelectedLead(lead);
-                                      setSelectedContact(contact);
-                                      setShowAddDocModal(true);
-                                    }}
-                                  >
-                                    <PlusIcon className="w-5 h-5" />
-                                    Add New Document
-                                  </button>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Add Document Modal */}
-      {showAddDocModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-bold">Add Document Requirement</h3>
-              <button 
-                onClick={() => {
-                  setShowAddDocModal(false);
-                  setSelectedLead(null);
-                }}
-                className="btn btn-ghost btn-circle btn-sm"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              {!selectedLead && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Lead *</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={selectedLead?.id || ''}
-                    onChange={(e) => {
-                      const lead = leads.find((l: HandlerLead) => l.id === e.target.value);
-                      setSelectedLead(lead || null);
-                    }}
-                  >
-                    <option value="">Select a lead...</option>
-                    {leads.map(lead => (
-                      <option key={lead.id} value={lead.id}>
-                        {lead.name} - #{lead.lead_number}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {selectedLead && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Applicant</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={selectedContact?.id || ''}
-                    onChange={(e) => {
-                      const contact = contacts.find(c => c.id === e.target.value);
-                      setSelectedContact(contact || null);
-                    }}
-                  >
-                    <option value="">For all applicants</option>
-                    {contacts.filter(c => c.lead_id === selectedLead.id).map(contact => (
-                      <option key={contact.id} value={contact.id}>
-                        {contact.name} ({contact.relationship?.replace('_', ' ')})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Document Name *</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={newDocument.document_name}
-                  onChange={(e) => setNewDocument(prev => ({ ...prev, document_name: e.target.value }))}
-                  placeholder="Enter document name..."
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={newDocument.document_type}
-                  onChange={(e) => setNewDocument(prev => ({ ...prev, document_type: e.target.value }))}
-                >
-                  <option value="identity">Identity</option>
-                  <option value="civil_status">Civil Status</option>
-                  <option value="legal">Legal</option>
-                  <option value="financial">Financial</option>
-                  <option value="professional">Professional</option>
-                  <option value="health">Health</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
-                <input
-                  type="date"
-                  className="input input-bordered w-full"
-                  value={newDocument.due_date}
-                  onChange={(e) => setNewDocument(prev => ({ ...prev, due_date: e.target.value }))}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-                <textarea
-                  className="textarea textarea-bordered w-full h-20 resize-none"
-                  value={newDocument.notes}
-                  onChange={(e) => setNewDocument(prev => ({ ...prev, notes: e.target.value }))}
-                  placeholder="Instructions or notes for this document..."
-                />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="checkbox checkbox-primary"
-                  checked={newDocument.is_required}
-                  onChange={(e) => setNewDocument(prev => ({ ...prev, is_required: e.target.checked }))}
-                />
-                <label className="text-sm font-medium text-gray-700">Required document</label>
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-6">
-              <button 
-                className="btn btn-outline flex-1"
-                onClick={() => {
-                  setShowAddDocModal(false);
-                  setSelectedLead(null);
-                }}
-              >
-                Cancel
-              </button>
-              <button 
-                className="btn btn-primary flex-1"
-                onClick={addRequiredDocument}
-              >
-                Add Document
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Edit Document Modal */}
-      {editingDocument && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-xl font-bold">Edit Document Requirement</h3>
-              <button 
-                onClick={() => setEditingDocument(null)}
-                className="btn btn-ghost btn-circle btn-sm"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Document Name</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={editingDocument.document_name}
-                  onChange={(e) => setEditingDocument(prev => prev ? ({ ...prev, document_name: e.target.value }) : null)}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={editingDocument.document_type}
-                  onChange={(e) => setEditingDocument(prev => prev ? ({ ...prev, document_type: e.target.value }) : null)}
-                >
-                  <option value="identity">Identity</option>
-                  <option value="civil_status">Civil Status</option>
-                  <option value="legal">Legal</option>
-                  <option value="financial">Financial</option>
-                  <option value="professional">Professional</option>
-                  <option value="health">Health</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Due Date</label>
-                <input
-                  type="date"
-                  className="input input-bordered w-full"
-                  value={editingDocument.due_date ? editingDocument.due_date.split('T')[0] : ''}
-                  onChange={(e) => setEditingDocument(prev => prev ? ({ ...prev, due_date: e.target.value }) : null)}
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-                <textarea
-                  className="textarea textarea-bordered w-full h-20 resize-none"
-                  value={editingDocument.notes || ''}
-                  onChange={(e) => setEditingDocument(prev => prev ? ({ ...prev, notes: e.target.value }) : null)}
-                />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="checkbox checkbox-primary"
-                  checked={editingDocument.is_required}
-                  onChange={(e) => setEditingDocument(prev => prev ? ({ ...prev, is_required: e.target.checked }) : null)}
-                />
-                <label className="text-sm font-medium text-gray-700">Required document</label>
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-6">
-              <button 
-                className="btn btn-outline flex-1"
-                onClick={() => setEditingDocument(null)}
-              >
-                Cancel
-              </button>
-              <button 
-                className="btn btn-primary flex-1"
-                onClick={updateDocument}
-              >
-                Update Document
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Document Viewer Modal */}
-      {showDocumentModal && selectedLeadForDocs && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
-          <div className="bg-white rounded-2xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between p-6 border-b border-gray-200">
-              <div>
-                <h3 className="text-xl font-bold text-gray-900">Documents for {selectedLeadForDocs.name}</h3>
-                <p className="text-gray-600">Lead #{selectedLeadForDocs.lead_number}</p>
-              </div>
-              <button 
-                onClick={() => {
-                  setShowDocumentModal(false);
-                  setSelectedLeadForDocs(null);
-                  setOneDriveFiles([]);
-                }}
-                className="btn btn-ghost btn-circle"
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-
-            <div className="p-6 overflow-y-auto max-h-[70vh]">
-              {loadingFiles ? (
-                <div className="text-center py-12">
-                  <div className="loading loading-spinner loading-lg text-blue-600 mb-4"></div>
-                  <p className="text-gray-600">Loading documents from OneDrive...</p>
-                </div>
-              ) : oneDriveFiles.length === 0 ? (
-                <div className="text-center py-12">
-                  <DocumentTextIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-                  <h4 className="text-lg font-medium text-gray-900 mb-2">No Documents Found</h4>
-                  <p className="text-gray-600 mb-4">No documents were found in the OneDrive folder for this lead.</p>
-                  {selectedLeadForDocs.onedrive_folder_link && (
-                    <a 
-                      href={selectedLeadForDocs.onedrive_folder_link} 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      className="btn btn-primary"
-                    >
-                      <FolderIcon className="w-4 h-4" />
-                      Open OneDrive Folder
-                    </a>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <div className="flex items-center justify-between mb-4">
-                    <h4 className="text-lg font-semibold text-gray-900">
-                      Found {oneDriveFiles.length} document{oneDriveFiles.length !== 1 ? 's' : ''}
-                    </h4>
-                    {selectedLeadForDocs.onedrive_folder_link && (
-                      <a 
-                        href={selectedLeadForDocs.onedrive_folder_link} 
-                        target="_blank" 
-                        rel="noopener noreferrer" 
-                        className="btn btn-outline btn-sm"
-                      >
-                        <FolderIcon className="w-4 h-4" />
-                        Open in OneDrive
-                      </a>
-                    )}
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {oneDriveFiles.map((file: any, index: number) => (
-                      <div key={index} className="bg-gray-50 rounded-xl p-4 border border-gray-200 hover:shadow-md transition-shadow">
-                        <div className="flex items-start gap-3">
-                          <DocumentTextIcon className="w-8 h-8 text-blue-500 flex-shrink-0 mt-1" />
-                          <div className="flex-1 min-w-0">
-                            <h5 className="font-medium text-gray-900 truncate" title={file.name}>
-                              {file.name}
-                            </h5>
-                            <div className="text-sm text-gray-600 mt-1">
-                              {file.size && (
-                                <div>Size: {(file.size / 1024 / 1024).toFixed(2)} MB</div>
-                              )}
-                              {file.lastModified && (
-                                <div>Modified: {new Date(file.lastModified).toLocaleDateString()}</div>
-                              )}
-                            </div>
-                            {file.downloadUrl && (
-                              <div className="flex gap-2 mt-3">
-                                <a
-                                  href={file.downloadUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="btn btn-outline btn-xs"
-                                >
-                                  <EyeIcon className="w-3 h-3" />
-                                  View
-                                </a>
-                                <a
-                                  href={file.downloadUrl}
-                                  download={file.name}
-                                  className="btn btn-primary btn-xs"
-                                >
-                                  Download
-                                </a>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
 
 // Tasks Tab Component with full CRUD functionality
 const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
@@ -2678,17 +1638,6 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
     return matchesStatus && matchesPriority && matchesSearch;
   });
 
-  // Get status badge color
-  const getStatusBadgeColor = (status: string) => {
-    switch (status) {
-      case 'pending': return 'badge-warning';
-      case 'in_progress': return 'badge-info';
-      case 'completed': return 'badge-success';
-      case 'cancelled': return 'badge-error';
-      default: return 'badge-neutral';
-    }
-  };
-
   // Get priority badge color
   const getPriorityBadgeColor = (priority: string) => {
     switch (priority) {
@@ -2774,10 +1723,16 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
           {filteredTasks.map((task) => (
             <div key={task.id} className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 group">
               <div className="card-body p-5">
-                <div className="flex justify-between items-start mb-2">
-                  <h2 className="card-title text-xl font-bold group-hover:text-purple-600 transition-colors">
-                    {task.title}
-                  </h2>
+                {/* Top Row: Status and Priority */}
+                <div className="flex justify-between items-start mb-4">
+                  <div className="flex gap-2">
+                    <span className={`badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none`}>
+                      {task.status.replace('_', ' ')}
+                    </span>
+                    <span className={`badge border-none text-white ${getPriorityBadgeColor(task.priority)}`}>
+                      {task.priority}
+                    </span>
+                  </div>
                   <div className="flex gap-2">
                     <button 
                       className="btn btn-ghost text-purple-600 hover:bg-purple-600 hover:text-white"
@@ -2793,55 +1748,30 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                     </button>
                   </div>
                 </div>
-                
-                {task.lead && (
-                  <p className="text-sm text-base-content/60 font-mono mb-4">
-                    {task.lead.name} - #{task.lead.lead_number}
-                  </p>
+
+                {/* Title */}
+                <h2 className="card-title text-xl font-bold group-hover:text-purple-600 transition-colors mb-3">
+                  {task.title}
+                </h2>
+
+                {/* Due Date */}
+                {task.due_date && (
+                  <div className="mb-4">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Due Date</span>
+                    <p className="text-sm font-medium">{task.due_date ? new Date(task.due_date).toLocaleDateString() : 'No due date'}</p>
+                  </div>
                 )}
 
-                <div className="divider my-0"></div>
-
-                {/* First Row: Description and Est. Hours */}
-                <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-                  {task.description && (
-                    <div className="flex flex-col gap-1">
-                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</span>
-                      <p className="text-sm font-medium line-clamp-3">{task.description}</p>
-                    </div>
-                  )}
-                  {task.estimated_hours && (
-                    <div className="flex flex-col gap-1">
-                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Est. Hours</span>
-                      <span className="text-sm font-medium">{task.estimated_hours}h</span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Second Row: Status, Priority, Due Date */}
-                <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</span>
-                    <span className={`badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none`}>
-                      {task.status.replace('_', ' ')}
-                    </span>
+                {/* Description in Gray Box */}
+                {task.description && (
+                  <div className="bg-gray-100 rounded-lg p-3 mb-4">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 block">Description</span>
+                    <p className="text-sm text-gray-700 line-clamp-3">{task.description}</p>
                   </div>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Priority</span>
-                    <span className={`badge border-none text-white ${getPriorityBadgeColor(task.priority)}`}>
-                      {task.priority}
-                    </span>
-                  </div>
-                  {task.due_date && (
-                    <div className="flex flex-col gap-1 col-span-2">
-                      <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Due Date</span>
-                      <span className="text-sm font-medium">{new Date(task.due_date).toLocaleDateString()}</span>
-                    </div>
-                  )}
-                </div>
+                )}
 
                 {/* Action Buttons */}
-                <div className="mt-4 pt-4 border-t border-base-200/50">
+                <div className="mt-auto pt-4 border-t border-base-200/50">
                   <div className="flex gap-2">
                     {task.status !== 'completed' && (
                       <>
@@ -3152,17 +2082,14 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
   };
 
   const handlerStageOptions = [
-    'pending_review',
+    'pending_payment',
     'documents_requested',
     'documents_pending',
-    'documents_received',
-    'under_review',
-    'additional_info_needed',
-    'ready_for_processing',
-    'processing',
-    'completed',
-    'on_hold',
-    'escalated'
+    'all_documents_received',
+    'application_form_processing',
+    'application_submitted',
+    'application_approved',
+    'application_rejected',
   ];
 
   return (
@@ -3178,7 +2105,7 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
         <div className="grid grid-cols-1 gap-4">
           {leads.map((lead) => (
             <div key={lead.id} className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
-              <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between">
                 <div className="flex-1">
                   <h4 className="text-lg font-bold text-gray-900">{lead.name}</h4>
                   <p className="text-blue-600 font-medium">Lead #{lead.lead_number}</p>
@@ -3186,7 +2113,7 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                 </div>
                 
                 <div className="flex items-center gap-4">
-                  <div>
+              <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Handler Stage</label>
                     <select 
                       className="select select-bordered"
@@ -3200,15 +2127,15 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                         </option>
                       ))}
                     </select>
-                  </div>
+              </div>
                   
                   <div className="text-center">
                     <div className="text-sm text-gray-600">Created</div>
                     <div className="text-sm font-medium">
                       {new Date(lead.created_at).toLocaleDateString()}
-                    </div>
-                  </div>
-                  
+            </div>
+          </div>
+
                   {updating === lead.id && (
                     <div className="loading loading-spinner loading-md text-purple-600"></div>
                   )}
@@ -3444,19 +2371,19 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({ leads }) => {
           </div>
           
           {/* Message Composer */}
-          <div>
+              <div>
             <h4 className="font-semibold text-gray-800 mb-4">Send Message</h4>
             {selectedLead ? (
               <div className="space-y-4">
                 <div className="p-4 bg-blue-50 rounded-lg">
                   <div className="font-medium text-blue-900">
                     To: {leads.find(l => l.id === selectedLead)?.name}
-                  </div>
+              </div>
                   <div className="text-sm text-blue-700">
                     {leads.find(l => l.id === selectedLead)?.email}
-                  </div>
-                </div>
-                
+            </div>
+          </div>
+
                 <textarea 
                   className="textarea textarea-bordered w-full h-32 resize-none"
                   placeholder="Type your message here..."
@@ -3495,71 +2422,883 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({ leads }) => {
   );
 };
 
-// Interfaces for real data
-interface HandlerLead {
-  id: string;
-  lead_number: string;
-  name: string;
-  email?: string;
-  phone?: string;
-  category?: string;
-  stage: string;
-  handler_stage?: string;
-  created_at: string;
-  balance?: number;
-  balance_currency?: string;
-  onedrive_folder_link?: string;
-  expert?: string;
-  handler?: string;
-  closer?: string;
-  scheduler?: string;
-  manager?: string;
-}
+// Finance Tab Component
+const DocumentsTab: React.FC<HandlerTabProps> = ({ leads }) => {
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+        <h3 className="text-xl font-bold text-gray-900 mb-4">Documents</h3>
+        <DocumentsContent />
+      </div>
+    </div>
+  );
+};
 
-interface CaseDocument {
-  id: string;
-  lead_id: string;
-  document_name: string;
-  document_type: string;
-  upload_date: string;
-  status: 'pending' | 'received' | 'approved' | 'missing';
-  file_path?: string;
-}
+const FinanceTab: React.FC<HandlerTabProps> = ({ leads }) => {
+  const [financePlan, setFinancePlan] = useState<any>(null);
+  const [contracts, setContracts] = useState<any[]>([]);
+  const [contacts, setContacts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
+  const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
+  const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
+  const [editPaymentData, setEditPaymentData] = useState<any>({});
+  const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
+  const [paidMap, setPaidMap] = useState<{ [id: string]: boolean }>({});
+  const [editingValueVatId, setEditingValueVatId] = useState<string | number | null>(null);
+  const [addingPaymentContact, setAddingPaymentContact] = useState<string | null>(null);
+  const [newPaymentData, setNewPaymentData] = useState<any>({});
+  const [showStagesDrawer, setShowStagesDrawer] = useState(false);
+  const [autoPlanData, setAutoPlanData] = useState({
+    totalAmount: '',
+    currency: '₪',
+    numberOfPayments: 3,
+    firstPaymentPercent: 50,
+    includeVat: true
+  });
 
-interface CaseTask {
-  id: string;
-  lead_id: string;
-  title: string;
-  description?: string;
-  due_date: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'overdue';
-  priority: 'low' | 'medium' | 'high';
-  assigned_to?: string;
-  created_at: string;
-}
+  // Get the current case from the leads array (assuming we're in a case context)
+  const currentCase = leads.length > 0 ? leads[0] : null;
 
-interface FamilyMember {
-  id: string;
-  lead_id: string;
-  name: string;
-  relationship: string;
-  birth_date?: string;
-  death_date?: string;
-  birth_place?: string;
-  is_persecuted: boolean;
-  is_main_applicant: boolean;
-  parent_id?: string;
-  persecution_details?: any;
-  contact_info?: any;
-  document_status?: any;
-}
+  // Fetch finance data for current case
+  const fetchFinanceData = async (leadId: string) => {
+    setLoading(true);
+    try {
+      // Fetch payment plans
+      const { data: paymentPlans, error: paymentError } = await supabase
+        .from('payment_plans')
+        .select('*')
+        .eq('lead_id', leadId)
+        .order('due_date', { ascending: true });
 
-interface UploadedFile {
-  name: string;
-  status: 'uploading' | 'success' | 'error';
-  progress?: number;
-  error?: string;
-}
+      if (paymentError) throw paymentError;
+
+      if (paymentPlans && paymentPlans.length > 0) {
+        const total = paymentPlans.reduce((sum, plan) => sum + Number(plan.value) + Number(plan.value_vat), 0);
+        const vat = paymentPlans.reduce((sum, plan) => sum + Number(plan.value_vat), 0);
+        
+        const payments = paymentPlans.map(plan => {
+          const value = Number(plan.value);
+          let valueVat = 0;
+          const currency = plan.currency || '₪';
+          if (currency === '₪' || currency === 'NIS' || currency === 'ILS') {
+            valueVat = Math.round(value * 0.18 * 100) / 100;
+          }
+          return {
+            id: plan.id,
+            duePercent: String(plan.due_percent || plan.percent || 0),
+            dueDate: plan.due_date,
+            value,
+            valueVat,
+            client: plan.client_name,
+            order: plan.payment_order,
+            proforma: plan.proforma || null,
+            notes: plan.notes || '',
+            paid: plan.paid || false,
+            paid_at: plan.paid_at || null,
+            paid_by: plan.paid_by || null,
+            currency,
+          };
+        });
+
+        // Update paidMap to reflect the paid status from database
+        const newPaidMap: { [id: string]: boolean } = {};
+        payments.forEach(payment => {
+          newPaidMap[payment.id.toString()] = payment.paid || false;
+        });
+        setPaidMap(newPaidMap);
+
+        setFinancePlan({
+          total: Math.round(total * 100) / 100,
+          vat: Math.round(vat * 100) / 100,
+          payments: payments,
+        });
+
+        // Initialize collapse state for contacts
+        if (Object.keys(collapsedContacts).length === 0) {
+          const contacts = [...new Set(payments.map(p => p.client))];
+          const initialCollapsedState = contacts.reduce((acc, contactName) => {
+            acc[contactName] = true; // true means collapsed
+            return acc;
+          }, {} as { [key: string]: boolean });
+          setCollapsedContacts(initialCollapsedState);
+        }
+      } else {
+        setFinancePlan(null);
+        setPaidMap({});
+      }
+
+      // Fetch contracts
+      const { data: contractData, error: contractError } = await supabase
+        .from('contracts')
+        .select(`
+          *,
+          contract_templates (*)
+        `)
+        .eq('lead_id', leadId);
+
+      if (!contractError && contractData) {
+        setContracts(contractData);
+      }
+
+      // Fetch contacts
+      const { data: leadData, error: leadError } = await supabase
+        .from('leads')
+        .select('additional_contacts')
+        .eq('id', leadId)
+        .single();
+      
+      if (!leadError && leadData?.additional_contacts) {
+        const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
+          id: index + 1,
+          ...contact
+        }));
+        setContacts(contactsWithIds);
+      } else {
+        setContacts([]);
+      }
+
+    } catch (error) {
+      console.error('Error fetching finance data:', error);
+      toast.error('Failed to fetch finance data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Auto-load finance data when component mounts or current case changes
+  useEffect(() => {
+    if (currentCase) {
+      fetchFinanceData(currentCase.id);
+    }
+  }, [currentCase]);
+
+
+
+  const getCurrencySymbol = (currency: string | undefined) => {
+    if (!currency) return '₪';
+    if (currency === 'USD' || currency === '$') return '$';
+    if (currency === 'ILS' || currency === 'NIS' || currency === '₪') return '₪';
+    return currency;
+  };
+
+  // Helper function to get current user's full name from Supabase users table
+  const getCurrentUserName = async (): Promise<string> => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user?.email) {
+        return 'System User';
+      }
+      
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('full_name, first_name, last_name, email')
+        .eq('email', user.email)
+        .single();
+      
+      if (error) {
+        return user.email;
+      }
+      
+      if (userData) {
+        if (userData.full_name) {
+          return userData.full_name;
+        } else if (userData.first_name && userData.last_name) {
+          return `${userData.first_name} ${userData.last_name}`;
+        } else if (userData.first_name) {
+          return userData.first_name;
+        } else if (userData.last_name) {
+          return userData.last_name;
+        } else {
+          return userData.email;
+        }
+      }
+      
+      return user.email;
+    } catch (error) {
+      console.error('Error getting current user name:', error);
+      return 'System User';
+    }
+  };
+
+  // Handler to mark a payment as paid
+  const handleMarkAsPaid = async (id: string | number) => {
+    setPaidMap((prev: { [id: string]: boolean }) => ({ ...prev, [id]: true }));
+    
+    setFinancePlan((prev: any) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        payments: prev.payments.map((payment: any) => 
+          payment.id === id 
+            ? { ...payment, paid: true, paid_at: new Date().toISOString() }
+            : payment
+        )
+      };
+    });
+    
+    try {
+      const currentUserName = await getCurrentUserName();
+      
+      const { error: historyError } = await supabase
+        .from('finance_changes_history')
+        .insert({
+          lead_id: currentCase?.id,
+          change_type: 'payment_marked_paid',
+          table_name: 'payment_plans',
+          record_id: id,
+          old_values: { paid: false },
+          new_values: { paid: true, paid_at: new Date().toISOString(), paid_by: currentUserName },
+          changed_by: currentUserName,
+          notes: `Payment marked as paid by ${currentUserName}`
+        });
+      
+      if (historyError) console.error('Error logging payment marked as paid:', historyError);
+      
+      const { error } = await supabase
+        .from('payment_plans')
+        .update({
+          paid: true,
+          paid_at: new Date().toISOString(),
+          paid_by: currentUserName,
+        })
+        .eq('id', id);
+        
+      if (!error) {
+        toast.success('Payment marked as paid!');
+      } else {
+        setPaidMap((prev: { [id: string]: boolean }) => ({ ...prev, [id]: false }));
+        setFinancePlan((prev: any) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            payments: prev.payments.map((payment: any) => 
+              payment.id === id 
+                ? { ...payment, paid: false, paid_at: undefined }
+                : payment
+            )
+          };
+        });
+        toast.error('Failed to mark as paid.');
+      }
+    } catch (error) {
+      console.error('Error marking payment as paid:', error);
+      setPaidMap((prev: { [id: string]: boolean }) => ({ ...prev, [id]: false }));
+      setFinancePlan((prev: any) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          payments: prev.payments.map((payment: any) => 
+            payment.id === id 
+              ? { ...payment, paid: false, paid_at: undefined }
+              : payment
+          )
+        };
+      });
+      toast.error('Failed to mark as paid.');
+    }
+  };
+
+  const handleEditPayment = (row: any) => {
+    setEditingPaymentId(row.id);
+    setEditPaymentData({ ...row });
+  };
+
+  const handleCancelEditPayment = () => {
+    setEditingPaymentId(null);
+    setEditPaymentData({});
+  };
+
+  const handleSaveEditPayment = async () => {
+    setIsSavingPaymentRow(true);
+    try {
+      const currentUserName = await getCurrentUserName();
+      
+      const { error } = await supabase
+        .from('payment_plans')
+        .update({
+          due_percent: editPaymentData.duePercent,
+          due_date: editPaymentData.dueDate,
+          value: editPaymentData.value,
+          value_vat: editPaymentData.valueVat,
+          client_name: editPaymentData.client,
+          payment_order: editPaymentData.order,
+          notes: editPaymentData.notes,
+        })
+        .eq('id', editPaymentData.id);
+      if (error) throw error;
+      
+      toast.success('Payment row updated!');
+      setEditingPaymentId(null);
+      setEditPaymentData({});
+      await fetchFinanceData(currentCase!.id);
+    } catch (error) {
+      console.error('Error updating payment:', error);
+      toast.error('Failed to update payment row.');
+    } finally {
+      setIsSavingPaymentRow(false);
+    }
+  };
+
+  const handleDeletePayment = async (row: any) => {
+    if (!window.confirm('Are you sure you want to delete this payment row?')) return;
+    try {
+      const currentUserName = await getCurrentUserName();
+      
+      const { error: historyError } = await supabase
+        .from('payment_plan_changes')
+        .insert({
+          payment_plan_id: null,
+          lead_id: currentCase?.id,
+          field_name: 'payment_deleted',
+          old_value: JSON.stringify({
+            id: row.id,
+            due_percent: row.duePercent,
+            due_date: row.dueDate,
+            value: row.value,
+            value_vat: row.valueVat,
+            client_name: row.client,
+            payment_order: row.order,
+            notes: row.notes
+          }),
+          new_value: '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
+      
+      if (historyError) {
+        console.error('Error logging deletion:', historyError);
+        toast.error('Failed to log deletion history.');
+        return;
+      }
+      
+      const { error } = await supabase
+        .from('payment_plans')
+        .delete()
+        .eq('id', row.id);
+      if (error) throw error;
+      
+      toast.success('Payment row deleted!');
+      await fetchFinanceData(currentCase!.id);
+    } catch (error) {
+      console.error('Error deleting payment:', error);
+      toast.error('Failed to delete payment row.');
+    }
+  };
+
+  const handleAddNewPayment = (contactName: string) => {
+    setAddingPaymentContact(contactName);
+    setNewPaymentData({
+      dueDate: '',
+      value: '',
+      client: contactName,
+      notes: '',
+      paid: false,
+      paid_at: null,
+      paid_by: null,
+    });
+  };
+
+  const handleCancelNewPayment = () => {
+    setAddingPaymentContact(null);
+    setNewPaymentData({});
+  };
+
+  const handleSaveNewPayment = async () => {
+    if (!newPaymentData.dueDate || !newPaymentData.value || !newPaymentData.client) {
+      toast.error('Please fill in all required fields');
+      return;
+    }
+
+    setIsSavingPaymentRow(true);
+    try {
+      const currentUserName = await getCurrentUserName();
+      
+      const paymentData = {
+        lead_id: currentCase?.id,
+        due_percent: Number(100),
+        percent: Number(100),
+        due_date: newPaymentData.dueDate,
+        value: Number(newPaymentData.value),
+        value_vat: 0,
+        client_name: newPaymentData.client,
+        payment_order: 'One-time Payment',
+        notes: newPaymentData.notes || '',
+        currency: newPaymentData.currency || '₪',
+        created_by: currentUserName,
+      };
+      
+      const { data, error } = await supabase
+        .from('payment_plans')
+        .insert(paymentData)
+        .select();
+
+      if (error) throw error;
+
+      toast.success('Payment plan created successfully');
+      handleCancelNewPayment();
+      await fetchFinanceData(currentCase!.id);
+    } catch (error) {
+      console.error('Error creating payment plan:', error);
+      toast.error('Failed to create payment plan');
+    } finally {
+      setIsSavingPaymentRow(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+        <h3 className="text-2xl font-bold text-gray-900 mb-4">Finance Management</h3>
+        <p className="text-gray-600 mb-6">View and manage finance plans for your cases.</p>
+        
+
+
+        {loading && (
+          <div className="flex items-center justify-center py-8">
+            <div className="loading loading-spinner loading-lg"></div>
+            <span className="ml-3">Loading finance data...</span>
+          </div>
+        )}
+
+        {currentCase && !loading && (
+          <div className="space-y-6">
+            {/* Contract Information */}
+            {contracts.length > 0 && (
+              <div className="bg-gradient-to-r from-purple-50 to-blue-50 rounded-xl p-6 border border-purple-200">
+                <h4 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
+                  <DocumentTextIcon className="w-5 h-5 text-purple-600" />
+                  Contract Information
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {contracts.map((contract) => (
+                    <div key={contract.id} className="bg-white rounded-lg p-4 border border-gray-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-semibold text-gray-700">
+                          {contract.contract_templates?.name || 'Contract'}
+                        </span>
+                        <span className={`badge ${
+                          contract.status === 'signed' 
+                            ? 'badge-success' 
+                            : 'badge-warning'
+                        }`}>
+                          {contract.status === 'signed' ? 'Signed' : 'Draft'}
+                        </span>
+                      </div>
+                      {contract.total_amount && (
+                        <div className="text-lg font-bold text-purple-700">
+                          {getCurrencySymbol(contract.currency)}{contract.total_amount.toLocaleString()}
+                        </div>
+                      )}
+                      {contract.signed_at && (
+                        <div className="text-sm text-gray-600">
+                          Signed: {new Date(contract.signed_at).toLocaleDateString()}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Finance Plan */}
+            {financePlan ? (
+              <div className="bg-white rounded-xl p-6 border border-gray-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                    <ChartBarIcon className="w-5 h-5 text-gray-600" />
+                    Payment Plan
+                  </h4>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => setViewMode(viewMode === 'table' ? 'boxes' : 'table')}
+                    >
+                      {viewMode === 'table' ? 'Box View' : 'Table View'}
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Summary */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <div className="bg-white rounded-lg p-4 border border-gray-200">
+                    <div className="text-sm text-gray-600">Total Amount</div>
+                    <div className="text-xl font-bold text-gray-900">
+                      {getCurrencySymbol(financePlan.payments[0]?.currency)}{financePlan.total.toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-lg p-4 border border-gray-200">
+                    <div className="text-sm text-gray-600">VAT</div>
+                    <div className="text-xl font-bold text-gray-900">
+                      {getCurrencySymbol(financePlan.payments[0]?.currency)}{financePlan.vat.toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-lg p-4 border border-gray-200">
+                    <div className="text-sm text-gray-600">Payments</div>
+                    <div className="text-xl font-bold text-gray-900">
+                      {financePlan.payments.length}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Group payments by contact */}
+                {(() => {
+                  const paymentsByContact = financePlan.payments.reduce((acc: { [key: string]: any[] }, payment: any) => {
+                    const contactName = payment.client;
+                    if (!acc[contactName]) {
+                      acc[contactName] = [];
+                    }
+                    acc[contactName].push(payment);
+                    return acc;
+                  }, {});
+
+                  return Object.entries(paymentsByContact).map(([contactName, payments], contactIndex) => {
+                    const sortedContactPayments = [...(payments as any[])].sort((a: any, b: any) => {
+                      const aTime = a.dueDate ? new Date(a.dueDate).getTime() : Infinity;
+                      const bTime = b.dueDate ? new Date(b.dueDate).getTime() : Infinity;
+                      return aTime - bTime;
+                    });
+
+                    return (
+                      <div key={contactName} className="mb-8">
+                        {/* Contact Header */}
+                        <div className="mb-4">
+                          <div 
+                            className="flex items-center gap-3 bg-white rounded-lg p-4 border border-purple-200 cursor-pointer hover:from-purple-100 hover:to-blue-100 transition-all duration-200"
+                            onClick={() => setCollapsedContacts(prev => ({ ...prev, [contactName]: !prev[contactName] }))}
+                          >
+                            <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
+                              <UserIcon className="w-5 h-5 text-white" />
+                            </div>
+                            <div className="flex-1">
+                              <h3 className="text-lg font-bold text-gray-900">{contactName}</h3>
+                              <p className="text-sm text-gray-600">Finance Plan</p>
+                            </div>
+                            <div className="text-right mr-4">
+                              <div className="text-lg font-bold text-gray-900">
+                                {getCurrencySymbol((payments as any[])[0]?.currency)}{(payments as any[]).reduce((sum: number, p: any) => sum + p.value + p.valueVat, 0).toLocaleString()}
+                              </div>
+                              <div className="text-xs text-gray-500">Total for {contactName}</div>
+                            </div>
+                            <div className="flex items-center justify-center w-8 h-8">
+                              {collapsedContacts[contactName] ? (
+                                <svg className="w-5 h-5 text-purple-600 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                </svg>
+                              ) : (
+                                <svg className="w-5 h-5 text-purple-600 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                                </svg>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Table or Box view for this contact */}
+                        {!collapsedContacts[contactName] && (
+                          <>
+                            {viewMode === 'table' ? (
+                              <div className="bg-white rounded-xl p-4 border border-gray-200 overflow-x-auto">
+                                <table className="min-w-full rounded-xl overflow-hidden">
+                                  <thead className="bg-base-200 sticky top-0 z-10">
+                                    <tr>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">VAT</th>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Contact</th>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
+                                      <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
+                                      <th className="px-4 py-3 text-center"></th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {sortedContactPayments.map((p: any, idx: number) => {
+                                      const isPaid = p.paid;
+                                      return (
+                                        <tr
+                                          key={p.id || idx}
+                                          className={`transition-all duration-200 ${
+                                            isPaid
+                                              ? 'bg-green-50 border-l-4 border-green-400'
+                                              : idx % 2 === 0
+                                                ? 'bg-white border-l-4 border-transparent'
+                                                : 'bg-base-100 border-l-4 border-transparent'
+                                          } hover:bg-blue-50 rounded-xl shadow-sm`}
+                                          style={{ 
+                                            verticalAlign: 'middle', 
+                                            position: 'relative',
+                                            ...(isPaid && {
+                                              backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 200 100'%3E%3Ctext x='100' y='50' font-family='Arial, sans-serif' font-size='24' font-weight='bold' fill='rgba(34,197,94,0.13)' text-anchor='middle' dominant-baseline='middle' transform='rotate(-20 100 50)'%3EPAID%3C/text%3E%3C/svg%3E")`,
+                                              backgroundRepeat: 'no-repeat',
+                                              backgroundPosition: 'center',
+                                              backgroundSize: 'contain'
+                                            })
+                                          }}
+                                        >
+                                          <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
+                                            {editingPaymentId === p.id ? (
+                                              <input
+                                                type="number"
+                                                min={0}
+                                                max={100}
+                                                className="input input-bordered input-lg w-20 text-center font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                                value={editPaymentData.duePercent}
+                                                onChange={e => {
+                                                  const newDuePercent = Number(e.target.value);
+                                                  setEditPaymentData((d: any) => ({ ...d, duePercent: newDuePercent }));
+                                                }}
+                                              />
+                                            ) : (
+                                              p.duePercent
+                                            )}
+                                          </td>
+                                          <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                            {editingPaymentId === p.id ? (
+                                              <input
+                                                type="date"
+                                                className="input input-bordered w-48 text-right"
+                                                value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''}
+                                                onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
+                                                required
+                                              />
+                                            ) : (
+                                              <span className="text-sm font-bold text-gray-900">{p.dueDate && new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : ''}</span>
+                                            )}
+                                          </td>
+                                          <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                            {editingPaymentId === p.id ? (
+                                              <div className="flex items-center gap-2">
+                                                <input
+                                                  type="number"
+                                                  className={`input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+                                                  value={editPaymentData.value}
+                                                  readOnly={editingValueVatId !== p.id}
+                                                  onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, value: e.target.value })) : undefined}
+                                                />
+                                                <span className='text-gray-500 font-bold'>+
+                                                  <input
+                                                    type="number"
+                                                    className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+                                                    value={editPaymentData.valueVat}
+                                                    readOnly={editingValueVatId !== p.id}
+                                                    onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
+                                                  />
+                                                </span>
+                                                {editingValueVatId === p.id ? (
+                                                  <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing Value/VAT">
+                                                    <CheckIcon className="w-4 h-4 text-green-600" />
+                                                  </button>
+                                                ) : (
+                                                  <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Edit Value/VAT">
+                                                    <PencilIcon className="w-4 h-4 text-blue-600" />
+                                                  </button>
+                                                )}
+                                              </div>
+                                            ) : (
+                                              <span className="text-sm font-bold text-gray-900">
+                                                {getCurrencySymbol(p.currency)}
+                                                {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                                + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                            <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                          </td>
+                                          <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                            <div className="flex items-center justify-center gap-2">
+                                              <div className="w-6 h-6 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
+                                                <UserIcon className="w-3 h-3 text-white" />
+                                              </div>
+                                              <div className="text-left">
+                                                <div className="text-sm font-semibold text-gray-900">
+                                                  {p.client}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </td>
+                                          <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                            {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
+                                          </td>
+                                          <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.order}</td>
+                                          <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.notes}</td>
+                                          <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
+                                            {p.id ? (
+                                              editingPaymentId === p.id ? (
+                                                <>
+                                                  <button
+                                                    className="btn btn-xs btn-success"
+                                                    onClick={handleSaveEditPayment}
+                                                    disabled={isSavingPaymentRow}
+                                                  >
+                                                    <CheckIcon className="w-4 h-4" />
+                                                  </button>
+                                                  <button
+                                                    className="btn btn-xs btn-ghost"
+                                                    onClick={handleCancelEditPayment}
+                                                    title="Cancel"
+                                                  >
+                                                    <XMarkIcon className="w-4 h-4 text-red-500" />
+                                                  </button>
+                                                </>
+                                              ) : (
+                                                <>
+                                                  {!isPaid && (
+                                                    <button
+                                                      className="btn btn-xs btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                                                      title="Mark as Paid"
+                                                      onClick={() => handleMarkAsPaid(p.id)}
+                                                      style={{ padding: 0 }}
+                                                    >
+                                                      <CurrencyDollarIcon className="w-4 h-4" />
+                                                    </button>
+                                                  )}
+                                                  <button
+                                                    className="btn btn-xs btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                    title="Edit"
+                                                    onClick={() => handleEditPayment(p)}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <PencilIcon className="w-4 h-4" />
+                                                  </button>
+                                                  <button
+                                                    className="btn btn-xs btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                                    title="Delete"
+                                                    onClick={() => handleDeletePayment(p)}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <TrashIcon className="w-4 h-4" />
+                                                  </button>
+                                                </>
+                                              )
+                                            ) : (
+                                              <span className="text-gray-400">—</span>
+                                            )}
+                                          </td>
+                                        </tr>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ) : (
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {sortedContactPayments.map((p: any, idx: number) => {
+                                  const isPaid = p.paid;
+                                  return (
+                                    <div
+                                      key={p.id || idx}
+                                      className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border flex flex-col gap-0 relative group min-h-[480px] ${isPaid ? 'border-green-500 ring-2 ring-green-400' : 'border-base-200'}`}
+                                      style={{ position: 'relative', overflow: 'hidden' }}
+                                    >
+                                      {isPaid && (
+                                        <div style={{
+                                          position: 'absolute',
+                                          top: '50%',
+                                          left: '50%',
+                                          transform: 'translate(-50%, -50%) rotate(-20deg)',
+                                          fontSize: '3rem',
+                                          color: 'rgba(34,197,94,0.15)',
+                                          fontWeight: 900,
+                                          letterSpacing: 2,
+                                          pointerEvents: 'none',
+                                          zIndex: 10,
+                                          textShadow: '0 2px 8px rgba(34,197,94,0.2)'
+                                        }}>PAID</div>
+                                      )}
+                                      <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                        <div className="flex items-center justify-between py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
+                                          <span>{p.duePercent}%</span>
+                                        </div>
+                                        <div className="flex items-center justify-between py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
+                                          <span className="text-sm font-bold text-gray-900">{p.dueDate && new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : ''}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
+                                          <span className="text-sm font-bold text-gray-900">
+                                            {getCurrencySymbol(p.currency)}{p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                            + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                          </span>
+                                        </div>
+                                        <div className="flex items-center justify-between py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
+                                          <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
+                                          <span className="text-sm">{p.client}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
+                                          <span className="text-sm">{p.order}</span>
+                                        </div>
+                                        <div className="flex items-center justify-between py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
+                                          <span className="text-sm">{p.notes}</span>
+                                        </div>
+                                        <div className="flex gap-2 justify-end pt-4">
+                                          {!isPaid && (
+                                            <button
+                                              className="btn btn-xs btn-success"
+                                              onClick={() => handleMarkAsPaid(p.id)}
+                                            >
+                                              Mark Paid
+                                            </button>
+                                          )}
+                                          <button
+                                            className="btn btn-xs btn-outline"
+                                            onClick={() => handleEditPayment(p)}
+                                          >
+                                            Edit
+                                          </button>
+                                          <button
+                                            className="btn btn-xs btn-error"
+                                            onClick={() => handleDeletePayment(p)}
+                                          >
+                                            Delete
+                                          </button>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            ) : (
+              <div className="text-center py-12 bg-gray-50 rounded-xl">
+                <ChartBarIcon className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                <h4 className="text-lg font-bold text-gray-800 mb-2">No Finance Plan</h4>
+                <p className="text-gray-600">This case doesn't have a finance plan yet.</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!currentCase && !loading && (
+          <div className="text-center py-12 bg-gray-50 rounded-xl">
+            <ChartBarIcon className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+            <h4 className="text-lg font-bold text-gray-800 mb-2">Select a Case</h4>
+            <p className="text-gray-600">Choose a case from the dropdown above to view its finance details.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+
 
 // Mock family data for a case
 const mockFamilyData = {
@@ -3904,7 +3643,7 @@ const CaseDetailsView = ({
       {/* Header with Back Button */}
       <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
         <div>
-          <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <button 
                 onClick={onBack}
@@ -3926,9 +3665,9 @@ const CaseDetailsView = ({
                 {caseData.caseInfo.priority} Priority
               </span>
               <span className="badge badge-primary badge-lg">{caseData.caseInfo.stage}</span>
-            </div>
           </div>
-          
+        </div>
+
           {/* Quick Stats */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
             <div className="text-center">
@@ -4232,7 +3971,7 @@ const CaseDetailsView = ({
                   <button className="btn btn-primary gap-2">
                     <PlusIcon className="w-4 h-4" />
                     Add Task
-                  </button>
+              </button>
                 </div>
                 <div className="space-y-4">
                   {[
@@ -4277,9 +4016,9 @@ const CaseDetailsView = ({
                         </div>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+            ))}
+          </div>
+        </div>
             </div>
           </div>
         )}
@@ -5194,6 +4933,24 @@ const CaseManagerPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabId>('cases');
   const [taskCount, setTaskCount] = useState(0);
   const [handlerStageStats, setHandlerStageStats] = useState<{stage: string, count: number}[]>([]);
+  
+  // Dashboard box states
+  const [expanded, setExpanded] = useState<'cases' | 'messages' | 'tasks' | 'documents' | null>(null);
+  const [newMessages, setNewMessages] = useState<any[]>([]);
+  const [tasksDue, setTasksDue] = useState<HandlerTask[]>([]);
+  const [documentsPending, setDocumentsPending] = useState<RequiredDocument[]>([]);
+  const [showCaseCards, setShowCaseCards] = useState(false);
+
+  // Get priority badge color
+  const getPriorityBadgeColor = (priority: string) => {
+    switch (priority) {
+      case 'low': return 'badge-neutral';
+      case 'medium': return 'badge-warning';
+      case 'high': return 'badge-error';
+      case 'urgent': return 'badge-error badge-outline';
+      default: return 'badge-neutral';
+    }
+  };
 
   // Fetch real leads from database
   // Fetch task count for badge
@@ -5227,6 +4984,85 @@ const CaseManagerPage: React.FC = () => {
     }
   };
 
+  // Fetch new messages
+  const fetchNewMessages = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('communications')
+        .select('*')
+        .eq('status', 'new')
+        .order('created_at', { ascending: false })
+        .limit(10);
+      
+      if (error) {
+        console.error('Error fetching new messages:', error);
+      } else if (data) {
+        setNewMessages(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch new messages:', err);
+    }
+  };
+
+  // Fetch tasks due today and tomorrow
+  const fetchTasksDue = async () => {
+    try {
+      const today = new Date();
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const todayStr = today.toISOString().split('T')[0];
+      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+      
+      const { data, error } = await supabase
+        .from('handler_tasks')
+        .select(`
+          *,
+          lead:leads(name, lead_number)
+        `)
+        .in('due_date', [todayStr, tomorrowStr])
+        .neq('status', 'completed')
+        .order('priority', { ascending: false });
+      
+      if (error) {
+        console.error('Error fetching tasks due:', error);
+      } else if (data) {
+        console.log('Tasks due fetched:', data);
+        setTasksDue(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch tasks due:', err);
+    }
+  };
+
+  // Fetch documents pending
+  const fetchDocumentsPending = async () => {
+    try {
+      const today = new Date();
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const todayStr = today.toISOString().split('T')[0];
+      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+      
+      const { data, error } = await supabase
+        .from('required_documents')
+        .select(`
+          *,
+          lead:leads(name, lead_number)
+        `)
+        .in('due_date', [todayStr, tomorrowStr])
+        .in('status', ['missing', 'pending'])
+        .order('due_date', { ascending: true });
+      
+      if (error) {
+        console.error('Error fetching documents pending:', error);
+      } else if (data) {
+        setDocumentsPending(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch documents pending:', err);
+    }
+  };
+
   useEffect(() => {
     const fetchLeads = async () => {
       setLoading(true);
@@ -5253,6 +5089,9 @@ const CaseManagerPage: React.FC = () => {
     fetchLeads();
     fetchTaskCount();
     fetchHandlerStageStats();
+    fetchNewMessages();
+    fetchTasksDue();
+    fetchDocumentsPending();
   }, []);
 
   // Upload files to OneDrive for a specific lead
@@ -5364,6 +5203,8 @@ const CaseManagerPage: React.FC = () => {
         isUploading={isUploading}
         handleFileInput={handleFileInput}
         refreshLeads={refreshLeads}
+        showCaseCards={showCaseCards}
+        setShowCaseCards={setShowCaseCards}
       />;
     }
 
@@ -5388,6 +5229,8 @@ const CaseManagerPage: React.FC = () => {
         return <DocumentsTab {...tabProps} />;
       case 'tasks':
         return <TasksTab {...tabProps} />;
+      case 'finance':
+        return <FinanceTab {...tabProps} />;
       case 'status':
         return <StatusTab {...tabProps} />;
       case 'notes':
@@ -5412,41 +5255,297 @@ const CaseManagerPage: React.FC = () => {
 
   return (
     <div className="flex-1 min-h-screen bg-white">
-      {/* Header Section */}
-      <div className="w-full px-4 md:px-6 pt-6 pb-4">
-        <div className="bg-white rounded-3xl p-6 shadow-lg border border-gray-200">
-          <div className="p-6 md:p-8">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-6">
-              {/* Left side - Title and Description */}
-              <div className="flex-1">
-                <div className="flex items-center gap-4 mb-4">
-                  <div className="flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 shadow-lg">
-                    <UserIcon className="w-8 h-8 text-white" />
-                  </div>
-                  <div>
-                    <h1 className="text-3xl md:text-4xl font-bold text-gray-900">Handler Dashboard</h1>
-                    <p className="text-lg text-gray-600 mt-1">Cases Assigned for Document Handling</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                  <div className="flex items-center gap-2">
-                    <FolderIcon className="w-5 h-5 text-blue-500" />
-                    <span className="text-gray-600">Handler Cases: <span className="font-bold text-gray-900">{leads.length}</span></span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <DocumentArrowUpIcon className="w-5 h-5 text-green-500" />
-                    <span className="text-gray-600">With Documents: <span className="font-bold text-gray-900">{leads.filter(l => l.onedrive_folder_link).length}</span></span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <ClockIcon className="w-5 h-5 text-orange-500" />
-                    <span className="text-gray-600">Pending: <span className="font-bold text-gray-900">{leads.filter(l => !l.onedrive_folder_link).length}</span></span>
-                  </div>
-                </div>
+
+
+      {/* Dashboard Boxes */}
+      <div className="w-full px-4 md:px-6 pb-4 mt-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {/* Handler Cases Box */}
+          <div 
+            className="rounded-2xl p-6 shadow-lg cursor-pointer relative overflow-hidden bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white hover:shadow-xl transition-all duration-300 transform hover:scale-105 border border-white/20"
+            onClick={() => {
+              if (expanded === 'cases') {
+                setExpanded(null);
+                setShowCaseCards(false);
+              } else {
+                setExpanded('cases');
+                setShowCaseCards(true);
+              }
+            }}
+          >
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <div className="p-3 bg-white/20 rounded-full backdrop-blur-sm">
+                <UserGroupIcon className="w-6 h-6 text-white" />
               </div>
+              <span className="text-3xl font-bold text-white">{leads.length}</span>
+            </div>
+            <div className="text-lg font-semibold text-white mb-1">Handler Cases</div>
+            <div className="text-sm text-white/80">Total cases assigned</div>
+            <div className="absolute bottom-2 right-2 w-16 h-16 opacity-10">
+              <div className="w-full h-full bg-white/20 rounded-full"></div>
+            </div>
+          </div>
+          
+          {/* New Messages Box */}
+          <div 
+            className="rounded-2xl p-6 shadow-lg cursor-pointer relative overflow-hidden bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white hover:shadow-xl transition-all duration-300 transform hover:scale-105 border border-white/20"
+            onClick={() => {
+              if (expanded === 'messages') {
+                setExpanded(null);
+              } else {
+                setExpanded('messages');
+                setShowCaseCards(false);
+              }
+            }}
+          >
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <div className="p-3 bg-white/20 rounded-full backdrop-blur-sm">
+                <ExclamationTriangleIcon className="w-6 h-6 text-white" />
+              </div>
+              <span className="text-3xl font-bold text-white">{newMessages.length}</span>
+            </div>
+            <div className="text-lg font-semibold text-white mb-1">New Messages</div>
+            <div className="text-sm text-white/80">Latest client messages</div>
+            <div className="absolute bottom-2 right-2 w-16 h-16 opacity-10">
+              <div className="w-4 h-4 bg-white/20 rounded-full absolute top-2 left-2"></div>
+              <div className="w-3 h-3 bg-white/20 rounded-full absolute top-4 left-6"></div>
+              <div className="w-2 h-2 bg-white/20 rounded-full absolute top-6 left-3"></div>
+            </div>
+          </div>
+          
+          {/* Tasks Due Box */}
+          <div 
+            className="rounded-2xl p-6 shadow-lg cursor-pointer relative overflow-hidden bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white hover:shadow-xl transition-all duration-300 transform hover:scale-105 border border-white/20"
+            onClick={() => {
+              console.log('Tasks due box clicked');
+              if (expanded === 'tasks') {
+                setExpanded(null);
+              } else {
+                setExpanded('tasks');
+                setShowCaseCards(false);
+              }
+            }}
+          >
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <div className="p-3 bg-white/20 rounded-full backdrop-blur-sm">
+                <ChatBubbleLeftRightIcon className="w-6 h-6 text-white" />
+              </div>
+              <span className="text-3xl font-bold text-white">{tasksDue.length}</span>
+            </div>
+            <div className="text-lg font-semibold text-white mb-1">Tasks Due</div>
+            <div className="text-sm text-white/80">Due today & tomorrow</div>
+            <div className="absolute bottom-2 right-2 w-16 h-16 opacity-10">
+              <div className="w-3 h-3 bg-white/20 rounded-full absolute top-2 left-2"></div>
+              <div className="w-2 h-2 bg-white/20 rounded-full absolute top-2 left-6"></div>
+              <div className="w-3 h-3 bg-white/20 rounded-full absolute top-6 left-2"></div>
+              <div className="w-2 h-2 bg-white/20 rounded-full absolute top-6 left-6"></div>
+            </div>
+          </div>
+          
+          {/* Documents Pending Box */}
+          <div 
+            className="rounded-2xl p-6 shadow-lg cursor-pointer relative overflow-hidden bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white hover:shadow-xl transition-all duration-300 transform hover:scale-105 border border-white/20"
+            onClick={() => {
+              if (expanded === 'documents') {
+                setExpanded(null);
+              } else {
+                setExpanded('documents');
+                setShowCaseCards(false);
+              }
+            }}
+          >
+            <div className="flex items-center justify-between mb-3 relative z-10">
+              <div className="p-3 bg-white/20 rounded-full backdrop-blur-sm">
+                <ArrowTrendingUpIcon className="w-6 h-6 text-white" />
+              </div>
+              <span className="text-3xl font-bold text-white">{documentsPending.length}</span>
+            </div>
+            <div className="text-lg font-semibold text-white mb-1">Documents Pending</div>
+            <div className="text-sm text-white/80">Due today & tomorrow</div>
+            <div className="absolute bottom-2 right-2 w-16 h-16 opacity-10">
+              <div className="w-full h-full bg-white/20 rounded-full"></div>
             </div>
           </div>
         </div>
       </div>
+
+
+
+      {expanded === 'messages' && (
+        <div className="w-full px-4 md:px-6 pb-4">
+          <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Latest Messages</h3>
+            <div className="space-y-3">
+              {newMessages.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  No new messages
+                </div>
+              ) : (
+                newMessages.map((message, index) => (
+                  <div key={index} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-gray-900">{message.client_name || 'Unknown Client'}</span>
+                        {message.lead_number && (
+                          <span className="text-sm text-blue-600 font-medium">({message.lead_number})</span>
+                        )}
+                      </div>
+                      <span className="text-sm text-gray-500">
+                        {new Date(message.created_at).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </span>
+                    </div>
+                    <p className="text-gray-700 text-sm">{message.content || 'No content'}</p>
+                    <div className="flex gap-2 mt-3">
+                      <button className="btn btn-sm btn-primary">Reply</button>
+                      <button className="btn btn-sm btn-outline">View Details</button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+            {expanded === 'tasks' && (
+        <div className="w-full px-4 md:px-6 pb-4">
+          <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Tasks Due Today & Tomorrow</h3>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {tasksDue.length === 0 ? (
+                <div className="col-span-full text-center py-12 text-gray-500">
+                  <ClockIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                  <p className="text-lg font-medium mb-1">No tasks due today or tomorrow</p>
+                  <p className="text-base">All caught up!</p>
+                </div>
+              ) : (
+                tasksDue.map((task) => (
+                  <div 
+                    key={task.id} 
+                    className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 group cursor-pointer"
+                    onClick={() => {
+                      // Find the lead for this task
+                      const lead = leads.find(l => l.id === task.lead_id);
+                      if (lead) {
+                        // Set the selected lead and switch to Tasks tab
+                        setSelectedLead(lead);
+                        setActiveTab('tasks');
+                      }
+                    }}
+                  >
+                    <div className="card-body p-5">
+                      <div className="flex justify-between items-start mb-2">
+                        <h2 className="card-title text-xl font-bold group-hover:text-purple-600 transition-colors">
+                          {task.title}
+                        </h2>
+                      </div>
+                      
+                      {task.lead && (
+                        <p className="text-sm text-base-content/60 font-mono mb-4">
+                          {task.lead.name} - #{task.lead.lead_number}
+                        </p>
+                      )}
+
+                      <div className="divider my-0"></div>
+
+                      {/* First Row: Description and Est. Hours */}
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+                        {task.description && (
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Description</span>
+                            <p className="text-sm font-medium line-clamp-3">{task.description}</p>
+                          </div>
+                        )}
+                        {task.estimated_hours && (
+                          <div className="flex flex-col gap-1">
+                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Est. Hours</span>
+                            <span className="text-sm font-medium">{task.estimated_hours}h</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Second Row: Status, Priority, Due Date */}
+                      <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+                        <div className="flex flex-col gap-1">
+                          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Status</span>
+                          <span className={`badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none`}>
+                            {task.status.replace('_', ' ')}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Priority</span>
+                          <span className={`badge border-none text-white ${getPriorityBadgeColor(task.priority)}`}>
+                            {task.priority}
+                          </span>
+                        </div>
+                        {task.due_date && (
+                          <div className="flex flex-col gap-1 col-span-2">
+                            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Due Date</span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">{task.due_date ? new Date(task.due_date).toLocaleDateString() : 'No due date'}</span>
+                              {task.due_date && (() => {
+                                const today = new Date().toISOString().split('T')[0];
+                                const tomorrow = new Date();
+                                tomorrow.setDate(tomorrow.getDate() + 1);
+                                const tomorrowStr = tomorrow.toISOString().split('T')[0];
+                                
+                                if (task.due_date === today) {
+                                  return <span className="badge badge-sm badge-error text-white">Today</span>;
+                                } else if (task.due_date === tomorrowStr) {
+                                  return <span className="badge badge-sm badge-warning text-white">Tomorrow</span>;
+                                }
+                                return null;
+                              })()}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {expanded === 'documents' && (
+        <div className="w-full px-4 md:px-6 pb-4">
+          <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+            <h3 className="text-xl font-bold text-gray-900 mb-4">Documents Due Today & Tomorrow</h3>
+            <div className="space-y-3">
+              {documentsPending.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  No documents due today or tomorrow
+                </div>
+              ) : (
+                documentsPending.map((document) => (
+                  <div key={document.id} className="bg-gray-50 rounded-lg p-4 border border-gray-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-semibold text-gray-900">{document.document_name}</h4>
+                      <span className={`badge ${document.status === 'missing' ? 'badge-error' : 'badge-warning'}`}>
+                        {document.status}
+                      </span>
+                    </div>
+                                         <div className="flex items-center justify-between text-sm text-gray-600">
+                       <span>Lead: {document.lead?.name || 'Unknown'}</span>
+                       <span>Due: {document.due_date ? new Date(document.due_date).toLocaleDateString() : 'No due date'}</span>
+                     </div>
+                    {document.notes && (
+                      <p className="text-gray-700 text-sm mt-2">{document.notes}</p>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Case Details Header (only show when case is selected) */}
       {selectedLead && (
@@ -5513,7 +5612,7 @@ const CaseManagerPage: React.FC = () => {
         </div>
       )}
 
-      {/* Tab Content */}
+        {/* Tab Content */}
       <div className="w-full bg-white min-h-screen">
         <div className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0">
           {renderTabContent()}

@@ -23,7 +23,7 @@ import OutlookCalendarPage from './components/OutlookCalendarPage';
 import PipelinePage from './components/PipelinePage';
 import NewCasesPage from './pages/NewCasesPage';
 import NewHandlerCasesPage from './pages/NewHandlerCasesPage';
-import CaseManagerPage from './components/CaseManagerPage';
+import CaseManagerPageNew from './components/CaseManagerPageNew';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
 import WhatsAppPage from './pages/WhatsAppPage';
@@ -172,7 +172,7 @@ const AppContent: React.FC = () => {
                     <Route path="/pipeline" element={<PipelinePage />} />
                     <Route path="/new-cases" element={<NewCasesPage />} />
                     <Route path="/new-handler-cases" element={<NewHandlerCasesPage />} />
-                    <Route path="/case-manager" element={<CaseManagerPage />} />
+                    <Route path="/case-manager" element={<CaseManagerPageNew />} />
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />
                     <Route path="/whatsapp" element={<WhatsAppPage />} />
