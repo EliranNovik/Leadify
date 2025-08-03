@@ -376,7 +376,7 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                       <span className={`badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none text-xs sm:text-sm`}>
                         {task.status.replace('_', ' ')}
                       </span>
-                      <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none text-xs sm:text-sm">
+                      <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none text-xs sm:text-sm">
                         {task.priority}
                       </span>
                     </div>

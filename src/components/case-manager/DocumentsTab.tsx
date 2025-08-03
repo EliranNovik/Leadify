@@ -226,38 +226,8 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
         }
 
         if (documents) {
-          // Get unique user IDs from the documents
-          const userIds = new Set<string>();
-          documents.forEach(doc => {
-            if (doc.requested_from_changed_by) userIds.add(doc.requested_from_changed_by);
-            if (doc.received_from_changed_by) userIds.add(doc.received_from_changed_by);
-          });
-
-          // Fetch user information
-          let usersMap = new Map();
-          if (userIds.size > 0) {
-            const { data: users, error: usersError } = await supabase
-              .from('users')
-              .select('id, full_name, email')
-              .in('id', Array.from(userIds));
-
-            if (!usersError && users) {
-              users.forEach(user => {
-                usersMap.set(user.id, user.full_name || user.email || 'Unknown User');
-              });
-            }
-          }
-
-          // Process the data to include user names
-          const processedData = documents.map(doc => ({
-            ...doc,
-            requested_from_changed_by: doc.requested_from_changed_by ? 
-              (usersMap.get(doc.requested_from_changed_by) || 'Unknown User') : 'Unknown User',
-            received_from_changed_by: doc.received_from_changed_by ? 
-              (usersMap.get(doc.received_from_changed_by) || 'Unknown User') : 'Unknown User'
-          }));
-
-          setRequiredDocuments(processedData);
+          // Since we're now storing full names directly, we don't need to do user lookup
+          setRequiredDocuments(documents);
         }
       } catch (err) {
         toast.error('Failed to fetch documents');
@@ -457,10 +427,10 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
           return;
         }
   
-        const { error } = await supabase.rpc('update_document_requested_from_with_tracking', {
+        const { error } = await supabase.rpc('update_document_requested_from_with_name_tracking', {
           p_document_id: documentId,
           p_requested_from: requestedFrom,
-          p_changed_by: currentUser.id
+          p_changed_by_name: currentUser.full_name
         });
         
         if (error) {
@@ -483,10 +453,10 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
           return;
         }
   
-        const { error } = await supabase.rpc('update_document_received_from_with_tracking', {
+        const { error } = await supabase.rpc('update_document_received_from_with_name_tracking', {
           p_document_id: documentId,
           p_received_from: receivedFrom,
-          p_changed_by: currentUser.id
+          p_changed_by_name: currentUser.full_name
         });
         
         if (error) {

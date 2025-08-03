@@ -98,6 +98,9 @@ const CaseManagerPageNew: React.FC = () => {
   // Tasks due data
   const [tasksDue, setTasksDue] = useState<any[]>([]);
   
+  // Documents due data
+  const [documentsDue, setDocumentsDue] = useState<any[]>([]);
+  
   // New dashboard statistics
   const [caseStats, setCaseStats] = useState({
     inProcess: 0,
@@ -205,13 +208,32 @@ const CaseManagerPageNew: React.FC = () => {
 
   const fetchDocumentsPending = async () => {
     try {
-      const { count, error } = await supabase
-        .from('required_documents')
-        .select('*', { count: 'exact', head: true })
-        .in('status', ['pending', 'missing']);
+      // Get today and tomorrow dates
+      const today = new Date();
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      
+      // Format dates for comparison (YYYY-MM-DD)
+      const todayStr = today.toISOString().split('T')[0];
+      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+      // Fetch documents due today and tomorrow
+      const { data: documentsDue, error } = await supabase
+        .from('lead_required_documents')
+        .select(`
+          *,
+          lead:leads(name, lead_number),
+          contact:contacts(name, relationship)
+        `)
+        .in('status', ['pending', 'missing'])
+        .or(`due_date.eq.${todayStr},due_date.eq.${tomorrowStr}`)
+        .order('due_date', { ascending: true });
 
       if (error) throw error;
-      setDocumentsPendingCount(count || 0);
+      
+      // Set the count and store the documents for display
+      setDocumentsPendingCount(documentsDue?.length || 0);
+      setDocumentsDue(documentsDue || []);
     } catch (error) {
       console.error('Error fetching documents pending:', error);
     }
@@ -882,7 +904,7 @@ const CaseManagerPageNew: React.FC = () => {
                             <span className={`badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none`}>
                               {task.status.replace('_', ' ')}
                             </span>
-                            <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">
+                            <span className="badge bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none">
                               {task.priority}
                             </span>
                           </div>
@@ -913,6 +935,126 @@ const CaseManagerPageNew: React.FC = () => {
                             <p className="text-sm text-gray-700 line-clamp-3">{task.description}</p>
                           </div>
                         )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Documents Section - Show directly under dashboard boxes when documents box is clicked */}
+        {expanded === 'documents' && (
+          <div className="mb-6">
+            <div className="bg-white rounded-2xl p-6 shadow-lg border border-gray-200">
+              <h3 className="text-xl font-bold text-gray-900 mb-4">Documents Due Today & Tomorrow</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {documentsDue.length === 0 ? (
+                  <div className="col-span-full text-center py-12 text-gray-500">
+                    <DocumentTextIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                    <p className="text-lg font-medium mb-1">No documents due today or tomorrow</p>
+                    <p className="text-base">All documents are up to date!</p>
+                  </div>
+                ) : (
+                  documentsDue.map((document) => (
+                    <div 
+                      key={document.id} 
+                      className="bg-white rounded-xl shadow-lg border border-gray-200 hover:shadow-xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 group cursor-pointer"
+                      onClick={() => {
+                        // Find the lead for this document
+                        const lead = leads.find(l => l.id === document.lead_id);
+                        if (lead) {
+                          // Set the selected lead and switch to Documents tab
+                          setSelectedCase(lead);
+                          setActiveTab('documents');
+                        }
+                      }}
+                    >
+                      <div className="card-body p-5">
+                        {/* Top Row: Status and Lead Info */}
+                        <div className="flex justify-between items-start mb-4">
+                          <div className="flex gap-2">
+                            <span className={`badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none`}>
+                              {document.status}
+                            </span>
+                            {document.due_date && (
+                                                          <span className="badge bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none">
+                              Due: {new Date(document.due_date).toLocaleDateString()}
+                            </span>
+                            )}
+                          </div>
+                          {document.lead && (
+                            <div className="text-sm text-base-content/60 font-mono text-right">
+                              {document.lead.name} #{document.lead.lead_number}
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Document Name and Type */}
+                        <div className="mb-3">
+                          {/* Separation line before title */}
+                          <div className="border-b border-gray-200 mb-3"></div>
+                          
+                          <h2 className="card-title text-xl font-bold group-hover:text-purple-600 transition-colors">
+                            {document.document_name}
+                          </h2>
+                          <p className="text-sm text-gray-600 mt-1">
+                            Type: {document.document_type}
+                          </p>
+                          
+                          {/* Requested From Information */}
+                          {document.requested_from && (
+                            <div className="flex items-center justify-between mt-2">
+                              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Requested From</span>
+                              <span className="text-sm font-medium">{document.requested_from}</span>
+                            </div>
+                          )}
+                          
+                          {/* Requested By Information */}
+                          {document.requested_from_changed_by && (
+                            <div className="flex items-center justify-between mt-1">
+                              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">By</span>
+                              <span className="text-sm font-medium">{document.requested_from_changed_by}</span>
+                            </div>
+                          )}
+                          
+                          {/* Requested Date Information */}
+                          {document.requested_from_changed_at && (
+                            <div className="flex items-center justify-between mt-1">
+                              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Date</span>
+                              <span className="text-sm font-medium">{new Date(document.requested_from_changed_at).toLocaleDateString()}</span>
+                            </div>
+                          )}
+                          
+                          {/* Separation line after type */}
+                          <div className="border-b border-gray-200 mt-3"></div>
+                        </div>
+
+                        {/* Contact and Notes */}
+                        <div className="space-y-2">
+                          {document.contact && (
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Contact</span>
+                                <span className="text-sm font-medium">{document.contact.name}</span>
+                              </div>
+
+                              {document.contact.relationship && (
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Relationship</span>
+                                  <span className="text-sm font-medium">{document.contact.relationship}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {document.notes && (
+                            <div className="bg-gray-100 rounded-lg p-3">
+                              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 block">Notes</span>
+                              <p className="text-sm text-gray-700">{document.notes}</p>
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   ))
