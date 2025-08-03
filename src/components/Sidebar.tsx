@@ -2,6 +2,7 @@ import React from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { FaRobot } from 'react-icons/fa';
 import { useAdminRole } from '../hooks/useAdminRole';
+import { toast } from 'react-hot-toast';
 import {
   HomeIcon,
   UserGroupIcon,
@@ -118,8 +119,22 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   }, []);
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    window.location.reload();
+    try {
+      console.log('Signing out from sidebar...');
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        console.error('Error signing out:', error);
+        toast.error('Failed to sign out');
+      } else {
+        console.log('Successfully signed out from sidebar');
+        toast.success('Signed out successfully');
+        // Navigate to login page instead of reload
+        window.location.href = '/login';
+      }
+    } catch (error) {
+      console.error('Unexpected error during sign out:', error);
+      toast.error('Failed to sign out');
+    }
   };
 
   // 3. Add state for expanded menu

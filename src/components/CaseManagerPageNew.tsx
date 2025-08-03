@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { 
   Squares2X2Icon, 
   ListBulletIcon,
@@ -85,6 +85,7 @@ const CaseManagerPageNew: React.FC = () => {
   const [uploadingLeadId, setUploadingLeadId] = useState<string | null>(null);
   const [uploadedFiles, setUploadedFiles] = useState<{ [leadId: string]: UploadedFile[] }>({});
   const [isUploading, setIsUploading] = useState(false);
+  const mainContainerRef = useRef<HTMLDivElement>(null);
 
   // Dashboard specific states
   const [handlerCasesCount, setHandlerCasesCount] = useState(0);
@@ -414,11 +415,19 @@ const CaseManagerPageNew: React.FC = () => {
 
 
   const handleCaseSelect = (lead: HandlerLead) => {
+    // Immediately scroll to top before state changes
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    
     setSelectedCase(lead);
     setActiveTab('cases'); // Start with cases tab
   };
 
   const handleBackToCases = () => {
+    // Reset scroll position before state changes
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    document.body.scrollTop = 0;
+    document.documentElement.scrollTop = 0;
+    
     setSelectedCase(null);
     setActiveTab('cases');
   };
@@ -432,6 +441,48 @@ const CaseManagerPageNew: React.FC = () => {
     fetchCaseStatistics();
     fetchTotalBalance();
   }, []);
+
+  // Scroll to top when component first mounts with a selected case
+  useEffect(() => {
+    if (selectedCase) {
+      // Force scroll to top on mount and reset all scroll positions
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+    }
+  }, []);
+
+  // Scroll to top when a case is selected or tab changes
+  useLayoutEffect(() => {
+    if (selectedCase) {
+      // Force scroll to top immediately and reset scroll position
+      window.scrollTo({ top: 0, behavior: 'auto' });
+      
+      // Also reset scroll position on the document body
+      document.body.scrollTop = 0;
+      document.documentElement.scrollTop = 0;
+    }
+  }, [selectedCase]);
+
+  // Additional scroll effect for tab changes
+  useEffect(() => {
+    if (selectedCase) {
+      // Comprehensive scroll reset after component has rendered
+      setTimeout(() => {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        document.body.scrollTop = 0;
+        document.documentElement.scrollTop = 0;
+        
+        // Also reset any scrollable containers
+        const scrollableElements = document.querySelectorAll('.overflow-auto, .overflow-y-auto, .overflow-scroll');
+        scrollableElements.forEach((element) => {
+          if (element instanceof HTMLElement) {
+            element.scrollTop = 0;
+          }
+        });
+      }, 100);
+    }
+  }, [activeTab, selectedCase]);
 
   // Handle responsive case cards display
   useEffect(() => {
@@ -488,21 +539,39 @@ const CaseManagerPageNew: React.FC = () => {
   // If a case is selected, show single case view
   if (selectedCase) {
     return (
-      <div className="min-h-screen bg-white pt-8">
+      <div ref={mainContainerRef} className="min-h-screen bg-white pt-8">
         <div className="container mx-auto px-4 py-8">
           {/* Header with back button */}
-          <div className="mb-8">
-            <div className="flex items-center gap-4 mb-4">
+          <div className="mb-6 sm:mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-purple-700 rounded-full flex items-center justify-center">
+                    <span className="text-white font-bold text-sm">
+                      {selectedCase.name.charAt(0).toUpperCase()}
+                    </span>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div>
+                      <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900">{selectedCase.name}</h1>
+                      <p className="text-sm sm:text-lg text-gray-600">#{selectedCase.lead_number}</p>
+                    </div>
+                    {selectedCase.handler_stage && (
+                      <span className="badge badge-primary badge-sm sm:badge-md lg:badge-lg mt-1">
+                        {selectedCase.handler_stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
               <button
                 onClick={handleBackToCases}
-                className="btn btn-outline btn-sm"
+                className="btn btn-outline btn-sm w-full sm:w-auto"
               >
-                ← Back to Cases
+                Back to Dashboard
               </button>
-              <h1 className="text-3xl font-bold text-gray-900">{selectedCase.name}</h1>
-              <span className="badge badge-primary">#{selectedCase.lead_number}</span>
             </div>
-            <p className="text-gray-600">Case details and management</p>
+            <p className="text-gray-600 text-sm sm:text-base">Case details and management</p>
           </div>
 
           {/* Tab Navigation - Styled like Clients page */}
@@ -579,7 +648,7 @@ const CaseManagerPageNew: React.FC = () => {
 
   // Main dashboard view
   return (
-    <div className="min-h-screen bg-white pt-8">
+    <div ref={mainContainerRef} className="min-h-screen bg-white pt-8">
       <div className="container mx-auto px-4 py-8">
         {/* Header */}
         <div className="mb-8">

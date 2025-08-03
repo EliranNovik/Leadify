@@ -298,15 +298,15 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
     }
   
     return (
-      <div className="w-full px-8">
+      <div className="w-full px-2 sm:px-8">
         {/* Header */}
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-8">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 mb-6 sm:mb-8">
           <div>
-            <h3 className="text-xl font-bold text-gray-900">Applicants & Family Management</h3>
-            <p className="text-gray-600">Manage persecuted persons and their family members for all cases</p>
+            <h3 className="text-lg sm:text-xl font-bold text-gray-900">Applicants & Family Management</h3>
+            <p className="text-sm sm:text-base text-gray-600">Manage persecuted persons and their family members for all cases</p>
           </div>
           <button 
-            className="btn btn-primary gap-2"
+            className="btn btn-primary gap-2 text-sm sm:text-base"
             onClick={() => setShowAddContactModal(true)}
           >
             <UserPlusIcon className="w-4 h-4" />
@@ -325,21 +325,21 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
               const leadContacts = contactsByLead[lead.id] || [];
               
               return (
-                <div key={lead.id} className="w-full bg-white rounded-2xl p-8 shadow-lg border border-gray-200 mb-8">
-                  <div className="flex items-center justify-between mb-6">
+                <div key={lead.id} className="w-full bg-white rounded-2xl p-3 sm:p-8 shadow-lg border border-gray-200 mb-4 sm:mb-8">
+                  <div className="flex items-center justify-between mb-4 sm:mb-6">
                     <div>
-                      <h4 className="text-lg font-bold text-gray-900">{lead.name}</h4>
-                      <p className="text-blue-600 font-medium">Lead #{lead.lead_number}</p>
-                      <p className="text-sm text-gray-500">{leadContacts.length} family member(s)</p>
+                      <h4 className="text-base sm:text-lg font-bold text-gray-900">{lead.name}</h4>
+                      <p className="text-blue-600 font-medium text-sm sm:text-base">Lead #{lead.lead_number}</p>
+                      <p className="text-xs sm:text-sm text-gray-500">{leadContacts.length} family member(s)</p>
                     </div>
                     <button
-                      className="btn btn-outline btn-sm"
+                      className="btn btn-outline btn-xs sm:btn-sm text-xs sm:text-sm"
                       onClick={() => {
                         setSelectedLead(lead);
                         setShowAddContactModal(true);
                       }}
                     >
-                      <UserPlusIcon className="w-4 h-4" />
+                      <UserPlusIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                       Add Family Member
                     </button>
                   </div>
@@ -352,41 +352,41 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                       <p className="text-xs text-gray-400">Click "Add Family Member" to get started</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6">
                       {leadContacts.map((contact) => (
                         <div key={contact.id} className="bg-white rounded-xl shadow-lg border border-gray-200 hover:shadow-xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 group flex flex-col h-full">
-                          <div className="card-body p-5 flex flex-col h-full">
+                          <div className="card-body p-3 sm:p-5 flex flex-col h-full">
                             <div className="flex justify-between items-start mb-2">
-                              <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
+                              <h2 className="card-title text-base sm:text-xl font-bold group-hover:text-primary transition-colors">
                                 {contact.name}
                               </h2>
-                              <div className="flex gap-2">
+                              <div className="flex gap-1 sm:gap-2">
                                 <button 
-                                  className="btn btn-ghost text-purple-600 hover:bg-purple-600 hover:text-white"
+                                  className="btn btn-ghost text-purple-600 hover:bg-purple-600 hover:text-white btn-xs sm:btn-sm"
                                   onClick={() => setEditingContact(contact)}
                                 >
-                                  <PencilIcon className="w-5 h-5" />
+                                  <PencilIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                                 </button>
                                 <button 
-                                  className="btn btn-ghost text-purple-600 hover:bg-purple-600 hover:text-white"
+                                  className="btn btn-ghost text-purple-600 hover:bg-purple-600 hover:text-white btn-xs sm:btn-sm"
                                   onClick={() => deleteContact(contact.id)}
                                 >
-                                  <TrashIcon className="w-5 h-5" />
+                                  <TrashIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                                 </button>
                               </div>
                             </div>
                             
-                            <div className="flex flex-wrap gap-1 mb-4">
-                              <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">
+                            <div className="flex flex-wrap gap-1 mb-3 sm:mb-4">
+                              <span className="badge badge-xs sm:badge-sm bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">
                                 {contact.relationship.replace('_', ' ')}
                               </span>
                               {contact.is_main_applicant && (
-                                <span className="badge bg-gradient-to-r from-blue-500 to-blue-600 text-white border-none">
+                                <span className="badge badge-xs sm:badge-sm bg-gradient-to-r from-blue-500 to-blue-600 text-white border-none">
                                   Main
                                 </span>
                               )}
                               {contact.is_persecuted && (
-                                <span className="badge bg-gradient-to-r from-red-500 to-red-600 text-white border-none">
+                                <span className="badge badge-xs sm:badge-sm bg-gradient-to-r from-red-500 to-red-600 text-white border-none">
                                   Persecuted
                                 </span>
                               )}
@@ -395,11 +395,11 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                             <div className="divider my-0"></div>
   
                             {/* Contact Info Grid */}
-                            <div className="grid grid-cols-2 gap-x-4 gap-y-3 mt-4 flex-grow">
+                            <div className="grid grid-cols-2 gap-x-2 sm:gap-x-4 gap-y-2 sm:gap-y-3 mt-3 sm:mt-4 flex-grow">
                               {contact.email && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Email</span>
-                                  <span className="text-sm font-medium truncate" title={contact.email}>
+                                  <span className="text-xs sm:text-sm font-medium truncate" title={contact.email}>
                                     {contact.email}
                                   </span>
                                 </div>
@@ -407,53 +407,53 @@ const ContactsTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                               {contact.phone && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Phone</span>
-                                  <span className="text-sm font-medium">{contact.phone}</span>
+                                  <span className="text-xs sm:text-sm font-medium">{contact.phone}</span>
                                 </div>
                               )}
                               {contact.birth_date && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Birth Date</span>
-                                  <span className="text-sm font-medium">{new Date(contact.birth_date).toLocaleDateString()}</span>
+                                  <span className="text-xs sm:text-sm font-medium">{new Date(contact.birth_date).toLocaleDateString()}</span>
                                 </div>
                               )}
                               {contact.citizenship && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Citizenship</span>
-                                  <span className="text-sm font-medium">{contact.citizenship}</span>
+                                  <span className="text-xs sm:text-sm font-medium">{contact.citizenship}</span>
                                 </div>
                               )}
                               {contact.birth_place && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Birth Place</span>
-                                  <span className="text-sm font-medium">{contact.birth_place}</span>
+                                  <span className="text-xs sm:text-sm font-medium">{contact.birth_place}</span>
                                 </div>
                               )}
                               {contact.current_address && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Address</span>
-                                  <span className="text-sm font-medium">{contact.current_address}</span>
+                                  <span className="text-xs sm:text-sm font-medium">{contact.current_address}</span>
                                 </div>
                               )}
                               {contact.passport_number && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Passport</span>
-                                  <span className="text-sm font-medium">{contact.passport_number}</span>
+                                  <span className="text-xs sm:text-sm font-medium">{contact.passport_number}</span>
                                 </div>
                               )}
                               {contact.id_number && (
                                 <div className="flex flex-col gap-1">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">ID Number</span>
-                                  <span className="text-sm font-medium">{contact.id_number}</span>
+                                  <span className="text-xs sm:text-sm font-medium">{contact.id_number}</span>
                                 </div>
                               )}
                             </div>
   
                             {/* Document Status - Always at bottom */}
-                            <div className="mt-auto pt-4 border-t border-base-200/50">
+                            <div className="mt-auto pt-3 sm:pt-4 border-t border-base-200/50">
                               <div className="flex flex-col gap-2">
                                 <div className="flex justify-between items-center">
                                   <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Documents</span>
-                                  <span className="text-sm font-bold">
+                                  <span className="text-xs sm:text-sm font-bold">
                                     {contact.completed_documents || 0}/{contact.document_count || 0}
                                   </span>
                                 </div>

@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import { searchLeads } from '../lib/supabase';
 import { supabase } from '../lib/supabase';
 import type { Lead } from '../lib/supabase';
+import { toast } from 'react-hot-toast';
 import {
   Bars3Icon,
   MagnifyingGlassIcon,
@@ -394,8 +395,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    window.location.reload();
+    try {
+      console.log('Signing out from header...');
+      const { error } = await supabase.auth.signOut();
+      if (error) {
+        console.error('Error signing out:', error);
+        toast.error('Failed to sign out');
+      } else {
+        console.log('Successfully signed out from header');
+        toast.success('Signed out successfully');
+        // Navigate to login page instead of reload
+        window.location.href = '/login';
+      }
+    } catch (error) {
+      console.error('Unexpected error during sign out:', error);
+      toast.error('Failed to sign out');
+    }
   };
 
   const handleMicrosoftSignOut = async () => {

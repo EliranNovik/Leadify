@@ -214,51 +214,51 @@ const CasesTab: React.FC<HandlerTabProps> = ({
   }
 
   return (
-    <div className="space-y-6">
-      <h3 className="text-xl font-bold text-gray-900">Case Summary</h3>
+    <div className="space-y-4 sm:space-y-6">
+      <h3 className="text-lg sm:text-xl font-bold text-gray-900">Case Summary</h3>
       
       {/* Individual Information Boxes */}
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-6">
         {leads.map((lead) => {
           const leadData = caseData[lead.id] || {};
           return (
             <React.Fragment key={lead.id}>
               {/* Expert Opinion & Eligibility */}
-              <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
-                <div className="flex items-center gap-2 mb-6">
-                  <div className="w-6 h-6 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-                    <CheckBadgeIcon className="w-4 h-4 text-white" />
+              <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 sm:p-6">
+                <div className="flex items-center gap-2 mb-4 sm:mb-6">
+                  <div className="w-5 h-5 sm:w-6 sm:h-6 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+                    <CheckBadgeIcon className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                   </div>
-                  <h5 className="font-semibold text-gray-900 text-lg">Expert Opinion & Eligibility</h5>
+                  <h5 className="font-semibold text-gray-900 text-base sm:text-lg">Expert Opinion & Eligibility</h5>
                 </div>
-                <div className="border-b border-gray-200 mb-6"></div>
-                <div className="space-y-4">
+                <div className="border-b border-gray-200 mb-4 sm:mb-6"></div>
+                <div className="space-y-3 sm:space-y-4">
                   <div className="flex justify-between items-start">
-                    <span className="text-sm font-medium text-gray-700">Expert:</span>
-                    <p className="font-medium text-gray-900 text-right">{lead.expert || 'Not assigned'}</p>
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Expert:</span>
+                    <p className="font-medium text-gray-900 text-right text-xs sm:text-sm">{lead.expert || 'Not assigned'}</p>
                   </div>
                   <div className="flex justify-between items-start">
-                    <span className="text-sm font-medium text-gray-700">Eligibility Status:</span>
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Eligibility Status:</span>
                     <div className="text-right">
-                      <span className="badge badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">
+                      <span className="badge badge-xs sm:badge-sm badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">
                         {typeof leadData.eligibility_status === 'string' ? leadData.eligibility_status.replace(/_/g, ' ') : 'Under Review'}
                       </span>
                     </div>
                   </div>
                   <div className="flex justify-between items-start">
-                    <span className="text-sm font-medium text-gray-700">Section Eligibility:</span>
-                    <p className="font-medium text-gray-900 text-right">
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Section Eligibility:</span>
+                    <p className="font-medium text-gray-900 text-right text-xs sm:text-sm">
                       {typeof lead.section_eligibility === 'string' ? lead.section_eligibility :
                        typeof leadData.section_eligibility === 'string' ? leadData.section_eligibility : 'Not specified'}
                     </p>
                   </div>
                   <div>
-                    <span className="text-sm font-medium text-gray-700">Expert Notes:</span>
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Expert Notes:</span>
                     <div className="text-gray-700 mt-1 space-y-2">
                       {Array.isArray(lead.expert_notes) && lead.expert_notes.length > 0 ? (
                         lead.expert_notes.map((note: any, index: number) => (
-                          <div key={index} className="bg-gray-50 p-3 rounded-lg">
-                            <p className="text-sm whitespace-pre-wrap">
+                          <div key={index} className="bg-gray-50 p-2 sm:p-3 rounded-lg">
+                            <p className="text-xs sm:text-sm whitespace-pre-wrap">
                               {note.content || note.note || JSON.stringify(note)}
                             </p>
                             {note.timestamp && (
@@ -304,35 +304,35 @@ const CasesTab: React.FC<HandlerTabProps> = ({
               </div>
 
               {/* Facts of Case */}
-              <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
-                <div className="flex items-center gap-2 mb-6">
-                  <div className="w-6 h-6 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-                    <ClipboardDocumentListIcon className="w-4 h-4 text-white" />
+              <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 sm:p-6">
+                <div className="flex items-center gap-2 mb-4 sm:mb-6">
+                  <div className="w-5 h-5 sm:w-6 sm:h-6 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+                    <ClipboardDocumentListIcon className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                   </div>
-                  <h5 className="font-semibold text-gray-900 text-lg">Facts of Case</h5>
+                  <h5 className="font-semibold text-gray-900 text-base sm:text-lg">Facts of Case</h5>
                 </div>
-                <div className="border-b border-gray-200 mb-6"></div>
-                <div className="space-y-4">
+                <div className="border-b border-gray-200 mb-4 sm:mb-6"></div>
+                <div className="space-y-3 sm:space-y-4">
                   <div className="flex justify-between items-start">
-                    <span className="text-sm font-medium text-gray-700">Category:</span>
-                    <p className="font-medium text-gray-900 text-right">{lead.category || 'N/A'}</p>
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Category:</span>
+                    <p className="font-medium text-gray-900 text-right text-xs sm:text-sm">{lead.category || 'N/A'}</p>
                   </div>
                   <div className="flex justify-between items-start">
-                    <span className="text-sm font-medium text-gray-700">Stage:</span>
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Stage:</span>
                     <div className="text-right">
-                      <span className="badge badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">
+                      <span className="badge badge-xs sm:badge-sm badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">
                         {lead.stage ? lead.stage.replace(/_/g, ' ') : 'N/A'}
                       </span>
                     </div>
                   </div>
                   <div className="flex justify-between items-start">
-                    <span className="text-sm font-medium text-gray-700">Handler:</span>
-                    <p className="font-medium text-gray-900 text-right">{lead.handler || 'Not assigned'}</p>
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Handler:</span>
+                    <p className="font-medium text-gray-900 text-right text-xs sm:text-sm">{lead.handler || 'Not assigned'}</p>
                   </div>
                   <div>
-                    <span className="text-sm font-medium text-gray-700">Case Details:</span>
-                    <div className="bg-gray-50 p-4 rounded-lg mt-2">
-                      <p className="text-gray-700 whitespace-pre-wrap">
+                    <span className="text-xs sm:text-sm font-medium text-gray-700">Case Details:</span>
+                    <div className="bg-gray-50 p-2 sm:p-4 rounded-lg mt-2">
+                      <p className="text-gray-700 whitespace-pre-wrap text-xs sm:text-sm">
                         {typeof lead.facts === 'string' ? lead.facts :
                          typeof leadData.facts === 'string' ? leadData.facts : 'No case facts available'}
                       </p>
@@ -342,15 +342,15 @@ const CasesTab: React.FC<HandlerTabProps> = ({
               </div>
 
               {/* Lead Summary */}
-              <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
-                <div className="flex items-center gap-2 mb-6">
-                  <div className="w-6 h-6 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
-                    <DocumentTextIcon className="w-4 h-4 text-white" />
+              <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 sm:p-6">
+                <div className="flex items-center gap-2 mb-4 sm:mb-6">
+                  <div className="w-5 h-5 sm:w-6 sm:h-6 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+                    <DocumentTextIcon className="w-3 h-3 sm:w-4 sm:h-4 text-white" />
                   </div>
-                  <h5 className="font-semibold text-gray-900 text-lg">Lead Summary</h5>
+                  <h5 className="font-semibold text-gray-900 text-base sm:text-lg">Lead Summary</h5>
                 </div>
-                <div className="border-b border-gray-200 mb-6"></div>
-                <div className="space-y-3 text-sm">
+                <div className="border-b border-gray-200 mb-4 sm:mb-6"></div>
+                <div className="space-y-2 sm:space-y-3 text-xs sm:text-sm">
                   <div className="flex justify-between items-start">
                     <span className="text-gray-500">Manager:</span>
                     <p className="font-medium text-right">{lead.manager || 'Not assigned'}</p>
@@ -380,9 +380,9 @@ const CasesTab: React.FC<HandlerTabProps> = ({
                               href={contract.link} 
                               target="_blank" 
                               rel="noopener noreferrer" 
-                              className="text-blue-600 hover:text-blue-800 underline flex items-center gap-1 justify-end text-sm"
+                              className="text-blue-600 hover:text-blue-800 underline flex items-center gap-1 justify-end text-xs sm:text-sm"
                             >
-                              <LinkIcon className="w-3 h-3" /> 
+                              <LinkIcon className="w-2 h-2 sm:w-3 sm:h-3" /> 
                               {contract.contactName}
                             </a>
                           ))}
@@ -394,8 +394,8 @@ const CasesTab: React.FC<HandlerTabProps> = ({
                   </div>
                   <div>
                     <span className="text-gray-500">Special Notes:</span>
-                    <div className="bg-gray-50 p-4 rounded-lg mt-2">
-                      <p className="font-medium text-gray-700 whitespace-pre-wrap">
+                    <div className="bg-gray-50 p-2 sm:p-4 rounded-lg mt-2">
+                      <p className="font-medium text-gray-700 whitespace-pre-wrap text-xs sm:text-sm">
                         {typeof leadData.special_notes === 'string' ? leadData.special_notes : 'No special notes'}
                       </p>
                     </div>

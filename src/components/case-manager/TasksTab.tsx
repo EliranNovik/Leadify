@@ -5,7 +5,8 @@ import {
   TrashIcon, 
   XMarkIcon,
   PlusIcon,
-  MagnifyingGlassIcon
+  MagnifyingGlassIcon,
+  EllipsisVerticalIcon
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -71,6 +72,7 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
     const [filterStatus, setFilterStatus] = useState<string>('all');
     const [filterPriority, setFilterPriority] = useState<string>('all');
     const [searchTerm, setSearchTerm] = useState('');
+    const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   
     // New task form state
     const [newTask, setNewTask] = useState({
@@ -242,6 +244,35 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
         toast.error('Failed to delete task');
       }
     };
+
+    // Dropdown functions
+    const toggleDropdown = (taskId: string) => {
+      setOpenDropdown(openDropdown === taskId ? null : taskId);
+    };
+
+    const handleEditClick = (task: HandlerTask) => {
+      setEditingTask(task);
+      setOpenDropdown(null);
+    };
+
+    const handleDeleteClick = (taskId: string) => {
+      deleteTask(taskId);
+      setOpenDropdown(null);
+    };
+
+    // Close dropdown when clicking outside
+    useEffect(() => {
+      const handleClickOutside = (event: MouseEvent) => {
+        if (openDropdown && !(event.target as Element).closest('.dropdown-container')) {
+          setOpenDropdown(null);
+        }
+      };
+
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }, [openDropdown]);
   
     // Filter tasks
     const filteredTasks = tasks.filter(task => {
@@ -341,27 +372,41 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                 <div className="card-body p-5">
                   {/* Top Row: Status and Priority */}
                   <div className="flex justify-between items-start mb-4">
-                    <div className="flex gap-6">
-                      <span className={`badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none`}>
+                    <div className="flex gap-2 sm:gap-6">
+                      <span className={`badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none text-xs sm:text-sm`}>
                         {task.status.replace('_', ' ')}
                       </span>
-                      <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">
+                      <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none text-xs sm:text-sm">
                         {task.priority}
                       </span>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="relative dropdown-container">
                       <button 
                         className="btn btn-ghost text-purple-600 hover:bg-purple-600 hover:text-white"
-                        onClick={() => setEditingTask(task)}
+                        onClick={() => toggleDropdown(task.id)}
                       >
-                        <PencilIcon className="w-5 h-5" />
+                        <EllipsisVerticalIcon className="w-8 h-8" />
                       </button>
-                      <button 
-                        className="btn btn-ghost text-purple-600 hover:bg-purple-600 hover:text-white"
-                        onClick={() => deleteTask(task.id)}
-                      >
-                        <TrashIcon className="w-5 h-5" />
-                      </button>
+                      
+                      {/* Dropdown Menu */}
+                      {openDropdown === task.id && (
+                        <div className="absolute right-0 top-full mt-1 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-10 min-w-[120px]">
+                          <button
+                            className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                            onClick={() => handleEditClick(task)}
+                          >
+                            <PencilIcon className="w-4 h-4" />
+                            Edit
+                          </button>
+                          <button
+                            className="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-gray-100 flex items-center gap-2"
+                            onClick={() => handleDeleteClick(task.id)}
+                          >
+                            <TrashIcon className="w-4 h-4" />
+                            Delete
+                          </button>
+                        </div>
+                      )}
                     </div>
                   </div>
   
@@ -540,7 +585,7 @@ const TasksTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
         {/* Edit Task Modal */}
         {editingTask && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/30">
-            <div className="bg-white rounded-2xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
+            <div className="bg-white rounded-2xl p-6 w-full h-full sm:max-w-md sm:h-auto sm:max-h-[90vh] overflow-y-auto">
               <div className="flex items-center justify-between mb-6">
                 <h3 className="text-xl font-bold">Edit Task</h3>
                 <button 

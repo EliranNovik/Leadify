@@ -11,7 +11,8 @@ import {
   EyeIcon,
   UserGroupIcon,
   FolderIcon,
-  ChevronDownIcon
+  ChevronDownIcon,
+  EllipsisVerticalIcon
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -50,6 +51,12 @@ interface RequiredDocument {
   received_date?: string;
   approved_date?: string;
   requested_by?: string;
+  requested_from?: string;
+  received_from?: string;
+  requested_from_changed_at?: string;
+  received_from_changed_at?: string;
+  requested_from_changed_by?: string;
+  received_from_changed_by?: string;
   created_at: string;
   updated_at: string;
   lead?: {
@@ -128,6 +135,36 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
     // Mobile detection
     const [isMobile, setIsMobile] = useState(false);
     const [expandedDocuments, setExpandedDocuments] = useState<Set<string>>(new Set());
+    
+    // Dropdown menu state
+    const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+
+    // Dropdown options
+    const sourceOptions = [
+      'Ministry of Interior',
+      'Rabbinical Office', 
+      'Foreign Ministry',
+      'Client',
+      'Police',
+      'Embassy'
+    ];
+
+    // Handle dropdown menu toggle
+    const toggleDropdown = (documentId: string) => {
+      setOpenDropdown(openDropdown === documentId ? null : documentId);
+    };
+
+    // Close dropdown when clicking outside
+    useEffect(() => {
+      const handleClickOutside = (event: MouseEvent) => {
+        if (openDropdown && !(event.target as Element).closest('.dropdown-menu')) {
+          setOpenDropdown(null);
+        }
+      };
+
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [openDropdown]);
 
     useEffect(() => {
       const checkMobile = () => {
@@ -172,20 +209,55 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
       }
     };
   
-    // Fetch required documents from database
+    // Fetch required documents from database with user information
     const fetchRequiredDocuments = async () => {
       setLoading(true);
       try {
-        const { data, error } = await supabase
+        // First fetch the documents
+        const { data: documents, error: documentsError } = await supabase
           .from('lead_required_documents')
           .select('*')
           .in('lead_id', leads.length > 0 ? leads.map((lead: HandlerLead) => lead.id) : [])
           .order('created_at', { ascending: false });
         
-        if (error) {
-          toast.error('Error fetching documents: ' + error.message);
-        } else if (data) {
-          setRequiredDocuments(data);
+        if (documentsError) {
+          toast.error('Error fetching documents: ' + documentsError.message);
+          return;
+        }
+
+        if (documents) {
+          // Get unique user IDs from the documents
+          const userIds = new Set<string>();
+          documents.forEach(doc => {
+            if (doc.requested_from_changed_by) userIds.add(doc.requested_from_changed_by);
+            if (doc.received_from_changed_by) userIds.add(doc.received_from_changed_by);
+          });
+
+          // Fetch user information
+          let usersMap = new Map();
+          if (userIds.size > 0) {
+            const { data: users, error: usersError } = await supabase
+              .from('users')
+              .select('id, full_name, email')
+              .in('id', Array.from(userIds));
+
+            if (!usersError && users) {
+              users.forEach(user => {
+                usersMap.set(user.id, user.full_name || user.email || 'Unknown User');
+              });
+            }
+          }
+
+          // Process the data to include user names
+          const processedData = documents.map(doc => ({
+            ...doc,
+            requested_from_changed_by: doc.requested_from_changed_by ? 
+              (usersMap.get(doc.requested_from_changed_by) || 'Unknown User') : 'Unknown User',
+            received_from_changed_by: doc.received_from_changed_by ? 
+              (usersMap.get(doc.received_from_changed_by) || 'Unknown User') : 'Unknown User'
+          }));
+
+          setRequiredDocuments(processedData);
         }
       } catch (err) {
         toast.error('Failed to fetch documents');
@@ -376,6 +448,58 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
         console.error('Error updating document status:', err);
       }
     };
+
+    // Update document requested_from with tracking
+    const updateDocumentRequestedFrom = async (documentId: string, requestedFrom: string) => {
+      try {
+        if (!currentUser) {
+          toast.error('User not authenticated');
+          return;
+        }
+  
+        const { error } = await supabase.rpc('update_document_requested_from_with_tracking', {
+          p_document_id: documentId,
+          p_requested_from: requestedFrom,
+          p_changed_by: currentUser.id
+        });
+        
+        if (error) {
+          toast.error('Error updating requested from: ' + error.message);
+        } else {
+          toast.success(`Requested from updated to ${requestedFrom}`);
+          await fetchRequiredDocuments();
+        }
+      } catch (err) {
+        toast.error('Failed to update requested from');
+        console.error('Error updating requested from:', err);
+      }
+    };
+
+    // Update document received_from with tracking
+    const updateDocumentReceivedFrom = async (documentId: string, receivedFrom: string) => {
+      try {
+        if (!currentUser) {
+          toast.error('User not authenticated');
+          return;
+        }
+  
+        const { error } = await supabase.rpc('update_document_received_from_with_tracking', {
+          p_document_id: documentId,
+          p_received_from: receivedFrom,
+          p_changed_by: currentUser.id
+        });
+        
+        if (error) {
+          toast.error('Error updating received from: ' + error.message);
+        } else {
+          toast.success(`Received from updated to ${receivedFrom}`);
+          await fetchRequiredDocuments();
+        }
+      } catch (err) {
+        toast.error('Failed to update received from');
+        console.error('Error updating received from:', err);
+      }
+    };
   
     // Update document details
     const updateDocument = async () => {
@@ -483,16 +607,16 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
     }
   
     return (
-      <div className="w-full px-8">
+      <div className="w-full px-2 sm:px-8">
         {/* Header */}
-        <div className="mb-8">
+        <div className="mb-6 sm:mb-8">
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
-              <h3 className="text-xl font-bold text-gray-900">Document Management</h3>
-              <p className="text-gray-600">Manage required documents for all cases</p>
+              <h3 className="text-lg sm:text-xl font-bold text-gray-900">Document Management</h3>
+              <p className="text-sm sm:text-base text-gray-600">Manage required documents for all cases</p>
             </div>
             <button 
-              className="btn btn-primary gap-2"
+              className="btn btn-primary gap-2 text-sm sm:text-base"
               onClick={() => setShowAddDocModal(true)}
             >
               <PlusIcon className="w-4 h-4" />
@@ -502,7 +626,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
         </div>
 
         {/* Content Container with Background */}
-        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-6">
+        <div className="bg-white rounded-xl shadow-lg border border-gray-200 p-3 sm:p-6">
           {leads.length === 0 ? (
             <div className="text-center py-16 px-8 text-gray-500">
               <DocumentTextIcon className="w-16 h-16 mx-auto mb-4 text-gray-300" />
@@ -514,7 +638,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                 const leadContacts = contacts.filter(contact => contact.lead_id === lead.id);
                 
                 return (
-                  <div key={lead.id} className="w-full p-8 mb-8">
+                  <div key={lead.id} className="w-full p-2 sm:p-8 mb-4 sm:mb-8">
                     <div className="flex items-center justify-between mb-6">
                       <div>
                         <h4 className="text-lg font-bold text-gray-900 mb-2">Total Applicants</h4>
@@ -544,7 +668,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                       <p className="text-sm text-gray-400">Add applicants in the Applicants tab first</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-8">
                       {leadContacts.map((contact) => {
                         const contactDocuments = requiredDocuments.filter(doc => doc.contact_id === contact.id);
                         const completedDocs = contactDocuments.filter(doc => ['approved', 'received'].includes(doc.status)).length;
@@ -580,7 +704,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                             {/* Front of Card */}
                             {(!flippedCards.has(contact.id) || !isMobile) && (
                               <div className={`flex ${isExpanded ? 'gap-6' : ''}`}>
-                                <div className={`${isExpanded ? 'w-1/2' : 'w-full'} p-6 relative`}>
+                                <div className={`${isExpanded ? 'w-1/2' : 'w-full'} p-3 sm:p-6 relative`}>
                                   {/* Completion Progress Ring */}
                                   <div className="absolute -top-4 -right-4">
                                     <div className="radial-progress text-white text-xs font-bold bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600" 
@@ -591,21 +715,21 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                   </div>
   
                                   {/* Contact Header */}
-                                  <div className="mb-6">
+                                  <div className="mb-4 sm:mb-6">
                                     <div className="flex items-start justify-between mb-3">
                                       <div className="flex-1">
-                                        <div className="flex items-center gap-3 mb-2">
-                                          <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-lg">
+                                        <div className="flex items-center gap-2 sm:gap-3 mb-2">
+                                          <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold text-base sm:text-lg">
                                             {contact.name.charAt(0).toUpperCase()}
                                           </div>
                 <div>
-                                            <h5 className="text-lg font-bold text-gray-900">{contact.name}</h5>
-                                            <div className="flex items-center gap-2 mt-1">
-                                              <span className="badge badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">
+                                            <h5 className="text-base sm:text-lg font-bold text-gray-900">{contact.name}</h5>
+                                            <div className="flex items-center gap-1 sm:gap-2 mt-1">
+                                              <span className="badge badge-xs sm:badge-sm badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">
                                                 {contact.relationship?.replace('_', ' ')}
                                               </span>
                                               {contact.is_persecuted && (
-                                                <span className="badge badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">⚠️ Persecuted</span>
+                                                <span className="badge badge-xs sm:badge-sm badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">⚠️ Persecuted</span>
                                               )}
                                             </div>
                 </div>
@@ -614,10 +738,10 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
             </div>
   
                                     {/* Document Status Summary */}
-                                    <div className="p-4">
+                                    <div className="p-2 sm:p-4">
                                       <div className="flex items-center justify-between mb-2">
-                                        <span className="text-sm font-medium text-gray-700">Document Progress</span>
-                                        <span className="text-sm font-bold text-gray-900">{completedDocs}/{totalDocs}</span>
+                                        <span className="text-xs sm:text-sm font-medium text-gray-700">Document Progress</span>
+                                        <span className="text-xs sm:text-sm font-bold text-gray-900">{completedDocs}/{totalDocs}</span>
                                       </div>
                                       <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
                                         <div 
@@ -633,7 +757,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                   </div>
   
                                   {/* Drag & Drop Area - Compact */}
-                                  <div className={`mb-4 p-3 border-2 border-dashed rounded-lg text-center transition-all duration-300 cursor-pointer ${
+                                  <div className={`mb-3 sm:mb-4 p-2 sm:p-3 border-2 border-dashed rounded-lg text-center transition-all duration-300 cursor-pointer ${
                                     dragOverContact === contact.id 
                                       ? 'border-purple-500 bg-purple-100' 
                                       : 'border-gray-300 bg-gray-50 hover:border-purple-400'
@@ -654,7 +778,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                       }}
                                     />
                                     <label htmlFor={`file-upload-${contact.id}`} className="cursor-pointer block w-full h-full">
-                                      <DocumentArrowUpIcon className="w-6 h-6 mx-auto mb-1 text-purple-500" />
+                                      <DocumentArrowUpIcon className="w-5 h-5 sm:w-6 sm:h-6 mx-auto mb-1 text-purple-500" />
                                       <p className="text-xs text-gray-600">
                                         Drop files or browse
                                       </p>
@@ -666,6 +790,7 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                     <div className="mt-6">
                                       <div className="text-center mb-4">
                                         <h3 className="text-xl font-bold text-gray-900 mb-2">Required Documents</h3>
+                                        <div className="border-b-2 border-gray-300 mb-4"></div>
                                         {contactDocuments.length > 0 && (
                                           <button
                                             className="btn btn-ghost text-purple-600 hover:text-purple-700 flex items-center gap-2 mx-auto"
@@ -700,47 +825,62 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                                 <div className="flex items-start justify-between mb-3">
                                                   <div className="flex-1">
                                                     <div className="mb-3">
-                                                      <h4 className="text-base font-bold text-gray-900">{doc.document_name}</h4>
+                                                      <div className="flex items-center justify-between">
+                                                        <h4 className="text-base font-bold text-gray-900">{doc.document_name}</h4>
+                                                        {doc.due_date && (
+                                                          <span className="text-sm text-gray-600">
+                                                            <strong>Due:</strong> {doc.due_date ? new Date(doc.due_date).toLocaleDateString() : 'No due date'}
+                                                          </span>
+                                                        )}
+                                                      </div>
                                                     </div>
                                                     <div className="flex items-center justify-between mb-2">
                                                       <span className="text-sm text-gray-600">Type: {doc.document_type}</span>
-                                                      {doc.due_date && (
-                                                        <span className="text-sm text-gray-600">
-                                                          <strong>Due:</strong> {doc.due_date ? new Date(doc.due_date).toLocaleDateString() : 'No due date'}
-                                                        </span>
-                                                      )}
                                                     </div>
-                                                    {doc.notes && (
-                                                      <p className="text-sm text-gray-600 mt-2">
-                                                        <strong>Notes:</strong> {doc.notes}
-                                                      </p>
-                                                    )}
+                                                    <div className="border-b border-gray-200 mb-3"></div>
                                                   </div>
-                                                  <div className="flex items-center gap-2">
+                                                  <div className="relative dropdown-menu">
                                                     <button
                                                       className="btn btn-ghost btn-sm text-purple-600 hover:text-purple-700"
                                                       onClick={(e) => {
                                                         e.stopPropagation();
-                                                        setEditingDocument(doc);
+                                                        toggleDropdown(doc.id);
                                                       }}
-                                                      title="Edit document"
+                                                      title="More options"
                                                     >
-                                                      <PencilIcon className="w-4 h-4" />
+                                                      <EllipsisVerticalIcon className="w-7 h-7" />
                                                     </button>
-                                                    <button
-                                                      className="btn btn-ghost btn-sm text-purple-600 hover:text-purple-700"
-                                                      onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        deleteDocument(doc.id);
-                                                      }}
-                                                      title="Delete document"
-                                                    >
-                                                      <TrashIcon className="w-4 h-4" />
-                                                    </button>
+                                                    
+                                                    {openDropdown === doc.id && (
+                                                      <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 min-w-[120px]">
+                                                        <button
+                                                          className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            setEditingDocument(doc);
+                                                            setOpenDropdown(null);
+                                                          }}
+                                                        >
+                                                          <PencilIcon className="w-4 h-4" />
+                                                          Edit
+                                                        </button>
+                                                        <button
+                                                          className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-100 flex items-center gap-2"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            deleteDocument(doc.id);
+                                                            setOpenDropdown(null);
+                                                          }}
+                                                        >
+                                                          <TrashIcon className="w-4 h-4" />
+                                                          Delete
+                                                        </button>
+                                                      </div>
+                                                    )}
                                                   </div>
                                                 </div>
                                                 
-                                                <div className="flex items-center gap-3">
+                                                <div className="flex items-center gap-3 mb-3">
                                                   <span className="text-sm font-medium text-gray-700">Status:</span>
                                                   <div className="relative">
                                                     <button
@@ -756,6 +896,75 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                                     </button>
                                                   </div>
                                                 </div>
+
+                                                {/* Requested From and Received From Dropdowns */}
+                                                <div className="flex items-center gap-3 mb-3">
+                                                  <div className="flex items-center gap-2">
+                                                    <span className="text-sm font-medium text-gray-700">Requested from:</span>
+                                                    <select
+                                                      className="select select-bordered select-sm bg-white border-gray-300 text-gray-700 focus:border-purple-500 focus:ring-purple-500"
+                                                      value={doc.requested_from || ''}
+                                                      onChange={(e) => {
+                                                        e.stopPropagation();
+                                                        updateDocumentRequestedFrom(doc.id, e.target.value);
+                                                      }}
+                                                      onClick={(e) => e.stopPropagation()}
+                                                    >
+                                                      <option value="">Select source...</option>
+                                                      {sourceOptions.map((option) => (
+                                                        <option key={option} value={option}>
+                                                          {option}
+                                                        </option>
+                                                      ))}
+                                                    </select>
+                                                  </div>
+                                                  {doc.requested_from && doc.requested_from_changed_at && (
+                                                    <div className="flex items-center gap-1 text-xs text-gray-500">
+                                                      <span>by {doc.requested_from_changed_by || 'Unknown'}</span>
+                                                      <span>•</span>
+                                                      <span>{new Date(doc.requested_from_changed_at).toLocaleDateString()}</span>
+                                                    </div>
+                                                  )}
+                                                </div>
+
+                                                <div className="flex items-center gap-3 mb-3">
+                                                  <div className="flex items-center gap-2">
+                                                    <span className="text-sm font-medium text-gray-700">Received from:</span>
+                                                    <select
+                                                      className="select select-bordered select-sm bg-white border-gray-300 text-gray-700 focus:border-purple-500 focus:ring-purple-500"
+                                                      value={doc.received_from || ''}
+                                                      onChange={(e) => {
+                                                        e.stopPropagation();
+                                                        updateDocumentReceivedFrom(doc.id, e.target.value);
+                                                      }}
+                                                      onClick={(e) => e.stopPropagation()}
+                                                    >
+                                                      <option value="">Select source...</option>
+                                                      {sourceOptions.map((option) => (
+                                                        <option key={option} value={option}>
+                                                          {option}
+                                                        </option>
+                                                      ))}
+                                                    </select>
+                                                  </div>
+                                                  {doc.received_from && doc.received_from_changed_at && (
+                                                    <div className="flex items-center gap-1 text-xs text-gray-500">
+                                                      <span>by {doc.received_from_changed_by || 'Unknown'}</span>
+                                                      <span>•</span>
+                                                      <span>{new Date(doc.received_from_changed_at).toLocaleDateString()}</span>
+                                                    </div>
+                                                  )}
+                                                </div>
+                                                
+                                                <div className="border-b border-gray-200 mb-3"></div>
+                                                
+                                                {doc.notes && (
+                                                  <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                                                    <p className="text-sm text-gray-600">
+                                                      <strong>Notes:</strong> {doc.notes}
+                                                    </p>
+                                                  </div>
+                                                )}
                                               </div>
                                             ))
                                           )}
@@ -802,49 +1011,64 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                       <div key={doc.id} className="bg-gray-50 rounded-lg p-4 border border-gray-100 hover:shadow-md transition-shadow">
                                         <div className="flex items-start justify-between mb-3">
                                           <div className="flex-1">
-                                            <h4 className="text-lg font-bold text-gray-900 mb-2">{doc.document_name}</h4>
+                                            <div className="flex items-center justify-between mb-2">
+                                              <h4 className="text-lg font-bold text-gray-900">{doc.document_name}</h4>
+                                              {doc.due_date && (
+                                                <span className="text-sm text-gray-600">
+                                                  <strong>Due:</strong> {doc.due_date ? new Date(doc.due_date).toLocaleDateString() : 'No due date'}
+                                                </span>
+                                              )}
+                                            </div>
                                             <div className="flex items-center gap-3 mb-2">
                                               <span className="text-sm text-gray-600">Type: {doc.document_type}</span>
                                               <span className={`badge ${getStatusBadgeColor(doc.status)}`}>
                                                 {doc.status}
                                               </span>
                                             </div>
-                                            {doc.due_date && (
-                                              <p className="text-sm text-gray-600">
-                                                <strong>Due:</strong> {doc.due_date ? new Date(doc.due_date).toLocaleDateString() : 'No due date'}
-                                              </p>
-                                            )}
-                                            {doc.notes && (
-                                              <p className="text-sm text-gray-600 mt-2">
-                                                <strong>Notes:</strong> {doc.notes}
-                                              </p>
-                                            )}
+                                            <div className="border-b border-gray-200 mb-3"></div>
                                           </div>
-                                          <div className="flex items-center gap-2">
+                                          <div className="relative dropdown-menu">
                                             <button
                                               className="btn btn-ghost btn-sm text-blue-600 hover:text-blue-700"
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                setEditingDocument(doc);
+                                                toggleDropdown(doc.id);
                                               }}
-                                              title="Edit document"
+                                              title="More options"
                                             >
-                                              <PencilIcon className="w-4 h-4" />
+                                              <EllipsisVerticalIcon className="w-7 h-7" />
                                             </button>
-                                            <button
-                                              className="btn btn-ghost btn-sm text-red-600 hover:text-red-700"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                deleteDocument(doc.id);
-                                              }}
-                                              title="Delete document"
-                                            >
-                                              <TrashIcon className="w-4 h-4" />
-                                            </button>
+                                            
+                                            {openDropdown === doc.id && (
+                                              <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-10 min-w-[120px]">
+                                                <button
+                                                  className="w-full px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 flex items-center gap-2"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setEditingDocument(doc);
+                                                    setOpenDropdown(null);
+                                                  }}
+                                                >
+                                                  <PencilIcon className="w-4 h-4" />
+                                                  Edit
+                                                </button>
+                                                <button
+                                                  className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-100 flex items-center gap-2"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    deleteDocument(doc.id);
+                                                    setOpenDropdown(null);
+                                                  }}
+                                                >
+                                                  <TrashIcon className="w-4 h-4" />
+                                                  Delete
+                                                </button>
+                                              </div>
+                                            )}
                                           </div>
                                         </div>
                                         
-                                        <div className="flex items-center gap-3">
+                                        <div className="flex items-center gap-3 mb-3">
                                           <span className="text-sm font-medium text-gray-700">Status:</span>
                                           <select 
                                             className="select select-bordered select-sm flex-1"
@@ -861,6 +1085,73 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
                                             <option value="rejected">Rejected</option>
                                           </select>
                                         </div>
+
+                                        {/* Requested From and Received From Dropdowns - Mobile */}
+                                        <div className="flex flex-col gap-2 mb-3">
+                                          <div className="flex items-center gap-3">
+                                            <span className="text-sm font-medium text-gray-700">Requested from:</span>
+                                            <select
+                                              className="select select-bordered select-sm flex-1"
+                                              value={doc.requested_from || ''}
+                                              onChange={(e) => {
+                                                e.stopPropagation();
+                                                updateDocumentRequestedFrom(doc.id, e.target.value);
+                                              }}
+                                            >
+                                              <option value="">Select source...</option>
+                                              {sourceOptions.map((option) => (
+                                                <option key={option} value={option}>
+                                                  {option}
+                                                </option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                          {doc.requested_from && doc.requested_from_changed_at && (
+                                            <div className="flex items-center gap-1 text-xs text-gray-500 ml-4">
+                                              <span>by {doc.requested_from_changed_by || 'Unknown'}</span>
+                                              <span>•</span>
+                                              <span>{new Date(doc.requested_from_changed_at).toLocaleDateString()}</span>
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        <div className="flex flex-col gap-2 mb-3">
+                                          <div className="flex items-center gap-3">
+                                            <span className="text-sm font-medium text-gray-700">Received from:</span>
+                                            <select
+                                              className="select select-bordered select-sm flex-1"
+                                              value={doc.received_from || ''}
+                                              onChange={(e) => {
+                                                e.stopPropagation();
+                                                updateDocumentReceivedFrom(doc.id, e.target.value);
+                                              }}
+                                            >
+                                              <option value="">Select source...</option>
+                                              {sourceOptions.map((option) => (
+                                                <option key={option} value={option}>
+                                                  {option}
+                                                </option>
+                                              ))}
+                                            </select>
+                                          </div>
+                                          {doc.received_from && doc.received_from_changed_at && (
+                                            <div className="flex items-center gap-1 text-xs text-gray-500 ml-4">
+                                              <span>by {doc.received_from_changed_by || 'Unknown'}</span>
+                                              <span>•</span>
+                                              <span>{new Date(doc.received_from_changed_at).toLocaleDateString()}</span>
+                                            </div>
+                                          )}
+                                        </div>
+                                        
+                                        <div className="border-b border-gray-200 mb-3"></div>
+                                        
+                                        {doc.notes && (
+                                          <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                                            <p className="text-sm text-gray-600">
+                                              <strong>Notes:</strong> {doc.notes}
+                                            </p>
+                                          </div>
+                                        )}
                                       </div>
                                     ))
                                   )}
