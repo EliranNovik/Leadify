@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 
 // Backend API configuration
-const API_BASE_URL = 'http://localhost:3001/api';
+const API_BASE_URL = 'https://leadify-crm-backend.onrender.com/api';
 
 interface User {
   id: string;
