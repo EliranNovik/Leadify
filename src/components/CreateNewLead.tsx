@@ -43,6 +43,8 @@ const CreateNewLead: React.FC = () => {
     topic: '',
     facts: '',
     specialNotes: '',
+    balance_currency: 'NIS',
+    proposal_currency: 'NIS',
   });
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
 
@@ -79,6 +81,8 @@ const CreateNewLead: React.FC = () => {
         p_lead_language: form.language,
         p_lead_source: form.source,
         p_created_by: currentUserEmail,
+        p_balance_currency: form.balance_currency,
+        p_proposal_currency: form.proposal_currency,
       });
 
       if (error) throw error;

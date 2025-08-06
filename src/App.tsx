@@ -8,6 +8,7 @@ import { Toaster } from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import AIChatWindow from './components/AIChatWindow';
+import EmailThreadModal from './components/EmailThreadModal';
 import { supabase } from './lib/supabase';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import Dashboard from './components/Dashboard';
@@ -41,23 +42,22 @@ import ProformaCreatePage from './pages/ProformaCreatePage';
 import AboutPage from './pages/AboutPage';
 import ContactPage from './pages/ContactPage';
 import HowItWorksPage from './pages/HowItWorksPage';
-
-
-const AppContent: React.FC = () => {
+import { AuthProvider, useAuthContext } from './contexts/AuthContext';
+const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
+  
+  // Get auth state from context
+  const { user, userFullName, userInitials, isLoading, isInitialized } = useAuthContext();
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isAiChatOpen, setIsAiChatOpen] = useState(false);
+  const [isEmailThreadOpen, setIsEmailThreadOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<any>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [user, setUser] = useState<any>(null);
   const [appJustLoggedIn, setAppJustLoggedIn] = useState(false);
   const prevUser = useRef<any>(null);
-  const [userFullName, setUserFullName] = useState<string | null>(null);
-  const [userInitials, setUserInitials] = useState<string | null>(null);
 
   const refreshClientData = useCallback(async (clientId: number) => {
     if (!clientId) return;
@@ -82,35 +82,6 @@ const AppContent: React.FC = () => {
     { href: '/lead-search', label: 'Lead Search', icon: MagnifyingGlassIcon },
   ];
 
-  useEffect(() => {
-    const session = supabase.auth.getSession().then(({ data }) => {
-      setUser(data.session?.user ?? null);
-      setIsLoading(false);
-    });
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
-    });
-    return () => {
-      listener?.subscription.unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (user && user.email) {
-      supabase
-        .from('users')
-        .select('full_name')
-        .eq('email', user.email)
-        .single()
-        .then(({ data, error }) => {
-          if (!error && data?.full_name) {
-            setUserFullName(data.full_name);
-            setUserInitials(data.full_name.split(' ').map((n: string) => n[0]).join(''));
-          }
-        });
-    }
-  }, [user]);
-
   // Detect login transition for animation
   useEffect(() => {
     if (!prevUser.current && user) {
@@ -122,9 +93,8 @@ const AppContent: React.FC = () => {
 
   const authUser = user || msalAccount;
 
-  if (isLoading) {
-    return <div className="flex justify-center items-center min-h-screen"><span className="loading loading-spinner loading-lg text-primary"></span></div>;
-  }
+  // Don't block the app on auth loading - allow it to render immediately
+  // The auth will load in the background
 
   return (
     <Routes>
@@ -154,6 +124,7 @@ const AppContent: React.FC = () => {
                   setIsSearchOpen={setIsSearchOpen}
                   appJustLoggedIn={appJustLoggedIn}
                   onOpenAIChat={() => setIsAiChatOpen(true)}
+                  onOpenEmailThread={() => setIsEmailThreadOpen(true)}
                   isMenuOpen={isSidebarOpen}
                 />
                 <main className="flex-1 overflow-x-hidden overflow-y-auto">
@@ -191,6 +162,10 @@ const AppContent: React.FC = () => {
                 onClientUpdate={selectedClient ? () => refreshClientData(selectedClient.id) : undefined}
                 userName={userFullName || userName}
               />
+              <EmailThreadModal 
+                isOpen={isEmailThreadOpen} 
+                onClose={() => setIsEmailThreadOpen(false)} 
+              />
             </div>
           </ProtectedRoute>
         }
@@ -199,18 +174,22 @@ const AppContent: React.FC = () => {
   );
 };
 
-const App: React.FC = () => {
+const AppContent: React.FC = () => {
   return (
-    <>
+    <AuthProvider>
       <Router>
-        <AppContent />
+        <AppContentInner />
+        <Toaster 
+          position="top-center"
+          reverseOrder={false}
+        />
       </Router>
-      <Toaster 
-        position="top-center"
-        reverseOrder={false}
-      />
-    </>
+    </AuthProvider>
   );
+};
+
+const App: React.FC = () => {
+  return <AppContent />;
 };
 
 export default App;

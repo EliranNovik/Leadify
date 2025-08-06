@@ -490,6 +490,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   }, [location.search, interactions.length]);
 
+  // Handle email modal opening from localStorage flag
   useEffect(() => {
     if (localStorage.getItem('openEmailModal') === 'true') {
       // Wait for interactions to be loaded and emails to be available
@@ -544,6 +545,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       }
     }
   }, [interactions.length, client.id]); // Add client.id dependency
+
+
 
   // Close WhatsApp modal when client changes
   useEffect(() => {

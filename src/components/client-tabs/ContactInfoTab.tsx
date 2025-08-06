@@ -290,18 +290,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     { code: '+977', country: 'NP', name: 'Nepal' },
     { code: '+975', country: 'BT', name: 'Bhutan' },
     { code: '+960', country: 'MV', name: 'Maldives' },
-    { code: '+967', country: 'YE', name: 'Yemen' },
-    { code: '+968', country: 'OM', name: 'Oman' },
-    { code: '+971', country: 'AE', name: 'United Arab Emirates' },
-    { code: '+972', country: 'IL', name: 'Israel' },
-    { code: '+973', country: 'BH', name: 'Bahrain' },
-    { code: '+974', country: 'QA', name: 'Qatar' },
-    { code: '+975', country: 'BT', name: 'Bhutan' },
-    { code: '+976', country: 'MN', name: 'Mongolia' },
-    { code: '+977', country: 'NP', name: 'Nepal' },
     { code: '+978', country: 'XX', name: 'International' },
     { code: '+979', country: 'XX', name: 'International' },
-    { code: '+98', country: 'IR', name: 'Iran' },
     { code: '+99', country: 'XX', name: 'International' },
   ];
 

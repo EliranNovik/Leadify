@@ -106,6 +106,33 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   const location = useLocation();
   const initials = userInitials || userName.split(' ').map(n => n[0]).join('');
   const { isAdmin } = useAdminRole();
+  
+  // State for user role from database
+  const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>('User');
+  
+  // Fetch user role from database
+  React.useEffect(() => {
+    const fetchUserRole = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user && user.email) {
+          const { data, error } = await supabase
+            .from('users')
+            .select('role')
+            .eq('email', user.email)
+            .single();
+          
+          if (!error && data && data.role) {
+            setUserRoleFromDB(data.role);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user role:', error);
+      }
+    };
+    
+    fetchUserRole();
+  }, []);
 
   // Responsive: shrink gap on small desktop heights
   const [isSmallGap, setIsSmallGap] = React.useState(false);
@@ -252,25 +279,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             })}
           </nav>
 
-          {/* Settings and Sign out buttons */}
-          <div className="flex flex-col items-center px-4 py-6 border-t border-white/10 mt-4 w-full gap-3">
-            <div className={`flex items-center w-full ${isSidebarHovered ? 'justify-between' : 'justify-center flex-col gap-3'}`}>
-              {/* Settings button */}
-              <div className="relative group">
-                <Link
-                  to="/settings"
-                  className="bg-white/10 text-white rounded-lg p-2 flex items-center justify-center shadow border border-white/20 hover:border-cyan-300 hover:bg-cyan-400/20 transition-colors duration-200"
-                  title="Settings"
-                >
-                  <Cog6ToothIcon className="w-6 h-6" />
-                </Link>
-                {!isSidebarHovered && (
-                  <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 bg-black/90 text-white text-xs rounded-lg px-3 py-2 shadow-lg whitespace-nowrap z-50 opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-opacity duration-200">
-                    Settings
-                  </div>
-                )}
-              </div>
-              
+          {/* User info and sign out button */}
+          <div className="flex flex-col px-4 py-6 border-t border-white/10 mt-4 w-full gap-3">
+            <div className={`flex items-center w-full justify-start gap-3`}>
               {/* Sign out button */}
               <div className="relative group">
                 <button
@@ -286,6 +297,18 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                   </div>
                 )}
               </div>
+              
+              {/* User info - only visible when sidebar is expanded */}
+              {isSidebarHovered && (
+                <div className="flex flex-col min-w-0">
+                  <span className="text-white font-medium text-sm truncate">
+                    {userName}
+                  </span>
+                  <span className="text-white/70 text-xs truncate">
+                    {userRoleFromDB}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -415,17 +438,9 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               </ul>
             </nav>
             
-            {/* Footer with settings and sign out */}
+            {/* Footer with user info and sign out */}
             <div className="p-4 border-t border-base-200">
-              <div className="flex items-center justify-center gap-4">
-                <Link
-                  to="/settings"
-                  className="btn btn-ghost btn-circle btn-sm"
-                  title="Settings"
-                  onClick={onClose}
-                >
-                  <Cog6ToothIcon className="w-5 h-5" />
-                </Link>
+              <div className="flex items-center justify-start gap-3">
                 <button 
                   className="btn btn-ghost btn-circle btn-sm" 
                   title="Sign out" 
@@ -433,6 +448,16 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 >
                   <ArrowRightOnRectangleIcon className="w-5 h-5" />
                 </button>
+                
+                {/* User info - always visible on mobile */}
+                <div className="flex flex-col min-w-0">
+                  <span className="text-base-content font-medium text-sm truncate">
+                    {userName}
+                  </span>
+                  <span className="text-base-content/70 text-xs truncate">
+                    {userRoleFromDB}
+                  </span>
+                </div>
               </div>
             </div>
           </div>

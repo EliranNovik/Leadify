@@ -10,6 +10,11 @@ import {
   PhoneIcon,
   EnvelopeIcon,
   UserIcon,
+  DocumentTextIcon,
+  DocumentIcon,
+  PhotoIcon,
+  FilmIcon,
+  MusicalNoteIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 
@@ -40,6 +45,17 @@ interface WhatsAppMessage {
   message: string;
   sent_at: string;
   status: string;
+  message_type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contact';
+  media_url?: string;
+  media_id?: string;
+  media_filename?: string;
+  media_mime_type?: string;
+  media_size?: number;
+  caption?: string;
+  whatsapp_message_id?: string;
+  whatsapp_status?: 'sent' | 'delivered' | 'read' | 'failed';
+  whatsapp_timestamp?: string;
+  error_message?: string;
 }
 
 const WhatsAppPage: React.FC = () => {
@@ -50,11 +66,58 @@ const WhatsAppPage: React.FC = () => {
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [allMessages, setAllMessages] = useState<WhatsAppMessage[]>([]);
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
+
+  // Helper function to get document icon based on MIME type
+  const getDocumentIcon = (mimeType?: string) => {
+    if (!mimeType) return DocumentTextIcon;
+    
+    if (mimeType.includes('pdf')) return DocumentTextIcon;
+    if (mimeType.includes('word') || mimeType.includes('document')) return DocumentIcon;
+    if (mimeType.includes('image/')) return PhotoIcon;
+    if (mimeType.includes('video/')) return FilmIcon;
+    if (mimeType.includes('audio/')) return MusicalNoteIcon;
+    
+    return DocumentTextIcon;
+  };
+
+  // Helper function to render WhatsApp-style message status
+  const renderMessageStatus = (status?: string) => {
+    if (!status) return null;
+    
+    const baseClasses = "w-7 h-7";
+    
+    switch (status) {
+      case 'sent':
+        return (
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        );
+      case 'delivered':
+        return (
+          <svg className={`${baseClasses} text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          </svg>
+        );
+      case 'read':
+        return (
+          <svg className={`${baseClasses} text-black`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          </svg>
+        );
+      default:
+        return null;
+    }
+  };
 
   // Mobile detection
   useEffect(() => {
@@ -70,14 +133,29 @@ const WhatsAppPage: React.FC = () => {
   useEffect(() => {
     const fetchCurrentUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (user?.id) {
-        const { data: userRow } = await supabase
+      if (user?.email) {
+        console.log('🔍 Looking for user with email:', user.email);
+        
+        // Try to find user in users table by email
+        const { data: userRow, error } = await supabase
           .from('users')
           .select('id, full_name, email')
-          .eq('auth_id', user.id)
+          .eq('email', user.email)
           .single();
+        
         if (userRow) {
+          console.log('✅ Found user in database:', userRow);
           setCurrentUser(userRow);
+        } else {
+          console.log('❌ User not found in database, using auth metadata');
+          // Fallback: create a user object with available data
+          const fallbackUser = {
+            id: user.id,
+            full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
+            email: user.email
+          };
+          console.log('📝 Using fallback user:', fallbackUser);
+          setCurrentUser(fallbackUser);
         }
       }
     };
@@ -115,13 +193,14 @@ const WhatsAppPage: React.FC = () => {
 
   // Fetch messages for selected client
   useEffect(() => {
-    const fetchMessages = async () => {
+    const fetchMessages = async (isPolling = false) => {
       if (!selectedClient) {
         setMessages([]);
         return;
       }
 
       try {
+        console.log('🔄 Fetching messages for client:', selectedClient.id, isPolling ? '(polling)' : '(initial)');
         const { data, error } = await supabase
           .from('whatsapp_messages')
           .select('*')
@@ -134,20 +213,45 @@ const WhatsAppPage: React.FC = () => {
           return;
         }
 
+        console.log('📨 Messages fetched:', data?.length || 0, 'messages');
+        console.log('📋 Messages data:', data);
         setMessages(data || []);
+        
+        // Only trigger auto-scroll on initial load, not during polling
+        if (!isPolling && isFirstLoad && shouldAutoScroll) {
+          setTimeout(() => {
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            setShouldAutoScroll(false);
+            setIsFirstLoad(false);
+          }, 200);
+        }
       } catch (error) {
         console.error('Error fetching messages:', error);
         toast.error('Failed to load messages');
       }
     };
 
-    fetchMessages();
+    fetchMessages(false); // Initial load
+    
+    // Set up polling to refresh messages every 5 seconds
+    const interval = setInterval(() => fetchMessages(true), 5000);
+    
+    return () => clearInterval(interval);
   }, [selectedClient]);
 
-  // Auto-scroll to bottom when new messages arrive
+  // Auto-scroll to bottom only when chat is first selected or new message is sent
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
+  const [isFirstLoad, setIsFirstLoad] = useState(false);
+  
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (shouldAutoScroll && messages.length > 0) {
+      // Add a small delay to ensure messages are rendered
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        setShouldAutoScroll(false);
+      }, 100);
+    }
+  }, [messages, shouldAutoScroll]);
 
   // Filter clients based on search term
   const filteredClients = clients.filter(client =>
@@ -158,51 +262,66 @@ const WhatsAppPage: React.FC = () => {
     (client.mobile && client.mobile.includes(searchTerm))
   );
 
-  // Send new message
+  // Send new message via WhatsApp API
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newMessage.trim() || !selectedClient || !currentUser) return;
 
     setSending(true);
     try {
-      const now = new Date();
-      const { error: insertError } = await supabase
-        .from('whatsapp_messages')
-        .insert([
-          {
-            lead_id: selectedClient.id,
-            sender_id: currentUser.id,
-            sender_name: currentUser.full_name || currentUser.email || 'You',
-            direction: 'out',
-            message: newMessage.trim(),
-            sent_at: now.toISOString(),
-            status: 'sent',
-          }
-        ]);
-
-      if (insertError) {
-        toast.error('Failed to send message: ' + insertError.message);
+      // Get phone number from client
+      const phoneNumber = selectedClient.phone || selectedClient.mobile;
+      if (!phoneNumber) {
+        toast.error('No phone number found for this client');
         return;
       }
 
+      const senderName = currentUser.full_name || currentUser.email;
+
+      // Send message via WhatsApp API
+      const response = await fetch('/api/whatsapp/send-message', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leadId: selectedClient.id,
+          message: newMessage.trim(),
+          phoneNumber: phoneNumber,
+          sender_name: senderName
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send message');
+      }
+
       // Add message to local state
+      console.log('📤 Sending message with sender:', senderName, 'from user:', currentUser);
+      
       const newMsg: WhatsAppMessage = {
         id: Date.now(), // Temporary ID
         lead_id: selectedClient.id,
         sender_id: currentUser.id,
-        sender_name: currentUser.full_name || currentUser.email || 'You',
+        sender_name: senderName,
         direction: 'out',
         message: newMessage.trim(),
-        sent_at: now.toISOString(),
+        sent_at: new Date().toISOString(),
         status: 'sent',
+        message_type: 'text',
+        whatsapp_status: 'sent',
+        whatsapp_message_id: result.messageId
       };
 
       setMessages(prev => [...prev, newMsg]);
+      setShouldAutoScroll(true); // Trigger auto-scroll when new message is sent
       setNewMessage('');
-      toast.success('Message sent!');
+      toast.success('Message sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending message:', error);
-      toast.error('Failed to send message');
+      toast.error('Failed to send message: ' + (error as Error).message);
     } finally {
       setSending(false);
     }
@@ -255,6 +374,99 @@ const WhatsAppPage: React.FC = () => {
     return clientMessages.filter(msg => msg.direction === 'in' && msg.status !== 'read').length;
   };
 
+  // Handle file selection
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+    }
+  };
+
+  // Send media message
+  const handleSendMedia = async () => {
+    if (!selectedFile || !selectedClient || !currentUser) return;
+
+    setUploadingMedia(true);
+    try {
+      const phoneNumber = selectedClient.phone || selectedClient.mobile;
+      if (!phoneNumber) {
+        toast.error('No phone number found for this client');
+        return;
+      }
+
+      // Create FormData for file upload
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('leadId', selectedClient.id);
+
+      // Upload media to WhatsApp
+      const uploadResponse = await fetch('/api/whatsapp/upload-media', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const uploadResult = await uploadResponse.json();
+
+      if (!uploadResponse.ok) {
+        throw new Error(uploadResult.error || 'Failed to upload media');
+      }
+
+      // Send media message
+      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
+      const senderName = currentUser.full_name || currentUser.email;
+      const response = await fetch('/api/whatsapp/send-media', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leadId: selectedClient.id,
+          mediaUrl: uploadResult.mediaId,
+          mediaType: mediaType,
+          caption: newMessage.trim() || undefined,
+          phoneNumber: phoneNumber,
+          sender_name: senderName
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send media');
+      }
+
+      // Add message to local state
+      console.log('📤 Sending media with sender:', senderName, 'from user:', currentUser);
+      
+      const newMsg: WhatsAppMessage = {
+        id: Date.now(),
+        lead_id: selectedClient.id,
+        sender_id: currentUser.id,
+        sender_name: senderName,
+        direction: 'out',
+        message: newMessage.trim() || `${mediaType} message`,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+        message_type: mediaType as any,
+        whatsapp_status: 'sent',
+        whatsapp_message_id: result.messageId,
+        media_url: uploadResult.mediaId,
+        caption: newMessage.trim() || undefined
+      };
+
+      setMessages(prev => [...prev, newMsg]);
+      setShouldAutoScroll(true); // Trigger auto-scroll when media message is sent
+      setNewMessage('');
+      setSelectedFile(null);
+      toast.success('Media sent via WhatsApp!');
+    } catch (error) {
+      console.error('Error sending media:', error);
+      toast.error('Failed to send media: ' + (error as Error).message);
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
   // Format last message time
   const formatLastMessageTime = (timestamp: string) => {
     const messageDate = new Date(timestamp);
@@ -275,162 +487,214 @@ const WhatsAppPage: React.FC = () => {
   };
 
   return (
-    <div className={`fixed inset-0 flex bg-gray-100 ${isMobile ? '' : ''}`} style={isMobile ? { top: '64px' } : { top: '64px', left: '96px', right: '0px', bottom: '0px' }}>
-      {/* Left Panel - Client List */}
-      <div className={`${isMobile ? 'w-full' : 'w-1/3'} bg-white border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
-        {/* Header - Fixed */}
-        <div className="flex-shrink-0 p-4 border-b border-gray-200 bg-white text-gray-900">
-          <div className="flex items-center gap-3">
-            <FaWhatsapp className="w-8 h-8 text-green-600" />
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">WhatsApp</h1>
-              <p className="text-sm text-gray-600">All client conversations</p>
-            </div>
+    <div className="fixed inset-0 bg-white z-[9999]">
+      <div className="h-full flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+          <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
+            <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
+            <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">WhatsApp</h2>
+            {selectedClient && (
+              <div className="hidden md:flex items-center gap-4 min-w-0 flex-1 overflow-hidden">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-lg font-semibold text-gray-900 truncate">
+                      {selectedClient.name}
+                    </span>
+                    <span className="text-sm text-gray-500 font-mono flex-shrink-0">
+                      ({selectedClient.lead_number})
+                    </span>
+                  </div>
+                </div>
+                
+                {(selectedClient.closer || selectedClient.scheduler || selectedClient.next_followup || selectedClient.probability || selectedClient.balance || selectedClient.potential_applicants) && (
+                  <div className="hidden md:flex items-center gap-4 lg:gap-6">
+                    <div className="w-px h-6 bg-gray-300"></div>
+                    
+                    {selectedClient.closer && (
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Closer</span>
+                        <span className="text-sm font-semibold text-gray-700">{selectedClient.closer}</span>
+                      </div>
+                    )}
+                    
+                    {selectedClient.scheduler && (
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Scheduler</span>
+                        <span className="text-sm font-semibold text-gray-700">{selectedClient.scheduler}</span>
+                      </div>
+                    )}
+                    
+                    {selectedClient.next_followup && (
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Follow-up</span>
+                        <span className="text-sm font-semibold text-gray-700">{new Date(selectedClient.next_followup).toLocaleDateString()}</span>
+                      </div>
+                    )}
+                    
+                    {selectedClient.probability && (
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Probability</span>
+                        <span className="text-sm font-semibold text-gray-900">{selectedClient.probability}%</span>
+                      </div>
+                    )}
+                    
+                    {selectedClient.balance && (
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Balance</span>
+                        <span className="text-sm font-semibold text-gray-900">${selectedClient.balance.toLocaleString()}</span>
+                      </div>
+                    )}
+                    
+                    {selectedClient.potential_applicants && (
+                      <div className="flex flex-col items-center">
+                        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Applicants</span>
+                        <span className="text-sm font-semibold text-purple-600">{selectedClient.potential_applicants}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+          <button
+            onClick={() => window.history.back()}
+            className="btn btn-ghost btn-circle flex-shrink-0"
+          >
+            <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+          </button>
         </div>
 
-        {/* Search Bar - Fixed */}
-        <div className="flex-shrink-0 p-4 border-b border-gray-200">
-          <div className="relative">
-            <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Search clients..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
-            />
-          </div>
-        </div>
-
-        {/* Client List - Scrollable */}
-        <div className="flex-1 overflow-y-auto">
-          {loading ? (
-            <div className="flex items-center justify-center h-32">
-              <div className="loading loading-spinner loading-lg text-green-600"></div>
+        <div className="flex-1 flex overflow-hidden">
+          {/* Left Panel - Client List */}
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
+            {/* Search Bar */}
+            <div className="p-3 border-b border-gray-200">
+              <div className="relative">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search clients..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                />
+              </div>
             </div>
-          ) : filteredClients.length === 0 ? (
-            <div className="p-8 text-center text-gray-500">
-              <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-              <p className="text-lg font-medium">No clients found</p>
-              <p className="text-sm">No clients match your search criteria</p>
-            </div>
-          ) : (
-            filteredClients.map((client) => {
-              const lastMessage = getLastMessageForClient(client.id);
-              const unreadCount = getUnreadCountForClient(client.id);
-              const isSelected = selectedClient?.id === client.id;
 
-              return (
-                <div
-                  key={client.id}
-                  onClick={() => {
-                    setSelectedClient(client);
-                    if (isMobile) {
-                      setShowChat(true);
-                    }
-                  }}
-                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
-                    isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    {/* Avatar */}
-                    <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
-                      <span className="text-green-600 font-semibold text-lg">
-                        {client.name.charAt(0).toUpperCase()}
-                      </span>
-                    </div>
+            {/* Client List */}
+            <div className="flex-1 overflow-y-auto">
+              {loading ? (
+                <div className="flex items-center justify-center h-32">
+                  <div className="loading loading-spinner loading-lg text-green-600"></div>
+                </div>
+              ) : filteredClients.length === 0 ? (
+                <div className="p-8 text-center text-gray-500">
+                  <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                  <p className="text-lg font-medium">No clients found</p>
+                  <p className="text-sm">No clients match your search criteria</p>
+                </div>
+              ) : (
+                filteredClients.map((client) => {
+                  const lastMessage = getLastMessageForClient(client.id);
+                  const unreadCount = getUnreadCountForClient(client.id);
+                  const isSelected = selectedClient?.id === client.id;
 
-                    {/* Client Info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <h3 className="font-semibold text-gray-900 truncate">
-                          {client.name}
-                        </h3>
-                        <div className="flex items-center gap-2">
+                  return (
+                    <div
+                      key={client.id}
+                      onClick={() => {
+                        setSelectedClient(client);
+                        setShouldAutoScroll(true); // Trigger auto-scroll when chat is selected
+                        setIsFirstLoad(true); // Mark as first load
+                        if (isMobile) {
+                          setShowChat(true);
+                        }
+                      }}
+                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                        isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 md:gap-3">
+                        {/* Avatar */}
+                        <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                          <span className="text-green-600 font-semibold text-sm md:text-lg">
+                            {client.name.charAt(0).toUpperCase()}
+                          </span>
+                        </div>
+
+                        {/* Client Info */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <h3 className="font-semibold text-gray-900 truncate text-sm md:text-base">
+                              {client.name}
+                            </h3>
+                            <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
+                              {lastMessage && (
+                                <span className="text-xs text-gray-500">
+                                  {formatLastMessageTime(lastMessage.sent_at)}
+                                </span>
+                              )}
+                              {unreadCount > 0 && (
+                                <span className="bg-green-500 text-white text-xs rounded-full px-1 md:px-2 py-1 min-w-[16px] md:min-w-[20px] text-center">
+                                  {unreadCount}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <p className="text-xs md:text-sm text-gray-500 truncate">
+                            {client.lead_number}
+                          </p>
                           {lastMessage && (
-                            <span className="text-xs text-gray-500">
-                              {formatLastMessageTime(lastMessage.sent_at)}
-                            </span>
-                          )}
-                          {unreadCount > 0 && (
-                            <span className="bg-green-500 text-white text-xs rounded-full px-2 py-1 min-w-[20px] text-center">
-                              {unreadCount}
-                            </span>
+                            <p className="text-xs md:text-sm text-gray-600 truncate mt-1">
+                              {lastMessage.direction === 'out' ? `${lastMessage.sender_name}: ` : ''}
+                              {lastMessage.message}
+                            </p>
                           )}
                         </div>
                       </div>
-                      <p className="text-sm text-gray-500 truncate">
-                        {client.lead_number}
-                      </p>
-                      {lastMessage && (
-                        <p className="text-sm text-gray-600 truncate mt-1">
-                          {lastMessage.direction === 'out' ? 'You: ' : ''}
-                          {lastMessage.message}
-                        </p>
-                      )}
                     </div>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
 
-      {/* Right Panel - Chat */}
-      <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`}>
-        {selectedClient ? (
-          <>
-            {/* Chat Header - Fixed */}
-            <div className="flex-shrink-0 p-4 border-b border-gray-200 bg-white">
-              <div className="flex items-center gap-3">
+          {/* Right Panel - Chat */}
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`}>
+            {selectedClient ? (
+              <>
+                {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <button
-                    onClick={() => setShowChat(false)}
-                    className="p-2 rounded-lg hover:bg-gray-100"
-                  >
-                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                    </svg>
-                  </button>
-                )}
-                <div className="w-10 h-10 bg-green-600 rounded-full flex items-center justify-center">
-                  <span className="text-white font-semibold">
-                    {selectedClient.name.split(' ').map((n: string) => n[0]).join('').toUpperCase()}
-                  </span>
-                </div>
-                <div className="flex-1">
-                  <h3 className="font-semibold text-gray-900">{selectedClient.name}</h3>
-                  {(selectedClient.closer || selectedClient.scheduler || selectedClient.next_followup || selectedClient.probability || selectedClient.balance || selectedClient.potential_applicants) && (
-                    <div className="mt-1 pt-1 border-t border-gray-200">
-                      <div className={`flex items-start gap-2 text-xs text-purple-600 ${isMobile ? 'flex-wrap' : ''}`}>
-                        <span className="text-gray-500">{selectedClient.lead_number}</span>
-                        {selectedClient.closer && (
-                          <span className="whitespace-nowrap"><span className="text-black">•</span> Closer: {selectedClient.closer}</span>
-                        )}
-                        {selectedClient.scheduler && (
-                          <span className="whitespace-nowrap"><span className="text-black">•</span> Scheduler: {selectedClient.scheduler}</span>
-                        )}
-                        {!isMobile && selectedClient.next_followup && (
-                          <span className="whitespace-nowrap"><span className="text-black">•</span> Follow-up: {new Date(selectedClient.next_followup).toLocaleDateString()}</span>
-                        )}
-                        {!isMobile && selectedClient.probability && (
-                          <span className="whitespace-nowrap"><span className="text-black">•</span> Probability: {selectedClient.probability}%</span>
-                        )}
-                        {!isMobile && selectedClient.balance && (
-                          <span className="whitespace-nowrap"><span className="text-black">•</span> Balance: ${selectedClient.balance.toLocaleString()}</span>
-                        )}
-                        {!isMobile && selectedClient.potential_applicants && (
-                          <span className="whitespace-nowrap"><span className="text-black">•</span> Applicants: {selectedClient.potential_applicants}</span>
-                        )}
+                  <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setShowChat(false)}
+                        className="btn btn-ghost btn-circle btn-sm"
+                      >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                          <span className="text-green-600 font-semibold text-sm">
+                            {selectedClient.name.charAt(0).toUpperCase()}
+                          </span>
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900 text-sm">
+                            {selectedClient.name}
+                          </h3>
+                          <p className="text-xs text-gray-500">
+                            {selectedClient.lead_number}
+                          </p>
+                        </div>
                       </div>
                     </div>
-                  )}
-                </div>
-              </div>
-            </div>
+                  </div>
+                )}
 
             {/* Messages - Scrollable */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -444,16 +708,213 @@ const WhatsAppPage: React.FC = () => {
                 messages.map((message, index) => (
                   <div
                     key={message.id || index}
-                    className={`flex ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}
+                    className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
                   >
+                    {message.direction === 'out' && (
+                      <span className="text-xs text-gray-500 mb-1 mr-2">
+                        {message.sender_name}
+                      </span>
+                    )}
+                    {message.direction === 'in' && (
+                      <span className="text-xs text-gray-500 mb-1 ml-2">
+                        {message.sender_name}
+                      </span>
+                    )}
                     <div
                       className={`max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
                         message.direction === 'out'
-                          ? 'bg-green-500 text-white'
+                          ? 'bg-green-600 text-white'
                           : 'bg-white text-gray-900 border border-gray-200'
                       }`}
                     >
-                      <p className="text-sm break-words">{message.message}</p>
+                      {/* Message content based on type */}
+                      {message.message_type === 'text' && (
+                        <p className="text-sm break-words">{message.message}</p>
+                      )}
+                      
+                      {message.message_type === 'image' && (
+                        <div>
+                          {message.media_url && (
+                            <div className="relative inline-block">
+                              <img 
+                                src={message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}
+                                alt="Image"
+                                className="max-w-full rounded-lg mb-2"
+                                onError={(e) => {
+                                  console.log('Failed to load image:', message.media_url);
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                              <button
+                                onClick={() => {
+                                  if (!message.media_url) return;
+                                  const url = message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`;
+                                  const link = document.createElement('a');
+                                  link.href = url;
+                                  link.download = `image_${Date.now()}.jpg`;
+                                  link.click();
+                                }}
+                                className="absolute top-2 right-2 btn btn-ghost btn-xs bg-black bg-opacity-50 text-white hover:bg-opacity-70"
+                                title="Download"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                              </button>
+                            </div>
+                          )}
+                          {message.caption && (
+                            <p className="text-sm break-words">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {message.message_type === 'document' && (
+                        <div>
+                          <div className="flex items-center gap-2 mb-2">
+                            {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6" })}
+                            <div className="flex-1">
+                              <a 
+                                href={message.media_url?.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block hover:opacity-80 transition-opacity"
+                              >
+                                <p className="text-sm font-medium underline cursor-pointer">
+                                  {message.media_filename || 'Document'}
+                                </p>
+                                {message.media_size && (
+                                  <p className="text-xs opacity-70">
+                                    {(message.media_size / 1024).toFixed(1)} KB
+                                  </p>
+                                )}
+                              </a>
+                            </div>
+                            <button
+                              onClick={() => {
+                                if (!message.media_url) return;
+                                const url = message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`;
+                                const link = document.createElement('a');
+                                link.href = url;
+                                link.download = message.media_filename || 'document';
+                                link.click();
+                              }}
+                              className="btn btn-ghost btn-xs"
+                              title="Download"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </button>
+                          </div>
+                          
+                          {/* Document Preview */}
+                          {message.media_url && (
+                            <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                              <div className="p-3 bg-white border-b border-gray-200">
+                                <div className="flex items-center gap-2">
+                                  <DocumentTextIcon className="w-4 h-4 text-gray-500" />
+                                  <span className="text-xs text-gray-600 font-medium">
+                                    {message.media_filename || 'Document Preview'}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="p-4 min-h-[120px] flex items-center justify-center">
+                                {message.media_mime_type === 'application/pdf' ? (
+                                  <iframe
+                                    src={`${message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}#toolbar=0&navpanes=0&scrollbar=0`}
+                                    className="w-full h-32 border-0"
+                                    title="PDF Preview"
+                                    onError={(e) => {
+                                      console.log('Failed to load PDF preview:', message.media_url);
+                                      e.currentTarget.style.display = 'none';
+                                    }}
+                                  />
+                                ) : message.media_mime_type?.includes('image/') ? (
+                                  <img
+                                    src={message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}
+                                    alt="Document Preview"
+                                    className="max-w-full max-h-24 object-contain rounded"
+                                    onError={(e) => {
+                                      console.log('Failed to load image preview:', message.media_url);
+                                      e.currentTarget.style.display = 'none';
+                                    }}
+                                  />
+                                ) : (
+                                  <div className="text-center text-gray-500">
+                                    <DocumentTextIcon className="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                    <p className="text-xs">Preview not available</p>
+                                    <p className="text-xs opacity-70">{message.media_mime_type}</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {message.caption && (
+                            <p className="text-sm break-words mt-2">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {message.message_type === 'audio' && (
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            <span className="text-sm">Audio message</span>
+                          </div>
+                          {message.caption && (
+                            <p className="text-sm break-words mt-2">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {message.message_type === 'video' && (
+                        <div>
+                          {message.media_url && (
+                            <video 
+                              controls
+                              className="max-w-full rounded-lg mb-2"
+                              onError={(e) => {
+                                console.log('Failed to load video:', message.media_url);
+                                e.currentTarget.style.display = 'none';
+                              }}
+                            >
+                              <source src={message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`} />
+                              Your browser does not support the video tag.
+                            </video>
+                          )}
+                          {message.caption && (
+                            <p className="text-sm break-words">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {message.message_type === 'location' && (
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                            <span className="text-sm">Location shared</span>
+                          </div>
+                          <p className="text-sm break-words mt-1">{message.message}</p>
+                        </div>
+                      )}
+                      
+                      {message.message_type === 'contact' && (
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <UserIcon className="w-6 h-6" />
+                            <span className="text-sm">Contact shared</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Message status and time */}
                       <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
                         <span>
                           {new Date(message.sent_at).toLocaleTimeString([], {
@@ -462,21 +923,8 @@ const WhatsAppPage: React.FC = () => {
                           })}
                         </span>
                         {message.direction === 'out' && (
-                          <span className="inline-block align-middle">
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              strokeWidth={2}
-                              stroke="currentColor"
-                              className="w-4 h-4"
-                            >
-                              <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                d="M4.5 12.75l6 6 9-13.5"
-                              />
-                            </svg>
+                          <span className="inline-block align-middle text-current">
+                            {renderMessageStatus(message.whatsapp_status)}
                           </span>
                         )}
                       </div>
@@ -493,28 +941,68 @@ const WhatsAppPage: React.FC = () => {
                 <button type="button" className="btn btn-ghost btn-circle">
                   <FaceSmileIcon className="w-6 h-6 text-gray-500" />
                 </button>
-                <button type="button" className="btn btn-ghost btn-circle">
+                
+                {/* File upload button */}
+                <label className="btn btn-ghost btn-circle cursor-pointer">
                   <PaperClipIcon className="w-6 h-6 text-gray-500" />
-                </button>
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                    onChange={handleFileSelect}
+                    disabled={uploadingMedia}
+                  />
+                </label>
+
+                {/* Selected file preview */}
+                {selectedFile && (
+                  <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-1">
+                    <span className="text-xs text-gray-600">{selectedFile.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFile(null)}
+                      className="text-red-500 hover:text-red-700"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
                 <input
                   type="text"
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
-                  placeholder="Type a message..."
+                  placeholder={selectedFile ? "Add a caption..." : "Type a message..."}
                   className="flex-1 input input-bordered rounded-full"
-                  disabled={sending}
+                  disabled={sending || uploadingMedia}
                 />
-                <button
-                  type="submit"
-                  disabled={!newMessage.trim() || sending}
-                  className="btn btn-primary btn-circle"
-                >
-                  {sending ? (
-                    <div className="loading loading-spinner loading-sm"></div>
-                  ) : (
-                    <PaperAirplaneIcon className="w-5 h-5" />
-                  )}
-                </button>
+                
+                {selectedFile ? (
+                  <button
+                    type="button"
+                    onClick={handleSendMedia}
+                    disabled={uploadingMedia}
+                    className="btn btn-primary btn-circle"
+                  >
+                    {uploadingMedia ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!newMessage.trim() || sending}
+                    className="btn btn-primary btn-circle"
+                  >
+                    {sending ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                )}
               </form>
             </div>
           </>
@@ -527,7 +1015,9 @@ const WhatsAppPage: React.FC = () => {
               <p className="text-sm">Select a client to start chatting</p>
             </div>
           </div>
-        )}
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

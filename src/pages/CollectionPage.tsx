@@ -164,6 +164,9 @@ const CollectionPage: React.FC = () => {
   // Add state for current user
   const [currentUserName, setCurrentUserName] = useState<string>('');
 
+  // Add state for total paid this month
+  const [totalPaidThisMonth, setTotalPaidThisMonth] = useState<number>(0);
+
   // Add handler to remove payment from awaitingPayments
   const handlePaymentMarkedPaid = async (paymentId: string | number) => {
     let paidBy = 'Unknown';
@@ -253,6 +256,35 @@ const CollectionPage: React.FC = () => {
     };
     fetchUser();
   }, [tab, paidMeetings, awaitingPayments]);
+
+  // Fetch total paid this month independently
+  useEffect(() => {
+    const fetchTotalPaidThisMonth = async () => {
+      const now = new Date();
+      const thisMonth = now.getMonth();
+      const thisYear = now.getFullYear();
+      const startOfMonth = new Date(thisYear, thisMonth, 1);
+      const endOfMonth = new Date(thisYear, thisMonth + 1, 0);
+
+      const { data, error } = await supabase
+        .from('payment_plans')
+        .select('value, value_vat, paid_at')
+        .eq('paid', true)
+        .gte('paid_at', startOfMonth.toISOString())
+        .lte('paid_at', endOfMonth.toISOString());
+
+      if (!error && data) {
+        const total = data.reduce((sum, row) => {
+          return sum + (Number(row.value) + Number(row.value_vat));
+        }, 0);
+        setTotalPaidThisMonth(total);
+      } else {
+        setTotalPaidThisMonth(0);
+      }
+    };
+
+    fetchTotalPaidThisMonth();
+  }, []); // Empty dependency array means this runs once on mount
 
   useEffect(() => {
     const fetchAwaitingPayments = async () => {
@@ -530,26 +562,43 @@ const CollectionPage: React.FC = () => {
     })
     .reduce((sum, row) => sum + (Number(row.value) + Number(row.value_vat)), 0);
 
-  // Calculate real paid by month for the last 5 months from paidCases
+  // Calculate real paid by month for the last 5 months from database
   const getMonthLabel = (date: Date) => date.toLocaleString('default', { month: 'long' });
-  const paidByMonth = (() => {
-    const months: { month: string; total: number }[] = [];
-    const now = new Date();
-    for (let i = 4; i >= 0; i--) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const month = getMonthLabel(d);
-      const year = d.getFullYear();
-      const total = paidCases
-        .filter(row => {
-          if (!row.paid_at) return false;
-          const paidDate = new Date(row.paid_at);
-          return paidDate.getMonth() === d.getMonth() && paidDate.getFullYear() === year;
-        })
-        .reduce((sum, row) => sum + (Number(row.value) + Number(row.value_vat)), 0);
-      months.push({ month, total });
-    }
-    return months;
-  })();
+  const [paidByMonth, setPaidByMonth] = useState<{ month: string; total: number }[]>([]);
+
+  // Fetch paid by month data independently
+  useEffect(() => {
+    const fetchPaidByMonth = async () => {
+      const months: { month: string; total: number }[] = [];
+      const now = new Date();
+      
+      for (let i = 4; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const month = getMonthLabel(d);
+        const year = d.getFullYear();
+        const startOfMonth = new Date(year, d.getMonth(), 1);
+        const endOfMonth = new Date(year, d.getMonth() + 1, 0);
+
+        const { data, error } = await supabase
+          .from('payment_plans')
+          .select('value, value_vat, paid_at')
+          .eq('paid', true)
+          .gte('paid_at', startOfMonth.toISOString())
+          .lte('paid_at', endOfMonth.toISOString());
+
+        let total = 0;
+        if (!error && data) {
+          total = data.reduce((sum, row) => {
+            return sum + (Number(row.value) + Number(row.value_vat));
+          }, 0);
+        }
+        months.push({ month, total });
+      }
+      setPaidByMonth(months);
+    };
+
+    fetchPaidByMonth();
+  }, []); // Empty dependency array means this runs once on mount
 
   return (
     <div className="p-4 md:p-6 lg:p-8 w-full">
@@ -565,7 +614,7 @@ const CollectionPage: React.FC = () => {
               <CurrencyDollarIcon className="w-7 h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-4xl font-extrabold text-white leading-tight">₪{realTotalPaidThisMonth.toLocaleString()}</div>
+              <div className="text-4xl font-extrabold text-white leading-tight">₪{totalPaidThisMonth.toLocaleString()}</div>
               <div className="text-white/80 text-sm font-medium mt-1">Total Paid (This Month)</div>
             </div>
           </div>

@@ -1,39 +1,14 @@
--- Fix handler stage constraint by handling existing invalid data
--- First, check what values currently exist in handler_stage
-SELECT DISTINCT handler_stage FROM leads WHERE handler_stage IS NOT NULL;
+-- Fix handler_stage constraint to include 'pending_review'
+-- This script updates the constraint to match the values used in handler_stage_management.sql
 
--- Update any invalid or old values to a valid default
-UPDATE leads 
-SET handler_stage = 'pending_payment' 
-WHERE handler_stage IS NOT NULL 
-AND handler_stage NOT IN (
-    'pending_payment',
-    'documents_requested',
-    'documents_pending', 
-    'all_documents_received',
-    'application_form_processing',
-    'application_submitted',
-    'application_approved',
-    'application_rejected'
-);
+-- Step 1: Drop the existing constraint
+ALTER TABLE leads DROP CONSTRAINT IF EXISTS handler_stage_check;
 
--- Now drop the existing constraint if it exists
-DO $$ 
-BEGIN
-    -- Drop the existing constraint if it exists
-    IF EXISTS (
-        SELECT 1 FROM information_schema.table_constraints 
-        WHERE constraint_name = 'check_handler_stage' 
-        AND table_name = 'leads'
-    ) THEN
-        ALTER TABLE leads DROP CONSTRAINT check_handler_stage;
-    END IF;
-END $$;
-
--- Add the updated constraint with "Documents Requested" included
+-- Step 2: Add the updated constraint with 'pending_review' included
 ALTER TABLE leads 
-ADD CONSTRAINT check_handler_stage 
+ADD CONSTRAINT handler_stage_check 
 CHECK (handler_stage IN (
+    'pending_review',       -- Initial state when assigned to handler
     'pending_payment',
     'documents_requested',
     'documents_pending', 
@@ -44,5 +19,5 @@ CHECK (handler_stage IN (
     'application_rejected'
 ) OR handler_stage IS NULL);
 
--- Verify the constraint works by checking current values
+-- Step 3: Verify the constraint works
 SELECT DISTINCT handler_stage FROM leads WHERE handler_stage IS NOT NULL; 

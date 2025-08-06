@@ -26,7 +26,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [editedGeneralNotes, setEditedGeneralNotes] = useState(generalNotes);
   const [editedTags, setEditedTags] = useState(tags);
   const [editedAnchor, setEditedAnchor] = useState(anchor);
-  const [editedFacts, setEditedFacts] = useState(factsOfCase.join('\n'));
+  const [editedFacts, setEditedFacts] = useState(client.facts || '');
 
   // Update state when client data changes (e.g., after page refresh)
   useEffect(() => {
@@ -319,7 +319,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
                     {specialNotes.length > 0 ? (
                       specialNotes.map((note, index) => (
-                        <p key={index} className="text-gray-900 mb-2 last:mb-0">{note}</p>
+                        <p key={index} className="text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words">{note}</p>
                       ))
                     ) : (
                       <span className="text-gray-500">No special notes added</span>
@@ -391,7 +391,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="space-y-3">
                   <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
                     {generalNotes ? (
-                      <p className="text-gray-900">{generalNotes}</p>
+                      <p className="text-gray-900 whitespace-pre-wrap break-words">{generalNotes}</p>
                     ) : (
                       <span className="text-gray-500">No general notes added</span>
                     )}
@@ -462,7 +462,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="space-y-3">
                   <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
                     {tags ? (
-                      <p className="text-gray-900">{tags}</p>
+                      <p className="text-gray-900 whitespace-pre-wrap break-words">{tags}</p>
                     ) : (
                       <span className="text-gray-500">No tags added</span>
                     )}
@@ -490,7 +490,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   isEditing={isEditingFacts}
                   onEdit={() => {
                     setIsEditingFacts(true);
-                    setEditedFacts(factsOfCase.join('\n'));
+                    setEditedFacts(client.facts || '');
                   }}
                   onSave={async () => {
                     try {
@@ -535,10 +535,39 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               ) : (
                 <div className="space-y-3">
                   <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
-                    {factsOfCase.length > 0 ? (
-                      factsOfCase.map((fact, index) => (
-                        <p key={index} className="text-gray-900 mb-3 last:mb-0 font-medium">{fact}</p>
-                      ))
+                    {client.facts ? (
+                      <div className="text-gray-900 text-sm">
+                        {(() => {
+                          try {
+                            // Try to parse as JSON and display only non-null values
+                            const parsed = JSON.parse(client.facts);
+                            const nonNullEntries = Object.entries(parsed)
+                              .filter(([key, value]) => value !== null && value !== undefined && value !== '')
+                              .map(([key, value]) => {
+                                // Format the key to be more readable
+                                const formattedKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                                return `${formattedKey}: ${value}`;
+                              });
+                            
+                            if (nonNullEntries.length > 0) {
+                              return (
+                                <div className="flex flex-wrap gap-2">
+                                  {nonNullEntries.map((entry, index) => (
+                                    <span key={index} className="text-gray-900 text-sm">
+                                      {entry}
+                                    </span>
+                                  ))}
+                                </div>
+                              );
+                            } else {
+                              return <span className="text-gray-500">No case facts added</span>;
+                            }
+                          } catch (e) {
+                            // If it's not valid JSON, display as plain text
+                            return <span className="text-gray-900">{client.facts}</span>;
+                          }
+                        })()}
+                      </div>
                     ) : (
                       <span className="text-gray-500">No case facts added</span>
                     )}

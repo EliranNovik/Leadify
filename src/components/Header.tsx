@@ -35,6 +35,7 @@ interface HeaderProps {
   appJustLoggedIn?: boolean;
   onOpenAIChat?: () => void;
   isMenuOpen?: boolean;
+  onOpenEmailThread?: () => void;
 }
 
 interface Notification {
@@ -76,7 +77,7 @@ const mockNotifications: Notification[] = [
   }
 ];
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -160,6 +161,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       label: 'WhatsApp',
       path: '/whatsapp',
       icon: FaWhatsapp,
+    },
+    {
+      label: 'Email Chat',
+      action: 'email-thread',
+      icon: EnvelopeIcon,
     },
   ];
 
@@ -472,12 +478,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }}
               >
                 {navTabs.map(tab => {
-                  const isActive = location.pathname === tab.path;
                   const Icon = tab.icon;
+                  if (tab.action === 'email-thread') {
+                    return (
+                      <button
+                        key={tab.label}
+                        onClick={() => {
+                          setShowMobileQuickActionsDropdown(false);
+                          if (onOpenEmailThread) {
+                            onOpenEmailThread();
+                          }
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
+                      >
+                        <Icon className="w-5 h-5 text-gray-500" />
+                        <span className="text-sm font-medium">{tab.label}</span>
+                      </button>
+                    );
+                  }
                   return (
                     <Link
-                      key={tab.path}
-                      to={tab.path}
+                      key={tab.path || tab.label}
+                      to={tab.path || '/'}
                       onClick={() => setShowMobileQuickActionsDropdown(false)}
                       className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
                     >
@@ -519,12 +541,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }}
               >
                 {navTabs.map(tab => {
-                  const isActive = location.pathname === tab.path;
                   const Icon = tab.icon;
+                  if (tab.action === 'email-thread') {
+                    return (
+                      <button
+                        key={tab.label}
+                        onClick={() => {
+                          setShowQuickActionsDropdown(false);
+                          if (onOpenEmailThread) {
+                            onOpenEmailThread();
+                          }
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
+                      >
+                        <Icon className="w-5 h-5 text-gray-500" />
+                        <span className="text-sm font-medium">{tab.label}</span>
+                      </button>
+                    );
+                  }
                   return (
                     <Link
-                      key={tab.path}
-                      to={tab.path}
+                      key={tab.path || tab.label}
+                      to={tab.path || '/'}
                       onClick={() => setShowQuickActionsDropdown(false)}
                       className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
                     >
@@ -832,9 +870,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           >
             <ArrowRightOnRectangleIcon className="w-5 h-5" />
           </button> */}
-          <span className={`text-base font-medium hidden md:inline-block ${appJustLoggedIn ? 'slide-fade-in' : ''}`}>
+          {/* <span className={`text-base font-medium hidden md:inline-block ${appJustLoggedIn ? 'slide-fade-in' : ''}`}>
             Welcome, <span className="font-semibold">{userFullName || 'User'}</span>
-          </span>
+          </span> */}
 
           {/* AI Assistant Button */}
           <button

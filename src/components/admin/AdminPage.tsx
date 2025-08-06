@@ -3,8 +3,24 @@ import { ChevronDownIcon } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UserManagement from './UserManagement';
 import PaymentPlanRowsManager from './PaymentPlanRowsManager';
+import AccessLogsManager from './AccessLogsManager';
+import CurrenciesManager from './CurrenciesManager';
+import DepartmentsManager from './DepartmentsManager';
+import EmployeesManager from './EmployeesManager';
+import SourcesManager from './SourcesManager';
+import BankAccountsManager from './BankAccountsManager';
+import MeetingLocationsManager from './MeetingLocationsManager';
+import LanguagesManager from './LanguagesManager';
+import HolidaysManager from './HolidaysManager';
+import LeadTagsManager from './LeadTagsManager';
+import LeadStageReasonsManager from './LeadStageReasonsManager';
+import MainCategoriesManager from './MainCategoriesManager';
+import SubCategoriesManager from './SubCategoriesManager';
+import WhatsAppNumbersManager from './WhatsAppNumbersManager';
+import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
+import { supabase } from '../../lib/supabase';
 
 const ADMIN_TABS = [
   {
@@ -59,6 +75,28 @@ const ADMIN_TABS = [
 // Type for leads
 type Lead = { id: number; name: string; email: string; phone: string; stage: string; number: string };
 
+// Type for access logs
+type AccessLog = {
+  id: number;
+  created_at: string;
+  request_method: string;
+  endpoint: string;
+  request_body: string;
+  response_body: string;
+  response_code: number;
+};
+
+// Type for users
+type User = {
+  id: number;
+  email: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  created_at: string;
+  is_active: boolean;
+};
+
 const AdminPage: React.FC = () => {
   const { isAdmin, isLoading, refreshAdminStatus } = useAdminRole();
   const navigate = useNavigate();
@@ -67,6 +105,13 @@ const AdminPage: React.FC = () => {
   const tabBarRef = useRef<HTMLDivElement>(null);
   const [showLeftArrow, setShowLeftArrow] = useState(false);
   const [showRightArrow, setShowRightArrow] = useState(false);
+
+  // State for real data
+  const [newUsers, setNewUsers] = useState<User[]>([]);
+  const [unactivatedUsers, setUnactivatedUsers] = useState<User[]>([]);
+  const [accessLogs, setAccessLogs] = useState<AccessLog[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [dataLoading, setDataLoading] = useState(true);
 
   // Arrow visibility logic
   useEffect(() => {
@@ -96,63 +141,148 @@ const AdminPage: React.FC = () => {
     el.scrollBy({ left: dir === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
   };
 
-  // Mock data for users
-  const newUsers = [
-    { name: 'Eliran Novik', email: 'eliran@example.com', date: '2024-06-10' },
-    { name: 'Anna Zh', email: 'anna@example.com', date: '2024-06-15' },
-    { name: 'Sarah L', email: 'sarah@example.com', date: '2024-06-18' },
-    { name: 'David K', email: 'david@example.com', date: '2024-06-22' },
-  ];
-  const unactivatedUsers = [
-    { name: 'Michael R', email: 'michael@example.com', date: '2024-06-12' },
-    { name: 'Yael T', email: 'yael@example.com', date: '2024-06-20' },
-  ];
+  const refreshAdminData = async () => {
+    setDataLoading(true);
+    try {
+      // Fetch users (last 30 days)
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, email, first_name, last_name, full_name, created_at, is_active')
+        .gte('created_at', thirtyDaysAgo.toISOString())
+        .order('created_at', { ascending: false });
 
-  // Mock data for access logs
-  const accessLogs = [
-    {
-      date: '01.07.25 16:06',
-      method: 'POST',
-      endpoint: 'hooks/catch/',
-      body: "{name: 'Anil chauhan', phone: '966557802168', email: 'anilchauhan678ch@gmail.com', desc: 'How can I get a free working visa in Israel?', lead_source: '784', topic: 'For working visa in Israel', sid: '1311'}",
-      code: 200,
-    },
-    {
-      date: '01.07.25 15:44',
-      method: 'GET',
-      endpoint: 'api/users',
-      body: '{}',
-      code: 200,
-    },
-    {
-      date: '01.07.25 15:40',
-      method: 'POST',
-      endpoint: 'api/login',
-      body: "{email: 'anna@example.com', password: '***'}",
-      code: 401,
-    },
-  ];
+      if (usersError) {
+        console.error('Error fetching users:', usersError);
+      } else {
+        const activeUsers = users?.filter(u => u.is_active) || [];
+        const inactiveUsers = users?.filter(u => !u.is_active) || [];
+        setNewUsers(activeUsers.slice(0, 4));
+        setUnactivatedUsers(inactiveUsers.slice(0, 2));
+      }
 
-  // Mock data for leads
-  const mockLeads: Lead[] = [
-    { id: 1, name: 'David Lee', email: 'david.lee@example.com', phone: '050-1234567', stage: 'New', number: 'L1001' },
-    { id: 2, name: 'Emma Wilson', email: 'emma.wilson@example.com', phone: '050-2345678', stage: 'Qualified', number: 'L1002' },
-    { id: 3, name: 'Noah Cohen', email: 'noah.cohen@example.com', phone: '050-3456789', stage: 'Meeting', number: 'L1003' },
-    { id: 4, name: 'Olivia Levi', email: 'olivia.levi@example.com', phone: '050-4567890', stage: 'Signed', number: 'L1004' },
-  ];
+      // Fetch latest 5 access logs
+      const { data: logs, error: logsError } = await supabase
+        .from('access_logs')
+        .select('id, created_at, request_method, endpoint, request_body, response_body, response_code')
+        .order('created_at', { ascending: false })
+        .limit(5);
+
+      if (logsError) {
+        console.error('Error fetching access logs:', logsError);
+      } else {
+        setAccessLogs(logs || []);
+      }
+
+      // Fetch leads for search
+      const { data: leadsData, error: leadsError } = await supabase
+        .from('leads')
+        .select('id, name, email, phone, stage, lead_number')
+        .order('created_at', { ascending: false })
+        .limit(50);
+
+      if (leadsError) {
+        console.error('Error fetching leads:', leadsError);
+      } else {
+        const formattedLeads = leadsData?.map(lead => ({
+          id: lead.id,
+          name: lead.name,
+          email: lead.email,
+          phone: lead.phone,
+          stage: lead.stage,
+          number: lead.lead_number
+        })) || [];
+        setLeads(formattedLeads);
+      }
+
+    } catch (error) {
+      console.error('Error refreshing admin data:', error);
+    } finally {
+      setDataLoading(false);
+    }
+  };
+
+  // State for lead search
   const [leadSearch, setLeadSearch] = React.useState('');
   const [selectedLead, setSelectedLead] = React.useState<Lead | null>(null);
-  const filteredLeads = leadSearch.length > 0 ? mockLeads.filter(l => l.name.toLowerCase().includes(leadSearch.toLowerCase()) || l.number.includes(leadSearch)) : [];
+  const filteredLeads = leadSearch.length > 0 ? leads.filter(l => l.name.toLowerCase().includes(leadSearch.toLowerCase()) || l.number.includes(leadSearch)) : [];
 
-  // No redirect - allow all users to access admin panel with limited tabs
+  // Fetch real data for admin dashboard
   useEffect(() => {
-    // Silent check - no logging needed
-  }, [isAdmin, isLoading]);
+    const fetchAdminData = async () => {
+      setDataLoading(true);
+      try {
+        // Fetch users (last 30 days)
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        const { data: users, error: usersError } = await supabase
+          .from('users')
+          .select('id, email, first_name, last_name, full_name, created_at, is_active')
+          .gte('created_at', thirtyDaysAgo.toISOString())
+          .order('created_at', { ascending: false });
+
+        if (usersError) {
+          console.error('Error fetching users:', usersError);
+        } else {
+          const activeUsers = users?.filter(u => u.is_active) || [];
+          const inactiveUsers = users?.filter(u => !u.is_active) || [];
+          setNewUsers(activeUsers.slice(0, 4)); // Show latest 4 active users
+          setUnactivatedUsers(inactiveUsers.slice(0, 2)); // Show latest 2 inactive users
+        }
+
+        // Fetch latest 5 access logs
+        const { data: logs, error: logsError } = await supabase
+          .from('access_logs')
+          .select('id, created_at, request_method, endpoint, request_body, response_body, response_code')
+          .order('created_at', { ascending: false })
+          .limit(5);
+
+        if (logsError) {
+          console.error('Error fetching access logs:', logsError);
+        } else {
+          setAccessLogs(logs || []);
+        }
+
+        // Fetch leads for search
+        const { data: leadsData, error: leadsError } = await supabase
+          .from('leads')
+          .select('id, name, email, phone, stage, lead_number')
+          .order('created_at', { ascending: false })
+          .limit(50); // Limit to latest 50 leads for performance
+
+        if (leadsError) {
+          console.error('Error fetching leads:', leadsError);
+        } else {
+          const formattedLeads = leadsData?.map(lead => ({
+            id: lead.id,
+            name: lead.name,
+            email: lead.email,
+            phone: lead.phone,
+            stage: lead.stage,
+            number: lead.lead_number
+          })) || [];
+          setLeads(formattedLeads);
+        }
+
+      } catch (error) {
+        console.error('Error fetching admin data:', error);
+      } finally {
+        setDataLoading(false);
+      }
+    };
+
+    if (isAdmin) {
+      fetchAdminData();
+    }
+  }, [isAdmin]);
 
 
 
   // Show loading state
-  if (isLoading) {
+  if (isLoading || dataLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="loading loading-spinner loading-lg"></div>
@@ -169,7 +299,25 @@ const AdminPage: React.FC = () => {
 
   return (
     <div className="p-6 w-full">
-      <h1 className="text-3xl font-bold mb-8">Admin Panel</h1>
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-3xl font-bold">Admin Panel</h1>
+        {isAdmin && (
+          <button
+            onClick={refreshAdminData}
+            disabled={dataLoading}
+            className="btn btn-primary btn-sm gap-2"
+          >
+            {dataLoading ? (
+              <div className="loading loading-spinner loading-xs"></div>
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            )}
+            Refresh Data
+          </button>
+        )}
+      </div>
       <div className="relative" style={{ minHeight: 48 }}>
         {/* Left Arrow */}
         {showLeftArrow && (
@@ -267,9 +415,9 @@ const AdminPage: React.FC = () => {
               <ul className="space-y-1 mb-2">
                 {newUsers.map(u => (
                   <li key={u.email} className="flex items-center gap-2 text-sm">
-                    <span className="font-bold text-white">{u.name}</span>
+                    <span className="font-bold text-white">{u.first_name && u.last_name ? `${u.first_name} ${u.last_name}` : u.full_name || u.email}</span>
                     <span className="text-white/80">({u.email})</span>
-                    <span className="badge badge-success badge-sm ml-auto bg-white/20 border-none text-white">{u.date}</span>
+                    <span className="badge badge-success badge-sm ml-auto bg-white/20 border-none text-white">{new Date(u.created_at).toLocaleDateString()}</span>
                   </li>
                 ))}
               </ul>
@@ -277,9 +425,9 @@ const AdminPage: React.FC = () => {
               <ul className="space-y-1">
                 {unactivatedUsers.map(u => (
                   <li key={u.email} className="flex items-center gap-2 text-sm">
-                    <span className="font-bold text-white">{u.name}</span>
+                    <span className="font-bold text-white">{u.first_name && u.last_name ? `${u.first_name} ${u.last_name}` : u.full_name || u.email}</span>
                     <span className="text-white/80">({u.email})</span>
-                    <span className="badge badge-error badge-sm ml-auto bg-white/20 border-none text-white">{u.date}</span>
+                    <span className="badge badge-error badge-sm ml-auto bg-white/20 border-none text-white">{new Date(u.created_at).toLocaleDateString()}</span>
                   </li>
                 ))}
               </ul>
@@ -298,9 +446,9 @@ const AdminPage: React.FC = () => {
                 </div>
                 <span className="card-title text-lg text-white">Access Logs</span>
               </div>
-              <div className="overflow-x-auto mt-2 rounded-lg bg-white/10">
+              <div className="overflow-x-auto mt-2 rounded-lg bg-white/10 max-h-96 overflow-y-auto">
                 <table className="table table-xs w-full text-xs text-white">
-                  <thead>
+                  <thead className="sticky top-0 bg-white/10">
                     <tr className="text-white/80">
                       <th className="font-bold">Date</th>
                       <th className="font-bold">Method</th>
@@ -312,11 +460,15 @@ const AdminPage: React.FC = () => {
                   <tbody>
                     {accessLogs.map((log, idx) => (
                       <tr key={idx} className="border-b border-white/20 hover:bg-white/10">
-                        <td className="whitespace-nowrap text-info font-mono font-bold">{log.date}</td>
-                        <td><span className={`badge ${log.method === 'POST' ? 'badge-error' : 'badge-info'} badge-sm bg-white/20 border-none text-white`}>{log.method}</span></td>
+                        <td className="whitespace-nowrap text-white font-mono font-bold">{new Date(log.created_at).toLocaleString()}</td>
+                        <td><span className={`badge ${log.request_method === 'POST' ? 'badge-error' : 'badge-info'} badge-sm bg-white/20 border-none text-white`}>{log.request_method}</span></td>
                         <td className="font-mono">{log.endpoint}</td>
-                        <td className="font-mono text-xs max-w-xs overflow-x-hidden whitespace-nowrap text-ellipsis" title={log.body}>{log.body}</td>
-                        <td><span className={`badge ${log.code === 200 ? 'badge-success' : 'badge-error'} badge-sm bg-white/20 border-none text-white`}>{log.code}</span></td>
+                        <td className="font-mono text-xs max-w-md">
+                          <div className="max-h-20 overflow-y-auto">
+                            <pre className="whitespace-pre-wrap break-words text-xs">{log.request_body || 'No request body'}</pre>
+                          </div>
+                        </td>
+                        <td><span className={`badge ${log.response_code === 200 ? 'badge-success' : 'badge-error'} badge-sm bg-white/20 border-none text-white`}>{log.response_code}</span></td>
                       </tr>
                     ))}
                   </tbody>
@@ -429,6 +581,51 @@ const AdminPage: React.FC = () => {
             ) : selectedTab?.label === 'Finances' &&
             selectedTab?.subcategories[selected.sub] === 'Payment plan rows' ? (
               <div className="w-full"><PaymentPlanRowsManager /></div>
+            ) : selectedTab?.label === 'Hooks' &&
+            selectedTab?.subcategories[selected.sub] === 'Access Logs' ? (
+              <div className="w-full"><AccessLogsManager /></div>
+            ) : selectedTab?.label === 'Accounting' &&
+            selectedTab?.subcategories[selected.sub] === 'Currencies' ? (
+              <div className="w-full"><CurrenciesManager /></div>
+            ) : selectedTab?.label === 'Tenants' &&
+            selectedTab?.subcategories[selected.sub] === 'Departements' ? (
+              <div className="w-full"><DepartmentsManager /></div>
+            ) : selectedTab?.label === 'Tenants' &&
+            selectedTab?.subcategories[selected.sub] === 'Employees' ? (
+              <div className="w-full"><EmployeesManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Lead Sources' ? (
+              <div className="w-full"><SourcesManager /></div>
+            ) : selectedTab?.label === 'Tenants' &&
+            selectedTab?.subcategories[selected.sub] === 'Bank accounts' ? (
+              <div className="w-full"><BankAccountsManager /></div>
+            ) : selectedTab?.label === 'Tenants' &&
+            selectedTab?.subcategories[selected.sub] === 'Meeting Locations' ? (
+              <div className="w-full"><MeetingLocationsManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Languages' ? (
+              <div className="w-full"><LanguagesManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Holidays' ? (
+              <div className="w-full"><HolidaysManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Lead Tags' ? (
+              <div className="w-full"><LeadTagsManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Lead Stage Reasons' ? (
+              <div className="w-full"><LeadStageReasonsManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Main Categories' ? (
+              <div className="w-full"><MainCategoriesManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'sub categories' ? (
+              <div className="w-full"><SubCategoriesManager /></div>
+            ) : selectedTab?.label === 'Whatsapp' &&
+            selectedTab?.subcategories[selected.sub] === 'Whatsapp numbers' ? (
+              <div className="w-full"><WhatsAppNumbersManager /></div>
+            ) : selectedTab?.label === 'Whatsapp' &&
+            selectedTab?.subcategories[selected.sub] === 'Whats app templates' ? (
+              <div className="w-full"><WhatsAppTemplatesManager /></div>
             ) : (
               <div className="flex items-center justify-center text-xl font-semibold text-primary">
                 {`${selectedTab?.label} / ${selectedTab?.subcategories[selected.sub]}`}

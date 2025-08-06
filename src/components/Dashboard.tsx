@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import Meetings from './Meetings';
 import AISuggestions from './AISuggestions';
 import OverdueFollowups from './OverdueFollowups';
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
@@ -183,13 +183,122 @@ const Dashboard: React.FC = () => {
       const { data } = await supabase.from('leads').select('id').lte('next_followup', today).not('next_followup', 'is', null);
       setOverdueFollowups(data?.length || 0);
     })();
-    // Fetch new messages (mock: last 5 from leads table with messages)
+    // Fetch new messages (real data from emails and WhatsApp)
     (async () => {
-      const { data } = await supabase.from('messages').select('*').order('created_at', { ascending: false }).limit(5);
-      if (data && data.length > 0) {
-        setLatestMessages(data);
-        setNewMessages(data.length);
-      } else {
+      try {
+        // Get current user's leads
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+
+        // Get user's leads
+        const { data: userLeads } = await supabase
+          .from('users')
+          .select('id')
+          .eq('auth_id', user.id)
+          .single();
+
+        if (!userLeads) return;
+
+        // Fetch recent incoming emails (last 7 days)
+        const sevenDaysAgo = new Date();
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        
+        const { data: recentEmails } = await supabase
+          .from('emails')
+          .select(`
+            id,
+            message_id,
+            client_id,
+            sender_name,
+            sender_email,
+            subject,
+            body_preview,
+            sent_at,
+            direction,
+            leads:client_id (
+              id,
+              name,
+              lead_number,
+              email
+            )
+          `)
+          .eq('direction', 'incoming')
+          .gte('sent_at', sevenDaysAgo.toISOString())
+          .order('sent_at', { ascending: false })
+          .limit(10);
+
+        // Fetch recent WhatsApp messages (last 7 days)
+        const { data: recentWhatsApp } = await supabase
+          .from('whatsapp_messages')
+          .select(`
+            id,
+            lead_id,
+            sender_name,
+            message,
+            sent_at,
+            direction,
+            leads:lead_id (
+              id,
+              name,
+              lead_number,
+              email
+            )
+          `)
+          .eq('direction', 'in')
+          .gte('sent_at', sevenDaysAgo.toISOString())
+          .order('sent_at', { ascending: false })
+          .limit(10);
+
+        // Combine and format messages
+        const allMessages: any[] = [];
+        
+        if (recentEmails) {
+          recentEmails.forEach(email => {
+            if (email.leads && typeof email.leads === 'object' && 'name' in email.leads) {
+              const leads = email.leads as any;
+              allMessages.push({
+                id: email.message_id,
+                type: 'email',
+                client_name: leads.name,
+                lead_number: leads.lead_number,
+                content: email.subject || email.body_preview || 'Email received',
+                sender: email.sender_name || email.sender_email,
+                created_at: email.sent_at,
+                client_id: email.client_id,
+                direction: email.direction
+              });
+            }
+          });
+        }
+
+        if (recentWhatsApp) {
+          recentWhatsApp.forEach(msg => {
+            if (msg.leads && typeof msg.leads === 'object' && 'name' in msg.leads) {
+              const leads = msg.leads as any;
+              allMessages.push({
+                id: msg.id,
+                type: 'whatsapp',
+                client_name: leads.name,
+                lead_number: leads.lead_number,
+                content: msg.message,
+                sender: msg.sender_name || 'Client',
+                created_at: msg.sent_at,
+                client_id: msg.lead_id,
+                direction: msg.direction
+              });
+            }
+          });
+        }
+
+        // Sort by date and take the latest 5
+        const sortedMessages = allMessages
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+          .slice(0, 5);
+
+        setLatestMessages(sortedMessages);
+        setNewMessages(sortedMessages.length);
+      } catch (error) {
+        console.error('Error fetching messages:', error);
         setLatestMessages(mockMessages);
         setNewMessages(mockMessages.length);
       }
@@ -278,7 +387,259 @@ const Dashboard: React.FC = () => {
   // Remove dropdown state
   const [showLeadsList, setShowLeadsList] = React.useState(false);
 
-  // Mock data for Score Board
+  // Real data for Score Board
+  const [realRevenueThisMonth, setRealRevenueThisMonth] = useState<number>(0);
+  const [revenueLoading, setRevenueLoading] = useState<boolean>(true);
+  const REVENUE_TARGET = 2000000; // 2M target
+
+  // Lead growth data
+  const [totalLeadsThisMonth, setTotalLeadsThisMonth] = useState<number>(0);
+  const [totalLeadsLastMonth, setTotalLeadsLastMonth] = useState<number>(0);
+  const [leadsLoading, setLeadsLoading] = useState<boolean>(true);
+
+  // Conversion rate data
+  const [meetingsScheduledThisMonth, setMeetingsScheduledThisMonth] = useState<number>(0);
+  const [totalExistingLeads, setTotalExistingLeads] = useState<number>(0);
+  const [conversionLoading, setConversionLoading] = useState<boolean>(true);
+
+  // Contracts signed data
+  const [contractsSignedThisMonth, setContractsSignedThisMonth] = useState<number>(0);
+  const [contractsSignedLastMonth, setContractsSignedLastMonth] = useState<number>(0);
+  const [contractsLoading, setContractsLoading] = useState<boolean>(true);
+
+  // Fetch real revenue this month
+  useEffect(() => {
+    const fetchRevenueThisMonth = async () => {
+      setRevenueLoading(true);
+      try {
+        const now = new Date();
+        const thisMonth = now.getMonth();
+        const thisYear = now.getFullYear();
+        const startOfMonth = new Date(thisYear, thisMonth, 1);
+        const endOfMonth = new Date(thisYear, thisMonth + 1, 0);
+
+        const { data, error } = await supabase
+          .from('payment_plans')
+          .select('value, value_vat, paid_at')
+          .eq('paid', true)
+          .gte('paid_at', startOfMonth.toISOString())
+          .lte('paid_at', endOfMonth.toISOString());
+
+        if (!error && data) {
+          const total = data.reduce((sum, row) => {
+            return sum + (Number(row.value) + Number(row.value_vat));
+          }, 0);
+          setRealRevenueThisMonth(total);
+        } else {
+          setRealRevenueThisMonth(0);
+        }
+      } catch (error) {
+        console.error('Error fetching revenue:', error);
+        setRealRevenueThisMonth(0);
+      } finally {
+        setRevenueLoading(false);
+      }
+    };
+
+    fetchRevenueThisMonth();
+  }, []);
+
+  // Fetch lead growth data
+  useEffect(() => {
+    const fetchLeadGrowth = async () => {
+      setLeadsLoading(true);
+      try {
+        const now = new Date();
+        const thisMonth = now.getMonth();
+        const thisYear = now.getFullYear();
+        
+        // This month
+        const startOfThisMonth = new Date(thisYear, thisMonth, 1);
+        const endOfThisMonth = new Date(thisYear, thisMonth + 1, 0);
+        
+        // Last month
+        const lastMonth = thisMonth === 0 ? 11 : thisMonth - 1;
+        const lastMonthYear = thisMonth === 0 ? thisYear - 1 : thisYear;
+        const startOfLastMonth = new Date(lastMonthYear, lastMonth, 1);
+        const endOfLastMonth = new Date(lastMonthYear, lastMonth + 1, 0);
+
+        // Fetch this month's leads
+        const { data: thisMonthData, error: thisMonthError } = await supabase
+          .from('leads')
+          .select('id')
+          .gte('created_at', startOfThisMonth.toISOString())
+          .lte('created_at', endOfThisMonth.toISOString());
+
+        // Fetch last month's leads
+        const { data: lastMonthData, error: lastMonthError } = await supabase
+          .from('leads')
+          .select('id')
+          .gte('created_at', startOfLastMonth.toISOString())
+          .lte('created_at', endOfLastMonth.toISOString());
+
+        if (!thisMonthError && thisMonthData) {
+          setTotalLeadsThisMonth(thisMonthData.length);
+        } else {
+          setTotalLeadsThisMonth(0);
+        }
+
+        if (!lastMonthError && lastMonthData) {
+          setTotalLeadsLastMonth(lastMonthData.length);
+        } else {
+          setTotalLeadsLastMonth(0);
+        }
+      } catch (error) {
+        console.error('Error fetching lead growth:', error);
+        setTotalLeadsThisMonth(0);
+        setTotalLeadsLastMonth(0);
+      } finally {
+        setLeadsLoading(false);
+      }
+    };
+
+    fetchLeadGrowth();
+  }, []);
+
+  // Fetch conversion rate data
+  useEffect(() => {
+    const fetchConversionRate = async () => {
+      setConversionLoading(true);
+      try {
+        const now = new Date();
+        const thisMonth = now.getMonth();
+        const thisYear = now.getFullYear();
+        const startOfThisMonth = new Date(thisYear, thisMonth, 1, 0, 0, 0, 0);
+        const endOfThisMonth = new Date(thisYear, thisMonth + 1, 0, 23, 59, 59, 999);
+
+        console.log('Date range:', {
+          startOfThisMonth: startOfThisMonth.toISOString(),
+          endOfThisMonth: endOfThisMonth.toISOString()
+        });
+
+        // Get new leads created this month
+        const { data: newLeadsData, error: newLeadsError } = await supabase
+          .from('leads')
+          .select('id, created_at')
+          .gte('created_at', startOfThisMonth.toISOString())
+          .lte('created_at', endOfThisMonth.toISOString());
+
+        console.log('New leads this month:', newLeadsData);
+        console.log('New leads error:', newLeadsError);
+
+        // Get meetings scheduled this month (no duplicates per client)
+        const { data: meetingsData, error: meetingsError } = await supabase
+          .from('meetings')
+          .select('client_id, created_at, status')
+          .gte('created_at', startOfThisMonth.toISOString())
+          .lte('created_at', endOfThisMonth.toISOString())
+          .eq('status', 'scheduled');
+
+        console.log('Meetings this month:', meetingsData);
+        console.log('Meetings error:', meetingsError);
+
+        if (!newLeadsError && newLeadsData) {
+          setTotalExistingLeads(newLeadsData.length);
+        } else {
+          setTotalExistingLeads(0);
+        }
+
+        if (!meetingsError && meetingsData) {
+          // Remove duplicates per client (client_id)
+          const uniqueClientIds = [...new Set(meetingsData.map(meeting => meeting.client_id))];
+          setMeetingsScheduledThisMonth(uniqueClientIds.length);
+          console.log('Unique client IDs with meetings:', uniqueClientIds);
+        } else {
+          setMeetingsScheduledThisMonth(0);
+        }
+      } catch (error) {
+        console.error('Error fetching conversion rate:', error);
+        setTotalExistingLeads(0);
+        setMeetingsScheduledThisMonth(0);
+      } finally {
+        setConversionLoading(false);
+      }
+    };
+
+    fetchConversionRate();
+  }, []);
+
+  // Fetch contracts signed data
+  useEffect(() => {
+    const fetchContractsSigned = async () => {
+      setContractsLoading(true);
+      try {
+        const now = new Date();
+        const thisMonth = now.getMonth();
+        const thisYear = now.getFullYear();
+        
+        // This month
+        const startOfThisMonth = new Date(thisYear, thisMonth, 1, 0, 0, 0, 0);
+        const endOfThisMonth = new Date(thisYear, thisMonth + 1, 0, 23, 59, 59, 999);
+        
+        // Last month
+        const lastMonth = thisMonth === 0 ? 11 : thisMonth - 1;
+        const lastMonthYear = thisMonth === 0 ? thisYear - 1 : thisYear;
+        const startOfLastMonth = new Date(lastMonthYear, lastMonth, 1, 0, 0, 0, 0);
+        const endOfLastMonth = new Date(lastMonthYear, lastMonth + 1, 0, 23, 59, 59, 999);
+
+        // Get contracts signed this month
+        const { data: thisMonthContracts, error: thisMonthError } = await supabase
+          .from('contracts')
+          .select('id')
+          .gte('created_at', startOfThisMonth.toISOString())
+          .lte('created_at', endOfThisMonth.toISOString());
+
+        // Get contracts signed last month
+        const { data: lastMonthContracts, error: lastMonthError } = await supabase
+          .from('contracts')
+          .select('id')
+          .gte('created_at', startOfLastMonth.toISOString())
+          .lte('created_at', endOfLastMonth.toISOString());
+
+        if (!thisMonthError && thisMonthContracts) {
+          setContractsSignedThisMonth(thisMonthContracts.length);
+        } else {
+          setContractsSignedThisMonth(0);
+        }
+
+        if (!lastMonthError && lastMonthContracts) {
+          setContractsSignedLastMonth(lastMonthContracts.length);
+        } else {
+          setContractsSignedLastMonth(0);
+        }
+      } catch (error) {
+        console.error('Error fetching contracts signed:', error);
+        setContractsSignedThisMonth(0);
+        setContractsSignedLastMonth(0);
+      } finally {
+        setContractsLoading(false);
+      }
+    };
+
+    fetchContractsSigned();
+  }, []);
+
+  // Calculate percentage from target
+  const revenuePercentage = REVENUE_TARGET > 0 ? (realRevenueThisMonth / REVENUE_TARGET) * 100 : 0;
+  const isAboveTarget = realRevenueThisMonth >= REVENUE_TARGET;
+
+  // Calculate lead growth percentage
+  const leadGrowthPercentage = totalLeadsLastMonth > 0 
+    ? ((totalLeadsThisMonth - totalLeadsLastMonth) / totalLeadsLastMonth) * 100 
+    : 0;
+  const isLeadGrowthPositive = leadGrowthPercentage >= 0;
+
+  // Calculate conversion rate
+  const conversionRate = totalExistingLeads > 0 
+    ? (meetingsScheduledThisMonth / totalExistingLeads) * 100 
+    : 0;
+
+  // Calculate contracts signed percentage
+  const contractsPercentage = contractsSignedLastMonth > 0 
+    ? ((contractsSignedThisMonth - contractsSignedLastMonth) / contractsSignedLastMonth) * 100 
+    : 0;
+  const isContractsGrowthPositive = contractsPercentage >= 0;
+
   const scoreboardTabs = ["Today", "Last 30d", "Tables"];
   const scoreboardCategories = [
     "General",
@@ -949,15 +1310,29 @@ const Dashboard: React.FC = () => {
             <h3 className="text-xl font-bold text-gray-900 mb-4">Latest Messages</h3>
             <div className="space-y-3">
               {latestMessages.map((message, index) => (
-                <div key={index} className="bg-white rounded-lg p-4 shadow-sm border border-gray-200">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-gray-900">{message.client_name}</span>
+                <div key={index} className="bg-gradient-to-r from-white to-gray-50 rounded-xl p-5 shadow-lg border border-gray-100 hover:shadow-xl hover:scale-[1.02] transition-all duration-300 cursor-pointer group"
+                     onClick={() => {
+                       // Navigate to client's interactions tab
+                       if (message.client_id) {
+                         console.log('Navigating to client:', message.lead_number, 'with message:', message);
+                         navigate(`/clients/${message.lead_number}?tab=interactions`);
+                       }
+                     }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <span className={`text-xs px-3 py-1.5 rounded-full font-medium shadow-sm animate-pulse ${
+                        message.type === 'email' 
+                          ? 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white' 
+                          : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white'
+                      }`}>
+                        {message.type === 'email' ? 'Email' : 'WhatsApp'}
+                      </span>
+                      <span className="font-bold text-gray-900 text-lg">{message.client_name}</span>
                       {message.lead_number && (
-                        <span className="text-sm text-primary font-medium">({message.lead_number})</span>
+                        <span className="text-sm text-gray-600 font-medium">#{message.lead_number}</span>
                       )}
                     </div>
-                    <span className="text-sm text-gray-500">
+                    <span className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
                       {new Date(message.created_at).toLocaleDateString('en-US', {
                         month: 'short',
                         day: 'numeric',
@@ -966,16 +1341,29 @@ const Dashboard: React.FC = () => {
                       })}
                     </span>
                   </div>
-                  <p className="text-gray-700 text-sm">{message.content}</p>
-                  <div className="flex gap-2 mt-3">
-                    <button className="btn btn-sm btn-primary">Reply</button>
-                    <button className="btn btn-sm btn-outline">View Details</button>
+                  <p className="text-gray-700 text-sm line-clamp-2 mb-4 leading-relaxed">{message.content}</p>
+                  <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+                    <span className="text-xs text-gray-600 font-medium">From: {message.sender}</span>
+                    <span className="text-xs text-primary font-medium group-hover:text-primary/80 transition-colors">
+                      View conversation →
+                    </span>
                   </div>
                 </div>
               ))}
             </div>
+            {latestMessages.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                No new messages in the last 7 days
+              </div>
+            )}
             <div className="flex justify-center mt-4">
-              <button className="btn btn-outline btn-primary">View All Messages</button>
+              <button className="btn btn-outline btn-primary" onClick={() => {
+                // Refresh the messages by re-fetching
+                setExpanded(null);
+                setTimeout(() => setExpanded('messages'), 100);
+              }}>
+                Refresh Messages
+              </button>
             </div>
           </div>
         </div>
@@ -1018,49 +1406,114 @@ const Dashboard: React.FC = () => {
               </div>
 
               {/* Performance Summary Cards */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-2 bg-purple-50 rounded-lg">
                       <UserGroupIcon className="w-5 h-5 text-purple-600" />
                     </div>
-                    <span className="text-2xl font-bold text-gray-900">142</span>
+                    {leadsLoading ? (
+                      <span className="text-2xl font-bold text-gray-900">Loading...</span>
+                    ) : (
+                      <span className="text-2xl font-bold text-gray-900">{totalLeadsThisMonth.toLocaleString()}</span>
+                    )}
                   </div>
-                  <div className="text-sm text-gray-700 font-medium">Total Leads</div>
-                  <div className="text-xs text-gray-500 mt-1">+12% from last month</div>
+                  <div className="text-sm text-gray-700 font-medium">Leads This Month</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {leadsLoading ? (
+                      "Calculating..."
+                    ) : (
+                      <span className={`font-medium ${isLeadGrowthPositive ? 'text-green-600' : 'text-purple-600'}`}>
+                        {isLeadGrowthPositive ? '+' : ''}{leadGrowthPercentage.toFixed(1)}% from last month
+                      </span>
+                    )}
+                  </div>
                 </div>
                 
-                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-2 bg-purple-50 rounded-lg">
                       <CheckCircleIcon className="w-5 h-5 text-purple-600" />
                     </div>
-                    <span className="text-2xl font-bold text-gray-900">89</span>
+                    {conversionLoading ? (
+                      <span className="text-2xl font-bold text-gray-900">Loading...</span>
+                    ) : (
+                      <span className="text-2xl font-bold text-gray-900">{meetingsScheduledThisMonth.toLocaleString()}</span>
+                    )}
                   </div>
-                  <div className="text-sm text-gray-700 font-medium">Conversions</div>
-                  <div className="text-xs text-gray-500 mt-1">62.7% conversion rate</div>
+                  <div className="text-sm text-gray-700 font-medium">Meetings Scheduled</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {conversionLoading ? (
+                      "Calculating..."
+                    ) : (
+                      <span className="font-medium text-purple-600">
+                        {conversionRate.toFixed(1)}% of new leads this month
+                      </span>
+                    )}
+                  </div>
                 </div>
                 
-                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-2 bg-purple-50 rounded-lg">
                       <ArrowTrendingUpIcon className="w-5 h-5 text-purple-600" />
                     </div>
-                    <span className="text-2xl font-bold text-gray-900">₪487K</span>
+                    {revenueLoading ? (
+                      <span className="text-2xl font-bold text-gray-900">Loading...</span>
+                    ) : (
+                      <span className="text-2xl font-bold text-gray-900">₪{realRevenueThisMonth.toLocaleString()}</span>
+                    )}
                   </div>
-                  <div className="text-sm text-gray-700 font-medium">Revenue</div>
-                  <div className="text-xs text-gray-500 mt-1">+18% from target</div>
+                  <div className="text-sm text-gray-700 font-medium">Revenue This Month</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {revenueLoading ? (
+                      "Calculating..."
+                    ) : (
+                      <span className={`font-medium ${isAboveTarget ? 'text-green-600' : 'text-purple-600'}`}>
+                        {isAboveTarget ? '+' : ''}{revenuePercentage.toFixed(1)}% from ₪2M target
+                      </span>
+                    )}
+                  </div>
+                  {/* Progress Bar */}
+                  {!revenueLoading && (
+                    <div className="mt-3">
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div 
+                          className={`h-2 rounded-full transition-all duration-500 ${
+                            isAboveTarget ? 'bg-green-500' : 'bg-purple-500'
+                          }`}
+                          style={{ width: `${Math.min(revenuePercentage, 100)}%` }}
+                        ></div>
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-500 mt-1">
+                        <span>₪0</span>
+                        <span>₪2M Target</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 
-                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm hover:shadow-md transition-shadow">
+                <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-2 bg-purple-50 rounded-lg">
-                      <ClockIcon className="w-5 h-5 text-purple-600" />
+                      <DocumentTextIcon className="w-5 h-5 text-purple-600" />
                     </div>
-                    <span className="text-2xl font-bold text-gray-900">23</span>
+                    {contractsLoading ? (
+                      <span className="text-2xl font-bold text-gray-900">Loading...</span>
+                    ) : (
+                      <span className="text-2xl font-bold text-gray-900">{contractsSignedThisMonth.toLocaleString()}</span>
+                    )}
                   </div>
-                  <div className="text-sm text-gray-700 font-medium">Pending</div>
-                  <div className="text-xs text-gray-500 mt-1">Require follow-up</div>
+                  <div className="text-sm text-gray-700 font-medium">Contracts Signed</div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {contractsLoading ? (
+                      "Calculating..."
+                    ) : (
+                      <span className={`font-medium ${isContractsGrowthPositive ? 'text-green-600' : 'text-purple-600'}`}>
+                        {isContractsGrowthPositive ? '+' : ''}{contractsPercentage.toFixed(1)}% from last month
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -1336,8 +1789,8 @@ const Dashboard: React.FC = () => {
                                 labelStyle={{ color: '#111827', fontWeight: 'bold', fontSize: '14px', marginBottom: '8px' }}
                                 itemStyle={{ color: '#374151', fontSize: '13px', fontWeight: '500' }}
                                 formatter={(value: number, name: string) => {
-                                  if (name === 'signed') return [`${value.toLocaleString()} contracts`, 'Signed'];
-                                  if (name === 'due') return [`${value.toLocaleString()} contracts`, 'Due'];
+                                  if (name === 'signed') return [`${value.toLocaleString()} NIS`, 'Signed'];
+                                  if (name === 'due') return [`${value.toLocaleString()} NIS`, 'Due'];
                                   return [value.toLocaleString(), name || 'Unknown'];
                                 }}
                                 cursor={{ fill: 'rgba(0, 0, 0, 0.05)' }}
@@ -1435,7 +1888,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* 3. Top Workers Row: 4 boxes */}
-      <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 w-full mb-12">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 w-full mb-12 px-4 md:px-0">
         {/* Top Closers */}
         <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white h-full min-h-[180px] md:min-h-0">
           <div className="flex items-center gap-2 mb-2">
@@ -1580,7 +2033,7 @@ const Dashboard: React.FC = () => {
 
       {/* 4. My Performance Graph (Full Width) */}
       <div className="w-full mt-12">
-        <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-indigo-500 via-purple-500 to-cyan-400">
+        <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-white via-white to-white">
           <div className="card shadow-xl rounded-3xl w-full max-w-full relative overflow-hidden bg-white">
             <div className="card-body p-8">
               <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">

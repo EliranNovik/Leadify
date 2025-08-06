@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Facts Field</title>
+    <style>
+        body { font-family: Arial, sans-serif; padding: 20px; }
+        .result { margin-top: 20px; padding: 15px; border-radius: 5px; }
+        .success { background-color: #d4edda; color: #155724; }
+        .error { background-color: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>Test Facts Field</h1>
+    <button onclick="testFacts()">Test Facts Field</button>
+    <div id="result"></div>
+
+    <script>
+        async function testFacts() {
+            const testData = {
+                name: "Test User",
+                email: "test@example.com",
+                phone: "+1234567890",
+                topic: "German Citizenship",
+                comments: "Test comment",
+                source: "Web Form",
+                language: "English",
+                facts: JSON.stringify({
+                    company: "Test Company",
+                    position: "Manager",
+                    country: "Germany",
+                    city: "Berlin",
+                    address: "123 Test St",
+                    utm_source: "google",
+                    utm_medium: "cpc",
+                    utm_campaign: "test",
+                    utm_term: "citizenship",
+                    utm_content: "banner",
+                    referral_source: "partner",
+                    referral_code: "TEST123",
+                    custom_fields: {}
+                }, null, 2)
+            };
+
+            console.log('Sending test data:', testData);
+            console.log('Facts field:', testData.facts);
+
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Sending test data...';
+            resultDiv.className = 'result';
+
+            try {
+                const response = await fetch('http://localhost:3001/api/hook/catch', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json',
+                    },
+                    mode: 'cors',
+                    body: JSON.stringify(testData)
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.className = 'result success';
+                    resultDiv.innerHTML = `
+                        <h3>✅ Success!</h3>
+                        <p><strong>Lead Number:</strong> ${result.data.lead_number}</p>
+                        <p><strong>Name:</strong> ${result.data.name}</p>
+                        <p><strong>Email:</strong> ${result.data.email}</p>
+                        <p><strong>Facts:</strong> ${testData.facts}</p>
+                    `;
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.innerHTML = `
+                        <h3>❌ Error</h3>
+                        <p><strong>Status:</strong> ${response.status}</p>
+                        <p><strong>Error:</strong> ${result.error}</p>
+                        <p><strong>Details:</strong> ${result.details || 'No additional details'}</p>
+                    `;
+                }
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `
+                    <h3>❌ Network Error</h3>
+                    <p><strong>Error:</strong> ${error.message}</p>
+                `;
+            }
+        }
+    </script>
+</body>
+</html> 

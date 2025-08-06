@@ -347,37 +347,37 @@ const ExpertPage: React.FC = () => {
             >
               {/* Lead Number and Name */}
               <div className="mb-3 flex items-center gap-2">
-                  <span className="text-sm font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                  <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
                 <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                  <h3 className="text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                  <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
               </div>
               <div className="space-y-2 divide-y divide-gray-100">
                 {/* Expert */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-base font-semibold text-gray-500">Expert</span>
-                    <span className="text-lg font-bold text-gray-800 ml-2">{lead.expert || 'N/A'}</span>
+                    <span className="text-sm font-semibold text-gray-500">Expert</span>
+                    <span className="text-base font-bold text-gray-800 ml-2">{lead.expert || 'N/A'}</span>
                 </div>
                 {/* Stage */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-base font-semibold text-gray-500">Stage</span>
-                    <span className={'text-base font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white'}>
+                    <span className="text-sm font-semibold text-gray-500">Stage</span>
+                    <span className={'text-sm font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white'}>
                     {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}
                   </span>
                 </div>
                 {/* Category */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-base font-semibold text-gray-500">Category</span>
-                    <span className="text-lg font-bold text-gray-800 ml-2">{lead.topic || 'N/A'}</span>
+                    <span className="text-sm font-semibold text-gray-500">Category</span>
+                    <span className="text-base font-bold text-gray-800 ml-2">{lead.topic || 'N/A'}</span>
                 </div>
                 {/* Date Created */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-base font-semibold text-gray-500">Date Created</span>
-                    <span className="text-lg font-bold text-gray-800 ml-2">{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</span>
+                    <span className="text-sm font-semibold text-gray-500">Date Created</span>
+                    <span className="text-base font-bold text-gray-800 ml-2">{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</span>
                 </div>
                 {/* Probability */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-base font-semibold text-gray-500">Probability</span>
-                    <span className={`text-lg font-bold ml-2 ${
+                    <span className="text-sm font-semibold text-gray-500">Probability</span>
+                    <span className={`text-base font-bold ml-2 ${
                     (lead.probability || 0) >= 80 ? 'text-green-600' :
                     (lead.probability || 0) >= 60 ? 'text-yellow-600' :
                     (lead.probability || 0) >= 40 ? 'text-orange-600' :
@@ -388,15 +388,15 @@ const ExpertPage: React.FC = () => {
                 </div>
                 {/* Total Applicants */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-base font-semibold text-gray-500">Total Applicants</span>
-                    <span className="text-lg font-bold text-gray-800 ml-2">
+                    <span className="text-sm font-semibold text-gray-500">Total Applicants</span>
+                    <span className="text-base font-bold text-gray-800 ml-2">
                     {lead.number_of_applicants_meeting ?? 'N/A'}
                   </span>
                 </div>
                 {/* Meeting Date */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-base font-semibold text-gray-500">Meeting Date</span>
-                    <span className={`text-base font-bold ml-2 px-2 py-1 rounded ${meetingSort === 'past' ? 'bg-purple-600 text-white' : 'bg-[#22c55e] text-white'}`}> 
+                    <span className="text-sm font-semibold text-gray-500">Meeting Date</span>
+                    <span className={`text-sm font-bold ml-2 px-2 py-1 rounded ${meetingSort === 'past' ? 'bg-purple-600 text-white' : 'bg-[#22c55e] text-white'}`}> 
                     {lead._latestMeetingDate && !isNaN(lead._latestMeetingDate.getTime()) ? format(lead._latestMeetingDate, 'yyyy-MM-dd') : 'N/A'}
                   </span>
                 </div>
