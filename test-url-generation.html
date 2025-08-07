@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>URL Generation Test</title>
+</head>
+<body>
+    <h1>URL Generation Test</h1>
+    <div id="output"></div>
+    
+    <script type="module">
+        // Simulate the API configuration
+        const getApiBaseUrl = () => {
+            console.log('🔧 Environment detection:', {
+                DEV: import.meta.env?.DEV || false,
+                MODE: import.meta.env?.MODE || 'production',
+                PROD: import.meta.env?.PROD || true
+            });
+            
+            // In development, use relative URLs (proxy handles it)
+            if (import.meta.env?.DEV) {
+                console.log('🔧 Using development mode (relative URLs)');
+                return '';
+            }
+            
+            // In production, use the full backend URL
+            console.log('🔧 Using production mode (full backend URL)');
+            return 'https://leadify-crm-backend.onrender.com';
+        };
+        
+        const apiBaseUrl = getApiBaseUrl();
+        
+        const buildApiUrl = (endpoint) => {
+            const fullUrl = `${apiBaseUrl}${endpoint}`;
+            console.log('🔗 Building API URL:', { endpoint, apiBaseUrl, fullUrl });
+            return fullUrl;
+        };
+        
+        // Test URL generation
+        const testUrls = [
+            '/api/whatsapp/test',
+            '/api/whatsapp/media/1418538702773809',
+            '/api/whatsapp/send-message'
+        ];
+        
+        const output = document.getElementById('output');
+        output.innerHTML = '<h2>Generated URLs:</h2>';
+        
+        testUrls.forEach(endpoint => {
+            const url = buildApiUrl(endpoint);
+            const div = document.createElement('div');
+            div.innerHTML = `
+                <p><strong>${endpoint}:</strong> <a href="${url}" target="_blank">${url}</a></p>
+            `;
+            output.appendChild(div);
+        });
+        
+        // Test the actual media endpoint
+        const mediaUrl = buildApiUrl('/api/whatsapp/media/1418538702773809');
+        const img = document.createElement('img');
+        img.src = mediaUrl;
+        img.style.maxWidth = '300px';
+        img.style.border = '1px solid #ccc';
+        img.onload = () => {
+            console.log('✅ Image loaded successfully');
+            const div = document.createElement('div');
+            div.innerHTML = '<h3>Image Test:</h3>';
+            div.appendChild(img);
+            output.appendChild(div);
+        };
+        img.onerror = (e) => {
+            console.log('❌ Image failed to load:', e);
+            const div = document.createElement('div');
+            div.innerHTML = '<h3>Image Test (Failed):</h3><p style="color: red;">Failed to load image</p>';
+            output.appendChild(div);
+        };
+    </script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
+import { buildApiUrl } from '../lib/api';
 import {
   MagnifyingGlassIcon,
   PaperAirplaneIcon,
@@ -279,7 +280,7 @@ const WhatsAppPage: React.FC = () => {
       const senderName = currentUser.full_name || currentUser.email;
 
       // Send message via WhatsApp API
-      const response = await fetch('/api/whatsapp/send-message', {
+      const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -400,7 +401,7 @@ const WhatsAppPage: React.FC = () => {
       formData.append('leadId', selectedClient.id);
 
       // Upload media to WhatsApp
-      const uploadResponse = await fetch('/api/whatsapp/upload-media', {
+      const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
         method: 'POST',
         body: formData,
       });
@@ -414,7 +415,7 @@ const WhatsAppPage: React.FC = () => {
       // Send media message
       const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
       const senderName = currentUser.full_name || currentUser.email;
-      const response = await fetch('/api/whatsapp/send-media', {
+      const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -737,7 +738,8 @@ const WhatsAppPage: React.FC = () => {
                           {message.media_url && (
                             <div className="relative inline-block">
                               <img 
-                                src={message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}
+                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+
                                 alt="Image"
                                 className="max-w-full rounded-lg mb-2"
                                 onError={(e) => {
@@ -751,7 +753,7 @@ const WhatsAppPage: React.FC = () => {
                               <button
                                 onClick={() => {
                                   if (!message.media_url) return;
-                                  const url = message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`;
+                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
                                   const link = document.createElement('a');
                                   link.href = url;
                                   link.download = `image_${Date.now()}.jpg`;
@@ -777,8 +779,8 @@ const WhatsAppPage: React.FC = () => {
                           <div className="flex items-center gap-2 mb-2">
                             {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6" })}
                             <div className="flex-1">
-                              <a 
-                                href={message.media_url?.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}
+                                                              <a 
+                                  href={message.media_url?.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="block hover:opacity-80 transition-opacity"
@@ -796,7 +798,7 @@ const WhatsAppPage: React.FC = () => {
                             <button
                               onClick={() => {
                                 if (!message.media_url) return;
-                                const url = message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`;
+                                                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
                                 const link = document.createElement('a');
                                 link.href = url;
                                 link.download = message.media_filename || 'document';
@@ -825,7 +827,7 @@ const WhatsAppPage: React.FC = () => {
                               <div className="p-4 min-h-[120px] flex items-center justify-center">
                                 {message.media_mime_type === 'application/pdf' ? (
                                   <iframe
-                                    src={`${message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}#toolbar=0&navpanes=0&scrollbar=0`}
+                                    src={`${message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}#toolbar=0&navpanes=0&scrollbar=0`}
                                     className="w-full h-32 border-0"
                                     title="PDF Preview"
                                     onError={(e) => {
@@ -845,7 +847,7 @@ const WhatsAppPage: React.FC = () => {
                                   />
                                 ) : message.media_mime_type?.includes('image/') ? (
                                   <img
-                                    src={message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`}
+                                    src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
                                     alt="Document Preview"
                                     className="max-w-full max-h-24 object-contain rounded"
                                     onError={(e) => {
@@ -913,7 +915,7 @@ const WhatsAppPage: React.FC = () => {
                                 e.currentTarget.parentNode?.appendChild(errorDiv);
                               }}
                             >
-                              <source src={message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`} />
+                              <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
                               Your browser does not support the video tag.
                             </video>
                           )}

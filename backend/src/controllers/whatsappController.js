@@ -738,9 +738,6 @@ const getMedia = async (req, res) => {
     }
 
     console.log('📥 Getting media from WhatsApp:', mediaId);
-    console.log('🔧 Development mode:', isDevelopmentMode);
-    console.log('🌐 Request headers:', req.headers);
-    console.log('🔗 Request URL:', req.url);
 
     // Check if this is a mock/test media ID
     if (mediaId.includes('mock_') || mediaId.includes('test_')) {
@@ -783,6 +780,7 @@ const getMedia = async (req, res) => {
       // Get media URL from WhatsApp
       try {
         console.log('🔗 Fetching media URL from WhatsApp API...');
+        
         const mediaResponse = await axios.get(
           `${WHATSAPP_API_URL}/${mediaId}`,
           {
@@ -813,7 +811,9 @@ const getMedia = async (req, res) => {
         res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
         
         console.log('📤 Streaming media to client...');
         // Pipe the file stream to response
