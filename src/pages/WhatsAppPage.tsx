@@ -742,7 +742,10 @@ const WhatsAppPage: React.FC = () => {
                                 className="max-w-full rounded-lg mb-2"
                                 onError={(e) => {
                                   console.log('Failed to load image:', message.media_url);
-                                  e.currentTarget.style.display = 'none';
+                                  // Replace with error placeholder
+                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                                  e.currentTarget.style.border = '1px solid #e5e7eb';
+                                  e.currentTarget.style.borderRadius = '0.5rem';
                                 }}
                               />
                               <button
@@ -827,7 +830,17 @@ const WhatsAppPage: React.FC = () => {
                                     title="PDF Preview"
                                     onError={(e) => {
                                       console.log('Failed to load PDF preview:', message.media_url);
-                                      e.currentTarget.style.display = 'none';
+                                      // Show error message instead of hiding
+                                      const iframe = e.currentTarget;
+                                      iframe.style.display = 'none';
+                                      const errorDiv = document.createElement('div');
+                                      errorDiv.className = 'text-center text-gray-500 p-4';
+                                      errorDiv.innerHTML = `
+                                        <DocumentTextIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                        <p class="text-xs">PDF Preview Unavailable</p>
+                                        <p class="text-xs opacity-70">Media may have expired</p>
+                                      `;
+                                      iframe.parentNode?.appendChild(errorDiv);
                                     }}
                                   />
                                 ) : message.media_mime_type?.includes('image/') ? (
@@ -837,7 +850,16 @@ const WhatsAppPage: React.FC = () => {
                                     className="max-w-full max-h-24 object-contain rounded"
                                     onError={(e) => {
                                       console.log('Failed to load image preview:', message.media_url);
+                                      // Show error message instead of hiding
                                       e.currentTarget.style.display = 'none';
+                                      const errorDiv = document.createElement('div');
+                                      errorDiv.className = 'text-center text-gray-500 p-4';
+                                      errorDiv.innerHTML = `
+                                        <DocumentTextIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                        <p class="text-xs">Preview Unavailable</p>
+                                        <p class="text-xs opacity-70">Media may have expired</p>
+                                      `;
+                                      e.currentTarget.parentNode?.appendChild(errorDiv);
                                     }}
                                   />
                                 ) : (
@@ -879,7 +901,16 @@ const WhatsAppPage: React.FC = () => {
                               className="max-w-full rounded-lg mb-2"
                               onError={(e) => {
                                 console.log('Failed to load video:', message.media_url);
+                                // Show error message instead of hiding
                                 e.currentTarget.style.display = 'none';
+                                const errorDiv = document.createElement('div');
+                                errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';
+                                errorDiv.innerHTML = `
+                                  <FilmIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                  <p class="text-xs font-medium">Video Unavailable</p>
+                                  <p class="text-xs opacity-70">Media may have expired</p>
+                                `;
+                                e.currentTarget.parentNode?.appendChild(errorDiv);
                               }}
                             >
                               <source src={message.media_url.startsWith('http') ? message.media_url : `/api/whatsapp/media/${message.media_url}`} />

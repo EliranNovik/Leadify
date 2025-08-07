@@ -287,6 +287,13 @@ const downloadAndStoreMedia = async (mediaId, type, leadId) => {
   try {
     console.log('📥 Downloading media from WhatsApp:', mediaId);
     
+    // In production mode, we don't need to download and store locally
+    // Just store the WhatsApp media ID for later retrieval
+    if (!isDevelopmentMode) {
+      console.log('✅ Media ID stored for later retrieval:', mediaId);
+      return;
+    }
+    
     // Get media URL from WhatsApp
     const mediaResponse = await axios.get(
       `${WHATSAPP_API_URL}/${mediaId}`,
@@ -322,11 +329,6 @@ const downloadAndStoreMedia = async (mediaId, type, leadId) => {
 
     return new Promise((resolve, reject) => {
       writer.on('finish', () => {
-        // Update message with WhatsApp media ID for frontend fetching
-        supabase
-          .from('whatsapp_messages')
-          .update({ media_url: mediaId })
-          .eq('whatsapp_message_id', mediaId);
         console.log('✅ Media downloaded and saved:', fileName);
         resolve();
       });
@@ -738,6 +740,12 @@ const getMedia = async (req, res) => {
     console.log('📥 Getting media from WhatsApp:', mediaId);
     console.log('🔧 Development mode:', isDevelopmentMode);
 
+    // Check if this is a mock/test media ID
+    if (mediaId.includes('mock_') || mediaId.includes('test_')) {
+      console.log('⚠️ Mock media ID detected, skipping:', mediaId);
+      return res.status(404).json({ error: 'Mock media not available in production' });
+    }
+
     if (isDevelopmentMode) {
       // In development mode, serve from local uploads
       const uploadsDir = path.join(__dirname, '../../uploads');
@@ -771,31 +779,45 @@ const getMedia = async (req, res) => {
       }
     } else {
       // Get media URL from WhatsApp
-      const mediaResponse = await axios.get(
-        `${WHATSAPP_API_URL}/${mediaId}`,
-        {
+      try {
+        const mediaResponse = await axios.get(
+          `${WHATSAPP_API_URL}/${mediaId}`,
+          {
+            headers: {
+              'Authorization': `Bearer ${ACCESS_TOKEN}`
+            }
+          }
+        );
+
+        const mediaUrl = mediaResponse.data.url;
+        
+        // Download and serve the media
+        const fileResponse = await axios.get(mediaUrl, {
           headers: {
             'Authorization': `Bearer ${ACCESS_TOKEN}`
-          }
+          },
+          responseType: 'stream'
+        });
+
+        // Set appropriate headers
+        res.setHeader('Content-Type', fileResponse.headers['content-type'] || 'application/octet-stream');
+        res.setHeader('Content-Length', fileResponse.headers['content-length'] || '');
+        
+        // Pipe the file stream to response
+        fileResponse.data.pipe(res);
+      } catch (error) {
+        console.error('❌ Error getting media from WhatsApp API:', error.response?.data || error.message);
+        
+        // If it's a 400 error (media not found), return a proper error
+        if (error.response?.status === 400) {
+          return res.status(404).json({ 
+            error: 'Media not found or no longer available',
+            details: error.response.data?.error?.message || 'Media ID does not exist'
+          });
         }
-      );
-
-      const mediaUrl = mediaResponse.data.url;
-      
-      // Download and serve the media
-      const fileResponse = await axios.get(mediaUrl, {
-        headers: {
-          'Authorization': `Bearer ${ACCESS_TOKEN}`
-        },
-        responseType: 'stream'
-      });
-
-      // Set appropriate headers
-      res.setHeader('Content-Type', fileResponse.headers['content-type'] || 'application/octet-stream');
-      res.setHeader('Content-Length', fileResponse.headers['content-length'] || '');
-      
-      // Pipe the file stream to response
-      fileResponse.data.pipe(res);
+        
+        return res.status(500).json({ error: 'Failed to get media from WhatsApp' });
+      }
     }
 
   } catch (error) {
