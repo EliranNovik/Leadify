@@ -739,6 +739,8 @@ const getMedia = async (req, res) => {
 
     console.log('📥 Getting media from WhatsApp:', mediaId);
     console.log('🔧 Development mode:', isDevelopmentMode);
+    console.log('🌐 Request headers:', req.headers);
+    console.log('🔗 Request URL:', req.url);
 
     // Check if this is a mock/test media ID
     if (mediaId.includes('mock_') || mediaId.includes('test_')) {
@@ -780,6 +782,7 @@ const getMedia = async (req, res) => {
     } else {
       // Get media URL from WhatsApp
       try {
+        console.log('🔗 Fetching media URL from WhatsApp API...');
         const mediaResponse = await axios.get(
           `${WHATSAPP_API_URL}/${mediaId}`,
           {
@@ -789,9 +792,11 @@ const getMedia = async (req, res) => {
           }
         );
 
+        console.log('✅ Media URL received:', mediaResponse.data.url);
         const mediaUrl = mediaResponse.data.url;
         
         // Download and serve the media
+        console.log('📥 Downloading media file...');
         const fileResponse = await axios.get(mediaUrl, {
           headers: {
             'Authorization': `Bearer ${ACCESS_TOKEN}`
@@ -799,14 +804,24 @@ const getMedia = async (req, res) => {
           responseType: 'stream'
         });
 
+        console.log('✅ Media file downloaded, content-type:', fileResponse.headers['content-type']);
+        console.log('📏 Content length:', fileResponse.headers['content-length']);
+
         // Set appropriate headers
         res.setHeader('Content-Type', fileResponse.headers['content-type'] || 'application/octet-stream');
         res.setHeader('Content-Length', fileResponse.headers['content-length'] || '');
+        res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
         
+        console.log('📤 Streaming media to client...');
         // Pipe the file stream to response
         fileResponse.data.pipe(res);
       } catch (error) {
         console.error('❌ Error getting media from WhatsApp API:', error.response?.data || error.message);
+        console.error('❌ Error status:', error.response?.status);
+        console.error('❌ Error headers:', error.response?.headers);
         
         // If it's a 400 error (media not found), return a proper error
         if (error.response?.status === 400) {
