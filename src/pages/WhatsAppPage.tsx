@@ -74,6 +74,8 @@ const WhatsAppPage: React.FC = () => {
   const [allMessages, setAllMessages] = useState<WhatsAppMessage[]>([]);
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   // Helper function to get document icon based on MIME type
   const getDocumentIcon = (mimeType?: string) => {
@@ -129,6 +131,18 @@ const WhatsAppPage: React.FC = () => {
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
+
+  // Keyboard support for modal
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && selectedMedia) {
+        setSelectedMedia(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedMedia]);
 
   // Fetch current user info
   useEffect(() => {
@@ -739,9 +753,13 @@ const WhatsAppPage: React.FC = () => {
                             <div className="relative inline-block">
                               <img 
                                 src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-
                                 alt="Image"
-                                className="max-w-full rounded-lg mb-2"
+                                className="max-w-[700px] max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                                onClick={() => message.media_url && setSelectedMedia({
+                                  url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                  type: 'image',
+                                  caption: message.caption
+                                })}
                                 onError={(e) => {
                                   console.log('Failed to load image:', message.media_url);
                                   // Replace with error placeholder
@@ -900,7 +918,12 @@ const WhatsAppPage: React.FC = () => {
                           {message.media_url && (
                             <video 
                               controls
-                              className="max-w-full rounded-lg mb-2"
+                              className="max-w-[700px] max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                              onClick={() => message.media_url && setSelectedMedia({
+                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                type: 'video',
+                                caption: message.caption
+                              })}
                               onError={(e) => {
                                 console.log('Failed to load video:', message.media_url);
                                 // Show error message instead of hiding
@@ -1052,6 +1075,171 @@ const WhatsAppPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Media Modal */}
+      {selectedMedia && (
+        <div className="fixed inset-0 z-[9999] bg-black bg-opacity-90 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="relative w-full h-full flex items-center justify-center" onClick={() => setSelectedMedia(null)}>
+            {/* Close button */}
+            <button
+              onClick={() => setSelectedMedia(null)}
+              className="absolute top-4 right-4 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+            >
+              <XMarkIcon className="w-6 h-6" />
+            </button>
+
+            {/* Download button */}
+            <button
+              onClick={() => {
+                if (!selectedMedia) return;
+                const link = document.createElement('a');
+                link.href = selectedMedia.url;
+                link.download = `media_${Date.now()}.${selectedMedia.type === 'image' ? 'jpg' : 'mp4'}`;
+                link.click();
+              }}
+              className="absolute top-4 left-4 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+            >
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </button>
+
+            {/* Delete button */}
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="absolute top-4 left-20 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+              title="Delete"
+            >
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+            </button>
+
+            {showDeleteConfirm && (
+              <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black bg-opacity-60">
+                <div className="bg-white rounded-lg shadow-xl p-8 max-w-xs w-full text-center">
+                  <h2 className="text-lg font-semibold mb-4">Delete this media?</h2>
+                  <p className="mb-6 text-gray-600">Are you sure you want to delete this media? This action cannot be undone.</p>
+                  <div className="flex justify-center gap-4">
+                    <button
+                      className="btn btn-error"
+                      onClick={async () => {
+                        // Implement delete logic here (API call, then update state)
+                        setShowDeleteConfirm(false);
+                        setSelectedMedia(null);
+                        toast.success('Media deleted (mock)');
+                      }}
+                    >
+                      Delete
+                    </button>
+                    <button
+                      className="btn btn-ghost"
+                      onClick={() => setShowDeleteConfirm(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Media content */}
+            <div className="relative w-full h-full flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+              {selectedMedia.type === 'image' ? (
+                <img
+                  src={selectedMedia.url}
+                  alt="Full size image"
+                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                  onError={(e) => {
+                    console.log('Failed to load image in modal:', selectedMedia.url);
+                    e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                  }}
+                />
+              ) : (
+                <video
+                  controls
+                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                  onError={(e) => {
+                    console.log('Failed to load video in modal:', selectedMedia.url);
+                    e.currentTarget.style.display = 'none';
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'text-center text-white p-8 bg-gray-800 rounded-lg';
+                    errorDiv.innerHTML = `
+                      <FilmIcon class="w-16 h-16 mx-auto mb-4 text-gray-400" />
+                      <p class="text-lg font-medium">Video Unavailable</p>
+                      <p class="text-sm opacity-70">Media may have expired</p>
+                    `;
+                    e.currentTarget.parentNode?.appendChild(errorDiv);
+                  }}
+                >
+                  <source src={selectedMedia.url} />
+                  Your browser does not support the video tag.
+                </video>
+              )}
+
+              {/* Caption */}
+              {selectedMedia.caption && (
+                <div className="absolute bottom-4 left-4 right-4 bg-black bg-opacity-50 text-white p-4 rounded-lg backdrop-blur-sm">
+                  <p className="text-sm">{selectedMedia.caption}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Gallery */}
+            {selectedMedia.type === 'image' && (
+              <div className="absolute bottom-0 left-0 right-0 px-4 pb-4 flex items-center justify-center">
+                <div className="bg-black bg-opacity-60 rounded-lg p-2 flex gap-2 overflow-x-auto max-w-[90vw] scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
+                  {messages.filter(m => m.message_type === 'image' && m.media_url).map((img, idx) => {
+                    const url = img.media_url!.startsWith('http') ? img.media_url! : buildApiUrl(`/api/whatsapp/media/${img.media_url}`);
+                    const isActive = selectedMedia.url === url;
+                    return (
+                      <img
+                        key={img.id}
+                        src={url}
+                        alt="thumb"
+                        className={`h-16 w-16 object-cover rounded-md cursor-pointer border-2 transition-all duration-200 ${isActive ? 'border-green-400 shadow-lg scale-110' : 'border-transparent opacity-70 hover:opacity-100'}`}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setSelectedMedia({ url, type: 'image', caption: img.caption });
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black bg-opacity-60">
+          <div className="bg-white rounded-lg shadow-xl p-8 max-w-xs w-full text-center">
+            <h2 className="text-lg font-semibold mb-4">Delete this media?</h2>
+            <p className="mb-6 text-gray-600">Are you sure you want to delete this media? This action cannot be undone.</p>
+            <div className="flex justify-center gap-4">
+              <button
+                className="btn btn-error"
+                onClick={async () => {
+                  // Implement delete logic here (API call, then update state)
+                  setShowDeleteConfirm(false);
+                  setSelectedMedia(null);
+                  toast.success('Media deleted (mock)');
+                }}
+              >
+                Delete
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
