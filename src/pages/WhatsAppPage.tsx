@@ -736,7 +736,7 @@ const WhatsAppPage: React.FC = () => {
                       </span>
                     )}
                     <div
-                      className={`max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
+                      className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
                         message.direction === 'out'
                           ? 'bg-green-600 text-white'
                           : 'bg-white text-gray-900 border border-gray-200'
@@ -754,7 +754,7 @@ const WhatsAppPage: React.FC = () => {
                               <img 
                                 src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
                                 alt="Image"
-                                className="max-w-[700px] max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                                className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
                                 onClick={() => message.media_url && setSelectedMedia({
                                   url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
                                   type: 'image',
@@ -918,7 +918,7 @@ const WhatsAppPage: React.FC = () => {
                           {message.media_url && (
                             <video 
                               controls
-                              className="max-w-[700px] max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                              className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
                               onClick={() => message.media_url && setSelectedMedia({
                                 url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
                                 type: 'video',

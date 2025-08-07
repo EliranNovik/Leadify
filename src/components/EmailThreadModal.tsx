@@ -43,9 +43,21 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
   const [subject, setSubject] = useState('');
   const [attachments, setAttachments] = useState<File[]>([]);
   const [showCompose, setShowCompose] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Mobile detection
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
 
   // Fetch all contacts
   useEffect(() => {
@@ -176,6 +188,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
     const category = contact.topic || 'General';
     setSubject(`${contact.lead_number} - ${contact.name} - ${category}`);
     setAttachments([]);
+    if (isMobile) {
+      setShowChat(true);
+    }
   };
 
   const handleSendEmail = async () => {
@@ -332,10 +347,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
     <div className="fixed inset-0 bg-white z-[9999]">
       <div className="h-full flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <div className="flex items-center gap-4">
-            <h2 className="text-2xl font-bold text-gray-900">Email Thread</h2>
-            {selectedContact && (
+        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+          <div className="flex items-center gap-2 md:gap-4">
+            <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
+            {selectedContact && !isMobile && (
               <div className="flex items-center gap-2">
                 <div className="w-2 h-2 bg-green-500 rounded-full"></div>
                 <span className="text-gray-600">
@@ -348,15 +363,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
             onClick={onClose}
             className="btn btn-ghost btn-circle"
           >
-            <XMarkIcon className="w-6 h-6" />
+            <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
           </button>
         </div>
 
         <div className="flex-1 flex overflow-hidden">
           {/* Left Panel - Contacts */}
-          <div className="w-80 border-r border-gray-200 flex flex-col">
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
             {/* Search Bar */}
-            <div className="p-4 border-b border-gray-200">
+            <div className="p-3 md:p-4 border-b border-gray-200">
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
@@ -375,28 +390,28 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                                                   <div
                    key={contact.id}
                    onClick={() => handleContactSelect(contact)}
-                   className={`p-4 border-b border-gray-100 cursor-pointer transition-colors hover:bg-gray-50 ${
+                   className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer transition-colors hover:bg-gray-50 ${
                      selectedContact?.id === contact.id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
                    }`}
                  >
-                   <div className="flex items-center gap-3">
-                     <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold">
+                   <div className="flex items-center gap-2 md:gap-3">
+                     <div className="w-8 h-8 md:w-10 md:h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm md:text-base">
                        {contact.name.charAt(0).toUpperCase()}
                      </div>
                                          <div className="flex-1 min-w-0">
-                       <div className="font-semibold text-gray-900 truncate">
+                       <div className="font-semibold text-gray-900 truncate text-sm md:text-base">
                          {contact.name}
                        </div>
-                       <div className="text-sm text-gray-500 truncate">
+                       <div className="text-xs md:text-sm text-gray-500 truncate">
                          {contact.email}
                        </div>
                                                 <div className="flex items-center justify-between">
                            <div className="text-xs text-gray-400">
                              #{contact.lead_number}
                            </div>
-                           <div className="flex items-center gap-2">
+                           <div className="flex items-center gap-1 md:gap-2">
                              {contact.unread_count && contact.unread_count > 0 && (
-                               <div className="w-5 h-5 bg-white rounded-full border-2 border-[#3e28cd] flex items-center justify-center">
+                               <div className="w-4 h-4 md:w-5 md:h-5 bg-white rounded-full border-2 border-[#3e28cd] flex items-center justify-center">
                                  <span className="text-xs text-[#3e28cd] font-bold">{contact.unread_count}</span>
                                </div>
                              )}
@@ -415,11 +430,40 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
           </div>
 
           {/* Right Panel - Email Thread */}
-          <div className="flex-1 flex flex-col">
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col ${isMobile && !showChat ? 'hidden' : ''}`}>
             {selectedContact ? (
               <>
+                {/* Mobile Chat Header - Only visible on mobile when in chat */}
+                {isMobile && (
+                  <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setShowChat(false)}
+                        className="btn btn-ghost btn-circle btn-sm"
+                      >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm">
+                          {selectedContact.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <h3 className="font-semibold text-gray-900 text-sm">
+                            {selectedContact.name}
+                          </h3>
+                          <p className="text-xs text-gray-500">
+                            {selectedContact.lead_number}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Email Thread */}
-                <div className="flex-1 overflow-y-auto p-6">
+                <div className="flex-1 overflow-y-auto p-4 md:p-6">
                   {isLoading ? (
                     <div className="flex items-center justify-center h-full">
                       <div className="loading loading-spinner loading-lg text-blue-500"></div>
@@ -454,7 +498,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                            
                            {/* Message Bubble */}
                            <div
-                             className={`max-w-md lg:max-w-lg xl:max-w-xl ${
+                             className={`max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl ${
                                message.direction === 'outgoing'
                                  ? 'bg-[#3E28CD] text-white'
                                  : 'bg-gray-100 text-gray-900'
@@ -496,7 +540,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                 </div>
 
                 {/* Compose Area */}
-                <div className="border-t border-gray-200 p-6">
+                <div className="border-t border-gray-200 p-4 md:p-6">
                   {showCompose ? (
                     <div className="space-y-4">
                                              <input
