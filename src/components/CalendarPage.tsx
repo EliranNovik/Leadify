@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -12,6 +12,8 @@ import { toast } from 'react-hot-toast';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { useRef } from 'react';
+import sanitizeHtml from 'sanitize-html';
+import { buildApiUrl } from '../lib/api';
 
 // Email templates
 const emailTemplates = [
@@ -365,7 +367,28 @@ const CalendarPage: React.FC = () => {
   const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
   const [bodyFocused, setBodyFocused] = useState(false);
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
+  const [showCompose, setShowCompose] = useState(false);
+  const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const quillRef = useRef<ReactQuill>(null);
+
+  // Assign Staff Modal State
+  const [isAssignStaffModalOpen, setIsAssignStaffModalOpen] = useState(false);
+  const [assignStaffMeetings, setAssignStaffMeetings] = useState<any[]>([]);
+  const [assignStaffLoading, setAssignStaffLoading] = useState(false);
+  const [availableStaff, setAvailableStaff] = useState<string[]>([]);
+  const [modalSelectedDate, setModalSelectedDate] = useState<string>('');
+  const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('');
+  const [dropdownStates, setDropdownStates] = useState<{
+    [meetingId: number]: {
+      managerSearch: string;
+      helperSearch: string;
+      showManagerDropdown: boolean;
+      showHelperDropdown: boolean;
+    };
+  }>({});
 
   // 1. Add state for WhatsApp messages and input
   const [whatsAppChatMessages, setWhatsAppChatMessages] = useState<any[]>([]);
@@ -395,6 +418,7 @@ const CalendarPage: React.FC = () => {
       const { data: meetingsData, error: meetingsError } = await supabase
         .from('meetings')
         .select('*, lead:leads!client_id(id, name, lead_number, onedrive_folder_link, stage, manager, category, balance, balance_currency, expert_notes, expert, probability, phone, email, manual_interactions)')
+        .or('status.is.null,status.neq.canceled')
         .order('meeting_date', { ascending: false });
       
       if (meetingsError) {
@@ -705,6 +729,122 @@ const CalendarPage: React.FC = () => {
     }
   };
 
+  // Helper function to render WhatsApp-style message status
+  const renderMessageStatus = (status?: string) => {
+    if (!status) return null;
+    
+    const baseClasses = "w-7 h-7";
+    
+    switch (status) {
+      case 'sent':
+        return (
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        );
+      case 'delivered':
+        return (
+          <svg className={`${baseClasses} text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          </svg>
+        );
+      case 'read':
+        return (
+          <svg className={`${baseClasses} text-black`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          </svg>
+        );
+      default:
+        return null;
+    }
+  };
+
+  // Handle file selection for WhatsApp
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+    }
+  };
+
+  // Send media message via WhatsApp
+  const handleSendMedia = async () => {
+    if (!selectedFile || !selectedLeadForWhatsApp) return;
+
+    setUploadingMedia(true);
+    try {
+      // Create FormData for file upload
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('leadId', selectedLeadForWhatsApp.id);
+
+      // Upload media to WhatsApp
+      const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
+        method: 'POST',
+        body: formData,
+      });
+
+      const uploadResult = await uploadResponse.json();
+
+      if (!uploadResponse.ok) {
+        throw new Error(uploadResult.error || 'Failed to upload media');
+      }
+
+      // Send media message
+      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
+      const senderName = currentUserFullName || 'You';
+      const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leadId: selectedLeadForWhatsApp.id,
+          mediaUrl: uploadResult.mediaId,
+          mediaType: mediaType,
+          caption: whatsAppInput.trim() || undefined,
+          phoneNumber: selectedLeadForWhatsApp.phone || selectedLeadForWhatsApp.mobile,
+          sender_name: senderName
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send media');
+      }
+
+      // Add message to local state
+      const newMsg = {
+        id: Date.now(),
+        lead_id: selectedLeadForWhatsApp.id,
+        sender_id: null,
+        sender_name: senderName,
+        direction: 'out',
+        message: whatsAppInput.trim() || `${mediaType} message`,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+        message_type: mediaType,
+        whatsapp_status: 'sent',
+        whatsapp_message_id: result.messageId,
+        media_url: uploadResult.mediaId,
+        caption: whatsAppInput.trim() || undefined
+      };
+
+      setWhatsAppChatMessages(prev => [...prev, newMsg]);
+      setWhatsAppInput('');
+      setSelectedFile(null);
+      toast.success('Media sent via WhatsApp!');
+    } catch (error) {
+      console.error('Error sending media:', error);
+      toast.error('Failed to send media: ' + (error as Error).message);
+    } finally {
+      setUploadingMedia(false);
+    }
+  };
+
   // Handle WhatsApp modal close
   const handleWhatsAppClose = () => {
     setIsWhatsAppOpen(false);
@@ -845,6 +985,169 @@ const CalendarPage: React.FC = () => {
     setComposeAttachments(prev => [...prev, ...newAttachments]);
   };
 
+  // Assign Staff Modal Functions
+  const fetchAssignStaffData = async () => {
+    setAssignStaffLoading(true);
+    try {
+      // Get today and next 7 days
+      const today = new Date().toISOString().split('T')[0];
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+      
+      // Initialize modal date to today if not set
+      if (!modalSelectedDate) {
+        setModalSelectedDate(today);
+      }
+
+      // Fetch meetings for today and next 7 days
+      const { data: meetingsData, error: meetingsError } = await supabase
+        .from('meetings')
+        .select('*, lead:leads!client_id(id, name, lead_number, stage, manager, category, balance, balance_currency, expert_notes, expert, probability, phone, email, language)')
+        .gte('meeting_date', today)
+        .lte('meeting_date', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
+        .or('status.is.null,status.neq.canceled')
+        .order('meeting_date', { ascending: true })
+        .order('meeting_time', { ascending: true });
+
+      if (meetingsError) throw meetingsError;
+
+      // Fetch available staff
+      const { data: staffData, error: staffError } = await supabase
+        .from('users')
+        .select('full_name, email')
+        .eq('is_active', true)
+        .order('full_name');
+
+      if (staffError) throw staffError;
+
+      const staffNames = staffData?.map(user => user.full_name || user.email).filter(Boolean) || [];
+
+      setAssignStaffMeetings(meetingsData || []);
+      setAvailableStaff(staffNames);
+    } catch (error) {
+      console.error('Error fetching assign staff data:', error);
+      toast.error('Failed to load meetings data');
+    } finally {
+      setAssignStaffLoading(false);
+    }
+  };
+
+  const handleAssignStaff = async (meetingId: number, field: 'meeting_manager' | 'helper', value: string) => {
+    try {
+      // Find the meeting to get the client_id
+      const meeting = assignStaffMeetings.find(m => m.id === meetingId);
+      if (!meeting || !meeting.client_id) {
+        throw new Error('Meeting or client_id not found');
+      }
+
+      // Update meetings table
+      const { error: meetingError } = await supabase
+        .from('meetings')
+        .update({ [field]: value })
+        .eq('id', meetingId);
+
+      if (meetingError) throw meetingError;
+
+      // Update leads table - map meeting_manager to manager, helper to helper
+      const leadField = field === 'meeting_manager' ? 'manager' : 'helper';
+      const { error: leadError } = await supabase
+        .from('leads')
+        .update({ [leadField]: value })
+        .eq('id', meeting.client_id);
+
+      if (leadError) throw leadError;
+
+      // Update local state
+      setAssignStaffMeetings(prev => 
+        prev.map(meeting => 
+          meeting.id === meetingId 
+            ? { 
+                ...meeting, 
+                [field]: value,
+                lead: {
+                  ...meeting.lead,
+                  [leadField]: value
+                }
+              }
+            : meeting
+        )
+      );
+
+      toast.success(`${field === 'meeting_manager' ? 'Manager' : 'Helper'} assigned successfully`);
+    } catch (error) {
+      console.error('Error assigning staff:', error);
+      toast.error('Failed to assign staff');
+    }
+  };
+
+  const openAssignStaffModal = () => {
+    setIsAssignStaffModalOpen(true);
+    fetchAssignStaffData();
+  };
+
+  // Helper function to get available dates from meetings
+  const getAvailableDates = () => {
+    const dates = [...new Set(assignStaffMeetings.map(m => m.meeting_date))].sort();
+    return dates;
+  };
+
+  // Helper function to filter meetings by date and staff
+  const getFilteredMeetings = () => {
+    let filtered = assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate);
+    
+    if (selectedStaffFilter) {
+      filtered = filtered.filter(m => {
+        const lead = m.lead || {};
+        return (
+          lead.manager === selectedStaffFilter ||
+          lead.helper === selectedStaffFilter ||
+          m.meeting_manager === selectedStaffFilter ||
+          m.helper === selectedStaffFilter
+        );
+      });
+    }
+    
+    return filtered;
+  };
+
+  // Helper function to check if selected date has any meetings
+  const hasMeetingsForDate = (date: string) => {
+    return assignStaffMeetings.some(m => m.meeting_date === date);
+  };
+
+  // Reset search states when modal opens/closes
+  useEffect(() => {
+    if (!isAssignStaffModalOpen) {
+      setDropdownStates({});
+    }
+  }, [isAssignStaffModalOpen]);
+
+  // Helper functions to manage dropdown states
+  const getMeetingDropdownState = (meetingId: number) => {
+    return dropdownStates[meetingId] || {
+      managerSearch: '',
+      helperSearch: '',
+      showManagerDropdown: false,
+      showHelperDropdown: false
+    };
+  };
+
+  const updateMeetingDropdownState = (meetingId: number, updates: Partial<{
+    managerSearch: string;
+    helperSearch: string;
+    showManagerDropdown: boolean;
+    showHelperDropdown: boolean;
+  }>) => {
+    setDropdownStates(prev => ({
+      ...prev,
+      [meetingId]: {
+        ...getMeetingDropdownState(meetingId),
+        ...updates
+      }
+    }));
+  };
+
   // Mobile-friendly meeting card component
   const renderMeetingCard = (meeting: any) => {
     const lead = meeting.lead || {};
@@ -895,6 +1198,14 @@ const CalendarPage: React.FC = () => {
               <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
                 {lead.manager || meeting.meeting_manager || '---'}
+              </span>
+            </div>
+
+            {/* Helper */}
+            <div className="flex justify-between items-center py-1">
+              <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
+                {lead.helper || meeting.helper || '---'}
               </span>
             </div>
 
@@ -1106,6 +1417,7 @@ const CalendarPage: React.FC = () => {
           </td>
           <td>{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
           <td>{lead.manager || meeting.meeting_manager || '---'}</td>
+          <td>{lead.helper || meeting.helper || '---'}</td>
           <td>{lead.category || meeting.category || 'N/A'}</td>
           <td>
             {typeof lead.balance === 'number'
@@ -1170,7 +1482,7 @@ const CalendarPage: React.FC = () => {
         {/* Expanded Details Row */}
         {isExpanded && (
           <tr>
-            <td colSpan={10} className="p-0">
+            <td colSpan={11} className="p-0">
               <div className="bg-base-100/50 p-4 border-t border-base-200">
                 {expandedData.loading ? (
                   <div className="flex justify-center items-center py-4">
@@ -1310,10 +1622,19 @@ const CalendarPage: React.FC = () => {
       </div>
 
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
-        <h1 className="text-3xl font-bold flex items-center gap-3">
-          <CalendarIcon className="w-8 h-8 text-primary" />
-          <span className="text-3xl">Calendar</span>
-        </h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-3xl font-bold flex items-center gap-3">
+            <CalendarIcon className="w-8 h-8 text-primary" />
+            <span className="text-3xl">Calendar</span>
+          </h1>
+          <button
+            className="btn btn-primary btn-lg flex items-center gap-2"
+            onClick={openAssignStaffModal}
+          >
+            <UserGroupIcon className="w-5 h-5" />
+            Assign Staff
+          </button>
+        </div>
 
         {/* Filters */}
         <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
@@ -1366,6 +1687,7 @@ const CalendarPage: React.FC = () => {
                 <th>Lead</th>
                 <th>Time</th>
                 <th>Manager</th>
+                <th>Helper</th>
                 <th>Category</th>
                 <th>Amount</th>
                 <th>Expert</th>
@@ -1377,11 +1699,11 @@ const CalendarPage: React.FC = () => {
             </thead>
             <tbody>
               {isLoading ? (
-                <tr><td colSpan={10} className="text-center p-8 text-lg">Loading meetings...</td></tr>
+                <tr><td colSpan={11} className="text-center p-8 text-lg">Loading meetings...</td></tr>
               ) : filteredMeetings.length > 0 ? (
                 filteredMeetings.map(renderMeetingRow)
               ) : (
-                <tr><td colSpan={10} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
+                <tr><td colSpan={11} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -1464,6 +1786,7 @@ const CalendarPage: React.FC = () => {
                         <th>Lead</th>
                         <th>Time</th>
                         <th>Manager</th>
+                        <th>Helper</th>
                         <th>Category</th>
                         <th>Amount</th>
                         <th>Expert</th>
@@ -1492,36 +1815,162 @@ const CalendarPage: React.FC = () => {
 
       {/* WhatsApp Modal */}
       {isWhatsAppOpen && selectedLeadForWhatsApp && createPortal(
-        <div className="fixed inset-0 z-[999] flex items-center justify-center bg-black/50" key={`whatsapp-modal-${selectedLeadForWhatsApp.id}`}>
-          <div className="bg-base-100 rounded-none shadow-none w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden">
+        <div className="fixed inset-0 bg-white z-[9999]">
+          <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="flex items-center justify-between p-4 border-b border-base-300 bg-white">
-              <h3 className="text-xl font-bold">WhatsApp Chat with {selectedLeadForWhatsApp.name}</h3>
-              <button className="btn btn-ghost btn-sm btn-circle" onClick={handleWhatsAppClose}>
-                <XMarkIcon className="w-6 h-6" />
+            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+              <div className="flex items-center gap-2 md:gap-4">
+                <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
+                <h2 className="text-lg md:text-2xl font-bold text-gray-900">WhatsApp</h2>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-lg font-semibold text-gray-900 truncate">
+                      {selectedLeadForWhatsApp.name}
+                    </span>
+                    <span className="text-sm text-gray-500 font-mono flex-shrink-0">
+                      ({selectedLeadForWhatsApp.lead_number})
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={handleWhatsAppClose}
+                className="btn btn-ghost btn-circle flex-shrink-0"
+              >
+                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
               </button>
             </div>
-            {/* Chat Messages */}
-            <div className="flex-1 overflow-y-auto flex flex-col w-full min-h-20 p-8">
+
+            {/* Messages - Scrollable */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {isWhatsAppLoading ? (
-                <div className="text-center p-8">Loading WhatsApp messages...</div>
+                <div className="flex items-center justify-center h-full">
+                  <div className="loading loading-spinner loading-lg text-green-500"></div>
+                </div>
               ) : whatsAppChatMessages.length === 0 ? (
-                <div className="text-center p-8 text-base-content/70">No WhatsApp messages found for this client.</div>
+                <div className="text-center py-8 text-gray-500">
+                  <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                  <p className="text-lg font-medium">No messages yet</p>
+                  <p className="text-sm">Start the conversation with {selectedLeadForWhatsApp.name}</p>
+                </div>
               ) : (
-                whatsAppChatMessages.map((msg: any, idx: number) => (
-                  <div key={msg.id || idx} className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'} w-full mb-2`}>
-                    <div className={
-                      `rounded-2xl px-6 py-3 shadow text-base max-w-[70%] break-words ` +
-                      (msg.direction === 'out'
-                        ? 'bg-primary text-white self-end'
-                        : 'bg-base-200 text-black self-start border border-base-200')
-                    }>
-                      {msg.message}
-                      <div className="flex items-center gap-1 mt-2 text-xs opacity-70 justify-end">
-                        <span>{msg.sent_at ? new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
-                        {msg.direction === 'out' && (
-                          <span className="inline-block align-middle">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-blue-200" style={{ display: 'inline' }}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
+                whatsAppChatMessages.map((message, index) => (
+                  <div
+                    key={message.id || index}
+                    className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
+                  >
+                    {message.direction === 'out' && (
+                      <span className="text-xs text-gray-500 mb-1 mr-2">
+                        {message.sender_name || 'You'}
+                      </span>
+                    )}
+                    {message.direction === 'in' && (
+                      <span className="text-xs text-gray-500 mb-1 ml-2">
+                        {message.sender_name || selectedLeadForWhatsApp.name}
+                      </span>
+                    )}
+                    <div
+                      className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
+                        message.direction === 'out'
+                          ? 'bg-green-600 text-white'
+                          : 'bg-white text-gray-900 border border-gray-200'
+                      }`}
+                    >
+                      {/* Message content based on type */}
+                      {message.message_type === 'text' && (
+                        <p className="text-sm break-words">{message.message}</p>
+                      )}
+                      
+                      {message.message_type === 'image' && (
+                        <div>
+                          {message.media_url && (
+                            <div className="relative inline-block">
+                              <img 
+                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                alt="Image"
+                                className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                                onClick={() => message.media_url && setSelectedMedia({
+                                  url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                  type: 'image',
+                                  caption: message.caption
+                                })}
+                                onError={(e) => {
+                                  console.log('Failed to load image:', message.media_url);
+                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                                  e.currentTarget.style.border = '1px solid #e5e7eb';
+                                  e.currentTarget.style.borderRadius = '0.5rem';
+                                }}
+                              />
+                              <button
+                                onClick={() => {
+                                  if (!message.media_url) return;
+                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
+                                  const link = document.createElement('a');
+                                  link.href = url;
+                                  link.download = `image_${Date.now()}.jpg`;
+                                  link.click();
+                                }}
+                                className="absolute top-2 right-2 btn btn-ghost btn-xs bg-black bg-opacity-50 text-white hover:bg-opacity-70"
+                                title="Download"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                              </button>
+                            </div>
+                          )}
+                          {message.caption && (
+                            <p className="text-sm break-words">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {message.message_type === 'video' && (
+                        <div>
+                          {message.media_url && (
+                            <video 
+                              controls
+                              className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                              onClick={() => message.media_url && setSelectedMedia({
+                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                type: 'video',
+                                caption: message.caption
+                              })}
+                              onError={(e) => {
+                                console.log('Failed to load video:', message.media_url);
+                                e.currentTarget.style.display = 'none';
+                                const errorDiv = document.createElement('div');
+                                errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';
+                                errorDiv.innerHTML = `
+                                  <FilmIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                  <p class="text-xs font-medium">Video Unavailable</p>
+                                  <p class="text-xs opacity-70">Media may have expired</p>
+                                `;
+                                e.currentTarget.parentNode?.appendChild(errorDiv);
+                              }}
+                            >
+                              <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
+                              Your browser does not support the video tag.
+                            </video>
+                          )}
+                          {message.caption && (
+                            <p className="text-sm break-words">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Message status and time */}
+                      <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
+                        <span>
+                          {new Date(message.sent_at).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </span>
+                        {message.direction === 'out' && (
+                          <span className="inline-block align-middle text-current">
+                            {renderMessageStatus(message.whatsapp_status)}
                           </span>
                         )}
                       </div>
@@ -1530,188 +1979,621 @@ const CalendarPage: React.FC = () => {
                 ))
               )}
             </div>
-            {/* Input */}
-            <form className="flex items-center gap-2 px-6 py-4 border-t border-base-200 bg-white" style={{ minHeight: 72 }} onSubmit={handleSendWhatsAppMessage}>
-              <button type="button" className="btn btn-ghost btn-circle">
-                <FaceSmileIcon className="w-6 h-6 text-gray-500" />
-              </button>
-              <button type="button" className="btn btn-ghost btn-circle">
-                <PaperClipIcon className="w-6 h-6 text-gray-500" />
-              </button>
-              <input
-                type="text"
-                className="input input-bordered flex-1 rounded-full"
-                placeholder="Type your message..."
-                value={whatsAppInput}
-                onChange={e => setWhatsAppInput(e.target.value)}
-              />
-              <button type="submit" className="btn btn-primary btn-circle">
-                <PaperAirplaneIcon className="w-6 h-6" />
-              </button>
-            </form>
+
+            {/* Message Input - Fixed */}
+            <div className="flex-shrink-0 p-4 bg-white border-t border-gray-200">
+              <form onSubmit={handleSendWhatsAppMessage} className="flex items-center gap-2">
+                <button type="button" className="btn btn-ghost btn-circle">
+                  <FaceSmileIcon className="w-6 h-6 text-gray-500" />
+                </button>
+                
+                {/* File upload button */}
+                <label className="btn btn-ghost btn-circle cursor-pointer">
+                  <PaperClipIcon className="w-6 h-6 text-gray-500" />
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                    onChange={handleFileSelect}
+                    disabled={uploadingMedia}
+                  />
+                </label>
+
+                {/* Selected file preview */}
+                {selectedFile && (
+                  <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-1">
+                    <span className="text-xs text-gray-600">{selectedFile.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFile(null)}
+                      className="text-red-500 hover:text-red-700"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  value={whatsAppInput}
+                  onChange={(e) => setWhatsAppInput(e.target.value)}
+                  placeholder={selectedFile ? "Add a caption..." : "Type a message..."}
+                  className="flex-1 input input-bordered rounded-full"
+                  disabled={sending || uploadingMedia}
+                />
+                
+                {selectedFile ? (
+                  <button
+                    type="button"
+                    onClick={handleSendMedia}
+                    disabled={uploadingMedia}
+                    className="btn btn-primary btn-circle"
+                  >
+                    {uploadingMedia ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!whatsAppInput.trim() || sending}
+                    className="btn btn-primary btn-circle"
+                  >
+                    {sending ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                )}
+              </form>
+            </div>
           </div>
         </div>,
         document.body
       )}
 
-      {/* Email Modal */}
+      {/* Email Thread Modal */}
       {isEmailModalOpen && selectedLeadForEmail && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-[999] flex items-start justify-center">
-          <div className="bg-base-100 rounded-none shadow-none w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden">
-            {/* Header: thread title, subject, templates, close */}
-            <div className="flex flex-wrap items-center gap-4 p-4 border-b border-base-300 bg-white">
-              <h3 className="text-xl font-bold whitespace-nowrap">Email Thread with {selectedLeadForEmail.name}</h3>
-              <input
-                type="text"
-                className="input input-bordered flex-1 min-w-[180px] max-w-xs"
-                value={composeSubject}
-                onChange={e => setComposeSubject(e.target.value)}
-                placeholder="Subject"
-                style={{ minWidth: 120 }}
-              />
-              <div className="flex flex-wrap gap-2">
-                {emailTemplates.map(template => (
-                  <button
-                    key={template.name}
-                    className="btn btn-outline btn-xs"
-                    onClick={() => {
-                      const uploadLink = 'https://portal.example.com/upload'; // Placeholder
-                      const processedBody = template.body
-                          .replace(/{client_name}/g, selectedLeadForEmail.name)
-                          .replace(/{upload_link}/g, uploadLink);
-                      const newSubject = `[${selectedLeadForEmail.lead_number}] - ${selectedLeadForEmail.name} - ${selectedLeadForEmail.topic || ''}`;
-                      setComposeBody(processedBody);
-                      setComposeSubject(newSubject);
-                    }}
-                  >
-                    {template.name}
-                  </button>
-                ))}
+        <div className="fixed inset-0 bg-white z-[9999]">
+          <div className="h-full flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+              <div className="flex items-center gap-2 md:gap-4">
+                <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <span className="text-gray-600">
+                    {selectedLeadForEmail.name} ({selectedLeadForEmail.lead_number})
+                  </span>
+                </div>
               </div>
-              <div className="flex-1" />
-              <button className="btn btn-ghost btn-sm btn-circle ml-auto" onClick={handleEmailClose}>
-                <XMarkIcon className="w-6 h-6" />
+              <button
+                onClick={handleEmailClose}
+                className="btn btn-ghost btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
               </button>
             </div>
-            {/* Conversation Body */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+
+            {/* Email Thread */}
+            <div className="flex-1 overflow-y-auto p-4 md:p-6">
               {emailsLoading ? (
-                <div className="text-center p-8">Loading email history...</div>
+                <div className="flex items-center justify-center h-full">
+                  <div className="loading loading-spinner loading-lg text-blue-500"></div>
+                </div>
               ) : emails.length === 0 ? (
-                <div className="text-center p-8 text-base-content/70">No emails found for this client.</div>
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                    </div>
+                    <p className="text-lg font-medium">No messages yet</p>
+                    <p className="text-sm">Start a conversation with {selectedLeadForEmail.name}</p>
+                  </div>
+                </div>
               ) : (
-                [...emails]
-                  .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime())
-                  .map(email => (
-                    <div 
-                      key={email.message_id} 
-                      data-email-id={email.message_id}
-                      className={`flex items-end gap-3 ${email.direction === 'outgoing' ? 'flex-row-reverse' : ''}`}
-                    >
-                      <div className={`avatar placeholder ${email.direction === 'outgoing' ? 'hidden' : ''}`}>
-                        <div className="bg-neutral-focus text-neutral-content rounded-full w-10 h-10">
-                          <span>{selectedLeadForEmail.name.charAt(0)}</span>
+                <div className="space-y-6">
+                  {[...emails]
+                    .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime())
+                    .map((message, index) => (
+                      <div
+                        key={message.message_id}
+                        data-email-id={message.message_id}
+                        className={`flex flex-col ${message.direction === 'outgoing' ? 'items-end' : 'items-start'}`}
+                      >
+                        {/* Message Label */}
+                        <div className={`mb-2 px-3 py-1 rounded-full text-xs font-semibold ${
+                          message.direction === 'outgoing'
+                            ? 'bg-gradient-to-r from-blue-500 via-purple-500 to-purple-600 text-white'
+                            : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
+                        }`}>
+                          {message.direction === 'outgoing' ? 'Team' : 'Client'}
+                        </div>
+                        
+                        {/* Message Bubble */}
+                        <div
+                          className={`max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl ${
+                            message.direction === 'outgoing'
+                              ? 'bg-[#3E28CD] text-white'
+                              : 'bg-gray-100 text-gray-900'
+                          } rounded-2xl px-4 py-3 shadow-sm`}
+                        >
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="font-semibold text-sm">
+                              {message.direction === 'outgoing' ? (currentUserFullName || 'You') : selectedLeadForEmail.name}
+                            </span>
+                            <span className="text-xs opacity-70">
+                              {new Date(message.sent_at).toLocaleString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                          {message.subject && (
+                            <div className="font-medium mb-2">
+                              {message.subject}
+                            </div>
+                          )}
+                          <div className="text-sm whitespace-pre-wrap">
+                            <div dangerouslySetInnerHTML={{ 
+                              __html: sanitizeHtml(stripSignatureAndQuotedText(message.body_preview || '')) 
+                            }} />
+                          </div>
+                          {/* Attachments */}
+                          {message.attachments && message.attachments.length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-gray-200">
+                              <div className="text-xs opacity-70 mb-2">Attachments:</div>
+                              <div className="flex flex-wrap gap-2">
+                                {message.attachments.map((attachment: any, idx: number) => (
+                                  <button 
+                                    key={attachment.id}
+                                    className="btn btn-outline btn-xs gap-1"
+                                    onClick={() => handleDownloadAttachment(message.message_id, attachment)}
+                                    disabled={downloadingAttachments[attachment.id]}
+                                  >
+                                    {downloadingAttachments[attachment.id] ? (
+                                      <span className="loading loading-spinner loading-xs" />
+                                    ) : (
+                                      <PaperClipIcon className="w-3 h-3" />
+                                    )}
+                                    <span className="truncate max-w-[100px]">{attachment.name}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
-                      <div className={`chat-bubble max-w-2xl break-words ${email.direction === 'outgoing' ? 'chat-bubble-primary' : 'bg-base-200'}`}>
-                        <div className="flex justify-between items-center text-xs opacity-70 mb-2">
-                          <span className="font-bold">{email.sender_name}</span>
-                          <span>{new Date(email.sent_at).toLocaleString()}</span>
+                    ))}
+                </div>
+              )}
+            </div>
+
+            {/* Compose Area */}
+            <div className="border-t border-gray-200 p-4 md:p-6">
+              {showCompose ? (
+                <div className="space-y-4">
+                  <input
+                    type="text"
+                    placeholder="Subject"
+                    value={composeSubject}
+                    onChange={(e) => setComposeSubject(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <textarea
+                    placeholder="Type your message..."
+                    value={composeBody}
+                    onChange={(e) => setComposeBody(e.target.value)}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    rows={4}
+                  />
+                  
+                  {/* Attachments */}
+                  {composeAttachments.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {composeAttachments.map((file, index) => (
+                        <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
+                          <PaperClipIcon className="w-4 h-4 text-gray-500" />
+                          <span className="text-sm">{file.name}</span>
+                          <button
+                            onClick={() => setComposeAttachments(prev => prev.filter((_, i) => i !== index))}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            ×
+                          </button>
                         </div>
-                        <div className="font-bold mb-2">{email.subject}</div>
-                        <div className="prose" dangerouslySetInnerHTML={{ __html: email.body_preview }} />
-                        {/* Incoming Attachments */}
-                        {email.attachments && email.attachments.length > 0 && (
-                          <div className="mt-4 pt-2 border-t border-black/10">
-                            <h4 className="font-semibold text-xs mb-2">Attachments:</h4>
-                            <div className="flex flex-wrap gap-2">
-                              {email.attachments.map((att: any) => (
-                                <button 
-                                  key={att.id}
-                                  className="btn btn-outline btn-xs gap-1"
-                                  onClick={() => handleDownloadAttachment(email.message_id, att)}
-                                  disabled={downloadingAttachments[att.id]}
+                      ))}
+                    </div>
+                  )}
+                  
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="btn btn-ghost btn-sm"
+                      >
+                        <PaperClipIcon className="w-4 h-4" />
+                        Attach
+                      </button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
+                        className="hidden"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setShowCompose(false)}
+                        className="btn btn-outline btn-sm"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSendEmail}
+                        disabled={sending || !composeBody.trim()}
+                        className="btn btn-primary btn-sm"
+                      >
+                        {sending ? (
+                          <div className="loading loading-spinner loading-xs"></div>
+                        ) : (
+                          <>
+                            <PaperAirplaneIcon className="w-4 h-4" />
+                            Send
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowCompose(true)}
+                  className="w-full btn btn-primary"
+                >
+                  <PaperAirplaneIcon className="w-4 h-4 mr-2" />
+                  Compose Message
+                </button>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Assign Staff Modal */}
+      {isAssignStaffModalOpen && createPortal(
+        <div className="fixed inset-0 bg-white z-50">
+          <div className="h-full flex flex-col">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-purple-600 to-blue-600 text-white p-6">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <UserGroupIcon className="w-8 h-8" />
+                  <h2 className="text-2xl font-bold">Assign Staff to Meetings</h2>
+                </div>
+                <button
+                  onClick={() => setIsAssignStaffModalOpen(false)}
+                  className="btn btn-ghost btn-circle text-white hover:bg-white hover:bg-opacity-20"
+                >
+                  <XMarkIcon className="w-6 h-6" />
+                </button>
+              </div>
+              <p className="text-purple-100 mt-2">Assign managers and helpers to meetings</p>
+              
+              {/* Filters */}
+              <div className="mt-4 flex flex-col md:flex-row gap-4">
+                {/* Date Selector */}
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-semibold">Date:</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const currentDate = new Date(modalSelectedDate);
+                        currentDate.setDate(currentDate.getDate() - 1);
+                        setModalSelectedDate(currentDate.toISOString().split('T')[0]);
+                      }}
+                      className="btn btn-sm btn-circle bg-white text-gray-800 hover:bg-gray-100"
+                    >
+                      <ChevronLeftIcon className="w-4 h-4" />
+                    </button>
+                    <input
+                      type="date"
+                      value={modalSelectedDate}
+                      onChange={(e) => setModalSelectedDate(e.target.value)}
+                      className="input bg-white text-gray-800 border-0 focus:outline-none focus:ring-2 focus:ring-purple-500 w-48"
+                      min={new Date().toISOString().split('T')[0]}
+                      max={new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]}
+                    />
+                    <button
+                      onClick={() => {
+                        const currentDate = new Date(modalSelectedDate);
+                        currentDate.setDate(currentDate.getDate() + 1);
+                        setModalSelectedDate(currentDate.toISOString().split('T')[0]);
+                      }}
+                      className="btn btn-sm btn-circle bg-white text-gray-800 hover:bg-gray-100"
+                    >
+                      <ChevronRightIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Staff Filter */}
+                <div className="flex items-center gap-2">
+                  <label className="text-sm font-semibold">Filter by Staff:</label>
+                  <select
+                    value={selectedStaffFilter}
+                    onChange={(e) => setSelectedStaffFilter(e.target.value)}
+                    className="select bg-white text-gray-800 border-0 focus:outline-none w-48"
+                  >
+                    <option value="">All Staff</option>
+                    {availableStaff.map(staff => (
+                      <option key={staff} value={staff}>{staff}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 overflow-y-auto flex-1">
+              {assignStaffLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <div className="loading loading-spinner loading-lg text-purple-600"></div>
+                  <span className="ml-4 text-lg">Loading meetings...</span>
+                </div>
+              ) : getAvailableDates().length === 0 ? (
+                <div className="text-center py-12">
+                  <CalendarIcon className="w-16 h-16 mx-auto text-gray-300 mb-4" />
+                  <h3 className="text-xl font-semibold text-gray-600 mb-2">No Meetings Found</h3>
+                  <p className="text-gray-500">No meetings scheduled for the selected period.</p>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* Selected Date Meetings */}
+                  {(() => {
+                    const filteredMeetings = getFilteredMeetings();
+                    return filteredMeetings.length > 0 ? (
+                      <div>
+                        <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+                          <CalendarIcon className="w-6 h-6 text-blue-600" />
+                          {new Date(modalSelectedDate).toLocaleDateString('en-US', { 
+                            weekday: 'long', 
+                            year: 'numeric', 
+                            month: 'long', 
+                            day: 'numeric' 
+                          })} ({filteredMeetings.length} meetings)
+                        </h3>
+                        <div className="grid gap-4">
+                          {filteredMeetings.map((meeting) => (
+                            <div key={meeting.id} className="bg-white rounded-xl p-4 border border-gray-200 shadow-lg hover:shadow-xl transition-shadow duration-200">
+                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {/* Meeting Info */}
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-gray-600">Lead:</span>
+                                    <Link 
+                                      to={`/clients/${meeting.lead?.lead_number || meeting.lead_number}`}
+                                      className="text-sm font-bold text-blue-600 hover:text-blue-800 hover:underline truncate"
+                                    >
+                                      {meeting.lead?.lead_number || meeting.lead_number} - {meeting.lead?.name || 'N/A'}
+                                    </Link>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-gray-600">Time:</span>
+                                    <span className="text-sm font-bold text-gray-900">{meeting.meeting_time || 'No time'}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-gray-600">Location:</span>
+                                    <span className="text-sm font-bold text-gray-900 truncate">{meeting.meeting_location || 'N/A'}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-gray-600">Category:</span>
+                                    <span className="text-sm font-bold text-gray-900 truncate">{meeting.lead?.category || 'N/A'}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-gray-600">Expert:</span>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-sm font-bold text-gray-900 truncate">{meeting.lead?.expert || 'N/A'}</span>
+                                      {meeting.lead?.expert_notes ? (
+                                        <AcademicCapIcon className="w-4 h-4 text-green-600 flex-shrink-0" title="Expert search completed" />
+                                      ) : (
+                                        <QuestionMarkCircleIcon className="w-4 h-4 text-yellow-600 flex-shrink-0" title="Expert search pending" />
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-sm font-semibold text-gray-600">Language:</span>
+                                    <span className="text-sm font-bold text-gray-900 truncate">{meeting.lead?.language || 'N/A'}</span>
+                                  </div>
+                                </div>
+
+                                {/* Manager Assignment */}
+                                <div className="space-y-2">
+                                  <label className="text-sm font-semibold text-gray-600">Manager</label>
+                                  <div className="relative">
+                                    {(() => {
+                                      const state = getMeetingDropdownState(meeting.id);
+                                      return (
+                                        <>
+                                          <input
+                                            type="text"
+                                            placeholder={meeting.meeting_manager || "Select manager..."}
+                                            className="input input-bordered w-full pr-10 cursor-pointer"
+                                            value={state.managerSearch}
+                                            onChange={(e) => updateMeetingDropdownState(meeting.id, { managerSearch: e.target.value })}
+                                            onFocus={() => {
+                                              updateMeetingDropdownState(meeting.id, { showManagerDropdown: true, managerSearch: '' });
+                                            }}
+                                            onBlur={() => setTimeout(() => updateMeetingDropdownState(meeting.id, { showManagerDropdown: false }), 200)}
+                                            readOnly={!state.showManagerDropdown}
+                                          />
+                                          <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                                            <ChevronDownIcon className="w-4 h-4 text-gray-400" />
+                                          </div>
+                                          {state.showManagerDropdown && (
+                                            <div className="absolute z-10 w-full max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-lg">
+                                              <div
+                                                className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
+                                                onClick={() => {
+                                                  handleAssignStaff(meeting.id, 'meeting_manager', '');
+                                                  updateMeetingDropdownState(meeting.id, { managerSearch: '', showManagerDropdown: false });
+                                                }}
+                                              >
+                                                <span className="text-sm text-gray-600">Clear assignment</span>
+                                              </div>
+                                              {availableStaff
+                                                .filter(staff => staff.toLowerCase().includes(state.managerSearch.toLowerCase()))
+                                                .map((staff) => (
+                                                  <div
+                                                    key={staff}
+                                                    className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
+                                                    onClick={() => {
+                                                      handleAssignStaff(meeting.id, 'meeting_manager', staff);
+                                                      updateMeetingDropdownState(meeting.id, { managerSearch: '', showManagerDropdown: false });
+                                                    }}
+                                                  >
+                                                    <span className="text-sm">{staff}</span>
+                                                  </div>
+                                                ))}
+                                            </div>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
+                                </div>
+
+                                {/* Helper Assignment */}
+                                <div className="space-y-2">
+                                  <label className="text-sm font-semibold text-gray-600">Helper</label>
+                                  <div className="relative">
+                                    {(() => {
+                                      const state = getMeetingDropdownState(meeting.id);
+                                      return (
+                                        <>
+                                          <input
+                                            type="text"
+                                            placeholder={meeting.helper || "Select helper..."}
+                                            className="input input-bordered w-full pr-10 cursor-pointer"
+                                            value={state.helperSearch}
+                                            onChange={(e) => updateMeetingDropdownState(meeting.id, { helperSearch: e.target.value })}
+                                            onFocus={() => {
+                                              updateMeetingDropdownState(meeting.id, { showHelperDropdown: true, helperSearch: '' });
+                                            }}
+                                            onBlur={() => setTimeout(() => updateMeetingDropdownState(meeting.id, { showHelperDropdown: false }), 200)}
+                                            readOnly={!state.showHelperDropdown}
+                                          />
+                                          <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                                            <ChevronDownIcon className="w-4 h-4 text-gray-400" />
+                                          </div>
+                                          {state.showHelperDropdown && (
+                                            <div className="absolute z-10 w-full max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-lg">
+                                              <div
+                                                className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
+                                                onClick={() => {
+                                                  handleAssignStaff(meeting.id, 'helper', '');
+                                                  updateMeetingDropdownState(meeting.id, { helperSearch: '', showHelperDropdown: false });
+                                                }}
+                                              >
+                                                <span className="text-sm text-gray-600">Clear assignment</span>
+                                              </div>
+                                              {availableStaff
+                                                .filter(staff => staff.toLowerCase().includes(state.helperSearch.toLowerCase()))
+                                                .map((staff) => (
+                                                  <div
+                                                    key={staff}
+                                                    className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
+                                                    onClick={() => {
+                                                      handleAssignStaff(meeting.id, 'helper', staff);
+                                                      updateMeetingDropdownState(meeting.id, { helperSearch: '', showHelperDropdown: false });
+                                                    }}
+                                                  >
+                                                    <span className="text-sm">{staff}</span>
+                                                  </div>
+                                                ))}
+                                            </div>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8">
+                        <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-4" />
+                        <h3 className="text-lg font-semibold text-gray-600 mb-2">No Meetings Found</h3>
+                        <p className="text-gray-500">
+                          {hasMeetingsForDate(modalSelectedDate) 
+                            ? "No meetings match the selected staff filter for this date."
+                            : `No meetings scheduled for ${new Date(modalSelectedDate).toLocaleDateString('en-US', { 
+                                weekday: 'long', 
+                                year: 'numeric', 
+                                month: 'long', 
+                                day: 'numeric' 
+                              })}.`
+                          }
+                        </p>
+                        {!hasMeetingsForDate(modalSelectedDate) && (
+                          <div className="mt-4">
+                            <p className="text-sm text-gray-400 mb-2">Available dates with meetings:</p>
+                            <div className="flex flex-wrap gap-2 justify-center">
+                              {getAvailableDates().slice(0, 5).map(date => (
+                                <button
+                                  key={date}
+                                  onClick={() => setModalSelectedDate(date)}
+                                  className="btn btn-xs btn-outline text-gray-600 hover:bg-gray-100"
                                 >
-                                  {downloadingAttachments[att.id] ? (
-                                    <span className="loading loading-spinner loading-xs" />
-                                  ) : (
-                                    <PaperClipIcon className="w-3 h-3" />
-                                  )}
-                                  {att.name} ({(att.sizeInBytes / 1024).toFixed(1)} KB)
+                                  {new Date(date).toLocaleDateString('en-US', { 
+                                    month: 'short', 
+                                    day: 'numeric' 
+                                  })}
                                 </button>
                               ))}
+                              {getAvailableDates().length > 5 && (
+                                <span className="text-xs text-gray-400 self-center">
+                                  +{getAvailableDates().length - 5} more
+                                </span>
+                              )}
                             </div>
                           </div>
                         )}
                       </div>
-                    </div>
-                  ))
+                    );
+                  })()}
+
+
+                </div>
               )}
             </div>
-            {/* In-place expanding compose bar */}
-            <form
-              className="flex items-end gap-2 p-4 border-t border-gray-200 bg-white"
-              style={{ minHeight: bodyFocused ? 350 : 72, transition: 'min-height 0.2s' }}
-              onSubmit={e => { e.preventDefault(); handleSendEmail(); setBodyFocused(false); }}
-            >
-              <input type="text" className="input input-bordered w-48" value={selectedLeadForEmail.email} disabled style={{ minWidth: 120 }} />
-              <div className="flex-1 flex flex-col">
-                <ReactQuill
-                  ref={quillRef}
-                  value={composeBody}
-                  onChange={setComposeBody}
-                  onFocus={() => setBodyFocused(true)}
-                  onBlur={() => setBodyFocused(false)}
-                  placeholder="Write your email here..."
-                  style={{
-                    minHeight: bodyFocused ? 300 : 60,
-                    maxHeight: 400,
-                    background: 'white',
-                    borderRadius: 12,
-                    border: '1.5px solid #e3dbfa',
-                    boxShadow: bodyFocused ? '0 0 0 2px #a78bfa, 0 2px 16px 0 rgba(59,40,199,0.08)' : 'none',
-                    fontSize: 16,
-                    fontFamily: 'system-ui, Arial, sans-serif',
-                    lineHeight: 1.7,
-                    padding: '18px 16px',
-                  }}
-                  modules={{
-                    toolbar: [
-                      [{ size: [false, 'large', 'huge'] }],
-                      [{ header: [1, 2, false] }],
-                      ['bold', 'italic', 'underline', 'strike'],
-                      [{ list: 'ordered' }, { list: 'bullet' }],
-                      ['link'],
-                      ['clean'],
-                    ],
-                  }}
-                  theme="snow"
-                />
+
+            {/* Footer */}
+            <div className="bg-gray-50 px-6 py-4 border-t border-gray-200">
+              <div className="flex justify-between items-center">
+                <div className="text-sm text-gray-600">
+                  Total meetings: {getFilteredMeetings().length}
+                </div>
+                <button
+                  onClick={() => setIsAssignStaffModalOpen(false)}
+                  className="btn btn-primary"
+                >
+                  Done
+                </button>
               </div>
-              <div className="flex flex-col gap-1 items-center justify-end">
-                {/* Attachments */}
-                <label htmlFor="file-upload" className="btn btn-outline btn-sm w-10 h-10 flex items-center justify-center p-0">
-                  <PaperClipIcon className="w-5 h-5" />
-                </label>
-                <input id="file-upload" type="file" className="hidden" onChange={e => e.target.files && handleAttachmentUpload(e.target.files)} />
-                {/* Show attached files */}
-                {composeAttachments.length > 0 && (
-                  <div className="flex flex-col gap-1 mt-1">
-                    {composeAttachments.map((att, index) => (
-                      <div key={index} className="flex items-center gap-1 text-xs bg-base-200 rounded px-2 py-1">
-                        <span>{att.name}</span>
-                        <button type="button" className="btn btn-ghost btn-xs p-0" onClick={() => setComposeAttachments(prev => prev.filter(a => a.name !== att.name))}>
-                          <XMarkIcon className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <button type="submit" className="btn btn-primary px-8 h-12" disabled={sending} style={{ minWidth: 80 }}>
-                {sending ? 'Sending...' : 'Send'}
-              </button>
-            </form>
+            </div>
           </div>
         </div>,
         document.body

@@ -29,6 +29,7 @@ import 'react-quill/dist/quill.snow.css';
 import { useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import sanitizeHtml from 'sanitize-html';
+import { buildApiUrl } from '../../lib/api';
 
 interface Attachment {
   id: string;
@@ -445,7 +446,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [footerHeight, setFooterHeight] = useState(72);
   const [composeOverlayOpen, setComposeOverlayOpen] = useState(false);
   const quillRef = useRef<ReactQuill>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [activeWhatsAppId, setActiveWhatsAppId] = useState<string | null>(null);
+  const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [showAiSummary, setShowAiSummary] = useState(false);
   const location = useLocation();
   const lastEmailRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -638,6 +644,122 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       if (onClientUpdate) await onClientUpdate();
     } catch (err) {
       toast.error('Unexpected error saving WhatsApp message.');
+    }
+  };
+
+  // Helper function to render WhatsApp-style message status
+  const renderMessageStatus = (status?: string) => {
+    if (!status) return null;
+    
+    const baseClasses = "w-7 h-7";
+    
+    switch (status) {
+      case 'sent':
+        return (
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        );
+      case 'delivered':
+        return (
+          <svg className={`${baseClasses} text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          </svg>
+        );
+      case 'read':
+        return (
+          <svg className={`${baseClasses} text-black`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          </svg>
+        );
+      default:
+        return null;
+    }
+  };
+
+  // Handle file selection for WhatsApp
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      setSelectedFile(file);
+    }
+  };
+
+  // Send media message via WhatsApp
+  const handleSendMedia = async () => {
+    if (!selectedFile || !client) return;
+
+    setUploadingMedia(true);
+    try {
+      // Create FormData for file upload
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('leadId', client.id);
+
+      // Upload media to WhatsApp
+      const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
+        method: 'POST',
+        body: formData,
+      });
+
+      const uploadResult = await uploadResponse.json();
+
+      if (!uploadResponse.ok) {
+        throw new Error(uploadResult.error || 'Failed to upload media');
+      }
+
+      // Send media message
+      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
+      const senderName = currentUserFullName || 'You';
+      const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leadId: client.id,
+          mediaUrl: uploadResult.mediaId,
+          mediaType: mediaType,
+          caption: whatsAppInput.trim() || undefined,
+          phoneNumber: client.phone || client.mobile,
+          sender_name: senderName
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send media');
+      }
+
+      // Add message to local state
+      const newMsg = {
+        id: Date.now(),
+        lead_id: client.id,
+        sender_id: null,
+        sender_name: senderName,
+        direction: 'out',
+        message: whatsAppInput.trim() || `${mediaType} message`,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+        message_type: mediaType,
+        whatsapp_status: 'sent',
+        whatsapp_message_id: result.messageId,
+        media_url: uploadResult.mediaId,
+        caption: whatsAppInput.trim() || undefined
+      };
+
+      setWhatsAppMessages(prev => [...prev, newMsg]);
+      setWhatsAppInput('');
+      setSelectedFile(null);
+      toast.success('Media sent via WhatsApp!');
+    } catch (error) {
+      console.error('Error sending media:', error);
+      toast.error('Failed to send media: ' + (error as Error).message);
+    } finally {
+      setUploadingMedia(false);
     }
   };
 
@@ -1270,16 +1392,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           <button 
             className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto justify-center"
             onClick={() => {
-              // Toggle AI summary panel on mobile, or scroll to it on desktop
+              // Toggle AI summary panel on mobile, or show/hide it on desktop
               if (window.innerWidth < 1024) {
                 // Mobile: show drawer with AI summary
                 setAiDrawerOpen(true);
               } else {
-                // Desktop: scroll to AI panel
-                const aiPanel = document.querySelector('.ai-summary-panel');
-                if (aiPanel) {
-                  aiPanel.scrollIntoView({ behavior: 'smooth' });
-                }
+                // Desktop: toggle AI panel visibility
+                setShowAiSummary(!showAiSummary);
               }
             }}
           >
@@ -1437,209 +1556,221 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           <TimelineHistoryButtons client={client} />
         </div>
       </div>
-      {/* Right-side AI summary panel (hidden on mobile, sticky on desktop) */}
-      <div className="hidden lg:block w-full max-w-sm ai-summary-panel">
-        <AISummaryPanel messages={aiSummaryMessages} />
-      </div>
-      {/* Email Thread Modal (mobile-friendly) */}
+      {/* Right-side AI summary panel (hidden on mobile, conditional on desktop) */}
+      {showAiSummary && (
+        <div className="hidden lg:block w-full max-w-sm ai-summary-panel">
+          <AISummaryPanel messages={aiSummaryMessages} />
+        </div>
+      )}
+      {/* Email Thread Modal */}
       {isEmailModalOpen && createPortal(
-        <div className="fixed inset-0 bg-black/50 z-[999] flex items-start justify-center">
-          <div className="bg-base-100 w-screen h-screen max-w-none max-h-none flex flex-col overflow-hidden">
-            {/* Header - Mobile optimized */}
-            <div className="flex flex-col gap-3 p-3 md:p-4 border-b border-base-300 bg-white">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg md:text-xl font-bold truncate">Email Thread with {client.name}</h3>
-                <button className="btn btn-ghost btn-sm btn-circle" onClick={() => setIsEmailModalOpen(false)}>
-                  <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-                </button>
+        <div className="fixed inset-0 bg-white z-[9999]">
+          <div className="h-full flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+              <div className="flex items-center gap-2 md:gap-4">
+                <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <span className="text-gray-600">
+                    {client.name} ({client.lead_number})
+                  </span>
+                </div>
               </div>
-              
-              {/* Subject input - Full width on mobile */}
-              <input
-                type="text"
-                className="input input-bordered w-full text-sm md:text-base"
-                value={composeSubject}
-                onChange={e => setComposeSubject(e.target.value)}
-                placeholder="Subject"
-              />
-              
-              {/* Templates - Scrollable on mobile */}
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {emailTemplates.map(template => (
-                  <button
-                    key={template.name}
-                    className="btn btn-outline btn-xs md:btn-sm whitespace-nowrap flex-shrink-0"
-                    onClick={() => {
-                      const uploadLink = 'https://portal.example.com/upload'; // Placeholder
-                      const processedBody = template.body
-                          .replace(/{client_name}/g, client.name)
-                          .replace(/{upload_link}/g, uploadLink);
-                      const newSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
-                      setComposeBody(processedBody);
-                      setComposeSubject(newSubject);
-                    }}
-                  >
-                    {template.name}
-                  </button>
-                ))}
-              </div>
+              <button
+                onClick={() => setIsEmailModalOpen(false)}
+                className="btn btn-ghost btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+              </button>
             </div>
-            {/* Conversation Body - Mobile optimized */}
-            <div ref={(el) => {
-              if (el && activeEmailId) {
-                const targetEmail = el.querySelector(`[data-email-id="${activeEmailId}"]`);
-                if (targetEmail) {
-                  targetEmail.classList.add('ring-2', 'ring-primary');
-                  targetEmail.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  setTimeout(() => targetEmail.classList.remove('ring-2', 'ring-primary'), 1200);
-                }
-                setActiveEmailId(null); // Reset after scrolling
-              }
-            }} className="flex-1 overflow-y-auto p-3 md:p-6 space-y-4 md:space-y-6">
+
+            {/* Email Thread */}
+            <div className="flex-1 overflow-y-auto p-4 md:p-6">
               {emailsLoading ? (
-                <div className="text-center p-8">Loading email history...</div>
+                <div className="flex items-center justify-center h-full">
+                  <div className="loading loading-spinner loading-lg text-blue-500"></div>
+                </div>
               ) : emails.length === 0 ? (
-                <div className="text-center p-8 text-base-content/70">No emails found for this client.</div>
-              ) : (
-                [...emails]
-                  .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                  .map(email => (
-                    <div 
-                      key={email.id} 
-                      data-email-id={email.id}
-                      className={`flex items-end gap-2 md:gap-3 ${email.direction === 'outgoing' ? 'flex-row-reverse' : ''}`}
-                    >
-                      <div className={`avatar placeholder ${email.direction === 'outgoing' ? 'hidden' : ''}`}>
-                        <div className="bg-neutral-focus text-neutral-content rounded-full w-8 h-8 md:w-10 md:h-10">
-                          <span className="text-xs md:text-sm">{client.name.charAt(0)}</span>
-                        </div>
-                      </div>
-                      <div className={`max-w-[85%] md:max-w-2xl break-words rounded-2xl p-3 md:p-4 ${email.direction === 'outgoing' ? 'bg-primary text-white' : 'bg-base-200'}`}>
-                        <div className="flex flex-col md:flex-row md:justify-between md:items-center text-xs opacity-70 mb-2 gap-1">
-                          <span className="font-bold truncate">{email.from}</span>
-                          <span className="text-xs">{new Date(email.date).toLocaleDateString()} {new Date(email.date).toLocaleTimeString()}</span>
-                        </div>
-                        <div className="font-bold mb-2 text-sm md:text-base">{email.subject}</div>
-                        <div className="prose prose-sm md:prose max-w-none text-xs md:text-sm" dangerouslySetInnerHTML={{ 
-                          __html: sanitizeEmailHtml(stripSignatureAndQuotedText(email.bodyPreview || '')) 
-                        }} />
-                        {/* Attachments */}
-                        {email.attachments && email.attachments.length > 0 && (
-                          <div className="mt-3 pt-2 border-t border-black/10">
-                            <h4 className="font-semibold text-xs mb-2">Attachments:</h4>
-                            <div className="flex flex-wrap gap-1 md:gap-2">
-                              {email.attachments.map((att: Attachment) => (
-                                <button 
-                                  key={att.id}
-                                  className="btn btn-outline btn-xs gap-1 text-xs"
-                                  onClick={() => handleDownloadAttachment(email.id, att)}
-                                  disabled={downloadingAttachments[att.id]}
-                                >
-                                  {downloadingAttachments[att.id] ? (
-                                    <span className="loading loading-spinner loading-xs" />
-                                  ) : (
-                                    <PaperClipIcon className="w-3 h-3" />
-                                  )}
-                                  <span className="truncate max-w-[100px]">{att.name}</span>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
                     </div>
-                  ))
+                    <p className="text-lg font-medium">No messages yet</p>
+                    <p className="text-sm">Start a conversation with {client.name}</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {[...emails]
+                    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                    .map((message, index) => (
+                      <div
+                        key={message.id}
+                        data-email-id={message.id}
+                        className={`flex flex-col ${message.direction === 'outgoing' ? 'items-end' : 'items-start'}`}
+                      >
+                        {/* Message Label */}
+                        <div className={`mb-2 px-3 py-1 rounded-full text-xs font-semibold ${
+                          message.direction === 'outgoing'
+                            ? 'bg-gradient-to-r from-blue-500 via-purple-500 to-purple-600 text-white'
+                            : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
+                        }`}>
+                          {message.direction === 'outgoing' ? 'Team' : 'Client'}
+                        </div>
+                        
+                        {/* Message Bubble */}
+                        <div
+                          className={`max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl ${
+                            message.direction === 'outgoing'
+                              ? 'bg-[#3E28CD] text-white'
+                              : 'bg-gray-100 text-gray-900'
+                          } rounded-2xl px-4 py-3 shadow-sm`}
+                        >
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="font-semibold text-sm">
+                              {message.direction === 'outgoing' ? (currentUserFullName || 'You') : client.name}
+                            </span>
+                            <span className="text-xs opacity-70">
+                              {new Date(message.date).toLocaleString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                          {message.subject && (
+                            <div className="font-medium mb-2">
+                              {message.subject}
+                            </div>
+                          )}
+                          <div className="text-sm whitespace-pre-wrap">
+                            <div dangerouslySetInnerHTML={{ 
+                              __html: sanitizeEmailHtml(stripSignatureAndQuotedText(message.bodyPreview || '')) 
+                            }} />
+                          </div>
+                          {/* Attachments */}
+                          {message.attachments && message.attachments.length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-gray-200">
+                              <div className="text-xs opacity-70 mb-2">Attachments:</div>
+                              <div className="flex flex-wrap gap-2">
+                                {message.attachments.map((attachment: Attachment, idx: number) => (
+                                  <button 
+                                    key={attachment.id}
+                                    className="btn btn-outline btn-xs gap-1"
+                                    onClick={() => handleDownloadAttachment(message.id, attachment)}
+                                    disabled={downloadingAttachments[attachment.id]}
+                                  >
+                                    {downloadingAttachments[attachment.id] ? (
+                                      <span className="loading loading-spinner loading-xs" />
+                                    ) : (
+                                      <PaperClipIcon className="w-3 h-3" />
+                                    )}
+                                    <span className="truncate max-w-[100px]">{attachment.name}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                </div>
               )}
             </div>
-            
-            {/* Mobile-friendly compose form */}
-            <form
-              className="flex flex-col gap-3 p-3 md:p-4 border-t border-gray-200 bg-white"
-              onSubmit={e => { e.preventDefault(); handleSendEmail(); setBodyFocused(false); }}
-            >
-              {/* To field - hidden on mobile, visible on desktop */}
-              <div className="hidden md:block">
-                <input type="text" className="input input-bordered w-full" value={client.email} disabled />
-              </div>
-              
-              {/* Compose editor */}
-              <div className="flex-1">
-                <ReactQuill
-                  ref={quillRef}
-                  value={composeBody}
-                  onChange={setComposeBody}
-                  onFocus={() => setBodyFocused(true)}
-                  onBlur={() => setBodyFocused(false)}
-                  placeholder="Write your email here..."
-                  style={{
-                    minHeight: bodyFocused ? 200 : 100,
-                    maxHeight: 300,
-                    background: 'white',
-                    borderRadius: 12,
-                    border: '1.5px solid #e3dbfa',
-                    boxShadow: bodyFocused ? '0 0 0 2px #a78bfa, 0 2px 16px 0 rgba(59,40,199,0.08)' : 'none',
-                    fontSize: 14,
-                    fontFamily: 'system-ui, Arial, sans-serif',
-                    lineHeight: 1.6,
-                  }}
-                  modules={{
-                    toolbar: [
-                      ['bold', 'italic', 'underline'],
-                      [{ list: 'ordered' }, { list: 'bullet' }],
-                      ['link'],
-                      ['clean'],
-                    ],
-                  }}
-                  theme="snow"
-                />
-              </div>
-              
-              {/* Attachments and send */}
-              <div className="flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <label htmlFor="file-upload" className="btn btn-outline btn-sm">
-                    <PaperClipIcon className="w-4 h-4" />
-                    <span className="hidden md:inline ml-1">Attach</span>
-                  </label>
-                  <input id="file-upload" type="file" className="hidden" onChange={e => e.target.files && handleAttachmentUpload(e.target.files)} />
+
+            {/* Compose Area */}
+            <div className="border-t border-gray-200 p-4 md:p-6">
+              {showCompose ? (
+                <div className="space-y-4">
+                  <input
+                    type="text"
+                    placeholder="Subject"
+                    value={composeSubject}
+                    onChange={(e) => setComposeSubject(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <textarea
+                    placeholder="Type your message..."
+                    value={composeBody}
+                    onChange={(e) => setComposeBody(e.target.value)}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    rows={4}
+                  />
                   
-                  {/* Show attached files count on mobile */}
+                  {/* Attachments */}
                   {composeAttachments.length > 0 && (
-                    <span className="text-xs text-gray-500">
-                      {composeAttachments.length} file{composeAttachments.length > 1 ? 's' : ''} attached
-                    </span>
+                    <div className="flex flex-wrap gap-2">
+                      {composeAttachments.map((file, index) => (
+                        <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
+                          <PaperClipIcon className="w-4 h-4 text-gray-500" />
+                          <span className="text-sm">{file.name}</span>
+                          <button
+                            onClick={() => setComposeAttachments(prev => prev.filter((_, i) => i !== index))}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   )}
-                </div>
-                
-                <button type="submit" className="btn btn-primary" disabled={sending}>
-                  {sending ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm"></span>
-                      <span className="hidden md:inline ml-2">Sending...</span>
-                    </>
-                  ) : (
-                    <>
-                      <PaperAirplaneIcon className="w-4 h-4" />
-                      <span className="hidden md:inline ml-2">Send</span>
-                    </>
-                  )}
-                </button>
-              </div>
-              
-              {/* Show attached files on desktop */}
-              {composeAttachments.length > 0 && (
-                <div className="hidden md:flex flex-wrap gap-2">
-                  {composeAttachments.map((att, index) => (
-                    <div key={index} className="flex items-center gap-2 text-xs bg-base-200 rounded-lg px-3 py-2">
-                      <span className="truncate max-w-[200px]">{att.name}</span>
-                      <button type="button" className="btn btn-ghost btn-xs p-0" onClick={() => setComposeAttachments(prev => prev.filter(a => a.name !== att.name))}>
-                        <XMarkIcon className="w-3 h-3" />
+                  
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="btn btn-ghost btn-sm"
+                      >
+                        <PaperClipIcon className="w-4 h-4" />
+                        Attach
+                      </button>
+                                             <input
+                         ref={fileInputRef}
+                         type="file"
+                         multiple
+                         onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
+                         className="hidden"
+                       />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setShowCompose(false)}
+                        className="btn btn-outline btn-sm"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSendEmail}
+                        disabled={sending || !composeBody.trim()}
+                        className="btn btn-primary btn-sm"
+                      >
+                        {sending ? (
+                          <div className="loading loading-spinner loading-xs"></div>
+                        ) : (
+                          <>
+                            <PaperAirplaneIcon className="w-4 h-4" />
+                            Send
+                          </>
+                        )}
                       </button>
                     </div>
-                  ))}
+                  </div>
                 </div>
+              ) : (
+                <button
+                  onClick={() => setShowCompose(true)}
+                  className="w-full btn btn-primary"
+                >
+                  <PaperAirplaneIcon className="w-4 h-4 mr-2" />
+                  Compose Message
+                </button>
               )}
-            </form>
+            </div>
           </div>
         </div>,
         document.body
@@ -1723,71 +1854,240 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         </div>,
         document.body
       )}
+      {/* WhatsApp Modal */}
       {isWhatsAppOpen && createPortal(
-        <div className="fixed inset-0 z-[999] flex flex-col bg-white w-full h-full max-w-none max-h-none">
-          {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-base-200 bg-white">
-            <h3 className="text-xl font-bold">WhatsApp Chat with {client.name}</h3>
-            <button className="btn btn-ghost btn-sm" onClick={handleWhatsAppClose}>
-              <XMarkIcon className="w-6 h-6" />
-            </button>
-          </div>
-          {/* Chat Messages */}
-          <div className="flex-1 overflow-y-auto flex flex-col w-full min-h-20 p-8" id="whatsapp-modal-messages">
-            {whatsAppMessages.length === 0 ? (
-              <div className="text-center p-8 text-base-content/70">
-                No WhatsApp messages found for this client.<br/>
-                <span className="text-xs text-error">(Debug: client.id = {client.id})</span>
-              </div>
-            ) : (
-              whatsAppMessages.map((msg: any, idx: number) => (
-                <div
-                  key={msg.id || idx}
-                  data-whatsapp-id={msg.id}
-                  className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'} w-full mb-2`}
-                >
-                  <div
-                    className={
-                    `rounded-2xl px-6 py-3 shadow text-base max-w-[70%] break-words ` +
-                    (msg.direction === 'out'
-                      ? 'bg-primary text-white self-end'
-                      : 'bg-base-200 text-black self-start border border-base-200')
-                    }
-                    style={activeWhatsAppId && msg.id && activeWhatsAppId === msg.id.toString() ? { boxShadow: '0 0 0 3px #3b28c7' } : {}}
-                  >
-                    {msg.message}
-                    <div className="flex items-center gap-1 mt-2 text-xs opacity-70 justify-end">
-                      <span>{msg.time || (msg.sent_at ? new Date(msg.sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '')}</span>
-                      {msg.direction === 'out' && (
-                        <span className="inline-block align-middle">
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-blue-200" style={{ display: 'inline' }}><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>
-                        </span>
-                      )}
-                    </div>
+        <div className="fixed inset-0 bg-white z-[9999]">
+          <div className="h-full flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+              <div className="flex items-center gap-2 md:gap-4">
+                <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
+                <h2 className="text-lg md:text-2xl font-bold text-gray-900">WhatsApp</h2>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-lg font-semibold text-gray-900 truncate">
+                      {client.name}
+                    </span>
+                    <span className="text-sm text-gray-500 font-mono flex-shrink-0">
+                      ({client.lead_number})
+                    </span>
                   </div>
                 </div>
-              ))
-            )}
+              </div>
+              <button
+                onClick={handleWhatsAppClose}
+                className="btn btn-ghost btn-circle flex-shrink-0"
+              >
+                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+              </button>
+            </div>
+
+            {/* Messages - Scrollable */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {whatsAppMessages.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                  <p className="text-lg font-medium">No messages yet</p>
+                  <p className="text-sm">Start the conversation with {client.name}</p>
+                </div>
+              ) : (
+                whatsAppMessages.map((message, index) => (
+                  <div
+                    key={message.id || index}
+                    className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
+                  >
+                    {message.direction === 'out' && (
+                      <span className="text-xs text-gray-500 mb-1 mr-2">
+                        {message.sender_name || 'You'}
+                      </span>
+                    )}
+                    {message.direction === 'in' && (
+                      <span className="text-xs text-gray-500 mb-1 ml-2">
+                        {message.sender_name || client.name}
+                      </span>
+                    )}
+                    <div
+                      className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
+                        message.direction === 'out'
+                          ? 'bg-green-600 text-white'
+                          : 'bg-white text-gray-900 border border-gray-200'
+                      }`}
+                    >
+                      {/* Message content based on type */}
+                      {message.message_type === 'text' && (
+                        <p className="text-sm break-words">{message.message}</p>
+                      )}
+                      
+                      {message.message_type === 'image' && (
+                        <div>
+                          {message.media_url && (
+                            <div className="relative inline-block">
+                              <img 
+                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                alt="Image"
+                                className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                                onClick={() => message.media_url && setSelectedMedia({
+                                  url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                  type: 'image',
+                                  caption: message.caption
+                                })}
+                                onError={(e) => {
+                                  console.log('Failed to load image:', message.media_url);
+                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                                  e.currentTarget.style.border = '1px solid #e5e7eb';
+                                  e.currentTarget.style.borderRadius = '0.5rem';
+                                }}
+                              />
+                              <button
+                                onClick={() => {
+                                  if (!message.media_url) return;
+                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
+                                  const link = document.createElement('a');
+                                  link.href = url;
+                                  link.download = `image_${Date.now()}.jpg`;
+                                  link.click();
+                                }}
+                                className="absolute top-2 right-2 btn btn-ghost btn-xs bg-black bg-opacity-50 text-white hover:bg-opacity-70"
+                                title="Download"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                              </button>
+                            </div>
+                          )}
+                          {message.caption && (
+                            <p className="text-sm break-words">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+                      
+                      {message.message_type === 'video' && (
+                        <div>
+                          {message.media_url && (
+                            <video 
+                              controls
+                              className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
+                              onClick={() => message.media_url && setSelectedMedia({
+                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                type: 'video',
+                                caption: message.caption
+                              })}
+                              onError={(e) => {
+                                console.log('Failed to load video:', message.media_url);
+                                e.currentTarget.style.display = 'none';
+                                const errorDiv = document.createElement('div');
+                                errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';
+                                errorDiv.innerHTML = `
+                                  <FilmIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
+                                  <p class="text-xs font-medium">Video Unavailable</p>
+                                  <p class="text-xs opacity-70">Media may have expired</p>
+                                `;
+                                e.currentTarget.parentNode?.appendChild(errorDiv);
+                              }}
+                            >
+                              <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
+                              Your browser does not support the video tag.
+                            </video>
+                          )}
+                          {message.caption && (
+                            <p className="text-sm break-words">{message.caption}</p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Message status and time */}
+                      <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
+                        <span>
+                          {new Date(message.sent_at).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </span>
+                        {message.direction === 'out' && (
+                          <span className="inline-block align-middle text-current">
+                            {renderMessageStatus(message.whatsapp_status)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Message Input - Fixed */}
+            <div className="flex-shrink-0 p-4 bg-white border-t border-gray-200">
+              <form onSubmit={handleSendWhatsApp} className="flex items-center gap-2">
+                <button type="button" className="btn btn-ghost btn-circle">
+                  <FaceSmileIcon className="w-6 h-6 text-gray-500" />
+                </button>
+                
+                {/* File upload button */}
+                <label className="btn btn-ghost btn-circle cursor-pointer">
+                  <PaperClipIcon className="w-6 h-6 text-gray-500" />
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                    onChange={handleFileSelect}
+                    disabled={uploadingMedia}
+                  />
+                </label>
+
+                {/* Selected file preview */}
+                {selectedFile && (
+                  <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-1">
+                    <span className="text-xs text-gray-600">{selectedFile.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFile(null)}
+                      className="text-red-500 hover:text-red-700"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
+
+                <input
+                  type="text"
+                  value={whatsAppInput}
+                  onChange={(e) => setWhatsAppInput(e.target.value)}
+                  placeholder={selectedFile ? "Add a caption..." : "Type a message..."}
+                  className="flex-1 input input-bordered rounded-full"
+                  disabled={sending || uploadingMedia}
+                />
+                
+                {selectedFile ? (
+                  <button
+                    type="button"
+                    onClick={handleSendMedia}
+                    disabled={uploadingMedia}
+                    className="btn btn-primary btn-circle"
+                  >
+                    {uploadingMedia ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!whatsAppInput.trim() || sending}
+                    className="btn btn-primary btn-circle"
+                  >
+                    {sending ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                )}
+              </form>
+            </div>
           </div>
-          {/* Input Area */}
-          <form className="flex items-center gap-2 px-6 py-4 border-t border-base-200 bg-white" style={{ minHeight: 72 }} onSubmit={handleSendWhatsApp}>
-            <button type="button" className="btn btn-ghost btn-circle">
-              <FaceSmileIcon className="w-6 h-6 text-gray-500" />
-            </button>
-            <button type="button" className="btn btn-ghost btn-circle">
-              <PaperClipIcon className="w-6 h-6 text-gray-500" />
-            </button>
-            <input
-              type="text"
-              className="input input-bordered flex-1 rounded-full"
-              placeholder="Type your message..."
-              value={whatsAppInput}
-              onChange={e => setWhatsAppInput(e.target.value)}
-            />
-            <button type="submit" className="btn btn-primary btn-circle">
-              <PaperAirplaneIcon className="w-6 h-6" />
-            </button>
-          </form>
         </div>,
         document.body
       )}

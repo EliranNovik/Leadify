@@ -76,6 +76,14 @@ const WhatsAppPage: React.FC = () => {
   const [showChat, setShowChat] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Contacts panel (mobile) UI state
+  const contactListRef = useRef<HTMLDivElement>(null);
+  const [isSearchHiddenMobile, setIsSearchHiddenMobile] = useState(false);
+  const lastScrollTopRef = useRef(0);
+  const [isContactsHeaderGlass, setIsContactsHeaderGlass] = useState(false);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const [isChatHeaderGlass, setIsChatHeaderGlass] = useState(false);
+  const [isChatFooterGlass, setIsChatFooterGlass] = useState(false);
 
   // Helper function to get document icon based on MIME type
   const getDocumentIcon = (mimeType?: string) => {
@@ -131,6 +139,42 @@ const WhatsAppPage: React.FC = () => {
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
+
+  // Handle scroll to hide on scroll down, reveal on scroll up (mobile only)
+  const handleContactListScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!isMobile) return;
+    const currentTop = e.currentTarget.scrollTop;
+    const diff = currentTop - lastScrollTopRef.current;
+
+    // Always show at very top
+    if (currentTop <= 0) {
+      setIsSearchHiddenMobile(false);
+      setIsContactsHeaderGlass(false);
+      lastScrollTopRef.current = currentTop;
+      return;
+    }
+
+    // Small threshold to avoid jitter
+    if (Math.abs(diff) > 4) {
+      if (diff > 0) {
+        // Scrolling down -> hide
+        setIsSearchHiddenMobile(true);
+      } else {
+        // Scrolling up -> show
+        setIsSearchHiddenMobile(false);
+      }
+      setIsContactsHeaderGlass(currentTop > 0);
+      lastScrollTopRef.current = currentTop;
+    }
+  };
+
+  // Chat messages scroll: toggle glass headers/footers on mobile
+  const handleChatMessagesScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    if (!isMobile) return;
+    const top = e.currentTarget.scrollTop;
+    setIsChatHeaderGlass(top > 0);
+    setIsChatFooterGlass(top > 0);
+  };
 
   // Keyboard support for modal
   useEffect(() => {
@@ -505,7 +549,7 @@ const WhatsAppPage: React.FC = () => {
     <div className="fixed inset-0 bg-white z-[9999]">
       <div className="h-full flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+        <div className={`flex items-center justify-between p-4 md:p-6 border-b border-gray-200 ${isMobile && isContactsHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
             <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
             <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">WhatsApp</h2>
@@ -584,8 +628,14 @@ const WhatsAppPage: React.FC = () => {
         <div className="flex-1 flex overflow-hidden">
           {/* Left Panel - Client List */}
           <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
-            {/* Search Bar */}
-            <div className="p-3 border-b border-gray-200">
+            {/* Search Bar (sticky on mobile, hides on scroll down) */}
+            <div className={`${isMobile
+                ? 'sticky top-0 z-10 bg-white transition-all duration-300 ' +
+                  (isSearchHiddenMobile
+                    ? 'h-0 p-0 -translate-y-full overflow-hidden border-b-0'
+                    : 'p-3 translate-y-0 border-b border-gray-200')
+                : 'p-3 border-b border-gray-200'
+              }`}>
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
@@ -599,7 +649,7 @@ const WhatsAppPage: React.FC = () => {
             </div>
 
             {/* Client List */}
-            <div className="flex-1 overflow-y-auto">
+            <div ref={contactListRef} onScroll={handleContactListScroll} className="flex-1 overflow-y-auto">
               {loading ? (
                 <div className="flex items-center justify-center h-32">
                   <div className="loading loading-spinner loading-lg text-green-600"></div>
@@ -642,7 +692,7 @@ const WhatsAppPage: React.FC = () => {
                         {/* Client Info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between">
-                            <h3 className="font-semibold text-gray-900 truncate text-sm md:text-base">
+                            <h3 className="font-semibold text-gray-900 truncate text-base md:text-base">
                               {client.name}
                             </h3>
                             <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
@@ -658,11 +708,11 @@ const WhatsAppPage: React.FC = () => {
                               )}
                             </div>
                           </div>
-                          <p className="text-xs md:text-sm text-gray-500 truncate">
+                          <p className="text-sm md:text-sm text-gray-500 truncate">
                             {client.lead_number}
                           </p>
                           {lastMessage && (
-                            <p className="text-xs md:text-sm text-gray-600 truncate mt-1">
+                            <p className="text-sm md:text-sm text-gray-600 truncate mt-1">
                               {lastMessage.direction === 'out' ? `${lastMessage.sender_name}: ` : ''}
                               {lastMessage.message}
                             </p>
@@ -682,7 +732,7 @@ const WhatsAppPage: React.FC = () => {
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                  <div className={`flex items-center justify-between p-4 border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => setShowChat(false)}
@@ -712,7 +762,7 @@ const WhatsAppPage: React.FC = () => {
                 )}
 
             {/* Messages - Scrollable */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4">
               {messages.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -992,7 +1042,7 @@ const WhatsAppPage: React.FC = () => {
             </div>
 
             {/* Message Input - Fixed */}
-            <div className="flex-shrink-0 p-4 bg-white border-t border-gray-200">
+            <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
               <form onSubmit={handleSendMessage} className="flex items-center gap-2">
                 <button type="button" className="btn btn-ghost btn-circle">
                   <FaceSmileIcon className="w-6 h-6 text-gray-500" />

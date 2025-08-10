@@ -164,8 +164,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="p-2 bg-blue-100 rounded-lg">
-          <InformationCircleIcon className="w-6 h-6 text-blue-600" />
+        <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+          <InformationCircleIcon className="w-6 h-6 text-white" />
         </div>
         <div>
           <h2 className="text-2xl font-bold">Client Information</h2>
@@ -179,13 +179,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 gap-y-12">
           {/* Case Probability */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">Case Probability</h4>
                 <div className="tooltip" data-tip="Likelihood of successful case">
                   <InformationCircleIcon className="w-5 h-5 text-gray-400 cursor-help" />
                 </div>
               </div>
+              <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
               <div className="space-y-4">
@@ -215,8 +216,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
           {/* Followup */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <h4 className="text-lg font-semibold text-black">Follow-up Status</h4>
+              <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
               <div className="space-y-4">
@@ -232,8 +234,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
           {/* Eligibility */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <h4 className="text-lg font-semibold text-black">Eligibility Status</h4>
+              <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
               <div className="flex justify-between items-center">
@@ -265,7 +268,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 gap-y-12">
           {/* Special Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">Special Notes</h4>
                 <EditButtons
@@ -305,6 +308,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   editIconClassName="w-5 h-5 text-black"
                 />
               </div>
+              <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
               {isEditingSpecialNotes ? (
@@ -338,7 +342,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
           {/* General Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">General Notes</h4>
                 <EditButtons
@@ -378,6 +382,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   editIconClassName="w-5 h-5 text-black"
                 />
               </div>
+              <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
               {isEditingGeneralNotes ? (
@@ -409,7 +414,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
           {/* Tags */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">Tags</h4>
                 <EditButtons
@@ -449,6 +454,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   editIconClassName="w-5 h-5 text-black"
                 />
               </div>
+              <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
               {isEditingTags ? (
@@ -483,7 +489,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Facts of Case */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
                 <EditButtons
@@ -585,7 +591,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
           {/* Anchor */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
               <div className="flex items-center justify-between">
                 <h4 className="text-lg font-semibold text-black">Anchor</h4>
                 <EditButtons

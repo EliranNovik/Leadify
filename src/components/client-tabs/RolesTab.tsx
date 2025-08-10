@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
-import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
 interface Role {
@@ -129,76 +129,102 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
+  // Function to get the appropriate icon for each role
+  const getRoleIcon = (roleId: string) => {
+    switch (roleId) {
+      case 'scheduler':
+        return CalendarIcon;
+      case 'manager':
+        return UserCircleIcon;
+      case 'helper':
+        return WrenchScrewdriverIcon;
+      case 'expert':
+        return AcademicCapIcon;
+      case 'closer':
+        return HandRaisedIcon;
+      case 'handler':
+        return CogIcon;
+      default:
+        return UserIcon;
+    }
+  };
+
   return (
     <div className="p-2 sm:p-4 md:p-6">
-      <div className="flex items-center gap-2 mb-6">
-        <UserGroupIcon className="w-6 h-6 text-primary" />
-        <h3 className="text-2xl font-semibold">Roles</h3>
+      <div className="flex items-center gap-3 mb-8">
+        <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+          <UserGroupIcon className="w-6 h-6 text-white" />
+        </div>
+        <div>
+          <h2 className="text-2xl font-bold">Roles</h2>
+          <p className="text-sm text-gray-500">Manage team roles and assignments</p>
+        </div>
       </div>
 
-      <div className="relative animate-fadeInUp">
-        {/* Roles Grid - 2 columns, smaller boxes, no colored line */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-10 w-full max-w-3xl mx-auto">
-          {roles.map((role, idx) => {
-            const hasAssignee = role.assignee && role.assignee !== '---';
-            const initials = hasAssignee
-              ? role.assignee.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
-              : '';
-            // Assign a unique gradient per role
-            const gradients = [
-              'from-pink-500 via-purple-500 to-purple-600',
-              'from-purple-600 via-blue-600 to-blue-500',
-              'from-blue-500 via-cyan-500 to-teal-400',
-              'from-teal-400 via-green-400 to-green-600',
-              'from-yellow-400 via-orange-400 to-pink-500',
-            ];
-            const gradient = gradients[idx % gradients.length];
-            return (
-              <div
-                key={role.id}
-                className={`w-full max-w-sm mx-auto rounded-xl shadow-xl p-4 flex flex-col items-center justify-center gap-2 min-h-[80px] relative bg-gradient-to-tr ${gradient} text-white overflow-hidden`}
-              >
-                {/* Role Title */}
-                <div className="absolute top-2 left-3 text-lg font-extrabold uppercase tracking-wider text-white/80">
-                  {role.title}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {roles.map((role, idx) => {
+          const hasAssignee = role.assignee && role.assignee !== '---';
+          const initials = hasAssignee
+            ? role.assignee.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+            : '';
+          
+          return (
+            <div
+              key={role.id}
+              className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden"
+            >
+              {/* Title Section */}
+              <div className="pl-6 pt-2 pb-2 w-2/5">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-lg font-semibold text-black">{role.title}</h4>
                 </div>
-                {/* Initials or Icon */}
-                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-bold shadow mb-1 ${hasAssignee ? 'bg-white/20 text-white' : 'bg-white/10 text-white/60'}`}> 
-                  {hasAssignee ? initials : <UserIcon className="w-6 h-6" />}
-                </div>
-                {/* Assignee Name */}
-                {isEditing ? (
-                  <select
-                    className="select select-bordered w-full max-w-xs font-semibold text-base bg-white/20 text-white border-white/30 hover:bg-white/30 transition-colors duration-150 shadow-sm"
-                    value={role.assignee}
-                    onChange={(e) => handleRoleChange(role.id, e.target.value)}
-                  >
-                    {(role.id === 'expert'
-                      ? expertOptions
-                      : role.id === 'scheduler'
-                        ? schedulerOptions
-                        : role.id === 'handler'
-                          ? handlerOptions
-                          : allUserOptions
-                    ).map((assignee) => (
-                      <option key={assignee} value={assignee} className="text-black">
-                        {assignee}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <span className={`text-base font-bold text-center ${hasAssignee ? 'text-white' : 'text-white/60 italic'}`}> 
-                    {hasAssignee ? role.assignee : 'Unassigned'}
-                  </span>
-                )}
-                {/* Optional: SVG icon/decoration in lower right */}
-                <svg className="absolute bottom-2 right-2 w-8 h-4 opacity-30" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 16"><path d="M2 14 Q8 2 16 8 T30 2" /></svg>
+                <div className="border-b border-gray-200 mt-2"></div>
               </div>
-            );
-          })}
-        </div>
-        {/* Action Bar - centered */}
-        <div className="flex flex-row gap-4 px-6 py-4 rounded-xl bg-white shadow border border-base-200/60 w-fit mx-auto z-20 animate-fadeInUp">
+              
+              {/* Content Section */}
+              <div className="p-6">
+                <div className="flex items-center gap-4">
+                  {/* Role Icon */}
+                  <div className="w-12 h-12 rounded-full flex items-center justify-center bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600">
+                    {React.createElement(getRoleIcon(role.id), { className: "w-6 h-6 text-white" })}
+                  </div>
+                  
+                  {/* Assignee Name */}
+                  <div className="flex-1">
+                    {isEditing ? (
+                      <select
+                        className="select select-bordered w-full max-w-xs font-semibold text-base"
+                        value={role.assignee}
+                        onChange={(e) => handleRoleChange(role.id, e.target.value)}
+                      >
+                        {(role.id === 'expert'
+                          ? expertOptions
+                          : role.id === 'scheduler'
+                            ? schedulerOptions
+                            : role.id === 'handler'
+                              ? handlerOptions
+                              : allUserOptions
+                        ).map((assignee) => (
+                          <option key={assignee} value={assignee}>
+                            {assignee}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className={`text-base font-semibold ${hasAssignee ? 'text-gray-900' : 'text-gray-500 italic'}`}> 
+                        {hasAssignee ? role.assignee : 'Unassigned'}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      
+      {/* Action Bar - centered */}
+      <div className="flex flex-row gap-4 px-6 py-4 rounded-xl bg-white shadow border border-base-200/60 w-fit mx-auto z-20 animate-fadeInUp">
           {isEditing ? (
             <>
               <button 
@@ -232,7 +258,6 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <UserIcon className="w-5 h-5" />
             Set me as closer
           </button>
-        </div>
       </div>
       
       <TimelineHistoryButtons client={client} />

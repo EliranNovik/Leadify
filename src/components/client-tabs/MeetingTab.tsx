@@ -61,6 +61,7 @@ interface Meeting {
   helper: string;
   expert: string;
   link: string;
+  status?: string;
   expert_notes?: string;
   handler_notes?: string;
   eligibility_status?: string;
@@ -90,6 +91,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }>({});
   const [editingField, setEditingField] = useState<{ meetingId: number; field: 'expert_notes' | 'handler_notes' } | null>(null);
   const [editedContent, setEditedContent] = useState<string>('');
+
 
   // New: Lead-level scheduling info
   const [leadSchedulingInfo, setLeadSchedulingInfo] = useState<{
@@ -128,6 +130,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             helper: m.helper,
             expert: m.expert,
             link: m.teams_meeting_url,
+            status: m.status || 'scheduled',
             expert_notes: m.expert_notes,
             handler_notes: m.handler_notes,
             eligibility_status: m.eligibility_status,
@@ -348,6 +351,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Helper to determine if a meeting is in the past
   const isPastMeeting = (meeting: Meeting) => {
+    if (meeting.status === 'canceled') return true;
     const meetingDateTime = new Date(`${meeting.date}T${meeting.time || '00:00'}`);
     return meetingDateTime < new Date();
   };
@@ -398,7 +402,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const showPastActions = past && isRecentPastMeeting(meeting);
 
     return (
-      <div key={meeting.id} className="bg-white border border-purple-200 rounded-xl shadow-lg hover:shadow-xl hover:border-purple-300 transition-all duration-200 overflow-hidden">
+      <div key={meeting.id} className="bg-white border border-purple-200 rounded-xl shadow-lg hover:shadow-xl hover:border-purple-300 transition-all duration-200 overflow-hidden relative">
+        {/* Canceled watermark */}
+        {meeting.status === 'canceled' && (
+          <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
+            <div className="bg-red-500 text-white px-4 py-2 rounded-lg transform -rotate-12 font-bold text-lg shadow-lg">
+              CANCELED
+            </div>
+          </div>
+        )}
         {/* Header */}
         <div className="px-4 py-3 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-purple-100">
           <div className="flex items-center justify-between">
@@ -416,7 +428,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
             {/* Action Buttons */}
             <div className="flex gap-2">
-              {(!past || showPastActions) && (
+              {!past && (
                 <button
                   className="btn btn-sm bg-purple-600 hover:bg-purple-700 text-white border-none shadow-sm"
                   onClick={() => handleSendEmail(meeting)}
@@ -426,7 +438,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   Notify
                 </button>
               )}
-              {meeting.location === 'Teams' && !meeting.link && (
+              {!past && meeting.location === 'Teams' && !meeting.link && (
                 <button
                   className="btn btn-sm btn-outline border-purple-300 text-purple-600 hover:bg-purple-50"
                   onClick={() => handleCreateTeamsMeeting(meeting)}
@@ -440,7 +452,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   Teams
                 </button>
               )}
-              {meeting.link && getValidTeamsLink(meeting.link) && (!past || showPastActions) && (
+              {!past && meeting.link && getValidTeamsLink(meeting.link) && (
                 <a
                   href={getValidTeamsLink(meeting.link)}
                   target="_blank"
@@ -451,6 +463,30 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   Join
                 </a>
               )}
+              {/* Cancel only for upcoming and not canceled */}
+              {!isPastMeeting(meeting) && meeting.status !== 'canceled' && (
+                <button
+                  className="btn btn-outline btn-error btn-sm"
+                  title="Cancel Meeting"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    if (!confirm('Cancel this meeting?')) return;
+                    try {
+                      const { data: { user } } = await supabase.auth.getUser();
+                      const editor = user?.email || 'system';
+                      const { error } = await supabase.from('meetings').update({ status: 'canceled', last_edited_timestamp: new Date().toISOString(), last_edited_by: editor }).eq('id', meeting.id);
+                      if (error) throw error;
+                      toast.success('Meeting canceled');
+                      setMeetings(prev => prev.map(m => m.id === meeting.id ? { ...m, status: 'canceled' } : m));
+                      if (onClientUpdate) await onClientUpdate();
+                    } catch (err) {
+                      toast.error('Failed to cancel meeting');
+                    }
+                  }}
+                >
+                  Cancel
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -458,6 +494,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {/* Content */}
         <div className="p-4">
           <div className="space-y-3">
+
+
 
             {/* Meeting Details */}
             <div className="grid grid-cols-2 gap-3">
@@ -480,6 +518,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="flex items-center gap-2">
                   <UserCircleIcon className="w-4 h-4 text-purple-400" />
                   <span className="text-sm text-gray-900">{meeting.scheduler || '---'}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-xs font-medium text-purple-600 uppercase tracking-wide">Helper</label>
+                <div className="flex items-center gap-2">
+                  <UserCircleIcon className="w-4 h-4 text-purple-400" />
+                  <span className="text-sm text-gray-900">{meeting.helper || '---'}</span>
                 </div>
               </div>
               <div className="space-y-2">
@@ -637,8 +682,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="p-2 bg-blue-100 rounded-lg">
-          <CalendarIcon className="w-6 h-6 text-blue-600" />
+        <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+          <CalendarIcon className="w-6 h-6 text-white" />
         </div>
         <div>
           <h2 className="text-2xl font-bold">Meeting Management</h2>
@@ -691,42 +736,45 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       )}
 
-      {/* Upcoming Meetings */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-          <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
-        </div>
-        <div className="p-6">
-          <div className="space-y-4">
-            {upcomingMeetings.length > 0 ? (
-              upcomingMeetings.map(renderMeetingCard)
-            ) : (
-              <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                <p className="font-medium">No upcoming meetings</p>
-                <p className="text-sm">Schedule a meeting to get started</p>
-              </div>
-            )}
+      {/* Two-column grid: Upcoming (left) and Past (right) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Upcoming Meetings (Left) */}
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+            <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
+          </div>
+          <div className="p-6">
+            <div className="space-y-4">
+              {upcomingMeetings.length > 0 ? (
+                upcomingMeetings.map(renderMeetingCard)
+              ) : (
+                <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
+                  <CalendarIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                  <p className="font-medium">No upcoming meetings</p>
+                  <p className="text-sm">Schedule a meeting to get started</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
-      </div>
 
-      {/* Past Meetings */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
-          <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
-        </div>
-        <div className="p-6">
-          <div className="space-y-4">
-            {pastMeetings.length > 0 ? (
-              pastMeetings.map(renderMeetingCard)
-            ) : (
-              <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
-                <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                <p className="font-medium">No past meetings</p>
-                <p className="text-sm">Completed meetings will appear here</p>
-              </div>
-            )}
+        {/* Past Meetings (Right) */}
+        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+            <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
+          </div>
+          <div className="p-6">
+            <div className="space-y-4">
+              {pastMeetings.length > 0 ? (
+                pastMeetings.map(renderMeetingCard)
+              ) : (
+                <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg">
+                  <ClockIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                  <p className="font-medium">No past meetings</p>
+                  <p className="text-sm">Completed meetings will appear here</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

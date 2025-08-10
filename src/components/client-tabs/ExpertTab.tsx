@@ -333,8 +333,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="p-2 bg-blue-100 rounded-lg">
-          <AcademicCapIcon className="w-6 h-6 text-blue-600" />
+        <div className="p-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg">
+          <AcademicCapIcon className="w-6 h-6 text-white" />
         </div>
         <div>
           <h2 className="text-2xl font-bold">Expert Assignment</h2>
@@ -344,8 +344,9 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Expert Information */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+        <div className="pl-6 pt-2 pb-2 w-2/5">
           <h4 className="text-lg font-semibold text-black">Expert Information</h4>
+          <div className="border-b border-gray-200 mt-2"></div>
         </div>
         <div className="p-6">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
@@ -409,8 +410,9 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Section Eligibility */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+          <div className="pl-6 pt-2 pb-2 w-2/5">
             <h4 className="text-lg font-semibold text-black">Section Eligibility</h4>
+            <div className="border-b border-gray-200 mt-2"></div>
           </div>
           <div className="p-6">
             <div className="space-y-4">
@@ -470,7 +472,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         {/* Expert Opinion Notes */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+          <div className="pl-6 pt-2 pb-2 w-2/5">
             <div className="flex items-center justify-between">
               <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
               {!isAddingExpertNote && !editingExpertNoteId && (
@@ -482,10 +484,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   }}
                 >
                   <PencilSquareIcon className="w-5 h-5 text-black" />
-                
                 </button>
               )}
             </div>
+            <div className="border-b border-gray-200 mt-2"></div>
           </div>
           <div className="p-6">
             {/* Add/Edit Expert Note Form */}
@@ -560,24 +562,27 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Handler Opinion Section */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl flex items-center justify-between">
-          <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
-          {!isAddingHandlerNote && !editingHandlerNoteId && (
-            <button
-              className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
-              onClick={() => {
-                if (handlerNotes.length > 0) {
-                  handleEditHandlerNote(handlerNotes[handlerNotes.length - 1]);
-                } else {
-                  setIsAddingHandlerNote(true);
-                  setNewHandlerNoteContent('');
-                }
-              }}
-              title="Edit Handler Note"
-            >
-              <PencilSquareIcon className="w-5 h-5 text-black" />
-            </button>
-          )}
+        <div className="pl-6 pt-2 pb-2 w-2/5">
+          <div className="flex items-center justify-between">
+            <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
+            {!isAddingHandlerNote && !editingHandlerNoteId && (
+              <button
+                className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
+                onClick={() => {
+                  if (handlerNotes.length > 0) {
+                    handleEditHandlerNote(handlerNotes[handlerNotes.length - 1]);
+                  } else {
+                    setIsAddingHandlerNote(true);
+                    setNewHandlerNoteContent('');
+                  }
+                }}
+                title="Edit Handler Note"
+              >
+                <PencilSquareIcon className="w-5 h-5 text-black" />
+              </button>
+            )}
+          </div>
+          <div className="border-b border-gray-200 mt-2"></div>
         </div>
         <div className="p-6">
           {/* Add/Edit Handler Note Form */}
@@ -646,8 +651,9 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {/* Document Upload Section */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-        <div className="pl-6 pt-2 pb-2 w-2/5 bg-gray-200 rounded-tr-2xl rounded-br-2xl">
+        <div className="pl-6 pt-2 pb-2 w-2/5">
           <h4 className="text-lg font-semibold text-black">Document Upload</h4>
+          <div className="border-b border-gray-200 mt-2"></div>
         </div>
         <div className="p-6">
           <div className="space-y-4">

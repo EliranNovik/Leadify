@@ -685,6 +685,41 @@ const Dashboard: React.FC = () => {
   // Score Board state
   const [scoreTab, setScoreTab] = React.useState("Tables");
   const [flippedCards, setFlippedCards] = React.useState<Set<string>>(new Set());
+  // Column-group visibility for Department Performance table (desktop)
+  const [showTodayCols, setShowTodayCols] = React.useState(true);
+  const [showLast30Cols, setShowLast30Cols] = React.useState(true);
+  const [showLastMonthCols, setShowLastMonthCols] = React.useState(true);
+  const [showRowsAsColumns, setShowRowsAsColumns] = React.useState(true);
+
+  // Derived totals for Department Performance table (exclude 'General' and 'Total')
+  const includedDeptIndexes = scoreboardCategories
+    .map((cat, idx) => ({ cat, idx }))
+    .filter(({ cat }) => cat !== 'General' && cat !== 'Total')
+    .map(({ idx }) => idx);
+
+  // Stable random targets for Today where not provided
+  const randomTodayTargetsRef = useRef<number[]>([]);
+  useEffect(() => {
+    if (randomTodayTargetsRef.current.length === 0) {
+      randomTodayTargetsRef.current = scoreboardCategories.map((_, idx) => {
+        const provided = scoreboardData['Today'][idx]?.expected;
+        return provided || Math.floor(20000 + Math.random() * 180000);
+      });
+    }
+  }, []);
+
+  const sumTodayCount = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Today'][i]?.count || 0), 0);
+  const sumTodayAmount = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Today'][i]?.amount || 0), 0);
+  const sumTodayExpected = includedDeptIndexes.reduce((sum, i) => sum + ((scoreboardData['Today'][i]?.expected || randomTodayTargetsRef.current[i] || 0)), 0);
+
+  const sum30Count = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Last 30d'][i]?.count || 0), 0);
+  const sum30Amount = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Last 30d'][i]?.amount || 0), 0);
+  const sum30Expected = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Last 30d'][i]?.expected || 0), 0);
+
+  const sumMonthCount = sum30Count; // using 30d as proxy for this month (demo)
+  const sumMonthAmount = sum30Amount;
+  const sumMonthTarget = sum30Expected;
+  const totalPerformancePct = sum30Expected > 0 ? Math.round((sum30Amount / sum30Expected) * 100) : 0;
 
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
@@ -906,6 +941,111 @@ const Dashboard: React.FC = () => {
       default:
         return null;
     }
+  };
+
+  // Helper function to render table in columns view (departments as columns)
+  const renderColumnsView = (tableType: 'agreement' | 'invoiced') => {
+    const categories = scoreboardCategories.filter(cat => cat !== 'General' && cat !== 'Total');
+    const visibleColumns = [];
+    if (showTodayCols) visibleColumns.push('Today');
+    if (showLast30Cols) visibleColumns.push('Last 30d');
+    if (showLastMonthCols) visibleColumns.push(new Date().toLocaleDateString('en-US', { month: 'long' }));
+
+    return (
+      <table className="min-w-full text-sm">
+        <thead className="bg-slate-50 border-b border-slate-200">
+          <tr>
+            <th className="text-left px-5 py-3 font-semibold text-slate-700"></th>
+            {categories.map(category => (
+              <th key={category} className="text-center px-5 py-3 font-semibold text-slate-700">{category}</th>
+            ))}
+            <th className="text-center px-5 py-3 font-semibold bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {visibleColumns.map(columnType => {
+            const isToday = columnType === 'Today';
+            const isLast30 = columnType === 'Last 30d';
+            const isThisMonth = columnType === new Date().toLocaleDateString('en-US', { month: 'long' });
+            
+            return (
+              <React.Fragment key={columnType}>
+                {/* Combined Count and Amount row */}
+                <tr className="hover:bg-slate-50">
+                  <td className="px-5 py-3 font-semibold text-slate-700">{columnType}</td>
+                  {categories.map((category, index) => {
+                    const data = isToday ? scoreboardData["Today"][index] : 
+                                isLast30 ? scoreboardData["Last 30d"][index] : 
+                                scoreboardData["Last 30d"][index]; // This month uses Last 30d data
+                    const amount = isThisMonth ? (scoreboardBarData30d[index]?.signed || 0) : (data?.amount || 0);
+                    const target = data?.expected || 0;
+                    const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                    
+                    return (
+                      <td key={`${category}-combined`} className="px-5 py-3 text-center">
+                        <div className="space-y-1">
+                          <div className="badge badge-primary text-white font-semibold px-2 py-1">{data?.count || 0}</div>
+                          <div className="border-t border-slate-200 my-1"></div>
+                          <div className="font-semibold text-slate-700">₪{amount.toLocaleString()}</div>
+                        </div>
+                      </td>
+                    );
+                  })}
+                  {/* Total column for this time period */}
+                  <td className="px-5 py-3 text-center bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1">
+                        <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">
+                          {isToday ? sumTodayCount : isLast30 ? sum30Count : sumMonthCount}
+                        </div>
+                        <span className="text-white text-sm">contracts</span>
+                      </div>
+                      <div className="border-t border-white/20 my-1"></div>
+                      <div className="font-semibold text-white">
+                        ₪{(isToday ? sumTodayAmount : isLast30 ? sum30Amount : sumMonthAmount).toLocaleString()}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+                {/* Target row */}
+                <tr className="bg-slate-100">
+                  <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
+                  {categories.map((category, index) => {
+                    const data = isToday ? scoreboardData["Today"][index] : 
+                                isLast30 ? scoreboardData["Last 30d"][index] : 
+                                scoreboardData["Last 30d"][index];
+                    const amount = isToday ? (data?.amount || 0) : 
+                                  isLast30 ? (data?.amount || 0) : 
+                                  (scoreboardBarData30d[index]?.signed || 0);
+                    const target = isToday ? (data?.expected || randomTodayTargetsRef.current[index] || 0) : (data?.expected || 0);
+                    const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                    
+                    return (
+                      <td key={`${category}-target`} className={`px-5 py-3 text-center font-semibold ${targetClass}`}>
+                        {target ? `₪${target.toLocaleString()}` : '—'}
+                      </td>
+                    );
+                  })}
+                  {/* Total target column */}
+                  <td className="px-5 py-3 text-center bg-slate-100">
+                    {(() => {
+                      const totalAmount = isToday ? sumTodayAmount : isLast30 ? sum30Amount : sumMonthAmount;
+                      const totalTarget = isToday ? sumTodayExpected : isLast30 ? sum30Expected : sumMonthTarget;
+                      const targetClass = totalTarget > 0 ? (totalAmount >= totalTarget ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                      return (
+                        <span className={`font-semibold ${targetClass}`}>
+                          {totalTarget ? `₪${totalTarget.toLocaleString()}` : '—'}
+                        </span>
+                      );
+                    })()}
+                  </td>
+                </tr>
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    );
   };
 
   const filteredSuggestions = allSuggestions.filter(suggestion => {
@@ -1526,184 +1666,407 @@ const Dashboard: React.FC = () => {
                     </div>
                     <h3 className="text-lg font-semibold text-slate-800">Department Performance</h3>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {/* Desktop: consolidated performance table */}
+                  <div className="hidden md:block">
+                    <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden">
+                      <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-slate-50">
+                        <div className="text-sm font-semibold text-[#3b28c7]">Agreement signed</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
+                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>Today</button>
+                          <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                          <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
+                          <div className="border-l border-slate-300 h-6 mx-2"></div>
+                          <button 
+                            className={`btn btn-xs ${showRowsAsColumns ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
+                            onClick={() => setShowRowsAsColumns(v => !v)}
+                            title="Toggle between rows and columns view"
+                          >
+                            {showRowsAsColumns ? 'Rows' : 'Columns'}
+                          </button>
+                        </div>
+                      </div>
+                      {showRowsAsColumns ? renderColumnsView('agreement') : (
+                        <table className="min-w-full text-sm">
+                          <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr>
+                            <th className="text-left px-5 py-3 font-semibold text-slate-700">Department</th>
+                            {showTodayCols && (
+                              <>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700">Today</th>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target Today</th>
+                              </>
+                            )}
+                            {showLast30Cols && (
+                              <>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700">Last 30d</th>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target 30d</th>
+                              </>
+                            )}
+                            {showLastMonthCols && (
+                              <>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700">{new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target {new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
+                              </>
+                            )}
+                            
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
                     {scoreboardCategories.map((category, index) => {
                                             const todayData = scoreboardData["Today"][index];
                       const last30Data = scoreboardData["Last 30d"][index];
                       const isFlipped = flippedCards.has(category);
                       const chartData = generateDepartmentData(category);
-                      
+                            const thisMonthCount = last30Data.count; // placeholder using 30d count
+                            const lastMonthNis = scoreboardBarData30d[index]?.signed || 0; // reuse demo data
+                            const targetMonth = last30Data.expected || 0;
+                            const performancePct = last30Data.expected > 0 ? Math.round((last30Data.amount / last30Data.expected) * 100) : 0;
+                            const perfClass = '';
+                            const todayAmount = todayData.amount || 0;
+                            const todayTarget = todayData.expected || randomTodayTargetsRef.current[index] || 0;
+                            const todayAmountClass = todayTarget > 0 ? (todayAmount >= todayTarget ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                            const last30Amount = last30Data.amount || 0;
+                            const last30Target = last30Data.expected || 0;
+                            const last30AmountClass = last30Target > 0 ? (last30Amount >= last30Target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                            const thisMonthAmount = lastMonthNis || 0;
+                            const thisMonthTargetVal = targetMonth || 0;
+                            const thisMonthAmountClass = thisMonthTargetVal > 0 ? (thisMonthAmount >= thisMonthTargetVal ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                            if (category === 'General' || category === 'Total') return null; // remove General and built-in Total rows
+                            const rowClass = 'hover:bg-slate-50';
+                            const nameClass = 'font-semibold text-slate-800';
+                            const strongCell = 'text-slate-700 font-semibold';
+                            const normalCell = 'text-slate-700';
+                            const targetCell = 'text-slate-600';
+                            const perfBadgeClass = perfClass;
                       return (
-                        <div key={category} className="relative h-64" style={{ perspective: '1000px' }}>
-                          <div 
-                            className="relative w-full h-full transition-transform duration-700 cursor-pointer"
-                            style={{ 
-                              transformStyle: 'preserve-3d',
-                              transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)'
-                            }}
-                            onClick={() => handleCardFlip(category)}
-                          >
-                            {/* Front of card */}
-                            <div 
-                              className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg hover:shadow-2xl hover:scale-[1.02] transition-all duration-300 overflow-hidden group"
-                              style={{ 
-                                backfaceVisibility: 'hidden',
-                                transform: 'rotateY(0deg)'
-                              }}
-                            >
-                              {/* Header */}
-                              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 group-hover:bg-gradient-to-r group-hover:from-purple-50 group-hover:to-indigo-50 transition-all duration-300">
-                                <h4 className="text-sm font-semibold text-slate-800 text-center group-hover:text-purple-800 transition-colors duration-300">{category}</h4>
+                              <React.Fragment key={category}>
+                                <tr className={`${rowClass} cursor-pointer transition-colors`} onClick={() => handleCardFlip(category)}>
+                                  <td className="px-5 py-3">
+                                    <span className={`${nameClass}`}>{category}</span>
+                                  </td>
+                                  {showTodayCols && (<>
+                                    <td className="px-5 py-3 text-right">
+                                      <div className="space-y-1">
+                                        <div className="badge badge-primary text-white font-semibold px-2 py-1">{todayData.count}</div>
+                                        <div className="border-t border-slate-200 my-1"></div>
+                                        <div className="font-semibold text-slate-700">₪{(todayAmount).toLocaleString()}</div>
+                                      </div>
+                                    </td>
+                                    <td className={`px-5 py-3 text-right font-semibold ${todayAmountClass} bg-slate-100`}>
+                                      <div className="text-right">{todayTarget ? `₪${todayTarget.toLocaleString()}` : '—'}</div>
+                                    </td>
+                                  </>)}
+                                  {showLast30Cols && (<>
+                                    <td className="px-5 py-3 text-right">
+                                      <div className="space-y-1">
+                                        <div className="badge badge-primary text-white font-semibold px-2 py-1">{last30Data.count}</div>
+                                        <div className="border-t border-slate-200 my-1"></div>
+                                        <div className="font-semibold text-slate-700">₪{(last30Amount).toLocaleString()}</div>
+                                      </div>
+                                    </td>
+                                    <td className={`px-5 py-3 text-right font-semibold ${last30AmountClass} bg-slate-100`}>
+                                      <div className="text-right">{last30Data.expected ? `₪${last30Data.expected.toLocaleString()}` : '—'}</div>
+                                    </td>
+                                  </>)}
+                                  {showLastMonthCols && (<>
+                                    <td className="px-5 py-3 text-right">
+                                      <div className="space-y-1">
+                                        <div className="badge badge-primary text-white font-semibold px-2 py-1">{thisMonthCount}</div>
+                                        <div className="border-t border-slate-200 my-1"></div>
+                                        <div className="font-semibold text-slate-700">₪{thisMonthAmount.toLocaleString()}</div>
+                                      </div>
+                                    </td>
+                                    <td className={`px-5 py-3 text-right font-semibold ${thisMonthAmountClass} bg-slate-100`}>
+                                      <div className="text-right">{targetMonth ? `₪${targetMonth.toLocaleString()}` : '—'}</div>
+                                    </td>
+                                  </>)}
+                                </tr>
+                                <tr className={isFlipped ? '' : 'hidden'}>
+                                  <td colSpan={1 + (showTodayCols ? 2 : 0) + (showLast30Cols ? 2 : 0) + (showLastMonthCols ? 2 : 0)} className="p-0">
+                                    <div className="relative overflow-hidden" style={{ perspective: '1000px' }}>
+                                      <div className="bg-gradient-to-br from-purple-500 to-indigo-600 p-4 transition-transform duration-500" style={{ transformOrigin: 'top', transform: isFlipped ? 'rotateX(0deg)' : 'rotateX(-90deg)' }}>
+                                        <div className="text-white text-xs font-semibold mb-2 text-center">{category} - 30 Day Trend</div>
+                                        <div className="w-full h-72">
+                                          <ResponsiveContainer width="100%" height="100%">
+                                            <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                              <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
+                                              <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={30} />
+                                              <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }}
+                                                       labelStyle={{ color: '#374151', fontWeight: 'bold' }}
+                                                       itemStyle={{ color: '#6366f1', fontWeight: 600 }}
+                                                       labelFormatter={(label) => {
+                                                         const d = chartData.find(x => x.date === label);
+                                                         return d ? `Date: ${d.fullDate}` : label;
+                                                       }}
+                                                       formatter={(value: number) => [`${value} ${value === 1 ? 'contract' : 'contracts'}`, 'Contracts Signed']} />
+                                              <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} activeDot={{ r: 5, fill: '#fbbf24', stroke: '#fff', strokeWidth: 2 }} />
+                                            </LineChart>
+                                          </ResponsiveContainer>
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              </React.Fragment>
+                            );
+                          })}
+                          {/* Calculated Total row */}
+                          <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
+                            <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
+                            {showTodayCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumTodayCount}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{sumTodayAmount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right text-white font-semibold">
+                                <div className="text-right">{sumTodayExpected ? `₪${sumTodayExpected.toLocaleString()}` : '—'}</div>
+                              </td>
+                            </>)}
+                            {showLast30Cols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sum30Count}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{sum30Amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right text-white font-semibold">
+                                <div className="text-right">{sum30Expected ? `₪${sum30Expected.toLocaleString()}` : '—'}</div>
+                              </td>
+                            </>)}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumMonthCount}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{sumMonthAmount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right text-white font-semibold">
+                                <div className="text-right">{sumMonthTarget ? `₪${sumMonthTarget.toLocaleString()}` : '—'}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                        </tbody>
+                      </table>
+                      )}
+                    </div>
                               </div>
                               
-                              {/* Content */}
-                              <div className="p-4">
-                                {/* Horizontal Stats Layout */}
-                                <div className="grid grid-cols-2 gap-3 mb-4">
-                                  {/* Today Stats - Left */}
-                                  <div className="bg-slate-50 rounded-lg p-3 group-hover:bg-slate-100 transition-all duration-300 hover:shadow-md">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="w-2 h-2 bg-indigo-500 rounded-full group-hover:scale-125 transition-transform duration-300"></div>
-                                      <span className="text-xs font-medium text-slate-600 group-hover:text-indigo-700 transition-colors duration-300">Today</span>
-                                    </div>
+                  {/* Duplicate table for Invoiced section */}
+                  <div className="hidden md:block mt-6">
+                    <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden">
+                      <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-slate-50">
+                        <div className="text-sm font-semibold text-[#3b28c7]">Invoiced</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
+                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>Today</button>
+                          <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                          <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
+                          <div className="border-l border-slate-300 h-6 mx-2"></div>
+                          <button 
+                            className={`btn btn-xs ${showRowsAsColumns ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
+                            onClick={() => setShowRowsAsColumns(v => !v)}
+                            title="Toggle between rows and columns view"
+                          >
+                            {showRowsAsColumns ? 'Rows' : 'Columns'}
+                          </button>
+                        </div>
+                      </div>
+                      {showRowsAsColumns ? renderColumnsView('invoiced') : (
+                        <table className="min-w-full text-sm">
+                          <thead className="bg-slate-50 border-b border-slate-200">
+                          <tr>
+                            <th className="text-left px-5 py-3 font-semibold text-slate-700">Department</th>
+                            {showTodayCols && (<>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Today</th>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target Today</th>
+                            </>)}
+                            {showLast30Cols && (<>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Last 30d</th>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target 30d</th>
+                            </>)}
+                            {showLastMonthCols && (<>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700">{new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target {new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
+                            </>)}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {scoreboardCategories.map((category, index) => {
+                            const todayData = scoreboardData["Today"][index];
+                            const last30Data = scoreboardData["Last 30d"][index];
+                            if (category === 'General' || category === 'Total') return null;
+                            const todayAmount = todayData.amount || 0;
+                            const todayTarget = todayData.expected || randomTodayTargetsRef.current[index] || 0;
+                            const todayAmountClass = todayTarget > 0 ? (todayAmount >= todayTarget ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                            const last30Amount = last30Data.amount || 0;
+                            const last30Target = last30Data.expected || 0;
+                            const last30AmountClass = last30Target > 0 ? (last30Amount >= last30Target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                            const thisMonthCount = last30Data.count;
+                            const thisMonthAmount = scoreboardBarData30d[index]?.signed || 0;
+                            const targetMonth = last30Data.expected || 0;
+                            const thisMonthAmountClass = targetMonth > 0 ? (thisMonthAmount >= targetMonth ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                            return (
+                              <>
+                              <tr key={`inv-${category}`} className="hover:bg-slate-50 cursor-pointer" onClick={() => handleCardFlip(`inv-${category}`)}>
+                                <td className="px-5 py-3 font-semibold text-slate-800">{category}</td>
+                                {showTodayCols && (<>
+                                  <td className="px-5 py-3 text-right">
                                     <div className="space-y-1">
-                                      <div className="text-lg font-bold text-slate-800 group-hover:text-indigo-800 transition-colors duration-300">{todayData.count}</div>
-                                      <div className="text-xs font-medium text-slate-600 group-hover:text-indigo-600 transition-colors duration-300">₪{todayData.amount ? todayData.amount.toLocaleString() : '0'}</div>
-                                      {todayData.expected > 0 && (
-                                        <div className="text-xs text-slate-500 group-hover:text-indigo-500 transition-colors duration-300">
-                                          Target: {todayData.expected.toLocaleString()}
-                                        </div>
-                                      )}
+                                      <div className="badge badge-primary text-white font-semibold px-2 py-1">{todayData.count}</div>
+                                      <div className="border-t border-slate-200 my-1"></div>
+                                      <div className="font-semibold text-slate-700">₪{todayAmount.toLocaleString()}</div>
                                     </div>
-                                  </div>
-                                  
-                                  {/* Last 30 Days Stats - Right */}
-                                  <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg p-3 border border-purple-400 group-hover:from-purple-600 group-hover:to-indigo-700 group-hover:border-purple-500 transition-all duration-300 hover:shadow-md">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="w-2 h-2 bg-white rounded-full group-hover:scale-125 transition-transform duration-300"></div>
-                                      <span className="text-xs font-medium text-white group-hover:text-white transition-colors duration-300">Last 30d</span>
-                                    </div>
+                                  </td>
+                                  <td className={`px-5 py-3 text-right font-semibold ${todayAmountClass} bg-slate-100`}>{todayTarget ? `₪${todayTarget.toLocaleString()}` : '—'}</td>
+                                </>)}
+                                {showLast30Cols && (<>
+                                  <td className="px-5 py-3 text-right">
                                     <div className="space-y-1">
-                                      <div className="text-lg font-bold text-white group-hover:text-white transition-colors duration-300">{last30Data.count}</div>
-                                      <div className="text-xs font-medium text-white/90 group-hover:text-white transition-colors duration-300">₪{last30Data.amount ? last30Data.amount.toLocaleString() : '0'}</div>
-                                      {last30Data.expected > 0 && (
-                                        <div className="text-xs text-white/80 group-hover:text-white/90 transition-colors duration-300">
-                                          Target: {last30Data.expected.toLocaleString()}
-                                        </div>
-                                      )}
+                                      <div className="badge badge-primary text-white font-semibold px-2 py-1">{last30Data.count}</div>
+                                      <div className="border-t border-slate-200 my-1"></div>
+                                      <div className="font-semibold text-slate-700">₪{last30Amount.toLocaleString()}</div>
                                     </div>
-                                  </div>
-                                </div>
-                                
-                                {/* Performance Indicator */}
-                                {last30Data.amount > 0 && (
-                                  <div className="pt-2 border-t border-slate-100 group-hover:border-purple-200 transition-colors duration-300">
-                                    <div className="flex justify-between items-center">
-                                      <span className="text-xs text-slate-500 group-hover:text-purple-600 transition-colors duration-300">Performance</span>
-                                      <div className={`text-xs font-medium px-2 py-1 rounded-full transition-all duration-300 hover:scale-105 ${
-                                        last30Data.amount >= last30Data.expected 
-                                          ? 'bg-green-100 text-green-700 group-hover:bg-green-200 group-hover:shadow-sm' 
-                                          : last30Data.amount >= last30Data.expected * 0.8
-                                          ? 'bg-yellow-100 text-yellow-700 group-hover:bg-yellow-200 group-hover:shadow-sm'
-                                          : 'bg-red-100 text-red-700 group-hover:bg-red-200 group-hover:shadow-sm'
-                                      }`}>
-                                        {last30Data.expected > 0 
-                                          ? `${Math.round((last30Data.amount / last30Data.expected) * 100)}%`
-                                          : 'N/A'
-                                        }
+                                  </td>
+                                  <td className={`px-5 py-3 text-right font-semibold ${last30AmountClass} bg-slate-100`}>{last30Target ? `₪${last30Target.toLocaleString()}` : '—'}</td>
+                                </>)}
+                                {showLastMonthCols && (<>
+                                  <td className="px-5 py-3 text-right">
+                                    <div className="space-y-1">
+                                      <div className="badge badge-primary text-white font-semibold px-2 py-1">{thisMonthCount}</div>
+                                      <div className="border-t border-slate-200 my-1"></div>
+                                      <div className="font-semibold text-slate-700">₪{thisMonthAmount.toLocaleString()}</div>
+                                    </div>
+                                  </td>
+                                  <td className={`px-5 py-3 text-right font-semibold ${thisMonthAmountClass} bg-slate-100`}>{targetMonth ? `₪${targetMonth.toLocaleString()}` : '—'}</td>
+                                </>)}
+                              </tr>
+                              <tr className={flippedCards.has(`inv-${category}`) ? '' : 'hidden'}>
+                                <td colSpan={1 + (showTodayCols ? 2 : 0) + (showLast30Cols ? 2 : 0) + (showLastMonthCols ? 2 : 0)} className="p-0">
+                                  <div className="relative overflow-hidden" style={{ perspective: '1000px' }}>
+                                    <div className="bg-gradient-to-br from-purple-500 to-indigo-600 p-4 transition-transform duration-500" style={{ transformOrigin: 'top', transform: flippedCards.has(`inv-${category}`) ? 'rotateX(0deg)' : 'rotateX(-90deg)' }}>
+                                      <div className="text-white text-xs font-semibold mb-2 text-center">{category} - 30 Day Trend</div>
+                                      <div className="w-full h-72">
+                                        <ResponsiveContainer width="100%" height="100%">
+                                          <LineChart data={generateDepartmentData(category)} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                            <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
+                                            <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={30} />
+                                            <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} labelStyle={{ color: '#374151', fontWeight: 'bold' }} itemStyle={{ color: '#6366f1', fontWeight: 600 }} />
+                                            <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} activeDot={{ r: 5, fill: '#fbbf24', stroke: '#fff', strokeWidth: 2 }} />
+                                          </LineChart>
+                                        </ResponsiveContainer>
                                       </div>
                                     </div>
                                   </div>
-                                )}
+                                </td>
+                              </tr>
+                              </>
+                            );
+                                                      })}
+                            <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
+                              <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
+                              {showTodayCols && (<>
+                                <td className="px-5 py-3 text-right">
+                                  <div className="space-y-1">
+                                    <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumTodayCount}</div>
+                                    <div className="border-t border-white/20 my-1"></div>
+                                    <div className="font-semibold text-white">₪{sumTodayAmount.toLocaleString()}</div>
+                                  </div>
+                                </td>
+                                <td className="px-5 py-3 text-right text-white font-semibold">
+                                  <div className="text-right">{sumTodayExpected ? `₪${sumTodayExpected.toLocaleString()}` : '—'}</div>
+                                </td>
+                              </>)}
+                              {showLast30Cols && (<>
+                                <td className="px-5 py-3 text-right">
+                                  <div className="space-y-1">
+                                    <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sum30Count}</div>
+                                    <div className="border-t border-white/20 my-1"></div>
+                                    <div className="font-semibold text-white">₪{sum30Amount.toLocaleString()}</div>
+                                  </div>
+                                </td>
+                                <td className="px-5 py-3 text-right text-white font-semibold">
+                                  <div className="text-right">{sum30Expected ? `₪${sum30Expected.toLocaleString()}` : '—'}</div>
+                                </td>
+                              </>)}
+                              {showLastMonthCols && (<>
+                                <td className="px-5 py-3 text-right">
+                                  <div className="space-y-1">
+                                    <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumMonthCount}</div>
+                                    <div className="border-t border-white/20 my-1"></div>
+                                    <div className="font-semibold text-white">₪{sumMonthAmount.toLocaleString()}</div>
+                                  </div>
+                                </td>
+                                <td className="px-5 py-3 text-right text-white font-semibold">
+                                  <div className="text-right">{sumMonthTarget ? `₪${sumMonthTarget.toLocaleString()}` : '—'}</div>
+                                </td>
+                              </>)}
+                            </tr>
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                                  </div>
+                                  
+                  {/* Mobile: keep card grid */}
+                  <div className="grid grid-cols-1 gap-4 md:hidden">
+                    {scoreboardCategories.map((category, index) => {
+                      const todayData = scoreboardData["Today"][index];
+                      const last30Data = scoreboardData["Last 30d"][index];
+                      const isFlipped = flippedCards.has(category);
+                      const chartData = generateDepartmentData(category);
+                      return (
+                        <div key={category} className="relative h-64" style={{ perspective: '1000px' }}>
+                          <div className="relative w-full h-full transition-transform duration-700 cursor-pointer" style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }} onClick={() => handleCardFlip(category)}>
+                            <div className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden group" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}>
+                              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                                <h4 className="text-sm font-semibold text-slate-800 text-center">{category}</h4>
                               </div>
-                              
-                              {/* Click hint */}
-                              <div className="absolute bottom-2 right-2 text-xs text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                                Click to view trends
+                              <div className="p-4">
+                                <div className="grid grid-cols-2 gap-3 mb-4">
+                                  <div className="bg-slate-50 rounded-lg p-3">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
+                                      <span className="text-xs font-medium text-slate-600">Today</span>
+                                    </div>
+                                    <div className="space-y-1">
+                                      <div className="text-lg font-bold text-slate-800">{todayData.count}</div>
+                                      <div className="text-xs font-medium text-slate-600">₪{todayData.amount ? todayData.amount.toLocaleString() : '0'}</div>
+                                        </div>
+                                    </div>
+                                  <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg p-3 border border-purple-400">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <div className="w-2 h-2 bg-white rounded-full"></div>
+                                      <span className="text-xs font-medium text-white">Last 30d</span>
+                                  </div>
+                                    <div className="space-y-1">
+                                      <div className="text-lg font-bold text-white">{last30Data.count}</div>
+                                      <div className="text-xs font-medium text-white/90">₪{last30Data.amount ? last30Data.amount.toLocaleString() : '0'}</div>
+                                </div>
+                                      </div>
+                                    </div>
+                                  </div>
+                              <div className="absolute bottom-2 right-2 text-xs text-gray-400">Tap to view</div>
                               </div>
-                            </div>
-
-                            {/* Back of card */}
-                            <div 
-                              className="absolute inset-0 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl border border-purple-300 shadow-lg overflow-hidden"
-                              style={{ 
-                                backfaceVisibility: 'hidden',
-                                transform: 'rotateY(180deg)'
-                              }}
-                            >
-                              {/* Header */}
-                              <div className="px-4 py-3 bg-white/10 border-b border-white/20 backdrop-blur-sm">
+                            <div className="absolute inset-0 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl border border-purple-300 shadow-lg overflow-hidden" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
+                              <div className="px-4 py-3 bg-white/10 border-b border-white/20">
                                 <h4 className="text-sm font-semibold text-white text-center">{category} - 30 Day Trend</h4>
                               </div>
-                              
-                              {/* Chart */}
                               <div className="p-4 h-full">
                                 <div className="w-full h-40">
                                   <ResponsiveContainer width="100%" height="100%">
                                     <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                      <XAxis 
-                                        dataKey="date" 
-                                        tick={{ fontSize: 10, fill: 'white' }} 
-                                        axisLine={{ stroke: 'white', strokeWidth: 1 }} 
-                                        tickLine={{ stroke: 'white' }}
-                                        interval={5}
-                                      />
-                                      <YAxis 
-                                        tick={{ fontSize: 10, fill: 'white' }} 
-                                        axisLine={{ stroke: 'white', strokeWidth: 1 }} 
-                                        tickLine={{ stroke: 'white' }}
-                                        width={25}
-                                      />
-                                                                             <Tooltip
-                                         contentStyle={{ 
-                                           background: 'rgba(255,255,255,0.98)', 
-                                           borderRadius: 12, 
-                                           border: '1px solid #e5e7eb',
-                                           boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
-                                           fontSize: 13,
-                                           fontWeight: 500,
-                                           padding: '12px 16px'
-                                         }}
-                                         labelStyle={{ 
-                                           color: '#374151', 
-                                           fontWeight: 'bold', 
-                                           fontSize: 14, 
-                                           marginBottom: 8 
-                                         }}
-                                         itemStyle={{ 
-                                           color: '#6366f1', 
-                                           fontSize: 13, 
-                                           fontWeight: 600 
-                                         }}
-                                         labelFormatter={(label) => {
-                                           const dataPoint = chartData.find(d => d.date === label);
-                                           return dataPoint ? `Date: ${dataPoint.fullDate}` : `Date: ${label}`;
-                                         }}
-                                         formatter={(value: number, name: string) => [
-                                           `${value} ${value === 1 ? 'contract' : 'contracts'}`, 
-                                           'Contracts Signed'
-                                         ]}
-                                         cursor={{ stroke: 'rgba(255,255,255,0.3)', strokeWidth: 2 }}
-                                         animationDuration={200}
-                                       />
-                                      <Line 
-                                        type="monotone" 
-                                        dataKey="contracts" 
-                                        stroke="#ffffff" 
-                                        strokeWidth={3}
-                                        dot={{ fill: '#ffffff', stroke: '#ffffff', strokeWidth: 2, r: 3 }}
-                                        activeDot={{ r: 5, fill: '#fbbf24', stroke: '#ffffff', strokeWidth: 2 }}
-                                      />
+                                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
+                                      <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={25} />
+                                      <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} itemStyle={{ color: '#6366f1', fontWeight: 600 }} />
+                                      <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} />
                                     </LineChart>
                                   </ResponsiveContainer>
-                                </div>
-                                
-                                {/* Stats summary */}
-                                <div className="mt-2 text-white text-xs">
-                                  <div className="flex justify-between">
-                                    <span>Total: {chartData.reduce((sum, d) => sum + d.contracts, 0)} contracts</span>
-                                    <span>Avg: {Math.round(chartData.reduce((sum, d) => sum + d.contracts, 0) / chartData.length)} per day</span>
-                                  </div>
                                 </div>
                                                              </div>
                              </div>
@@ -1867,21 +2230,7 @@ const Dashboard: React.FC = () => {
                 </div>
               )}
 
-              {/* Quick Actions */}
-              <div className="flex flex-wrap gap-3 mt-6">
-                <button className="btn btn-sm bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg">
-                  <PlusIcon className="w-4 h-4 mr-2" />
-                  New Lead
-                </button>
-                <button className="btn btn-sm bg-gradient-to-r from-blue-500 to-cyan-500 text-white border-none hover:from-blue-600 hover:to-cyan-600 shadow-lg">
-                  <MagnifyingGlassIcon className="w-4 h-4 mr-2" />
-                  Search
-                </button>
-                <button className="btn btn-sm bg-gradient-to-r from-green-500 to-teal-500 text-white border-none hover:from-green-600 hover:to-teal-600 shadow-lg">
-                  <ArrowPathIcon className="w-4 h-4 mr-2" />
-                  Refresh
-                </button>
-              </div>
+              {/* Quick Actions removed per request */}
             </div>
           </div>
         </div>

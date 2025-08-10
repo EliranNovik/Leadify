@@ -885,8 +885,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       <div className="w-full overflow-x-hidden">
         <div className="p-2 sm:p-4 md:p-6">
           <div className="flex items-center gap-3 mb-8">
-            <div className="p-2 bg-blue-100 rounded-lg">
-              <UserIcon className="w-6 h-6 text-blue-600" />
+            <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+              <UserIcon className="w-6 h-6 text-white" />
             </div>
             <div>
               <h2 className="text-2xl font-bold">Contact Information</h2>

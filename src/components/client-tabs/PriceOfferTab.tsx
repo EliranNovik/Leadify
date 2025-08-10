@@ -31,7 +31,15 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
 
   return (
     <div className="p-2 sm:p-4 md:p-8">
-      <h2 className="text-3xl font-bold mb-2">Price offer</h2>
+      <div className="flex items-center gap-3 mb-8">
+        <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
+          <CurrencyDollarIcon className="w-6 h-6 text-white" />
+        </div>
+        <div>
+          <h2 className="text-2xl font-bold">Price Offer</h2>
+          <p className="text-sm text-gray-500">Manage pricing and proposals</p>
+        </div>
+      </div>
       <div className="text-lg mb-4 text-base-content/80">
         <span className="font-semibold">Closer:</span> {closer}
       </div>

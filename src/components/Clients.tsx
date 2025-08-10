@@ -43,6 +43,8 @@ import {
   XMarkIcon,
   HandThumbUpIcon,
   PlusIcon,
+  TagIcon,
+  ChartBarIcon,
 } from '@heroicons/react/24/outline';
 import InfoTab from './client-tabs/InfoTab';
 import RolesTab from './client-tabs/RolesTab';
@@ -84,6 +86,7 @@ const tabs: TabItem[] = [
   { id: 'meeting', label: 'Meeting', icon: CalendarIcon, component: MeetingTab },
   { id: 'price', label: 'Price Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
   { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: 31, component: InteractionsTab },
+  { id: 'finances', label: 'Finances', icon: CurrencyDollarIcon, component: FinancesTab },
 ];
 
 const tabColors = [
@@ -243,6 +246,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [isSavingUpdate, setIsSavingUpdate] = useState(false);
   const [showMeetingEndedDrawer, setShowMeetingEndedDrawer] = useState(false);
   const [isSavingMeetingEnded, setIsSavingMeetingEnded] = useState(false);
+  const [latestMeetingDate, setLatestMeetingDate] = useState<string | null>(null);
   const [meetingEndedData, setMeetingEndedData] = useState({
     probability: 50,
     meetingBrief: '',
@@ -285,6 +289,10 @@ const Clients: React.FC<ClientsProps> = ({
     next_followup: selectedClient?.next_followup || '',
     balance_currency: selectedClient?.balance_currency || 'NIS',
   });
+  // Main categories for Edit Lead drawer
+  const [mainCategories, setMainCategories] = useState<string[]>([]);
+  const [sources, setSources] = useState<string[]>([]);
+  const [languagesList, setLanguagesList] = useState<string[]>([]);
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
@@ -502,8 +510,66 @@ const Clients: React.FC<ClientsProps> = ({
     };
 
     fetchClient();
+    // Fetch categories for Edit Lead drawer
+    const fetchCategories = async () => {
+      try {
+        const { data, error } = await supabase.from('sub_categories').select('name');
+        if (!error && data) {
+          const names = data.map((row: any) => row.name).filter(Boolean);
+          setMainCategories(names);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchCategories();
+    // Fetch sources for Edit Lead drawer
+    const fetchSources = async () => {
+      try {
+        const { data, error } = await supabase.from('sources').select('name');
+        if (!error && data) {
+          const names = data.map((row: any) => row.name).filter(Boolean);
+          setSources(names);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchSources();
+    // Fetch languages for Edit Lead drawer
+    const fetchLanguages = async () => {
+      try {
+        const { data, error } = await supabase.from('languages').select('name');
+        if (!error && data) {
+          const names = data.map((row: any) => row.name).filter(Boolean);
+          setLanguagesList(names);
+        }
+      } catch {
+        // ignore
+      }
+    };
+    fetchLanguages();
+    // Also fetch latest meeting date for case summary
+    const fetchLatestMeeting = async () => {
+      try {
+        const leadId = selectedClient?.id;
+        if (!leadId) return setLatestMeetingDate(null);
+        const { data, error } = await supabase
+          .from('meetings')
+          .select('meeting_date')
+          .eq('client_id', leadId)
+          .not('meeting_date', 'is', null)
+          .order('meeting_date', { ascending: false })
+          .limit(1);
+        if (!error && data && data.length > 0) setLatestMeetingDate(data[0].meeting_date);
+        else setLatestMeetingDate(null);
+      } catch {
+        setLatestMeetingDate(null);
+      }
+    };
+    fetchLatestMeeting();
     return () => { isMounted = false; };
-  }, [lead_number, navigate, setSelectedClient, fullLeadNumber]);
+  }, [lead_number, navigate, setSelectedClient, fullLeadNumber, selectedClient?.id]);
 
   // Handle tab switching from URL
   useEffect(() => {
@@ -2099,161 +2165,274 @@ const Clients: React.FC<ClientsProps> = ({
               ))}
             </div>
           )}
-          {/* Top Row: Lead Number, Client Name, Stage Badge, Amount, and Action Buttons */}
-          <div className="flex items-center justify-between mb-8">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-3">
-                <span className="text-2xl font-bold text-gray-900 saira-regular">{selectedClient?.lead_number || 'Loading...'}</span>
-                <span className="w-2 h-2 bg-gray-300 rounded-full"></span>
-                <h1 className="text-3xl font-bold text-gray-900 saira-regular">{selectedClient?.name || 'Loading...'}</h1>
-              </div>
-              {selectedClient?.stage && (
-                <span className="px-4 py-2 rounded-xl text-white font-bold text-sm shadow-lg saira-light" style={{ backgroundColor: '#3b28c7' }}>
-                  {selectedClient.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
-                </span>
-              )}
-            </div>
-            {/* Amount and Action Buttons */}
-            <div className="flex items-center gap-3">
-              {/* Amount moved here */}
-              <div className="text-2xl font-bold text-gray-900">
-                {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
-                {(selectedClient?.balance || 0).toLocaleString()}
-              </div>
-              
-              <div className="dropdown">
-                <label tabIndex={0} className="btn bg-gray-900 text-white border-none hover:bg-gray-800 gap-2 saira-regular">
-                  <span>Stages</span>
-                  <ChevronDownIcon className="w-4 h-4" />
-                </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                  {dropdownItems}
-                </ul>
-              </div>
-              {selectedClient && selectedClient.stage === 'created' && (
-                <div className="dropdown">
-                  <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
-                    <span>Assign to</span>
-                    <ChevronDownIcon className="w-4 h-4" />
-                  </label>
-                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                    {schedulerOptions.map((scheduler) => (
-                      <li key={scheduler}>
-                        <a 
-                          className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                          onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
-                        >
-                          <UserIcon className="w-5 h-5 text-primary" />
-                          <span className="font-medium">{scheduler}</span>
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              <div className="dropdown dropdown-end">
-                <label tabIndex={0} className="btn btn-outline border-gray-300 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 gap-2 saira-regular">
-                  <span>Actions</span>
-                  <ChevronDownIcon className="w-4 h-4" />
-                </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                </ul>
-              </div>
-            </div>
-          </div>
 
-          {/* Client Details - Left/Right Layout */}
-          <div className="border-t border-gray-200 dark:border-gray-700 pt-8">
-            <div className="flex justify-between gap-6">
-              {/* Left Side - Contact & Case Information: Email, Category | Phone, Topic | Closer */}
-              <div className="flex-1">
-                <div className="flex flex-row gap-6">
-                  {/* Left vertical stack: Email, Category */}
-                  <div className="space-y-6 border-r border-gray-200 pr-6">
-                    <div>
-                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Email</p>
-                      <a 
-                        href={selectedClient ? `mailto:${selectedClient.email}` : undefined} 
-                        className="flex items-center gap-3 text-gray-900 hover:text-blue-600 transition-colors"
-                      >
-                        <EnvelopeIcon className="w-5 h-5 text-gray-500" />
-                        <span className="text-base font-medium break-all saira-light">{selectedClient ? selectedClient.email : '---'}</span>
-                      </a>
+
+          {/* Client Details - Modern Box Design */}
+          <div className="pt-0 -mt-6">
+                          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Left Box - Client Information */}
+                <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-gray-50 border border-gray-200 text-black relative overflow-hidden p-4">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
+                      <UserIcon className="w-5 h-5 text-white" />
                     </div>
-                    <div>
-                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Category</p>
-                      <p className="text-base font-medium text-gray-900 saira-light">{selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}</p>
-                    </div>
+                    <span className="inline-flex items-center px-3 py-1 rounded-full bg-[#3b28c7] text-white text-xs font-semibold">Client Information</span>
                   </div>
-                  {/* Middle vertical stack: Phone, Topic */}
-                  <div className="space-y-6 border-r border-gray-200 px-6">
-                    <div>
-                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Phone</p>
-                      <a 
-                        href={selectedClient ? `tel:${selectedClient.phone}` : undefined} 
-                        className="flex items-center gap-3 text-gray-900 hover:text-green-600 transition-colors"
-                      >
-                        <PhoneIcon className="w-5 h-5 text-gray-500" />
-                        <span className="text-base font-medium saira-light">{selectedClient ? selectedClient.phone : '---'}</span>
-                      </a>
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Topic</p>
-                      <p className="text-base font-medium text-gray-900 saira-light">{selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}</p>
-                    </div>
-                  </div>
-                  {/* Right vertical stack: Closer and Handler */}
-                  <div className="space-y-6 pl-6">
-                    <div>
-                      <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Closer</p>
-                      <p className="text-base font-medium text-gray-900 saira-light">{selectedClient?.closer || 'Not assigned'}</p>
-                    </div>
-                    {selectedClient?.stage === 'handler_assigned' && (
-                      <div>
-                        <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Handler</p>
-                        <p className="text-base font-medium text-gray-900 saira-light">{selectedClient?.handler || 'Not assigned'}</p>
+                  {/* Removed top divider under title */}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-gray-200">
+                    {/* Row 1: Email | Phone */}
+                    <div className="md:pr-4">
+                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">
+                        <EnvelopeIcon className="w-3.5 h-3.5 text-[#3b28c7]" />
                       </div>
+                      <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="mt-1 block text-base font-semibold text-gray-900 break-all">
+                        {selectedClient ? selectedClient.email : '---'}
+                      </a>
+                    </div>
+                    <div className="md:pl-4">
+                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">
+                        <PhoneIcon className="w-3.5 h-3.5 text-[#3b28c7]" />
+                      </div>
+                      <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="mt-1 block text-base font-semibold text-gray-900">
+                        {selectedClient ? selectedClient.phone : '---'}
+                      </a>
+                    </div>
+                    {/* Horizontal divider between rows */}
+                    <div className="col-span-1 md:col-span-2 border-t border-gray-200 my-3"></div>
+                    {/* Row 2: Category | Topic */}
+                    <div className="md:pr-4">
+                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Category</div>
+                      <p className="mt-1 text-base font-semibold text-gray-900">
+                        {selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}
+                      </p>
+                    </div>
+                    <div className="md:pl-4">
+                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Topic</div>
+                      <p className="mt-1 text-base font-semibold text-gray-900">
+                        {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
+                      </p>
+                    </div>
+                    {/* Optional Row 3 for handler */}
+                    {selectedClient?.stage === 'handler_assigned' && (
+                      <>
+                        <div className="col-span-1 md:col-span-2 border-t border-gray-200 my-3"></div>
+                        <div className="md:pr-4">
+                          <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Handler</div>
+                          <p className="mt-1 text-base font-semibold text-gray-900">{selectedClient?.handler || 'Not assigned'}</p>
+                        </div>
+                        <div className="md:pl-4"></div>
+                      </>
                     )}
                   </div>
-                </div>
-              </div>
+                              </div>
 
-              {/* Right Side - Probability & Follow-up Stacked */}
-              <div className="w-48 space-y-6">
-                <div className="text-right">
-                  <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Probability</p>
-                  <div className="space-y-2">
-                    <p className="text-xl font-bold text-gray-900 saira-light">{selectedClient?.probability || 0}%</p>
+                {/* Middle Box - Case Summary (match Dashboard Overdue Follow-ups) */}
+                <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-gray-50 border border-gray-200 text-black relative overflow-hidden p-4">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
+                      <ChartPieIcon className="w-5 h-5 text-white" />
+                    </div>
+                    <span className="inline-flex items-center px-3 py-1 rounded-full bg-[#3b28c7] text-white text-xs font-semibold">Case Summary</span>
+                  </div>
+                  {/* Removed top divider under title */}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-gray-200">
+                      {/* Row 1: Next Meeting | Eligibility */}
+                      <div className="md:pr-4">
+                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Next Meeting</div>
+                        <p className="mt-1 text-base font-semibold text-gray-900">
+                          {latestMeetingDate ? (
+                            <>
+                              {new Date(latestMeetingDate).toLocaleDateString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric'
+                              })}
+                              {selectedClient?.next_meeting_time && (
+                                <span className="block text-sm opacity-80">
+                                  {selectedClient.next_meeting_time}
+                                </span>
+                              )}
+                            </>
+                          ) : (
+                            'Not scheduled'
+                          )}
+                        </p>
+                      </div>
+                      <div className="md:pl-4">
+                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Eligibility</div>
+                        <p className="mt-1 text-base font-semibold text-gray-900">
+                          {selectedClient?.eligibility_status || 'Not assessed'}
+                          {selectedClient?.section_eligibility ? (
+                            <span className="block text-sm opacity-90 mt-0.5">
+                              {(() => {
+                                const map: Record<string, string> = { '116': '§ 116', '15': '§ 15', '5': '§ 5', '58c': '§ 58c' };
+                                const sec = String(selectedClient.section_eligibility);
+                                return map[sec] || sec;
+                              })()}
+                            </span>
+                          ) : null}
+                        </p>
+                      </div>
+                      {/* Horizontal divider between rows */}
+                      <div className="col-span-1 md:col-span-2 border-t border-gray-200 my-3"></div>
+                      {/* Row 2: Citizenship | Total Applicants */}
+                      <div className="md:pr-4">
+                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Citizenship</div>
+                        <p className="mt-1 text-base font-semibold text-gray-900">
+                          {selectedClient?.topic || 'Not specified'}
+                        </p>
+                      </div>
+                      <div className="md:pl-4">
+                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Total Applicants</div>
+                        <p className="mt-1 text-base font-semibold text-gray-900">
+                          {selectedClient?.potential_applicants || selectedClient?.total_applicants || 0}
+                        </p>
+                      </div>
+                    </div>
+                </div>
+
+                {/* Right Box - Progress & Follow-up */}
+                <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-gray-50 border border-gray-200 text-black relative overflow-hidden p-4">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
+                      <ChartBarIcon className="w-5 h-5 text-white" />
+                    </div>
+                    <span className="inline-flex items-center px-3 py-1 rounded-full bg-[#3b28c7] text-white text-xs font-semibold">Progress & Follow-up</span>
+                  </div>
+                {/* Removed top divider under title */}
+
+                <div className="space-y-3">
+                  {/* Probability */}
+                  <div className="pb-2 border-b border-gray-200 last:border-b-0">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Probability</p>
+                      <span className="text-base font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
+                    </div>
                     <div className="w-full bg-gray-200 rounded-full h-2">
                       <div 
-                        className="bg-gray-800 h-2 rounded-full transition-all duration-300" 
+                        className="bg-[#3b28c7] h-2 rounded-full transition-all duration-300" 
                         style={{ width: `${selectedClient?.probability || 0}%` }}
                       ></div>
                     </div>
                   </div>
-                </div>
 
-                {selectedClient?.next_followup ? (
-                  <div className="text-right">
-                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Next Follow-up</p>
-                    <p className="text-base font-medium text-gray-900 saira-light">{new Date(selectedClient.next_followup).toLocaleDateString()}</p>
+                  {/* Next Follow-up */}
+                  <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+                    <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Next Follow-up</p>
+                    <p className="text-base text-gray-900 text-right">
+                      {selectedClient?.next_followup ? (
+                        new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric'
+                        })
+                      ) : (
+                        'Not scheduled'
+                      )}
+                    </p>
                   </div>
-                ) : (
-                  <div className="text-right">
-                    <p className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Follow-up</p>
-                    <p className="text-base font-medium text-gray-500">Not scheduled</p>
+
+                  {/* Amount */}
+                  <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+                    <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Amount</p>
+                    <p className="text-base font-semibold text-gray-900 text-right">
+                      {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
+                      {(selectedClient?.balance || 0).toLocaleString()}
+                    </p>
                   </div>
-                )}
+
+                  {/* Closer */}
+                  <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+                    <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Closer</p>
+                    <p className="text-base text-gray-900 text-right">
+                      {selectedClient?.closer || 'Not assigned'}
+                    </p>
+                  </div>
+
+                  {/* Handler (if applicable) */}
+                  {selectedClient?.stage === 'handler_assigned' && (
+                    <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+                      <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Handler</p>
+                      <p className="text-base text-gray-900 text-right">
+                        {selectedClient?.handler || 'Not assigned'}
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
         </div>
+        
+        {/* Header Row below boxes: Left (lead/name/stage), Right (actions) */}
+        <div className="flex items-center justify-between mt-8 mb-6 px-8">
+          {/* Left: Lead number, Client name, Stage (black text) */}
+          <div className="flex items-center gap-2 sm:gap-3 text-black min-w-0 pl-2">
+            <span className="text-2xl font-bold">{selectedClient?.lead_number || '---'}</span>
+            <span className="hidden sm:inline w-2 h-2 bg-[#3b28c7] rounded-full" />
+            <span className="text-2xl font-bold truncate max-w-[40vw]">{selectedClient?.name || '---'}</span>
+            {selectedClient?.language && (
+              <label className="ml-2 btn btn-lg text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-base truncate whitespace-nowrap">
+                {selectedClient.language}
+              </label>
+            )}
+            {selectedClient?.stage && (
+              <label className="btn btn-lg btn-primary text-white gap-3 text-base truncate">
+                {selectedClient.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
+              </label>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 pr-2">
+            <div className="dropdown">
+              <label tabIndex={0} className="btn btn-lg btn-primary text-white gap-3 text-base saira-regular">
+                <span>Stages</span>
+                <ChevronDownIcon className="w-5 h-5" />
+              </label>
+              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                {dropdownItems}
+              </ul>
+            </div>
+            {selectedClient && selectedClient.stage === 'created' && (
+              <div className="dropdown">
+                <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
+                  <span>Assign to</span>
+                  <ChevronDownIcon className="w-4 h-4" />
+                </label>
+                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                  {schedulerOptions.map((scheduler) => (
+                    <li key={scheduler}>
+                      <a 
+                        className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
+                        onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
+                      >
+                        <UserIcon className="w-5 h-5 text-primary" />
+                        <span className="font-medium">{scheduler}</span>
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="dropdown">
+              <label tabIndex={0} className="btn btn-lg btn-primary text-white gap-3 text-base saira-regular">
+                <span>Actions</span>
+                <ChevronDownIcon className="w-5 h-5" />
+              </label>
+              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
+                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        
         {/* Tabs Navigation */}
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6">
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
           <div className="w-full">
             {/* Desktop version */}
             <div className="hidden md:flex items-center px-4 py-4">
@@ -2908,7 +3087,19 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
               <div>
                 <label className="block font-semibold mb-1">Source</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.source} onChange={e => handleEditLeadChange('source', e.target.value)} />
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="Search or select a source..."
+                  value={editLeadData.source}
+                  onChange={e => handleEditLeadChange('source', e.target.value)}
+                  list="source-options"
+                />
+                <datalist id="source-options">
+                  {sources.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <label className="block font-semibold mb-1">Client Name</label>
@@ -2916,11 +3107,35 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
               <div>
                 <label className="block font-semibold mb-1">Language</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.language} onChange={e => handleEditLeadChange('language', e.target.value)} />
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="Search or select a language..."
+                  value={editLeadData.language}
+                  onChange={e => handleEditLeadChange('language', e.target.value)}
+                  list="language-options"
+                />
+                <datalist id="language-options">
+                  {languagesList.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <label className="block font-semibold mb-1">Category</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.category} onChange={e => handleEditLeadChange('category', e.target.value)} />
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="Search or select a category..."
+                  value={editLeadData.category}
+                  onChange={e => handleEditLeadChange('category', e.target.value)}
+                  list="category-options"
+                />
+                <datalist id="category-options">
+                  {mainCategories.map((name) => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <label className="block font-semibold mb-1">Topic</label>
