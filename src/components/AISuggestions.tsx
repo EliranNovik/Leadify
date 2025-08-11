@@ -1,5 +1,7 @@
 import React, { useState, forwardRef, useImperativeHandle, useEffect } from 'react';
-import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, XMarkIcon, FunnelIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { useNavigate } from 'react-router-dom';
+import { supabase } from '../lib/supabase';
 
 interface Suggestion {
   id: string;
@@ -8,6 +10,9 @@ interface Suggestion {
   action: string;
   dueDate?: string;
   context?: string;
+  leadId?: string;
+  leadNumber?: string;
+  clientName?: string;
 }
 
 // Initial suggestions shown on dashboard
@@ -140,9 +145,11 @@ const allSuggestions: Suggestion[] = [
 ];
 
 const AISuggestions = forwardRef((props, ref) => {
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [filterType, setFilterType] = useState<'all' | 'urgent' | 'important' | 'reminder'>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+  const navigate = useNavigate();
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [aiMessage, setAiMessage] = useState('');
+  const [isSummaryOpen, setIsSummaryOpen] = useState(false);
 
   const getTypeIcon = (type: Suggestion['type']) => {
     switch (type) {
@@ -157,12 +164,7 @@ const AISuggestions = forwardRef((props, ref) => {
     }
   };
 
-  const filteredSuggestions = allSuggestions.filter(suggestion => {
-    const matchesType = filterType === 'all' || suggestion.type === filterType;
-    const matchesSearch = suggestion.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         suggestion.context?.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesType && matchesSearch;
-  });
+  
 
   const getTypeColor = (type: Suggestion['type']) => {
     switch (type) {
@@ -172,6 +174,59 @@ const AISuggestions = forwardRef((props, ref) => {
       default: return 'border-gray-300';
     }
   };
+
+  // Fetch notifications from the edge function
+  const fetchNotifications = async () => {
+    setIsLoading(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-notifications`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({ action: 'get_notifications' })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to fetch notifications: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      // Convert notifications to suggestions format
+      const newSuggestions: Suggestion[] = data.notifications.map((notification: any) => ({
+        id: notification.id,
+        type: notification.type,
+        message: notification.message,
+        action: notification.action,
+        dueDate: notification.dueDate,
+        context: notification.context,
+        leadId: notification.leadId,
+        leadNumber: notification.leadNumber,
+        clientName: notification.clientName
+      }));
+
+      setSuggestions(newSuggestions);
+      setAiMessage(data.aiMessage);
+    } catch (error) {
+      console.error('Error fetching notifications:', error);
+      // Fallback to mock data if API fails
+      setSuggestions(mockSuggestions);
+      setAiMessage('Using fallback data due to connection issues.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Auto-refresh notifications every 5 minutes
+  useEffect(() => {
+    fetchNotifications();
+    
+    const interval = setInterval(fetchNotifications, 5 * 60 * 1000); // 5 minutes
+    
+    return () => clearInterval(interval);
+  }, []);
   const getDueColor = (type: Suggestion['type']) => {
     switch (type) {
       case 'urgent': return 'bg-red-100 text-red-700';
@@ -181,9 +236,45 @@ const AISuggestions = forwardRef((props, ref) => {
     }
   };
 
+  // Navigation function to handle button clicks
+  const handleActionClick = (suggestion: Suggestion) => {
+    if (suggestion.leadNumber) {
+      // Navigate to the specific client page
+      navigate(`/clients/${suggestion.leadNumber}`);
+    } else {
+      // For actions without specific lead, navigate to appropriate page based on action
+      switch (suggestion.action.toLowerCase()) {
+        case 'review contract':
+        case 'check payment':
+        case 'contact client':
+        case 'send follow-up':
+        case 'update profile':
+        case 'send documents':
+        case 'schedule call':
+        case 'start research':
+          // Navigate to clients page
+          navigate('/clients');
+          break;
+        case 'prepare docs':
+        case 'prepare docs':
+          // Navigate to expert page
+          navigate('/expert');
+          break;
+        case 'review case':
+          // Navigate to pipeline
+          navigate('/pipeline');
+          break;
+        default:
+          // Default to clients page
+          navigate('/clients');
+          break;
+      }
+    }
+  };
+
   const SuggestionCard = ({ suggestion }: { suggestion: Suggestion }) => (
     <div 
-      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 md:hover:shadow-xl md:hover:scale-[1.025] p-5 h-[280px] w-full suggestion-card"
+      className="relative flex flex-col bg-white rounded-2xl shadow-md transition-transform duration-200 md:hover:shadow-xl md:hover:scale-[1.025] p-5 h-[280px] w-full suggestion-card cursor-pointer"
       draggable={false}
       onDragStart={(e) => e.preventDefault()}
       onTouchStart={(e) => {
@@ -200,6 +291,7 @@ const AISuggestions = forwardRef((props, ref) => {
       }}
       onContextMenu={(e) => e.preventDefault()}
       style={{ touchAction: 'auto' }}
+      onClick={() => handleActionClick(suggestion)}
     >
         <div className="flex items-start justify-between mb-2 flex-shrink-0">
           <div className="flex items-center gap-2">
@@ -214,7 +306,13 @@ const AISuggestions = forwardRef((props, ref) => {
           )}
         </div>
         <div className="flex justify-start mt-auto flex-shrink-0">
-          <button className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all">
+          <button 
+            className="btn btn-sm px-4 bg-gradient-to-r from-[#3b28c7] to-[#6a5cff] text-white font-semibold shadow-none border-none hover:from-[#2a1e8a] hover:to-[#3b28c7] transition-all cursor-pointer"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleActionClick(suggestion);
+            }}
+          >
             {suggestion.action}
             <ArrowRightIcon className="w-4 h-4 ml-1" />
           </button>
@@ -223,7 +321,6 @@ const AISuggestions = forwardRef((props, ref) => {
   );
 
   useImperativeHandle(ref, () => ({
-    openModal: () => setIsModalOpen(true),
     scrollIntoView: (options?: ScrollIntoViewOptions) => {
       containerRef.current?.scrollIntoView(options);
     }
@@ -267,8 +364,18 @@ const AISuggestions = forwardRef((props, ref) => {
           <SparklesIcon className="w-6 h-6" style={{ color: '#3b28c7' }} />
           <div className="text-2xl font-bold">RMQ AI</div>
         </div>
-        <button className="btn btn-sm btn-outline" style={{ borderColor: '#3b28c7', color: '#3b28c7' }} onClick={() => setIsModalOpen(true)}>View All</button>
+        <div className="flex items-center gap-2">
+          <button 
+            className="btn btn-sm btn-ghost" 
+            onClick={fetchNotifications}
+            disabled={isLoading}
+            title="Refresh notifications"
+          >
+            <ArrowPathIcon className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
+      
       <div 
         className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible max-h-[1200px] bg-white"
         style={{ 
@@ -281,73 +388,50 @@ const AISuggestions = forwardRef((props, ref) => {
           .scrollbar-none::-webkit-scrollbar { display: none; }
         `}</style>
         <div className="flex md:grid flex-row md:grid-cols-1 gap-4">
-          {mockSuggestions.map((suggestion) => (
-            <div key={suggestion.id} className="w-[calc(50%-0.5rem)] md:w-full flex-shrink-0">
-              <SuggestionCard suggestion={suggestion} />
+          {isLoading ? (
+            <div className="w-full flex items-center justify-center py-8">
+              <div className="loading loading-spinner loading-lg text-primary"></div>
             </div>
-          ))}
+          ) : suggestions.length > 0 ? (
+            suggestions.map((suggestion) => (
+              <div key={suggestion.id} className="w-[calc(50%-0.5rem)] md:w-full flex-shrink-0">
+                <SuggestionCard suggestion={suggestion} />
+              </div>
+            ))
+          ) : (
+            <div className="w-full text-center py-8 text-gray-500">
+              <SparklesIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+              <p className="text-lg font-medium">No notifications at this time</p>
+              <p className="text-sm">All systems are running smoothly!</p>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Modal for View All */}
-      {isModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-4xl max-h-[80vh] overflow-hidden border border-gray-200">
-            <div className="p-4 border-b border-gray-200 flex items-center justify-between bg-white">
-              <h3 className="text-xl font-semibold flex items-center gap-2 text-gray-900">
-                <SparklesIcon className="w-6 h-6" style={{ color: '#3b28c7' }} />
-                All AI Suggestions
-              </h3>
-              <button 
-                className="btn btn-ghost btn-sm btn-circle text-gray-700 hover:bg-gray-100"
-                onClick={() => setIsModalOpen(false)}
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
+      {/* AI Message */}
+      {aiMessage && (
+        <div className="mt-4 relative flex flex-col bg-white rounded-2xl shadow-md p-5 w-full">
+          <div className="flex items-start justify-between mb-2 flex-shrink-0">
+            <div className="flex items-center gap-2">
+              <SparklesIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="font-semibold text-sm capitalize text-gray-700">Summary</span>
             </div>
-
-            <div className="p-4 border-b border-gray-200 bg-white">
-              <div className="flex gap-4 flex-wrap">
-                <div className="flex-1 min-w-[200px]">
-                  <div className="relative">
-                    <input
-                      type="text"
-                      placeholder="Search suggestions..."
-                      className="input input-bordered w-full pl-10 bg-white text-gray-900 border-gray-300 placeholder-gray-400"
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                    />
-                    <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <FunnelIcon className="w-5 h-5 text-gray-700" />
-                  <select
-                    className="select select-bordered bg-white text-gray-900 border-gray-300"
-                    value={filterType}
-                    onChange={(e) => setFilterType(e.target.value as any)}
-                  >
-                    <option value="all">All Types</option>
-                    <option value="urgent">Urgent</option>
-                    <option value="important">Important</option>
-                    <option value="reminder">Reminder</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 overflow-x-auto md:overflow-y-auto md:overflow-x-visible max-h-[calc(80vh-200px)] bg-white">
-              <div className="flex md:grid flex-row md:grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-                {filteredSuggestions.map((suggestion) => (
-                  <div key={suggestion.id} className="w-[calc(50%-0.5rem)] md:w-full flex-shrink-0">
-                    <SuggestionCard suggestion={suggestion} />
-                  </div>
-                ))}
-              </div>
-            </div>
+            <button 
+              className="btn btn-sm btn-ghost text-gray-600 hover:text-gray-800"
+              onClick={() => setIsSummaryOpen(!isSummaryOpen)}
+            >
+              {isSummaryOpen ? 'Hide' : 'Show'}
+            </button>
           </div>
+          {isSummaryOpen && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{aiMessage}</div>
+            </div>
+          )}
         </div>
       )}
+
+
     </div>
     </>
   );

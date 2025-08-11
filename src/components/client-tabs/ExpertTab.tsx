@@ -45,6 +45,30 @@ interface EligibilityStatus {
 }
 
 const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+  // Helper function to get current user's full name
+  const getCurrentUserName = async (): Promise<string> => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) return 'Unknown';
+      
+      // Get user's full name from users table
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('auth_id', user.id)
+        .single();
+      
+      if (error || !userData?.full_name) {
+        return user?.email || 'Unknown';
+      }
+      
+      return userData.full_name;
+    } catch (error) {
+      console.error('Error getting user name:', error);
+      return 'Unknown';
+    }
+  };
+
   // Section & eligibility
   const [selectedSection, setSelectedSection] = useState(client.section_eligibility || '');
   const [eligibilityStatus, setEligibilityStatus] = useState<EligibilityStatus>({
@@ -127,9 +151,32 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     if (newValue === 'not_feasible') {
       setSelectedSection(''); // Clear section selection
     }
+    
+    // Only update expert assessment columns if this is the first time setting eligibility
+    // or if the eligibility status is being changed from empty/null to a valid value
+    const shouldUpdateExpertAssessment = !client.eligibility_status || client.eligibility_status === '';
+    
+    let updateData: any = {
+      eligibility_status: newValue, 
+      eligibility_status_timestamp: timestamp, 
+      section_eligibility: newValue === 'not_feasible' ? '' : selectedSection
+    };
+    
+    // Only update expert assessment columns when actually completing an assessment
+    if (shouldUpdateExpertAssessment && newValue && newValue !== '') {
+      const currentUser = await getCurrentUserName();
+      
+      updateData = {
+        ...updateData,
+        expert_eligibility_assessed: true,
+        expert_eligibility_date: timestamp,
+        expert_eligibility_assessed_by: currentUser
+      };
+    }
+    
     await supabase
       .from('leads')
-      .update({ eligibility_status: newValue, eligibility_status_timestamp: timestamp, section_eligibility: newValue === 'not_feasible' ? '' : selectedSection })
+      .update(updateData)
       .eq('id', client.id);
     if (onClientUpdate) await onClientUpdate();
   };
@@ -263,9 +310,17 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         const folderUrl = data.folderUrl;
         if (folderUrl && folderUrl !== client.onedrive_folder_link) {
+            // Get current user for tracking who uploaded documents
+            const currentUser = await getCurrentUserName();
+            
             await supabase
                 .from('leads')
-                .update({ onedrive_folder_link: folderUrl })
+                .update({ 
+                    onedrive_folder_link: folderUrl,
+                    // Update new AI notification columns
+                    documents_uploaded_date: new Date().toISOString(),
+                    documents_uploaded_by: currentUser
+                })
                 .eq('id', client.id);
             if (onClientUpdate) {
                 await onClientUpdate();

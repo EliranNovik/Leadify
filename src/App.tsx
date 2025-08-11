@@ -28,6 +28,7 @@ import CaseManagerPageNew from './components/CaseManagerPageNew';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
 import WhatsAppPage from './pages/WhatsAppPage';
+import WhatsAppModal from './components/WhatsAppModal';
 import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
 import ProformaViewPage from './pages/ProformaViewPage';
@@ -54,7 +55,9 @@ const AppContentInner: React.FC = () => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isAiChatOpen, setIsAiChatOpen] = useState(false);
+  const [isAiChatFullPage, setIsAiChatFullPage] = useState(false);
   const [isEmailThreadOpen, setIsEmailThreadOpen] = useState(false);
+  const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [appJustLoggedIn, setAppJustLoggedIn] = useState(false);
   const prevUser = useRef<any>(null);
@@ -125,6 +128,7 @@ const AppContentInner: React.FC = () => {
                   appJustLoggedIn={appJustLoggedIn}
                   onOpenAIChat={() => setIsAiChatOpen(true)}
                   onOpenEmailThread={() => setIsEmailThreadOpen(true)}
+                  onOpenWhatsApp={() => setIsWhatsAppOpen(true)}
                   isMenuOpen={isSidebarOpen}
                 />
                 <main className="flex-1 overflow-x-hidden overflow-y-auto">
@@ -161,10 +165,16 @@ const AppContentInner: React.FC = () => {
                 onClose={() => setIsAiChatOpen(false)} 
                 onClientUpdate={selectedClient ? () => refreshClientData(selectedClient.id) : undefined}
                 userName={userFullName || userName}
+                isFullPage={isAiChatFullPage}
+                onToggleFullPage={() => setIsAiChatFullPage(!isAiChatFullPage)}
               />
               <EmailThreadModal 
                 isOpen={isEmailThreadOpen} 
                 onClose={() => setIsEmailThreadOpen(false)} 
+              />
+              <WhatsAppModal 
+                isOpen={isWhatsAppOpen} 
+                onClose={() => setIsWhatsAppOpen(false)} 
               />
             </div>
           </ProtectedRoute>

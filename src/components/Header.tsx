@@ -36,6 +36,7 @@ interface HeaderProps {
   onOpenAIChat?: () => void;
   isMenuOpen?: boolean;
   onOpenEmailThread?: () => void;
+  onOpenWhatsApp?: () => void;
 }
 
 interface Notification {
@@ -77,7 +78,7 @@ const mockNotifications: Notification[] = [
   }
 ];
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread }) => {
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -496,6 +497,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       </button>
                     );
                   }
+                  if (tab.path === '/whatsapp') {
+                    return (
+                      <button
+                        key={tab.label}
+                        onClick={() => {
+                          setShowMobileQuickActionsDropdown(false);
+                          if (onOpenWhatsApp) {
+                            onOpenWhatsApp();
+                          }
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
+                      >
+                        <Icon className="w-5 h-5 text-gray-500" />
+                        <span className="text-sm font-medium">{tab.label}</span>
+                      </button>
+                    );
+                  }
                   return (
                     <Link
                       key={tab.path || tab.label}
@@ -550,6 +568,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           setShowQuickActionsDropdown(false);
                           if (onOpenEmailThread) {
                             onOpenEmailThread();
+                          }
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
+                      >
+                        <Icon className="w-5 h-5 text-gray-500" />
+                        <span className="text-sm font-medium">{tab.label}</span>
+                      </button>
+                    );
+                  }
+                  if (tab.path === '/whatsapp') {
+                    return (
+                      <button
+                        key={tab.label}
+                        onClick={() => {
+                          setShowQuickActionsDropdown(false);
+                          if (onOpenWhatsApp) {
+                            onOpenWhatsApp();
                           }
                         }}
                         className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
@@ -881,6 +916,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             onClick={handleAIClick}
           >
             <FaRobot className="w-7 h-7 text-primary" />
+          </button>
+
+          {/* WhatsApp Button */}
+          <button
+            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
+            title="Open WhatsApp"
+            onClick={onOpenWhatsApp}
+          >
+            <FaWhatsapp className="w-7 h-7 text-green-600" />
+          </button>
+
+          {/* Email Thread Button */}
+          <button
+            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
+            title="Open Email Thread"
+            onClick={onOpenEmailThread}
+          >
+            <EnvelopeIcon className="w-7 h-7 text-blue-600" />
           </button>
 
           {/* Microsoft sign in/out button */}

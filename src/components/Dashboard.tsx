@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import Meetings from './Meetings';
 import AISuggestions from './AISuggestions';
+import AISuggestionsModal from './AISuggestionsModal';
 import OverdueFollowups from './OverdueFollowups';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
@@ -37,6 +38,7 @@ const Dashboard: React.FC = () => {
   const [meetings, setMeetings] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [showAllSuggestions, setShowAllSuggestions] = useState(false);
+  const [isAISuggestionsModalOpen, setIsAISuggestionsModalOpen] = useState(false);
 
   // 1. Add state for real signed leads
   const [realSignedLeads, setRealSignedLeads] = useState<any[]>([]);
@@ -306,10 +308,28 @@ const Dashboard: React.FC = () => {
         setNewMessages(mockMessages.length);
       }
     })();
-    // Fetch AI actions (mock: count from suggestions API or table)
+    // Fetch AI actions count
     (async () => {
-      // Replace with real AI suggestions count
-      setAIActions(2);
+      try {
+        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-notifications`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+          },
+          body: JSON.stringify({ action: 'get_notifications' })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setAIActions(data.count || 0);
+        } else {
+          setAIActions(0);
+        }
+      } catch (error) {
+        console.error('Error fetching AI actions count:', error);
+        setAIActions(0);
+      }
     })();
   }, []);
 
@@ -1203,13 +1223,14 @@ const Dashboard: React.FC = () => {
         {/* Action Required */}
         <div
           className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-3 md:p-6"
+          onClick={() => setIsAISuggestionsModalOpen(true)}
         >
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <ArrowTrendingUpIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">3</div>
+              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{aiActions}</div>
               <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Action Required</div>
             </div>
           </div>
@@ -2635,6 +2656,11 @@ const Dashboard: React.FC = () => {
         </button>
       )}
 
+      {/* AI Suggestions Modal */}
+      <AISuggestionsModal 
+        isOpen={isAISuggestionsModalOpen}
+        onClose={() => setIsAISuggestionsModalOpen(false)}
+      />
 
     </div>
   );

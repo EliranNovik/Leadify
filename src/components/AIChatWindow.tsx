@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { XMarkIcon, PaperAirplaneIcon } from '@heroicons/react/24/solid';
+import { XMarkIcon, PaperAirplaneIcon, MagnifyingGlassIcon, ClockIcon, ChatBubbleLeftRightIcon, ArrowsPointingOutIcon, ArrowsPointingInIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { FaRobot } from 'react-icons/fa';
@@ -10,6 +10,8 @@ interface AIChatWindowProps {
   onClose: () => void;
   onClientUpdate?: () => void;
   userName?: string;
+  isFullPage?: boolean;
+  onToggleFullPage?: () => void;
 }
 
 interface Message {
@@ -17,6 +19,16 @@ interface Message {
   content: string;
   tool_calls?: any[];
   tool_call_id?: string;
+}
+
+interface ChatHistory {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  summary?: string;
+  tags: string[];
 }
 
 interface NewLeadResult {
@@ -240,7 +252,7 @@ const sanitizeMessages = (messages: Message[]) => {
   return sanitized;
 };
 
-const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate, userName }) => {
+const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUpdate, userName, isFullPage = false, onToggleFullPage }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [images, setImages] = useState<File[]>([]);
@@ -251,6 +263,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
   const [aiIconAnim, setAiIconAnim] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  
+  // Chat history state
+  const [chatHistory, setChatHistory] = useState<ChatHistory[]>([]);
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [historySearchTerm, setHistorySearchTerm] = useState('');
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
 
@@ -446,17 +465,187 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setTimeout(() => setAiIconAnim(false), 600);
   };
 
+  // Chat history functions
+  const loadChatHistory = async (searchTerm = '') => {
+    setIsLoadingHistory(true);
+    try {
+      // Try RPC function first, fallback to direct query
+      let data, error;
+      
+      try {
+        const result = await supabase.rpc('search_ai_chat_history', { p_search_term: searchTerm || '' });
+        data = result.data;
+        error = result.error;
+      } catch (rpcError) {
+        // Fallback to direct query if RPC function doesn't exist
+        const result = await supabase
+          .from('ai_chat_history')
+          .select('id, title, created_at, updated_at, message_count, summary, tags')
+          .eq('user_id', (await supabase.auth.getUser()).data.user?.id)
+          .eq('is_archived', false)
+          .order('updated_at', { ascending: false });
+        data = result.data;
+        error = result.error;
+      }
+      
+      if (error) throw error;
+      setChatHistory(data || []);
+    } catch (error) {
+      console.error('Error loading chat history:', error);
+      toast.error('Failed to load chat history');
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  };
+
+  const saveCurrentChat = async () => {
+    if (messages.length <= 1) return; // Don't save if only greeting message
+    
+    try {
+      const messagesToSave = messages.filter(msg => msg.content !== '...'); // Remove placeholder
+      const user = (await supabase.auth.getUser()).data.user;
+      if (!user) throw new Error('User not authenticated');
+      
+      if (currentChatId) {
+        // Update existing chat
+        try {
+          const { error } = await supabase.rpc('update_ai_chat_history', {
+            p_chat_id: currentChatId,
+            p_messages: messagesToSave
+          });
+          if (error) throw error;
+        } catch (rpcError) {
+          // Fallback to direct update
+          const { error } = await supabase
+            .from('ai_chat_history')
+            .update({
+              messages: messagesToSave,
+              message_count: messagesToSave.length,
+              last_message_at: new Date().toISOString()
+            })
+            .eq('id', currentChatId)
+            .eq('user_id', user.id);
+          if (error) throw error;
+        }
+      } else {
+        // Create new chat
+        try {
+          const { data, error } = await supabase.rpc('save_ai_chat_history', {
+            p_title: null, // Will be auto-generated
+            p_messages: messagesToSave
+          });
+          if (error) throw error;
+          setCurrentChatId(data);
+        } catch (rpcError) {
+          // Fallback to direct insert
+          const title = messagesToSave.find(msg => msg.role === 'user')?.content?.substring(0, 50) || 'New Conversation';
+          const { data, error } = await supabase
+            .from('ai_chat_history')
+            .insert({
+              user_id: user.id,
+              title: title,
+              messages: messagesToSave,
+              message_count: messagesToSave.length
+            })
+            .select('id')
+            .single();
+          if (error) throw error;
+          setCurrentChatId(data.id);
+        }
+      }
+      
+      // Refresh history
+      loadChatHistory(historySearchTerm);
+    } catch (error) {
+      console.error('Error saving chat:', error);
+      toast.error('Failed to save chat');
+    }
+  };
+
+  const loadChat = async (chatId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('ai_chat_history')
+        .select('messages, title')
+        .eq('id', chatId)
+        .single();
+      
+      if (error) throw error;
+      
+      setMessages(data.messages);
+      setCurrentChatId(chatId);
+      setShowHistoryPanel(false);
+      toast.success(`Loaded: ${data.title}`);
+    } catch (error) {
+      console.error('Error loading chat:', error);
+      toast.error('Failed to load chat');
+    }
+  };
+
+  const startNewChat = () => {
+    setMessages([{ 
+      role: 'assistant', 
+      content: userName ? `Hi ${userName}, how can I help you?` : "Hello! How can I help you?"
+    }]);
+    setCurrentChatId(null);
+    setShowHistoryPanel(false);
+  };
+
+  const deleteChat = async (chatId: string) => {
+    if (!confirm('Are you sure you want to delete this chat?')) return;
+    
+    try {
+      const { error } = await supabase
+        .from('ai_chat_history')
+        .delete()
+        .eq('id', chatId);
+      
+      if (error) throw error;
+      
+      if (currentChatId === chatId) {
+        startNewChat();
+      }
+      
+      loadChatHistory(historySearchTerm);
+      toast.success('Chat deleted');
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      toast.error('Failed to delete chat');
+    }
+  };
+
+  // Load chat history when component opens
+  useEffect(() => {
+    if (isOpen) {
+      loadChatHistory();
+    }
+  }, [isOpen]);
+
+  // Auto-save chat when messages change
+  useEffect(() => {
+    if (messages.length > 1 && !isLoading) {
+      const saveTimeout = setTimeout(saveCurrentChat, 2000); // Save after 2 seconds of inactivity
+      return () => clearTimeout(saveTimeout);
+    }
+  }, [messages, isLoading]);
+
   if (!isOpen) return null;
 
   return (
     <div
-      className={`fixed z-50 right-0 top-0 bottom-0 w-full max-w-2xl flex flex-col transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} ${isDragActive ? 'ring-4 ring-primary/40' : ''}`}
+      className={`fixed z-50 flex flex-col transition-all duration-300 ${isOpen ? 'translate-y-0' : 'translate-y-full'} ${isDragActive ? 'ring-4 ring-primary/40' : ''} ${
+        isFullPage 
+          ? 'left-0 top-0 w-full h-full' 
+          : 'right-0 top-0 bottom-0 w-full max-w-2xl'
+      }`}
       style={{ 
         height: '100dvh', 
         minHeight: '100dvh', 
         maxHeight: '100dvh', 
-        borderTopLeftRadius: 0, 
-        borderTopRightRadius: 0
+        borderTopLeftRadius: isFullPage ? 0 : 0, 
+        borderTopRightRadius: 0,
+        borderBottomLeftRadius: isFullPage ? 0 : '2rem',
+        borderBottomRightRadius: isFullPage ? 0 : '2rem'
       }}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -471,6 +660,13 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           box-shadow: 0 8px 32px 0 rgba(31,38,135,0.10);
           border-top-left-radius: 2rem;
           border-bottom-left-radius: 2rem;
+        }
+        .ai-glass-fullpage {
+          background: rgba(255,255,255,0.95);
+          backdrop-filter: blur(18px) saturate(1.2);
+          -webkit-backdrop-filter: blur(18px) saturate(1.2);
+          box-shadow: 0 8px 32px 0 rgba(31,38,135,0.10);
+          border-radius: 0;
         }
         .ai-header-gradient {
           background: linear-gradient(90deg, #7c3aed 0%, #38bdf8 100%);
@@ -495,12 +691,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           font-size: 0.95rem;
           transition: background 0.2s, color 0.2s;
         }
-        .ai-quick-btn-lead { background: #ede9fe; color: #7c3aed; }
-        .ai-quick-btn-lead:hover { background: #c7d2fe; color: #4f46e5; }
-        .ai-quick-btn-stats { background: #cffafe; color: #06b6d4; }
-        .ai-quick-btn-stats:hover { background: #a5f3fc; color: #0e7490; }
-        .ai-quick-btn-weekly { background: #bbf7d0; color: #22c55e; }
-        .ai-quick-btn-weekly:hover { background: #86efac; color: #15803d; }
+
         .ai-input-area {
           background: rgba(255,255,255,0.95);
           box-shadow: 0 2px 12px 0 rgba(31,38,135,0.07);
@@ -536,9 +727,17 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             font-size: 16px; /* Prevents zoom on iOS */
           }
         }
+        
+        /* Line clamp utility */
+        .line-clamp-2 {
+          display: -webkit-box;
+          -webkit-line-clamp: 2;
+          -webkit-box-orient: vertical;
+          overflow: hidden;
+        }
       `}</style>
       <div 
-        className="ai-glass flex flex-col h-full w-full"
+        className={`${isFullPage ? 'ai-glass-fullpage' : 'ai-glass'} flex flex-col h-full w-full`}
         style={{
           ...(isMobile && {
             height: '100dvh',
@@ -547,7 +746,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
         }}
       >
         {/* Header */}
-        <div className="ai-header-gradient sticky top-0 z-20 p-4 flex items-center justify-between rounded-tl-2xl" style={{boxShadow:'0 2px 12px 0 rgba(31,38,135,0.07)'}}>
+        <div className={`ai-header-gradient sticky top-0 z-20 p-4 flex items-center justify-between ${isFullPage ? 'rounded-none' : 'rounded-tl-2xl'}`} style={{boxShadow:'0 2px 12px 0 rgba(31,38,135,0.07)'}}>
           <div className="flex items-center gap-3">
             <button
               className={`focus:outline-none ${aiIconAnim ? 'animate-ai-pulse' : ''}`}
@@ -562,128 +761,239 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           </div>
           <div className="flex items-center gap-2">
             <button
-              onClick={() => handleQuickAction('create a lead')}
-              className="ai-quick-btn ai-quick-btn-lead"
-              disabled={isLoading}
-              title="Create a new lead"
+              onClick={() => setShowHistoryPanel(!showHistoryPanel)}
+              className={`ai-quick-btn ${showHistoryPanel ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'}`}
+              title="Chat History"
             >
-               Lead
-            </button>
-            <button
-              onClick={() => handleQuickAction('show me today\'s statistics')}
-              className="ai-quick-btn ai-quick-btn-stats"
-              disabled={isLoading}
-              title="Today's statistics"
-            >
-               Stats
-            </button>
-            <button
-              onClick={() => handleQuickAction('how many leads were created this week?')}
-              className="ai-quick-btn ai-quick-btn-weekly"
-              disabled={isLoading}
-              title="Weekly leads"
-            >
-               Weekly
+              <ChatBubbleLeftRightIcon className="w-4 h-4" />
             </button>
           </div>
-          <button className="btn btn-sm btn-ghost btn-circle hover:bg-white/20 text-white" onClick={onClose}>
-            <XMarkIcon className="w-6 h-6" />
-          </button>
+          <div className="flex items-center gap-2">
+            {onToggleFullPage && (
+              <button 
+                className="btn btn-sm btn-ghost btn-circle hover:bg-white/20 text-white" 
+                onClick={onToggleFullPage}
+                title={isFullPage ? "Exit full page" : "Enter full page"}
+              >
+                {isFullPage ? (
+                  <ArrowsPointingInIcon className="w-5 h-5" />
+                ) : (
+                  <ArrowsPointingOutIcon className="w-5 h-5" />
+                )}
+              </button>
+            )}
+            <button className="btn btn-sm btn-ghost btn-circle hover:bg-white/20 text-white" onClick={onClose}>
+              <XMarkIcon className="w-6 h-6" />
+            </button>
+          </div>
         </div>
 
-        {/* Messages */}
-        <div 
-          className="flex-1 overflow-y-auto p-6 space-y-6"
-          style={{
-            ...(isMobile && keyboardOpen && {
-              paddingBottom: '120px' // Add space for fixed input
-            })
-          }}
-        >
-          {messages.map((msg, idx) => (
-            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[70%] px-5 py-3 rounded-2xl shadow ai-bubble-${msg.role} mb-2`} style={{fontSize:'1.05rem', lineHeight:1.6}}>
-                {/* Render message content, supporting OpenAI Vision format */}
-                {Array.isArray(msg.content) ? (
-                  msg.content.map((item, i) => {
-                    if (item.type === 'text') {
-                      return <span key={i}>{item.text}</span>;
-                    } else if (item.type === 'image_url') {
-                      return <img key={i} src={item.image_url.url} alt="uploaded" className="max-w-xs my-2 rounded-lg border border-base-300" />;
-                    } else {
-                      return null;
-                    }
-                  })
+        {/* Main Content Area */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Chat Area */}
+          <div className={`flex flex-col ${showHistoryPanel ? 'w-2/3' : 'w-full'} transition-all duration-300`}>
+            {/* Messages */}
+            <div 
+              className="flex-1 overflow-y-auto p-6 space-y-6"
+              style={{
+                ...(isMobile && keyboardOpen && {
+                  paddingBottom: '120px' // Add space for fixed input
+                })
+              }}
+            >
+              {messages.map((msg, idx) => (
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[70%] px-5 py-3 rounded-2xl shadow ai-bubble-${msg.role} mb-2`} style={{fontSize:'1.05rem', lineHeight:1.6}}>
+                    {/* Render message content, supporting OpenAI Vision format */}
+                    {Array.isArray(msg.content) ? (
+                      msg.content.map((item, i) => {
+                        if (item.type === 'text') {
+                          return <span key={i}>{item.text}</span>;
+                        } else if (item.type === 'image_url') {
+                          return <img key={i} src={item.image_url.url} alt="uploaded" className="max-w-xs my-2 rounded-lg border border-base-300" />;
+                        } else {
+                          return null;
+                        }
+                      })
+                    ) : (
+                      <span>{msg.content}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Image previews above input */}
+            {imagePreviews.length > 0 && (
+              <div className="flex gap-2 px-4 pt-2 pb-1 overflow-x-auto border-t border-base-200 bg-base-100">
+                {imagePreviews.map((preview, idx) => (
+                  <div key={idx} className="relative">
+                    <img src={preview} alt="preview" className="w-20 h-20 object-cover rounded-lg border border-base-300" />
+                    <button onClick={() => handleRemoveImage(idx)} className="absolute top-0 right-0 bg-base-100 rounded-full p-1 shadow hover:bg-error hover:text-white transition-colors">
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Input */}
+            <div 
+              className={`ai-input-area p-4 flex items-end gap-2 border-t border-base-200 ${
+                isMobile && keyboardOpen ? 'pb-safe' : ''
+              }`}
+              style={{
+                ...(isMobile && keyboardOpen && {
+                  position: 'fixed',
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  zIndex: 60,
+                  backgroundColor: 'rgba(255,255,255,0.95)',
+                  backdropFilter: 'blur(18px) saturate(1.2)',
+                  borderTop: '1px solid #e0e7ef',
+                  paddingBottom: 'env(safe-area-inset-bottom, 1rem)'
+                })
+              }}
+            >
+              <input
+                type="text"
+                className="input input-bordered flex-1 bg-white/80 focus:bg-white/95 rounded-full px-5 py-3 text-base shadow-sm border border-base-200"
+                placeholder="Type your message..."
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              />
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                ref={fileInputRef}
+                onChange={handleImageChange}
+                multiple
+              />
+              <button
+                className="btn btn-ghost btn-circle hover:bg-primary/10"
+                onClick={() => fileInputRef.current?.click()}
+                title="Upload images"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5V19a2.003 2.003 0 002 2h14a2.003 2.003 0 002-2v-2.5M16.5 12.5l-4.5 4.5-4.5-4.5M12 3v13.5" />
+                </svg>
+              </button>
+              <button className="btn btn-primary ml-2 px-6 py-2 rounded-full shadow-lg text-base font-semibold transition-all duration-150 hover:scale-105 hover:bg-primary/90" onClick={() => handleSend()} disabled={isLoading || (!input.trim() && images.length === 0)}>
+                Send
+              </button>
+            </div>
+          </div>
+
+          {/* Chat History Panel */}
+          {showHistoryPanel && (
+            <div className="w-1/3 border-l border-gray-200 bg-gray-50 flex flex-col">
+              {/* History Header */}
+              <div className="p-4 border-b border-gray-200 bg-white">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-gray-900">Chat History</h3>
+                  <button
+                    onClick={startNewChat}
+                    className="btn btn-sm btn-primary"
+                    title="Start New Chat"
+                  >
+                    New
+                  </button>
+                </div>
+                
+                {/* Search Bar */}
+                <div className="relative">
+                  <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search conversations..."
+                    value={historySearchTerm}
+                    onChange={(e) => {
+                      setHistorySearchTerm(e.target.value);
+                      loadChatHistory(e.target.value);
+                    }}
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                  />
+                </div>
+              </div>
+
+              {/* History List */}
+              <div className="flex-1 overflow-y-auto">
+                {isLoadingHistory ? (
+                  <div className="flex items-center justify-center h-32">
+                    <div className="loading loading-spinner loading-md text-blue-600"></div>
+                  </div>
+                ) : chatHistory.length === 0 ? (
+                  <div className="p-8 text-center text-gray-500">
+                    <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                    <p className="text-lg font-medium">No conversations yet</p>
+                    <p className="text-sm">Start chatting to see your history here</p>
+                  </div>
                 ) : (
-                  <span>{msg.content}</span>
+                  <div className="divide-y divide-gray-200">
+                    {chatHistory.map((chat) => (
+                      <div
+                        key={chat.id}
+                        className={`p-4 hover:bg-gray-100 cursor-pointer transition-colors ${
+                          currentChatId === chat.id ? 'bg-blue-50 border-r-2 border-blue-500' : ''
+                        }`}
+                        onClick={() => loadChat(chat.id)}
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1 min-w-0">
+                            <h4 className="font-medium text-gray-900 truncate text-sm">
+                              {chat.title}
+                            </h4>
+                            <div className="flex items-center gap-2 mt-1 text-xs text-gray-500">
+                              <ClockIcon className="w-3 h-3" />
+                              <span>{new Date(chat.updated_at).toLocaleDateString()}</span>
+                              <span>•</span>
+                              <span>{chat.message_count} messages</span>
+                            </div>
+                            {chat.summary && (
+                              <p className="text-xs text-gray-600 mt-1 line-clamp-2">
+                                {chat.summary}
+                              </p>
+                            )}
+                            {chat.tags && chat.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-2">
+                                {chat.tags.slice(0, 3).map((tag, idx) => (
+                                  <span
+                                    key={idx}
+                                    className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                                {chat.tags.length > 3 && (
+                                  <span className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-full">
+                                    +{chat.tags.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteChat(chat.id);
+                            }}
+                            className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50 ml-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Delete chat"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             </div>
-          ))}
-          <div ref={messagesEndRef} />
-        </div>
-
-        {/* Image previews above input */}
-        {imagePreviews.length > 0 && (
-          <div className="flex gap-2 px-4 pt-2 pb-1 overflow-x-auto border-t border-base-200 bg-base-100">
-            {imagePreviews.map((preview, idx) => (
-              <div key={idx} className="relative">
-                <img src={preview} alt="preview" className="w-20 h-20 object-cover rounded-lg border border-base-300" />
-                <button onClick={() => handleRemoveImage(idx)} className="absolute top-0 right-0 bg-base-100 rounded-full p-1 shadow hover:bg-error hover:text-white transition-colors">
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* Input */}
-        <div 
-          className={`ai-input-area p-4 flex items-end gap-2 border-t border-base-200 ${
-            isMobile && keyboardOpen ? 'pb-safe' : ''
-          }`}
-          style={{
-            ...(isMobile && keyboardOpen && {
-              position: 'fixed',
-              bottom: 0,
-              left: 0,
-              right: 0,
-              zIndex: 60,
-              backgroundColor: 'rgba(255,255,255,0.95)',
-              backdropFilter: 'blur(18px) saturate(1.2)',
-              borderTop: '1px solid #e0e7ef',
-              paddingBottom: 'env(safe-area-inset-bottom, 1rem)'
-            })
-          }}
-        >
-          <input
-            type="text"
-            className="input input-bordered flex-1 bg-white/80 focus:bg-white/95 rounded-full px-5 py-3 text-base shadow-sm border border-base-200"
-            placeholder="Type your message..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-          />
-          <input
-            type="file"
-            accept="image/*"
-            className="hidden"
-            ref={fileInputRef}
-            onChange={handleImageChange}
-            multiple
-          />
-          <button
-            className="btn btn-ghost btn-circle hover:bg-primary/10"
-            onClick={() => fileInputRef.current?.click()}
-            title="Upload images"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5V19a2.003 2.003 0 002 2h14a2.003 2.003 0 002-2v-2.5M16.5 12.5l-4.5 4.5-4.5-4.5M12 3v13.5" />
-            </svg>
-          </button>
-          <button className="btn btn-primary ml-2 px-6 py-2 rounded-full shadow-lg text-base font-semibold transition-all duration-150 hover:scale-105 hover:bg-primary/90" onClick={() => handleSend()} disabled={isLoading || (!input.trim() && images.length === 0)}>
-            Send
-          </button>
+          )}
         </div>
 
         {isDragActive && (
