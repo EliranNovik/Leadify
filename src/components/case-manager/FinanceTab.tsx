@@ -93,7 +93,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
           const value = Number(plan.value);
           let valueVat = 0;
           const currency = plan.currency || '₪';
-          if (currency === '₪' || currency === 'NIS' || currency === 'ILS') {
+          if (currency === '₪') {
             valueVat = Math.round(value * 0.18 * 100) / 100;
           }
           return {
@@ -187,8 +187,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
-    if (currency === 'USD' || currency === '$') return '$';
-    if (currency === 'ILS' || currency === 'NIS' || currency === '₪') return '₪';
+    // Since we're now storing currency symbols directly, just return the currency
     return currency;
   };
 
@@ -438,7 +437,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
         value: Number(newPaymentData.value),
         value_vat: Number(newPaymentData.valueVat || 0),
         client_name: newPaymentData.client,
-        payment_order: 1,
+        payment_order: 'One-time Payment',
         currency: newPaymentData.currency || '₪',
         created_by: currentUserName,
       };
@@ -612,9 +611,9 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                   </div>
                 </div>
                 <div className="bg-white rounded-lg p-3 sm:p-4 border border-gray-200 shadow-sm hover:shadow-lg hover:shadow-purple-100 transition-all duration-300 cursor-pointer">
-                  <div className="text-xs sm:text-sm text-gray-600">VAT</div>
+                  <div className="text-xs sm:text-sm text-gray-600">Total</div>
                   <div className="text-lg sm:text-xl font-bold text-gray-900">
-                    {getCurrencySymbol(financePlan.payments[0]?.currency)}{financePlan.vat.toLocaleString()}
+                    {getCurrencySymbol(financePlan.payments[0]?.currency)}{(financePlan.total + financePlan.vat).toLocaleString()}
                   </div>
                 </div>
                 <div className="bg-white rounded-lg p-3 sm:p-4 border border-gray-200 shadow-sm hover:shadow-lg hover:shadow-purple-100 transition-all duration-300 cursor-pointer">
@@ -682,7 +681,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-bold text-sm sm:text-lg">%</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Due Date</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Value + VAT</th>
-                                  <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">VAT</th>
+                                  <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Total</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Status</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Actions</th>
                                 </tr>
@@ -760,7 +759,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                       )}
                                     </td>
                                     <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                      <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                      <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                     </td>
                                     <td className="align-middle text-center px-2 sm:px-4 py-2 sm:py-3 whitespace-nowrap">
                                       <div className="flex items-center justify-center gap-2">
@@ -887,8 +886,8 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                       </span>
                                     </div>
                                     <div className="flex items-center justify-between py-3 border-b border-gray-100">
-                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
-                                      <span className="text-xs sm:text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                      <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total</span>
+                                      <span className="text-xs sm:text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                     </div>
                                     <div className="flex items-center justify-between py-3">
                                       <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>

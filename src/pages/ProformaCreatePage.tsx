@@ -131,7 +131,7 @@ const ProformaCreatePage: React.FC = () => {
       if (
         addVat &&
         clientCountry === 'IL' &&
-        (currency === '₪' || currency === 'NIS' || currency === 'ILS')
+        (currency === '₪')
       ) {
         vat = Math.round(total * 0.18 * 100) / 100;
       }
@@ -170,7 +170,7 @@ const ProformaCreatePage: React.FC = () => {
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
     if (currency === 'USD' || currency === '$') return '$';
-    if (currency === 'ILS' || currency === 'NIS' || currency === '₪') return '₪';
+    if (currency === '₪') return '₪';
     return currency;
   };
 

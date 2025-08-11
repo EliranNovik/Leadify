@@ -416,8 +416,10 @@ const CollectionPage: React.FC = () => {
     if (!dueDate) return false;
     const due = new Date(dueDate);
     const now = new Date();
-    const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
-    return due < oneMonthAgo;
+    // Set both dates to start of day for accurate comparison
+    due.setHours(0, 0, 0, 0);
+    now.setHours(0, 0, 0, 0);
+    return due < now;
   };
 
   // Helper to determine if a payment is due soon (today or tomorrow)
@@ -469,13 +471,7 @@ const CollectionPage: React.FC = () => {
   });
 
   // Calculate the number of overdue payments
-  const overdueCount = awaitingPayments.filter(row => {
-    if (!row.date) return false;
-    const due = new Date(row.date);
-    const now = new Date();
-    const oneMonthAgo = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
-    return due < oneMonthAgo;
-  }).length;
+  const overdueCount = awaitingPayments.filter(row => isOverdue(row.date)).length;
 
   const [paidCasesOrderFilter, setPaidCasesOrderFilter] = useState('all');
   const [paidCasesDateFilter, setPaidCasesDateFilter] = useState('');
@@ -1102,7 +1098,7 @@ const CollectionPage: React.FC = () => {
                   {filteredAwaitingPayments.map((row) => (
                     <tr key={row.id}>
                       <td>
-                        <span className={`flex items-center gap-1 px-3 py-1 rounded-full font-bold shadow ${isOverdue(row.date) ? 'bg-gradient-to-tr from-red-500 via-pink-500 to-orange-400 text-white' : isDueSoon(row.date) ? 'bg-gradient-to-tr from-yellow-400 via-orange-400 to-pink-400 text-white' : 'bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white'}`}>
+                        <span className={`flex items-center gap-1 px-3 py-1 rounded-full font-bold shadow ${isOverdue(row.date) ? 'bg-gradient-to-tr from-red-500 via-pink-500 to-orange-400 text-white' : isDueSoon(row.date) ? 'bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white' : 'bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white'}`}>
                           {isOverdue(row.date) ? 'Overdue' : isDueSoon(row.date) ? 'Due Soon' : 'Due'}
                         </span>
                       </td>
@@ -1147,7 +1143,7 @@ const CollectionPage: React.FC = () => {
                   <div className="flex-1 flex flex-col">
                     {/* Lead Number and Name */}
                     <div className="mb-3 flex items-center gap-2">
-                      <span className={`flex items-center gap-1 px-3 py-1 rounded-full font-bold shadow ${isOverdue(row.date) ? 'bg-gradient-to-tr from-red-500 via-pink-500 to-orange-400 text-white' : isDueSoon(row.date) ? 'bg-gradient-to-tr from-yellow-400 via-orange-400 to-pink-400 text-white' : 'bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white'}`}>
+                      <span className={`flex items-center gap-1 px-3 py-1 rounded-full font-bold shadow ${isOverdue(row.date) ? 'bg-gradient-to-tr from-red-500 via-pink-500 to-orange-400 text-white' : isDueSoon(row.date) ? 'bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white' : 'bg-gradient-to-tr from-purple-500 via-primary to-pink-400 text-white'}`}>
                         {isOverdue(row.date) ? 'Overdue' : isDueSoon(row.date) ? 'Due Soon' : 'Due'}
                       </span>
                       <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.lead_number}</span>
@@ -1313,7 +1309,7 @@ const CollectionPage: React.FC = () => {
               >
                 <option value="all">All</option>
                 <option value="first payment">First Payment</option>
-                <option value="second payment">Second Payment</option>
+                <option value="intermediate payment">Intermediate Payment</option>
                 <option value="one payment">One Payment</option>
                 <option value="final payment">Final Payment</option>
               </select>

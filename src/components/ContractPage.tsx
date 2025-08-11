@@ -25,9 +25,37 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     result = result.replace(/{{applicant_count}}/g, customPricing.applicant_count?.toString() || '');
     result = result.replace(/{{total_amount}}/g, customPricing.total_amount?.toLocaleString() || '');
     result = result.replace(/{{final_amount}}/g, customPricing.final_amount?.toLocaleString() || '');
-    result = result.replace(/{{discount_percentage}}/g, customPricing.discount_percentage?.toString() || '');
-    result = result.replace(/{{discount_amount}}/g, customPricing.discount_amount?.toLocaleString() || '');
+    
+    // Handle discount placeholders - only show if there's an actual discount
+    const discountPercentage = Number(customPricing.discount_percentage) || 0;
+    const discountAmount = Number(customPricing.discount_amount) || 0;
+    
+    if (discountPercentage > 0 && discountAmount > 0) {
+      // Only replace discount placeholders if there's an actual discount
+      result = result.replace(/{{discount_percentage}}/g, discountPercentage.toString());
+      result = result.replace(/{{discount_amount}}/g, discountAmount.toLocaleString());
+    } else {
+      // Remove lines that contain discount information when there's no discount
+      result = result.replace(/.*discount.*total.*%.*/gi, ''); // Remove lines mentioning discount
+      result = result.replace(/.*The client receives a discount.*/gi, ''); // Remove specific discount text
+      result = result.replace(/.*{{discount_percentage}}.*/g, ''); // Remove lines with discount percentage placeholder
+      result = result.replace(/.*{{discount_amount}}.*/g, ''); // Remove lines with discount amount placeholder
+    }
+    
     result = result.replace(/{{currency}}/g, customPricing.currency || '');
+    
+    // Handle payment plan placeholders
+    if (customPricing.payment_plan && Array.isArray(customPricing.payment_plan)) {
+      customPricing.payment_plan.forEach((row: any, index: number) => {
+        const placeholder = `{{payment_${index + 1}_percent}}`;
+        const valuePlaceholder = `{{payment_${index + 1}_value}}`;
+        const duePlaceholder = `{{payment_${index + 1}_due}}`;
+        
+        result = result.replace(new RegExp(placeholder, 'g'), row.percent?.toString() || '0');
+        result = result.replace(new RegExp(valuePlaceholder, 'g'), `${customPricing.currency} ${row.value?.toLocaleString() || '0'}`);
+        result = result.replace(new RegExp(duePlaceholder, 'g'), row.payment_order || row.label || '');
+      });
+    }
   }
   
   // Use contact information if available, otherwise fall back to client
@@ -95,16 +123,16 @@ function buildPaymentPlan(finalAmount: number, archivalFee: number) {
   if (archivalFee > 0) {
     plan.push({
       percent: 100,
-      due: 'On signing',
+      due_date: 'On signing',
       value: archivalFee,
       label: 'Archival Research',
     });
   }
   if (finalAmount > 0) {
     plan.push(
-      { percent: 50, due: 'On signing', value: Math.round(finalAmount * 0.5), label: 'First Service Payment' },
-      { percent: 25, due: '30 days', value: Math.round(finalAmount * 0.25), label: 'Second Service Payment' },
-      { percent: 25, due: '60 days', value: Math.round(finalAmount * 0.25), label: 'Final Service Payment' }
+      { percent: 50, due_date: 'On signing', value: Math.round(finalAmount * 0.5), label: 'First Payment' },
+      { percent: 25, due_date: '30 days', value: Math.round(finalAmount * 0.25), label: 'Intermediate Payment' },
+      { percent: 25, due_date: '60 days', value: Math.round(finalAmount * 0.25), label: 'Final Payment' }
     );
   }
   return plan;
@@ -270,9 +298,9 @@ const ContractPage: React.FC = () => {
             
             // Default payment plan: 50/25/25
             const paymentPlan = [
-              { percent: 50, due: 'On signing', amount: Math.round(finalAmount * 0.5) },
-              { percent: 25, due: '30 days', amount: Math.round(finalAmount * 0.25) },
-              { percent: 25, due: '60 days', amount: Math.round(finalAmount * 0.25) },
+              { percent: 50, due_date: 'On signing', value: Math.round(finalAmount * 0.5) },
+              { percent: 25, due_date: '30 days', value: Math.round(finalAmount * 0.25) },
+              { percent: 25, due_date: '60 days', value: Math.round(finalAmount * 0.25) },
             ];
             
             setCustomPricing({
@@ -413,9 +441,9 @@ const ContractPage: React.FC = () => {
     if (customPricing && (!customPricing.payment_plan || customPricing.payment_plan.length === 0)) {
       const finalAmount = customPricing.final_amount || 0;
       const defaultPlan = [
-        { percent: 50, due: 'On signing', amount: Math.round(finalAmount * 0.5) },
-        { percent: 25, due: '30 days', amount: Math.round(finalAmount * 0.25) },
-        { percent: 25, due: '60 days', amount: Math.round(finalAmount * 0.25) },
+        { percent: 50, due_date: 'On signing', value: Math.round(finalAmount * 0.5) },
+        { percent: 25, due_date: '30 days', value: Math.round(finalAmount * 0.25) },
+        { percent: 25, due_date: '60 days', value: Math.round(finalAmount * 0.25) },
       ];
       const updated = { ...customPricing, payment_plan: defaultPlan };
       setCustomPricing(updated);
@@ -435,16 +463,43 @@ const ContractPage: React.FC = () => {
     }
   }, [contract, customPricing]);
 
-  // When initializing or updating customPricing, use buildPaymentPlan
+  // When initializing or updating customPricing, use buildPaymentPlan with VAT calculations
   useEffect(() => {
     if (!customPricing) return;
     const archivalFee = customPricing.archival_research_fee || 0;
     const finalAmount = customPricing.final_amount || 0;
-    const paymentPlan = buildPaymentPlan(finalAmount, archivalFee);
+    
+         // Calculate base total and VAT for payment plan
+     const baseTotal = (customPricing.total_amount || 0) + archivalFee;
+     const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+     const discountAmount = customPricing?.discount_amount || 0;
+     
+     // Calculate VAT on the discounted amount (baseTotal - discountAmount)
+     const discountedBaseTotal = baseTotal - discountAmount;
+     
+     // Build the basic payment plan structure
+     const basicPaymentPlan = buildPaymentPlan(finalAmount, archivalFee);
+     
+     // Update each payment to show value + VAT only if there's VAT
+     const paymentPlan = basicPaymentPlan.map((payment: any) => {
+       if (payment.label === 'Archival Research') {
+         // Archival research fee is already the full amount
+         return payment;
+       } else {
+         // For regular payments, calculate base value and add VAT (based on discounted amount)
+         const baseValueForThisPercent = Math.round((discountedBaseTotal * payment.percent) / 100);
+         const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+         return {
+           ...payment,
+           value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+         };
+       }
+     });
+    
     if (JSON.stringify(customPricing.payment_plan) !== JSON.stringify(paymentPlan)) {
       setCustomPricing((prev: typeof customPricing) => ({ ...prev, payment_plan: paymentPlan }));
     }
-  }, [customPricing?.final_amount, customPricing?.archival_research_fee]);
+  }, [customPricing?.final_amount, customPricing?.archival_research_fee, customPricing?.total_amount, contract?.client_country, customPricing?.currency]);
 
   // Discount options
   const discountOptions = [0, 5, 10, 15, 20];
@@ -472,14 +527,31 @@ const ContractPage: React.FC = () => {
     const discountAmount = Math.round(total * (discount / 100));
     const finalAmount = total - discountAmount;
     
-    // Recalculate payment plan amounts
+    // Calculate final amount with VAT for payment plan calculations
+    const archivalFee = customPricing?.archival_research_fee || 0;
+    const baseTotal = total + archivalFee;
+    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+    
+    // Calculate VAT on the discounted amount (baseTotal - discountAmount)
+    const discountedBaseTotal = baseTotal - discountAmount;
+    const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
+    const finalAmountWithVat = discountedBaseTotal + vatAmount;
+    
+    // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
     let paymentPlan = customPricing.payment_plan || [];
     if (paymentPlan.length > 0) {
       const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-      paymentPlan = paymentPlan.map((row: any) => ({
-        ...row,
-        amount: Math.round(finalAmount * (Number(row.percent) / totalPercent)),
-      }));
+      paymentPlan = paymentPlan.map((row: any) => {
+        // Calculate the base value for this percentage (based on discounted amount)
+        const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+        // Calculate the VAT for this percentage
+        const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+        // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+        return {
+          ...row,
+          value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+        };
+      });
     }
     
     updateCustomPricing({
@@ -508,14 +580,31 @@ const ContractPage: React.FC = () => {
     const discountAmount = Math.round(total * (discount / 100));
     const finalAmount = total - discountAmount;
       
-    // Recalculate payment plan amounts
+    // Calculate final amount with VAT for payment plan calculations
+    const archivalFee = customPricing?.archival_research_fee || 0;
+    const baseTotal = total + archivalFee;
+    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+    
+    // Calculate VAT on the discounted amount (baseTotal - discountAmount)
+    const discountedBaseTotal = baseTotal - discountAmount;
+    const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
+    const finalAmountWithVat = discountedBaseTotal + vatAmount;
+      
+    // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
     let paymentPlan = customPricing.payment_plan || [];
     if (paymentPlan.length > 0) {
       const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-      paymentPlan = paymentPlan.map((row: any) => ({
-        ...row,
-        amount: Math.round(finalAmount * (Number(row.percent) / totalPercent)),
-      }));
+      paymentPlan = paymentPlan.map((row: any) => {
+        // Calculate the base value for this percentage (based on discounted amount)
+        const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+        // Calculate the VAT for this percentage
+        const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+        // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+        return {
+          ...row,
+          value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+        };
+      });
     }
       
       updateCustomPricing({
@@ -537,15 +626,38 @@ const ContractPage: React.FC = () => {
     const newPlan = [...(customPricing.payment_plan || [])];
     newPlan[idx] = { ...newPlan[idx], [field]: value };
     
-    // If changing amount, recalculate percentage
-    if (field === 'amount') {
-      const totalAmount = customPricing.final_amount || 0;
-      newPlan[idx].percent = totalAmount > 0 ? Math.round((value / totalAmount) * 100) : 0;
+    // Calculate the correct final amount including VAT
+    const archivalFee = customPricing?.archival_research_fee || 0;
+    const baseTotal = (customPricing?.total_amount || 0) + archivalFee;
+    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+    const discountAmount = customPricing?.discount_amount || 0;
+    
+    // Calculate VAT on the discounted amount (baseTotal - discountAmount)
+    const discountedBaseTotal = baseTotal - discountAmount;
+    const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
+    const finalAmountWithVat = discountedBaseTotal + vatAmount;
+    
+    // If changing value (amount), recalculate percentage
+    if (field === 'value') {
+      // Parse the value string to extract the total amount
+      let totalValue = 0;
+      if (typeof value === 'string' && value.includes('+')) {
+        // Extract numbers from "value + vat" format
+        const parts = value.split('+').map(part => parseFloat(part.trim()) || 0);
+        totalValue = parts.reduce((sum, part) => sum + part, 0);
+      } else {
+        totalValue = parseFloat(value) || 0;
+      }
+      newPlan[idx].percent = finalAmountWithVat > 0 ? Math.round((totalValue / finalAmountWithVat) * 100) : 0;
     }
-    // If changing percentage, recalculate amount
+    // If changing percentage, recalculate value (amount) - this should show "value + VAT" only if there's VAT
     else if (field === 'percent') {
-      const totalAmount = customPricing.final_amount || 0;
-      newPlan[idx].amount = Math.round((totalAmount * value) / 100);
+      // Calculate the base value for this percentage (based on discounted amount)
+      const baseValueForThisPercent = Math.round((discountedBaseTotal * value) / 100);
+      // Calculate the VAT for this percentage
+      const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+      // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+      newPlan[idx].value = isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString();
     }
     
     updateCustomPricing({ payment_plan: newPlan });
@@ -554,7 +666,7 @@ const ContractPage: React.FC = () => {
   const handleAddPaymentRow = () => {
     const newPlan = [
       ...(customPricing.payment_plan || []),
-      { percent: 0, due: '', amount: 0 },
+      { percent: 0, due_date: '', value: 0 },
     ];
     updateCustomPricing({ payment_plan: newPlan });
   };
@@ -600,14 +712,33 @@ const ContractPage: React.FC = () => {
         alert('Please set the number of applicants before signing.');
         return;
       }
-      // Recalculate payment plan amounts
+      // Recalculate payment plan amounts and convert "value + VAT" format to separate numeric values
       let updatedPaymentPlan = latestPricing.payment_plan || [];
       if (updatedPaymentPlan.length > 0) {
         const totalPercent = updatedPaymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-        updatedPaymentPlan = updatedPaymentPlan.map((row: any) => ({
-          ...row,
-          amount: Math.round(finalAmount * (Number(row.percent) / totalPercent)),
-        }));
+        updatedPaymentPlan = updatedPaymentPlan.map((row: any) => {
+          // Parse the "value + VAT" format to extract separate values
+          let value = 0;
+          let value_vat = 0;
+          
+                     if (typeof row.value === 'string' && row.value.includes('+')) {
+             // Extract numbers from "value + vat" format
+             const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+             value = parts[0] || 0;
+             value_vat = parts[1] || 0;
+           } else {
+            // If it's already a number or doesn't have the format, use as is
+            value = parseFloat(row.value) || 0;
+            value_vat = 0;
+          }
+          
+          return {
+            ...row,
+            value: value,
+            value_vat: value_vat,
+            amount: value + value_vat, // Keep amount for backward compatibility
+          };
+        });
       }
       // Update the contract with the rebuilt payment plan and final amount before signing
       await supabase.from('contracts').update({
@@ -708,7 +839,7 @@ const ContractPage: React.FC = () => {
       const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
       paymentPlan = paymentPlan.map((row: any) => ({
         ...row,
-        amount: Math.round(finalAmount * (Number(row.percent) / totalPercent)),
+        value: Math.round(finalAmount * (Number(row.percent) / totalPercent)),
       }));
     }
     // Update customPricing
@@ -879,7 +1010,7 @@ const ContractPage: React.FC = () => {
           paymentPlanIndex.current++;
           if (row) {
             result.push(
-              <span className="inline-block bg-blue-50 border border-blue-200 rounded-lg px-3 py-1 mx-1 text-sm font-medium" key={keyPrefix + '-pprow-' + rowIndex}>
+              <span className="inline-block text-black font-medium border-b-2 border-black" key={keyPrefix + '-pprow-' + rowIndex}>
                 {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {row.value?.toLocaleString()}
               </span>
             );
@@ -932,14 +1063,14 @@ const ContractPage: React.FC = () => {
           if (asClient) {
             // In client view, show the payment plan data as text
             return (
-              <span className="inline-block bg-blue-50 border border-blue-200 rounded-lg px-3 py-1 mx-1 text-sm font-medium">
+              <span className="inline-block text-black font-medium border-b-2 border-black">
                 {row.percent}% {row.due} = {customPricing.currency} {row.amount?.toLocaleString()}
               </span>
           );
         } else {
             // In admin view, show editable fields
             return (
-              <div className="inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg p-2 my-1">
+              <span className="inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg p-2 my-1">
               <input
                 type="number"
                 min={0}
@@ -967,7 +1098,7 @@ const ContractPage: React.FC = () => {
                   placeholder="Amount"
                 />
                 <span className="text-sm font-medium">{customPricing.currency}</span>
-              </div>
+              </span>
             );
           }
         }
@@ -1220,7 +1351,7 @@ const ContractPage: React.FC = () => {
           const row = customPricing.payment_plan[rowIndex];
           if (row) {
             parts.push(
-              <span key={keyPrefix + '-pprow-' + rowIndex} className="inline-block bg-blue-50 border border-blue-200 rounded-lg px-3 py-1 mx-1 text-sm font-medium">
+              <span key={keyPrefix + '-pprow-' + rowIndex} className="inline-block text-black font-medium border-b-2 border-black">
                 {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {row.value?.toLocaleString()}
               </span>
             );
@@ -1430,7 +1561,7 @@ const ContractPage: React.FC = () => {
   // Before the return statement in ContractPage, define VAT logic
   const archivalFee = customPricing?.archival_research_fee || 0;
   const baseTotal = (customPricing?.total_amount || 0) + archivalFee;
-  const isIsraeli = contract?.client_country === 'IL' || customPricing?.currency === 'NIS';
+        const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
   const vatAmount = isIsraeli ? Math.round(baseTotal * 0.18 * 100) / 100 : 0;
   const discountAmount = customPricing?.discount_amount || 0;
   const finalAmountWithVat = baseTotal + vatAmount - discountAmount;
@@ -1595,7 +1726,7 @@ const ContractPage: React.FC = () => {
                   <div className="space-y-3 text-sm">
                     <div>
                       <span className="font-medium text-gray-700">Status:</span>
-                      <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'badge-warning'}`}>{status}</span>
+                      <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
                     </div>
                     <div className="text-gray-700 flex items-center"><span className="font-medium">Applicants:</span> <span className="ml-2">{customPricing?.applicant_count || ''}</span></div>
                     <div className="text-gray-700 flex items-center">
@@ -1768,14 +1899,31 @@ const ContractPage: React.FC = () => {
                             const discountAmount = Math.round(total * (discount / 100));
                             const finalAmount = total - discountAmount;
                             
-                            // Recalculate payment plan amounts
+                            // Calculate final amount with VAT for payment plan calculations
+                            const archivalFee = customPricing?.archival_research_fee || 0;
+                            const baseTotal = total + archivalFee;
+                            const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+                            
+                            // Calculate VAT on the discounted amount (baseTotal - discountAmount)
+                            const discountedBaseTotal = baseTotal - discountAmount;
+                            const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
+                            const finalAmountWithVat = discountedBaseTotal + vatAmount;
+                            
+                            // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
                             let paymentPlan = customPricing.payment_plan || [];
                             if (paymentPlan.length > 0) {
                               const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-                              paymentPlan = paymentPlan.map((row: any) => ({
-                                ...row,
-                                amount: Math.round(finalAmount * (Number(row.percent) / totalPercent)),
-                              }));
+                              paymentPlan = paymentPlan.map((row: any) => {
+                                // Calculate the base value for this percentage (based on discounted amount)
+                                const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                // Calculate the VAT for this percentage
+                                const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+                                // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+                                return {
+                                  ...row,
+                                  value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+                                };
+                              });
                             }
                             
                             updateCustomPricing({
@@ -1817,58 +1965,58 @@ const ContractPage: React.FC = () => {
                         </div>
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-gray-900">Final Amount:</span>
-                          <span className="font-bold text-lg text-blue-600">{customPricing.currency} {totalWithArchival.toLocaleString()}</span>
+                          <span className="font-bold text-lg text-blue-600">{customPricing.currency} {finalAmountWithVat.toLocaleString()}</span>
                         </div>
                       </div>
 
                       {/* Payment Plan Editor */}
                       <div>
                         <h4 className="font-semibold text-gray-900 mb-3">Payment Plan</h4>
+                        {(() => {
+                          const totalPercent = (customPricing.payment_plan || []).reduce((sum: number, row: any) => sum + Number(row.percent), 0);
+                          if (totalPercent < 100) {
+                            return (
+                              <div className="flex items-center gap-3 p-4 mb-3 rounded-xl shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                </svg>
+                                <span className="font-medium">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
                         <div className="space-y-3">
                           {(customPricing.payment_plan || []).map((row: any, idx: number) => (
-                            <div key={idx} className="flex items-center gap-2 bg-gray-50 p-3 rounded-lg">
+                            <div key={idx} className="flex items-center gap-3 bg-gray-50 p-4 rounded-lg">
                               <input
                                 type="number"
                                 min={0}
                                 max={100}
-                                className="input input-bordered input-lg w-20 text-center bg-white text-lg font-bold px-3 py-2 rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-                                value={row.percent}
-                                onChange={e => handlePaymentPlanChange(idx, 'percent', Number(e.target.value))}
+                                className="input input-bordered w-24 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                value={row.percent === 0 ? '' : row.percent}
+                                onChange={e => {
+                                  const value = e.target.value;
+                                  // If the field is empty or 0, treat it as 0
+                                  const numValue = value === '' ? 0 : Number(value);
+                                  handlePaymentPlanChange(idx, 'percent', numValue);
+                                }}
                                 placeholder="%"
                                 disabled={status === 'signed'}
                               />
-                              <span className="text-xs">%</span>
-                              {idx === 0 ? (
-                                <input
-                                  type="text"
-                                  className="input input-bordered input-sm w-28 text-center bg-white"
-                                  value={row.due_date}
-                                  onChange={e => handlePaymentPlanChange(idx, 'due_date', e.target.value)}
-                                  placeholder="When"
-                                  disabled={status === 'signed'}
-                                />
-                              ) : (
-                                <input
-                                  type="text"
-                                  className="input input-bordered input-sm w-28 text-center bg-gray-100 text-gray-400"
-                                  value={''}
-                                  placeholder=""
-                                  disabled
-                                />
-                              )}
-                              <span className="text-xs">=</span>
+                              <span className="text-lg font-semibold text-gray-700">%</span>
+                              <span className="text-lg font-semibold text-gray-700">=</span>
                               <input
-                                type="number"
-                                min={0}
-                                className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-3 py-2 rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                type="text"
+                                className="input input-bordered w-40 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 border-blue-300 focus:border-blue-500"
                                 value={row.value}
-                                onChange={e => handlePaymentPlanChange(idx, 'value', Number(e.target.value))}
-                                placeholder="Amount"
+                                onChange={e => handlePaymentPlanChange(idx, 'value', e.target.value)}
+                                placeholder="Value + VAT"
                                 disabled={status === 'signed'}
                               />
-                              <span className="text-xs">{customPricing.currency}</span>
+                              <span className="text-lg font-semibold text-gray-700">{customPricing.currency}</span>
                               <button 
-                                className="btn btn-xs btn-circle btn-ghost text-red-500 hover:bg-red-100" 
+                                className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-xl font-bold w-10 h-10" 
                                 onClick={() => handleDeletePaymentRow(idx)}
                                 disabled={status === 'signed'}
                               >

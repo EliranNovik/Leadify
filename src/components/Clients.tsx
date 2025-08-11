@@ -114,6 +114,7 @@ const getCurrencySymbol = (currencyCode?: string) => {
     case 'EUR':
       return '€';
     case 'NIS':
+    case '₪':
       return '₪';
     default:
       return '$';
@@ -122,9 +123,9 @@ const getCurrencySymbol = (currencyCode?: string) => {
 
 // Add currency options at the top of the component
 const currencyOptions = [
-  { value: 'NIS', label: 'NIS' },
-  { value: 'USD', label: 'USD' },
-  { value: 'EUR', label: 'EUR' },
+  { value: '₪', label: '₪' },
+  { value: '$', label: '$' },
+  { value: '€', label: '€' },
 ];
 
 // Add getValidTeamsLink helper (copied from MeetingTab)
@@ -253,9 +254,9 @@ const Clients: React.FC<ClientsProps> = ({
     numberOfApplicants: 1,
     potentialApplicants: 2,
     proposalTotal: '0.0',
-    proposalCurrency: 'NIS',
+    proposalCurrency: '₪',
     meetingTotal: '0.0',
-    meetingTotalCurrency: 'NIS',
+    meetingTotalCurrency: '₪',
     meetingPaymentForm: '',
     specialNotes: '',
   });
@@ -265,7 +266,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [offerSending, setOfferSending] = useState(false);
   const [offerTemplateLang, setOfferTemplateLang] = useState<'en'|'he'|null>(null);
   const [offerTotal, setOfferTotal] = useState(selectedClient?.proposal_total || '');
-  const [offerCurrency, setOfferCurrency] = useState(selectedClient?.proposal_currency || 'NIS');
+  const [offerCurrency, setOfferCurrency] = useState(selectedClient?.proposal_currency || '₪');
   const [showSignedDrawer, setShowSignedDrawer] = useState(false);
   const [signedDate, setSignedDate] = useState(() => {
     const today = new Date();
@@ -287,7 +288,7 @@ const Clients: React.FC<ClientsProps> = ({
     potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
     balance: selectedClient?.balance || '',
     next_followup: selectedClient?.next_followup || '',
-    balance_currency: selectedClient?.balance_currency || 'NIS',
+          balance_currency: selectedClient?.balance_currency || '₪',
   });
   // Main categories for Edit Lead drawer
   const [mainCategories, setMainCategories] = useState<string[]>([]);
@@ -312,7 +313,7 @@ const Clients: React.FC<ClientsProps> = ({
     manager: '',
     helper: '',
     amount: '',
-    currency: 'NIS',
+    currency: '₪',
   });
   const [meetingToDelete, setMeetingToDelete] = useState(null);
 
@@ -346,7 +347,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [showSuccessDrawer, setShowSuccessDrawer] = useState(false);
   const [successForm, setSuccessForm] = useState({
     handler: '',
-    currency: 'NIS',
+    currency: '₪',
     numApplicants: '',
     proposal: '',
     potentialValue: '',
@@ -380,7 +381,7 @@ const Clients: React.FC<ClientsProps> = ({
     setShowSuccessDrawer(true);
     setSuccessForm({
       handler: '', // No default name
-      currency: selectedClient?.proposal_currency || 'NIS',
+      currency: selectedClient?.proposal_currency || '₪',
       numApplicants: selectedClient?.number_of_applicants_meeting || '',
       proposal: selectedClient?.proposal_total || '',
       potentialValue: selectedClient?.potential_value || '',
@@ -722,7 +723,7 @@ const Clients: React.FC<ClientsProps> = ({
     return (
       <span
         className="badge badge-sm ml-2 px-3 py-1 min-w-max whitespace-nowrap"
-        style={{ background: '#7c3aed', color: '#fff', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem' }}
+        style={{ background: '#ffffff', color: '#7c3aed', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem', border: '2px solid #7c3aed' }}
       >
         {formatted}
       </span>
@@ -820,7 +821,7 @@ const Clients: React.FC<ClientsProps> = ({
         meeting_time: meetingFormData.time,
         meeting_location: meetingFormData.location,
         meeting_manager: meetingFormData.manager || '',
-        meeting_currency: 'NIS',
+        meeting_currency: '₪',
         meeting_amount: 0,
         expert: selectedClient.expert || '---',
         helper: meetingFormData.helper || '---',
@@ -1006,7 +1007,7 @@ const Clients: React.FC<ClientsProps> = ({
     setOfferBody('');
     setOfferTemplateLang(null);
     setOfferTotal(selectedClient?.proposal_total || '');
-    setOfferCurrency(selectedClient?.proposal_currency || 'NIS');
+    setOfferCurrency(selectedClient?.proposal_currency || '₪');
     setShowSendOfferDrawer(true);
   };
 
@@ -1179,7 +1180,7 @@ const Clients: React.FC<ClientsProps> = ({
         potential_applicants_meeting: selectedClient.potential_applicants_meeting || '',
         balance: selectedClient.balance || '',
         next_followup: selectedClient.next_followup || '',
-        balance_currency: selectedClient.balance_currency || 'NIS',
+        balance_currency: selectedClient.balance_currency || '₪',
       });
     }
   }, [selectedClient]);
@@ -1394,7 +1395,7 @@ const Clients: React.FC<ClientsProps> = ({
       toast.success('The new meeting was scheduled and the client was notified.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: 'NIS' });
+      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: '₪' });
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
       toast.error('Failed to reschedule meeting.');
@@ -1928,7 +1929,7 @@ const Clients: React.FC<ClientsProps> = ({
     tags: '',
     // Details step fields
     handler: '',
-    currency: 'NIS',
+          currency: '₪',
     numApplicants: '',
     proposal: '',
     potentialValue: '',
@@ -1969,7 +1970,7 @@ const Clients: React.FC<ClientsProps> = ({
         stage: 'Created',
         probability: 0,
         balance: 0,
-        balance_currency: subLeadForm.currency || 'NIS',
+        balance_currency: subLeadForm.currency || '₪',
         handler: subLeadForm.handler,
         number_of_applicants_meeting: subLeadForm.numApplicants === '' ? null : Number(subLeadForm.numApplicants),
         proposal_total: subLeadForm.proposal === '' ? null : Number(subLeadForm.proposal),
@@ -2176,7 +2177,7 @@ const Clients: React.FC<ClientsProps> = ({
                     <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
                       <UserIcon className="w-5 h-5 text-white" />
                     </div>
-                    <span className="inline-flex items-center px-3 py-1 rounded-full bg-[#3b28c7] text-white text-xs font-semibold">Client Information</span>
+                    <span className="text-base font-semibold text-gray-900">Client Information</span>
                   </div>
                   {/* Removed top divider under title */}
 
@@ -2186,7 +2187,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">
                         <EnvelopeIcon className="w-3.5 h-3.5 text-[#3b28c7]" />
                       </div>
-                      <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="mt-1 block text-base font-semibold text-gray-900 break-all">
+                      <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="mt-1 block text-sm font-semibold text-gray-900 break-all">
                         {selectedClient ? selectedClient.email : '---'}
                       </a>
                     </div>
@@ -2194,7 +2195,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">
                         <PhoneIcon className="w-3.5 h-3.5 text-[#3b28c7]" />
                       </div>
-                      <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="mt-1 block text-base font-semibold text-gray-900">
+                      <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="mt-1 block text-sm font-semibold text-gray-900">
                         {selectedClient ? selectedClient.phone : '---'}
                       </a>
                     </div>
@@ -2203,27 +2204,17 @@ const Clients: React.FC<ClientsProps> = ({
                     {/* Row 2: Category | Topic */}
                     <div className="md:pr-4">
                       <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Category</div>
-                      <p className="mt-1 text-base font-semibold text-gray-900">
+                      <p className="mt-1 text-sm font-semibold text-gray-900">
                         {selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}
                       </p>
                     </div>
                     <div className="md:pl-4">
                       <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Topic</div>
-                      <p className="mt-1 text-base font-semibold text-gray-900">
+                      <p className="mt-1 text-sm font-semibold text-gray-900">
                         {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
                       </p>
                     </div>
-                    {/* Optional Row 3 for handler */}
-                    {selectedClient?.stage === 'handler_assigned' && (
-                      <>
-                        <div className="col-span-1 md:col-span-2 border-t border-gray-200 my-3"></div>
-                        <div className="md:pr-4">
-                          <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Handler</div>
-                          <p className="mt-1 text-base font-semibold text-gray-900">{selectedClient?.handler || 'Not assigned'}</p>
-                        </div>
-                        <div className="md:pl-4"></div>
-                      </>
-                    )}
+
                   </div>
                               </div>
 
@@ -2233,7 +2224,7 @@ const Clients: React.FC<ClientsProps> = ({
                     <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
                       <ChartPieIcon className="w-5 h-5 text-white" />
                     </div>
-                    <span className="inline-flex items-center px-3 py-1 rounded-full bg-[#3b28c7] text-white text-xs font-semibold">Case Summary</span>
+                    <span className="text-base font-semibold text-gray-900">Case Summary</span>
                   </div>
                   {/* Removed top divider under title */}
 
@@ -2241,7 +2232,7 @@ const Clients: React.FC<ClientsProps> = ({
                       {/* Row 1: Next Meeting | Eligibility */}
                       <div className="md:pr-4">
                         <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Next Meeting</div>
-                        <p className="mt-1 text-base font-semibold text-gray-900">
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
                           {latestMeetingDate ? (
                             <>
                               {new Date(latestMeetingDate).toLocaleDateString('en-US', {
@@ -2262,7 +2253,7 @@ const Clients: React.FC<ClientsProps> = ({
                       </div>
                       <div className="md:pl-4">
                         <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Eligibility</div>
-                        <p className="mt-1 text-base font-semibold text-gray-900">
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
                           {selectedClient?.eligibility_status || 'Not assessed'}
                           {selectedClient?.section_eligibility ? (
                             <span className="block text-sm opacity-90 mt-0.5">
@@ -2280,13 +2271,13 @@ const Clients: React.FC<ClientsProps> = ({
                       {/* Row 2: Citizenship | Total Applicants */}
                       <div className="md:pr-4">
                         <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Citizenship</div>
-                        <p className="mt-1 text-base font-semibold text-gray-900">
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
                           {selectedClient?.topic || 'Not specified'}
                         </p>
                       </div>
                       <div className="md:pl-4">
                         <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Total Applicants</div>
-                        <p className="mt-1 text-base font-semibold text-gray-900">
+                        <p className="mt-1 text-sm font-semibold text-gray-900">
                           {selectedClient?.potential_applicants || selectedClient?.total_applicants || 0}
                         </p>
                       </div>
@@ -2299,7 +2290,7 @@ const Clients: React.FC<ClientsProps> = ({
                     <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
                       <ChartBarIcon className="w-5 h-5 text-white" />
                     </div>
-                    <span className="inline-flex items-center px-3 py-1 rounded-full bg-[#3b28c7] text-white text-xs font-semibold">Progress & Follow-up</span>
+                    <span className="text-base font-semibold text-gray-900">Progress & Follow-up</span>
                   </div>
                 {/* Removed top divider under title */}
 
@@ -2308,7 +2299,7 @@ const Clients: React.FC<ClientsProps> = ({
                   <div className="pb-2 border-b border-gray-200 last:border-b-0">
                     <div className="flex items-center justify-between mb-2">
                       <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Probability</p>
-                      <span className="text-base font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
+                      <span className="text-sm font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
                     </div>
                     <div className="w-full bg-gray-200 rounded-full h-2">
                       <div 
@@ -2321,7 +2312,7 @@ const Clients: React.FC<ClientsProps> = ({
                   {/* Next Follow-up */}
                   <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
                     <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Next Follow-up</p>
-                    <p className="text-base text-gray-900 text-right">
+                    <p className="text-sm text-gray-900 text-right">
                       {selectedClient?.next_followup ? (
                         new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
                           month: 'short',
@@ -2334,19 +2325,12 @@ const Clients: React.FC<ClientsProps> = ({
                     </p>
                   </div>
 
-                  {/* Amount */}
-                  <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-                    <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Amount</p>
-                    <p className="text-base font-semibold text-gray-900 text-right">
-                      {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
-                      {(selectedClient?.balance || 0).toLocaleString()}
-                    </p>
-                  </div>
+
 
                   {/* Closer */}
                   <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
                     <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Closer</p>
-                    <p className="text-base text-gray-900 text-right">
+                    <p className="text-sm text-gray-900 text-right">
                       {selectedClient?.closer || 'Not assigned'}
                     </p>
                   </div>
@@ -2355,7 +2339,7 @@ const Clients: React.FC<ClientsProps> = ({
                   {selectedClient?.stage === 'handler_assigned' && (
                     <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
                       <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Handler</p>
-                      <p className="text-base text-gray-900 text-right">
+                      <p className="text-sm text-gray-900 text-right">
                         {selectedClient?.handler || 'Not assigned'}
                       </p>
                     </div>
@@ -2374,22 +2358,26 @@ const Clients: React.FC<ClientsProps> = ({
             <span className="hidden sm:inline w-2 h-2 bg-[#3b28c7] rounded-full" />
             <span className="text-2xl font-bold truncate max-w-[40vw]">{selectedClient?.name || '---'}</span>
             {selectedClient?.language && (
-              <label className="ml-2 btn btn-lg text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-base truncate whitespace-nowrap">
+              <label className="ml-2 btn btn-md text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm truncate whitespace-nowrap">
                 {selectedClient.language}
               </label>
             )}
             {selectedClient?.stage && (
-              <label className="btn btn-lg btn-primary text-white gap-3 text-base truncate">
+              <label className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm truncate">
                 {selectedClient.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
               </label>
             )}
           </div>
 
           <div className="flex items-center gap-3 pr-2">
+            <span className="text-2xl font-bold text-black mr-3">
+              {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
+              {(selectedClient?.balance || 0).toLocaleString()}
+            </span>
             <div className="dropdown">
-              <label tabIndex={0} className="btn btn-lg btn-primary text-white gap-3 text-base saira-regular">
+              <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
                 <span>Stages</span>
-                <ChevronDownIcon className="w-5 h-5" />
+                <ChevronDownIcon className="w-4 h-4 text-purple-600" />
               </label>
               <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                 {dropdownItems}
@@ -2417,9 +2405,9 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
             )}
             <div className="dropdown">
-              <label tabIndex={0} className="btn btn-lg btn-primary text-white gap-3 text-base saira-regular">
+              <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
                 <span>Actions</span>
-                <ChevronDownIcon className="w-5 h-5" />
+                <ChevronDownIcon className="w-4 h-4 text-purple-600" />
               </label>
               <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                 <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
@@ -3168,9 +3156,10 @@ const Clients: React.FC<ClientsProps> = ({
               <div>
                 <label className="block font-semibold mb-1">Balance Currency</label>
                 <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
-                  <option value="NIS">NIS</option>
-                  <option value="USD">USD</option>
-                  <option value="EUR">EUR</option>
+                  <option value="₪">₪ (ILS)</option>
+                  <option value="$">$ (USD)</option>
+                  <option value="€">€ (EUR)</option>
+                  <option value="£">£ (GBP)</option>
                 </select>
               </div>
             </div>

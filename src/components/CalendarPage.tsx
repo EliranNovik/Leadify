@@ -514,7 +514,7 @@ const CalendarPage: React.FC = () => {
     // Calculate total NIS balance for the day
     const totalNIS = filtered.reduce((acc, meeting) => {
       const lead = meeting.lead || {};
-      if (typeof lead.balance === 'number' && (lead.balance_currency === 'NIS' || !lead.balance_currency)) {
+              if (typeof lead.balance === 'number' && (lead.balance_currency === '₪' || !lead.balance_currency)) {
         return acc + lead.balance;
       }
       return acc;

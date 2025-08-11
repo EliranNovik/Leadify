@@ -176,11 +176,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const [viewAsClient, setViewAsClient] = useState(false);
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
 
-  // New state for contract creation with applicant count and country
+  // New state for contract creation with applicant count and currency
   const [showContractCreation, setShowContractCreation] = useState(false);
   const [contractForm, setContractForm] = useState({
     applicantCount: 1,
-    clientCountry: 'IL', // Default to Israel
+    selectedCurrency: null as {id: string, front_name: string, iso_code: string, name: string} | null,
     selectedTemplateId: '',
     contactId: null as number | null,
   });
@@ -193,6 +193,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Add state for archival research option
   const [archivalResearch, setArchivalResearch] = useState<'none' | 'with'>('none');
+
+  // Add state for currencies from database
+  const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
 
   // Add country codes data
   const countryCodes = [
@@ -400,10 +403,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     });
   }, [client]);
 
-  // Fetch contract templates when component mounts
+  // Fetch contract templates and currencies when component mounts
   useEffect(() => {
+    // Fetch contract templates
     supabase.from('contract_templates').select('id, name, content, default_pricing_tiers, default_currency, default_country').then(({ data }) => {
       if (data) setContractTemplates(data);
+    });
+
+    // Fetch currencies from database
+    supabase.from('currencies').select('id, front_name, iso_code, name').eq('is_active', true).order('order_value').then(({ data, error }) => {
+      if (error) {
+        console.error('Error fetching currencies:', error);
+      } else if (data) {
+        setCurrencies(data);
+      }
     });
   }, []);
 
@@ -583,7 +596,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Create contract with minimal fields
   const handleCreateContract = async () => {
     console.log('handleCreateContract called with:', { contractForm, clientId: client?.id });
-    if (!contractForm.selectedTemplateId || !client?.id || !contractForm.contactId) {
+    if (!contractForm.selectedTemplateId || !client?.id || !contractForm.contactId || !contractForm.selectedCurrency) {
       console.log('handleCreateContract: Missing required data, returning early');
       return;
     }
@@ -613,9 +626,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       // Get the selected template to use its default pricing
       const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
       
-      // Initialize customPricing with correct currency based on country
-      const isIsraeli = contractForm.clientCountry === 'IL';
-      const currency = isIsraeli ? 'NIS' : 'USD';
+      // Initialize customPricing with correct currency based on selected currency
+      const isIsraeli = contractForm.selectedCurrency.iso_code === 'ILS';
+      const currency = contractForm.selectedCurrency.name;
       
       // Initialize pricing tiers - use template defaults if available, otherwise use system defaults
       const pricingTiers: { [key: string]: number } = {};
@@ -650,7 +663,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       
       // Calculate archivalFee before paymentPlan
       const archivalFee = archivalResearch === 'with'
-        ? (contractForm.clientCountry === 'IL' ? 1650 : contractForm.clientCountry === 'US' ? 850 : 0)
+        ? (contractForm.selectedCurrency.name === '₪' ? 1650 : contractForm.selectedCurrency.name === '$' ? 850 : 0)
         : 0;
 
       // Calculate due dates
@@ -671,15 +684,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         ];
         if (restAmount > 0) {
           paymentPlan = paymentPlan.concat([
-            { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Service Payment', notes: '', currency },
-            { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Second Service Payment', notes: '', currency },
-            { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Service Payment', notes: '', currency },
+            { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
+            { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
+            { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
           ]);
         }
       } else {
         paymentPlan = [
           { percent: 50, due_date: addDays(0), value: Math.round(finalAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
-          { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Second Payment', notes: '', currency },
+          { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
           { percent: 25, due_date: addDays(60), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
         ];
       }
@@ -707,7 +720,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contact_phone: contactPhone, // Save contact phone
         contact_mobile: contactMobile, // Save contact mobile
         applicant_count: contractForm.applicantCount,
-        client_country: contractForm.clientCountry,
+        client_country: contractForm.selectedCurrency.name,
         custom_pricing: initialCustomPricing, // Save initial customPricing with correct currency
       };
       console.log('handleCreateContract: Inserting contract data:', contractData);
@@ -737,7 +750,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       setShowContractCreation(false);
       setContractForm({
         applicantCount: 1,
-        clientCountry: 'IL',
+        selectedCurrency: null,
         selectedTemplateId: '',
         contactId: null,
       });
@@ -1152,7 +1165,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   {contactContracts[contact.id]?.name}
                                 </span>
                                 <span className={`badge badge-sm ${
-                                  contactContracts[contact.id]?.status === 'signed' ? 'badge-success' : 'badge-warning'
+                                  contactContracts[contact.id]?.status === 'signed' ? 'bg-purple-600 text-white border-none' : 'badge-warning'
                                 }`}>
                                   {contactContracts[contact.id]?.status}
                                 </span>
@@ -1308,12 +1321,18 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Client Country</label>
                 <select
                   className="select select-bordered w-full"
-                  value={contractForm.clientCountry}
-                  onChange={(e) => setContractForm(prev => ({ ...prev, clientCountry: e.target.value }))}
+                  value={contractForm.selectedCurrency?.id || ''}
+                  onChange={(e) => {
+                    const selectedCurrency = currencies.find(c => c.id === e.target.value);
+                    setContractForm(prev => ({ ...prev, selectedCurrency: selectedCurrency || null }));
+                  }}
                 >
-                  <option value="IL">Israel (NIS + VAT)</option>
-                  <option value="US">United States (USD)</option>
-                  <option value="OTHER">Other Countries (USD)</option>
+                  <option value="">Select a country/currency</option>
+                  {currencies.map(currency => (
+                    <option key={currency.id} value={currency.id}>
+                      {currency.front_name}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -1321,9 +1340,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               <div className="bg-gray-50 rounded-lg p-4">
                 <h3 className="text-lg font-semibold mb-3">Price Preview</h3>
                 {(() => {
-                  if (!contractForm.selectedTemplateId) {
-                    // No template selected: show zeroes
-                    const currency = contractForm.clientCountry === 'IL' ? 'NIS' : 'USD';
+                  if (!contractForm.selectedTemplateId || !contractForm.selectedCurrency) {
+                    // No template or currency selected: show zeroes
+                    const currency = contractForm.selectedCurrency?.iso_code || 'USD';
                     return (
                       <div className="space-y-2">
                         <div className="flex justify-between">
@@ -1339,9 +1358,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   }
                   // Template selected: use its pricing tiers if available
                   const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
-                  const isIsraeli = contractForm.clientCountry === 'IL';
+                  const isIsraeli = contractForm.selectedCurrency.iso_code === 'ILS';
                   let perApplicant = 0;
-                  let currency = isIsraeli ? 'NIS' : 'USD';
+                  let currency = contractForm.selectedCurrency.iso_code;
                   if (selectedTemplate?.default_currency) {
                     currency = selectedTemplate.default_currency;
                   }
@@ -1361,7 +1380,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
                   // Add state for archival research option
                   const archivalFee = archivalResearch === 'with'
-                    ? (contractForm.clientCountry === 'IL' ? 1650 : contractForm.clientCountry === 'US' ? 850 : 0)
+                    ? (contractForm.selectedCurrency?.name === '₪' ? 1650 : contractForm.selectedCurrency?.name === '$' ? 850 : 0)
                     : 0;
 
                   // Calculate due dates
@@ -1382,15 +1401,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     ];
                     if (restAmount > 0) {
                       paymentPlan = paymentPlan.concat([
-                        { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Service Payment', notes: '', currency },
-                        { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Second Service Payment', notes: '', currency },
-                        { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Service Payment', notes: '', currency },
+                        { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
+                        { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
+                        { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
                       ]);
                     }
                   } else {
                     paymentPlan = [
                       { percent: 50, due_date: addDays(0), value: Math.round(finalAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
-                      { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Second Payment', notes: '', currency },
+                      { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
                       { percent: 25, due_date: addDays(60), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
                     ];
                   }
@@ -1408,7 +1427,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       {archivalResearch === 'with' && (
                         <div className="flex justify-between">
                           <span className="text-gray-600">Archival Research:</span>
-                          <span className="font-semibold">{contractForm.clientCountry === 'IL' ? 'NIS' : 'USD'} {archivalFee.toLocaleString()}</span>
+                          <span className="font-semibold">{contractForm.selectedCurrency?.name || '$'} {archivalFee.toLocaleString()}</span>
                         </div>
                       )}
                     </div>

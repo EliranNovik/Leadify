@@ -143,7 +143,7 @@ const ProformaViewPage: React.FC = () => {
         // Patch: If addVat true, currency is NIS/ILS/₪, and vat is 0, recalc vat
         if (
           parsed.addVat &&
-          (parsed.currency === '₪' || parsed.currency === 'NIS' || parsed.currency === 'ILS') &&
+          (parsed.currency === '₪') &&
           (!parsed.vat || parsed.vat === 0)
         ) {
           parsed.vat = Math.round(parsed.total * 0.18 * 100) / 100;

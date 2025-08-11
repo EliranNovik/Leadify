@@ -254,7 +254,7 @@ const PaymentPage: React.FC = () => {
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
     if (currency === 'USD' || currency === '$') return '$';
-    if (currency === 'ILS' || currency === 'NIS' || currency === '₪') return '₪';
+    if (currency === '₪') return '₪';
     return currency;
   };
 

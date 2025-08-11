@@ -40,7 +40,7 @@ export async function handleContractSigned(contract: Contract) {
     console.log('Contract data received:', contract);
     
     // 1. Calculate total contract value
-    const isIsraeli = contract.client_country === 'IL';
+    const isIsraeli = contract.client_country === '₪';
     console.log('Client country:', contract.client_country, 'Is Israeli:', isIsraeli);
     console.log('Applicant count:', contract.applicant_count);
     
@@ -61,13 +61,13 @@ export async function handleContractSigned(contract: Contract) {
     let totalValue;
     if (contract.custom_pricing && Array.isArray(contract.custom_pricing.payment_plan) && contract.custom_pricing.payment_plan.length > 0) {
       paymentPlan = contract.custom_pricing.payment_plan;
-      currency = contract.custom_pricing.currency || (isIsraeli ? 'NIS' : 'USD');
+      currency = contract.custom_pricing.currency || contract.client_country;
       // Calculate totalValue from payment plan rows
       totalValue = paymentPlan.reduce((sum, row) => sum + (typeof row.value === 'number' ? row.value : 0), 0);
       console.log('Using custom payment plan from contract.custom_pricing:', paymentPlan);
     } else {
       totalValue = calculateTotalContractValue(contract.applicant_count, isIsraeli);
-      currency = isIsraeli ? 'NIS' : 'USD';
+      currency = contract.client_country;
       paymentPlan = generatePaymentPlan(totalValue, currency);
       console.log('Generated default payment plan:', paymentPlan);
     }
@@ -106,7 +106,7 @@ export async function handleContractSigned(contract: Contract) {
         value: typeof plan.value !== 'undefined' ? plan.value : 0,
         value_vat: typeof plan.value_vat !== 'undefined' ? plan.value_vat : 0,
         client_name: contract.contact_name || client.name || '',
-        payment_order: plan.payment_order || `Payment ${idx + 1}`,
+        payment_order: plan.payment_order || (idx === 0 ? 'First Payment' : idx === paymentPlan.length - 1 ? 'Final Payment' : 'Intermediate Payment'),
         notes: plan.notes || '',
         currency: currency,
       };
@@ -151,8 +151,8 @@ export async function handleContractSigned(contract: Contract) {
         ],
         total: firstPayment.value,
         totalWithVat: firstPayment.value + firstPayment.value_vat,
-        addVat: currency === 'NIS',
-        currency: currency === 'NIS' ? '₪' : '$',
+        addVat: currency === '₪',
+        currency: currency,
         bankAccount: '',
         notes: `Proforma for ${firstPayment.payment_order} - Contract ${contract.id}`,
         createdAt: new Date().toISOString(),

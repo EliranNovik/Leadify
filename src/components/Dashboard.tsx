@@ -27,6 +27,9 @@ const Dashboard: React.FC = () => {
   // State for expanded sections
   const [expanded, setExpanded] = useState<'meetings' | 'overdue' | 'ai' | 'messages' | null>(null);
 
+  // State for AI container collapse/expand
+  const [aiContainerCollapsed, setAiContainerCollapsed] = useState(false);
+
   const aiSuggestionsRef = useRef<any>(null);
 
   const [isLoading, setIsLoading] = useState(true);
@@ -959,7 +962,7 @@ const Dashboard: React.FC = () => {
             {categories.map(category => (
               <th key={category} className="text-center px-5 py-3 font-semibold text-slate-700">{category}</th>
             ))}
-            <th className="text-center px-5 py-3 font-semibold bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white">Total</th>
+            <th className="text-center px-5 py-3 font-semibold text-white" style={{backgroundColor: '#411cce'}}>Total</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
@@ -984,7 +987,7 @@ const Dashboard: React.FC = () => {
                     return (
                       <td key={`${category}-combined`} className="px-5 py-3 text-center">
                         <div className="space-y-1">
-                          <div className="badge badge-primary text-white font-semibold px-2 py-1">{data?.count || 0}</div>
+                          <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{data?.count || 0}</div>
                           <div className="border-t border-slate-200 my-1"></div>
                           <div className="font-semibold text-slate-700">₪{amount.toLocaleString()}</div>
                         </div>
@@ -992,14 +995,13 @@ const Dashboard: React.FC = () => {
                     );
                   })}
                   {/* Total column for this time period */}
-                  <td className="px-5 py-3 text-center bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white">
+                  <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
                     <div className="space-y-1">
-                      <div className="flex items-center gap-1">
-                        <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">
-                          {isToday ? sumTodayCount : isLast30 ? sum30Count : sumMonthCount}
+                                              <div className="flex items-center justify-center">
+                          <div className="badge badge-white font-semibold px-2 py-1" style={{color: '#411cce'}}>
+                            {isToday ? sumTodayCount : isLast30 ? sum30Count : sumMonthCount}
+                          </div>
                         </div>
-                        <span className="text-white text-sm">contracts</span>
-                      </div>
                       <div className="border-t border-white/20 my-1"></div>
                       <div className="font-semibold text-white">
                         ₪{(isToday ? sumTodayAmount : isLast30 ? sum30Amount : sumMonthAmount).toLocaleString()}
@@ -1008,7 +1010,7 @@ const Dashboard: React.FC = () => {
                   </td>
                 </tr>
                 {/* Target row */}
-                <tr className="bg-slate-100">
+                <tr className="bg-white border-2 border-purple-600">
                   <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
                   {categories.map((category, index) => {
                     const data = isToday ? scoreboardData["Today"][index] : 
@@ -1027,11 +1029,11 @@ const Dashboard: React.FC = () => {
                     );
                   })}
                   {/* Total target column */}
-                  <td className="px-5 py-3 text-center bg-slate-100">
+                  <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
                     {(() => {
                       const totalAmount = isToday ? sumTodayAmount : isLast30 ? sum30Amount : sumMonthAmount;
                       const totalTarget = isToday ? sumTodayExpected : isLast30 ? sum30Expected : sumMonthTarget;
-                      const targetClass = totalTarget > 0 ? (totalAmount >= totalTarget ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                      const targetClass = 'text-white';
                       return (
                         <span className={`font-semibold ${targetClass}`}>
                           {totalTarget ? `₪${totalTarget.toLocaleString()}` : '—'}
@@ -1510,13 +1512,33 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* 2. AI Suggestions (left) and Scoreboard (right) side by side */}
-      <div className="flex flex-col md:flex-row gap-8 mb-10 w-full" style={{ alignItems: 'stretch' }}>
+      <div className="flex flex-col md:flex-row mb-10 w-full relative transition-all duration-500 ease-in-out" style={{ alignItems: 'stretch' }}>
         {/* AI Suggestions Box */}
-        <div ref={aiRef} className="bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col w-full md:w-1/5">
+        <div 
+          ref={aiRef} 
+          className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out ${
+            aiContainerCollapsed 
+              ? 'w-0 p-0 border-0 shadow-none overflow-hidden opacity-0' 
+              : 'w-full md:w-1/5 opacity-100'
+          }`}
+        >
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-semibold text-gray-900">AI Assistant</h3>
+            <button
+              onClick={() => setAiContainerCollapsed(true)}
+              className="btn btn-ghost btn-sm text-gray-500 hover:text-gray-700 transition-colors"
+              title="Close AI Assistant"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+          </div>
           <AISuggestions />
         </div>
+        
         {/* Professional CRM Scoreboard */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg flex flex-col justify-between w-full md:w-4/5">
+        <div className={`bg-white border border-gray-200 rounded-2xl shadow-lg flex flex-col justify-between transition-all duration-500 ease-in-out ${
+          aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
+        } ${aiContainerCollapsed ? 'ml-0' : 'md:ml-8'}`}>
           <div className="w-full relative overflow-hidden">
             <div className="card-body p-8">
               {/* Header with gradient background */}
@@ -1748,7 +1770,7 @@ const Dashboard: React.FC = () => {
                                   {showTodayCols && (<>
                                     <td className="px-5 py-3 text-right">
                                       <div className="space-y-1">
-                                        <div className="badge badge-primary text-white font-semibold px-2 py-1">{todayData.count}</div>
+                                        <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{todayData.count}</div>
                                         <div className="border-t border-slate-200 my-1"></div>
                                         <div className="font-semibold text-slate-700">₪{(todayAmount).toLocaleString()}</div>
                                       </div>
@@ -1760,7 +1782,7 @@ const Dashboard: React.FC = () => {
                                   {showLast30Cols && (<>
                                     <td className="px-5 py-3 text-right">
                                       <div className="space-y-1">
-                                        <div className="badge badge-primary text-white font-semibold px-2 py-1">{last30Data.count}</div>
+                                        <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{last30Data.count}</div>
                                         <div className="border-t border-slate-200 my-1"></div>
                                         <div className="font-semibold text-slate-700">₪{(last30Amount).toLocaleString()}</div>
                                       </div>
@@ -1772,7 +1794,7 @@ const Dashboard: React.FC = () => {
                                   {showLastMonthCols && (<>
                                     <td className="px-5 py-3 text-right">
                                       <div className="space-y-1">
-                                        <div className="badge badge-primary text-white font-semibold px-2 py-1">{thisMonthCount}</div>
+                                        <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{thisMonthCount}</div>
                                         <div className="border-t border-slate-200 my-1"></div>
                                         <div className="font-semibold text-slate-700">₪{thisMonthAmount.toLocaleString()}</div>
                                       </div>
@@ -1817,7 +1839,7 @@ const Dashboard: React.FC = () => {
                             {showTodayCols && (<>
                               <td className="px-5 py-3 text-right">
                                 <div className="space-y-1">
-                                  <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumTodayCount}</div>
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumTodayCount}</div>
                                   <div className="border-t border-white/20 my-1"></div>
                                   <div className="font-semibold text-white">₪{sumTodayAmount.toLocaleString()}</div>
                                 </div>
@@ -1829,7 +1851,7 @@ const Dashboard: React.FC = () => {
                             {showLast30Cols && (<>
                               <td className="px-5 py-3 text-right">
                                 <div className="space-y-1">
-                                  <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sum30Count}</div>
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sum30Count}</div>
                                   <div className="border-t border-white/20 my-1"></div>
                                   <div className="font-semibold text-white">₪{sum30Amount.toLocaleString()}</div>
                                 </div>
@@ -1841,7 +1863,7 @@ const Dashboard: React.FC = () => {
                             {showLastMonthCols && (<>
                               <td className="px-5 py-3 text-right">
                                 <div className="space-y-1">
-                                  <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumMonthCount}</div>
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumMonthCount}</div>
                                   <div className="border-t border-white/20 my-1"></div>
                                   <div className="font-semibold text-white">₪{sumMonthAmount.toLocaleString()}</div>
                                 </div>
@@ -1918,7 +1940,7 @@ const Dashboard: React.FC = () => {
                                 {showTodayCols && (<>
                                   <td className="px-5 py-3 text-right">
                                     <div className="space-y-1">
-                                      <div className="badge badge-primary text-white font-semibold px-2 py-1">{todayData.count}</div>
+                                      <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{todayData.count}</div>
                                       <div className="border-t border-slate-200 my-1"></div>
                                       <div className="font-semibold text-slate-700">₪{todayAmount.toLocaleString()}</div>
                                     </div>
@@ -1928,7 +1950,7 @@ const Dashboard: React.FC = () => {
                                 {showLast30Cols && (<>
                                   <td className="px-5 py-3 text-right">
                                     <div className="space-y-1">
-                                      <div className="badge badge-primary text-white font-semibold px-2 py-1">{last30Data.count}</div>
+                                      <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{last30Data.count}</div>
                                       <div className="border-t border-slate-200 my-1"></div>
                                       <div className="font-semibold text-slate-700">₪{last30Amount.toLocaleString()}</div>
                                     </div>
@@ -1938,7 +1960,7 @@ const Dashboard: React.FC = () => {
                                 {showLastMonthCols && (<>
                                   <td className="px-5 py-3 text-right">
                                     <div className="space-y-1">
-                                      <div className="badge badge-primary text-white font-semibold px-2 py-1">{thisMonthCount}</div>
+                                      <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{thisMonthCount}</div>
                                       <div className="border-t border-slate-200 my-1"></div>
                                       <div className="font-semibold text-slate-700">₪{thisMonthAmount.toLocaleString()}</div>
                                     </div>
@@ -1973,7 +1995,7 @@ const Dashboard: React.FC = () => {
                               {showTodayCols && (<>
                                 <td className="px-5 py-3 text-right">
                                   <div className="space-y-1">
-                                    <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumTodayCount}</div>
+                                    <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumTodayCount}</div>
                                     <div className="border-t border-white/20 my-1"></div>
                                     <div className="font-semibold text-white">₪{sumTodayAmount.toLocaleString()}</div>
                                   </div>
@@ -1985,7 +2007,7 @@ const Dashboard: React.FC = () => {
                               {showLast30Cols && (<>
                                 <td className="px-5 py-3 text-right">
                                   <div className="space-y-1">
-                                    <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sum30Count}</div>
+                                    <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sum30Count}</div>
                                     <div className="border-t border-white/20 my-1"></div>
                                     <div className="font-semibold text-white">₪{sum30Amount.toLocaleString()}</div>
                                   </div>
@@ -1997,7 +2019,7 @@ const Dashboard: React.FC = () => {
                               {showLastMonthCols && (<>
                                 <td className="px-5 py-3 text-right">
                                   <div className="space-y-1">
-                                    <div className="badge badge-white text-purple-600 font-semibold px-2 py-1">{sumMonthCount}</div>
+                                    <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumMonthCount}</div>
                                     <div className="border-t border-white/20 my-1"></div>
                                     <div className="font-semibold text-white">₪{sumMonthAmount.toLocaleString()}</div>
                                   </div>
@@ -2600,6 +2622,17 @@ const Dashboard: React.FC = () => {
             </>
           )}
         </div>
+      )}
+
+      {/* Floating button to reopen AI container */}
+      {aiContainerCollapsed && (
+        <button
+          onClick={() => setAiContainerCollapsed(false)}
+          className="fixed right-8 top-1/2 transform -translate-y-1/2 z-50 btn btn-circle btn-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 border-none"
+          title="Open AI Assistant"
+        >
+          <ChatBubbleLeftRightIcon className="w-6 h-6" />
+        </button>
       )}
 
 

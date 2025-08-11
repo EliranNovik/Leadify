@@ -2793,7 +2793,7 @@ const BonusesV4Report = () => {
                         <td>{lead.closer || 'N/A'}</td>
                         <td>
                           {lead.balance ? 
-                            `${lead.balance.toLocaleString()} ${lead.balance_currency || 'USD'}` : 
+                            `${lead.balance.toLocaleString()} ${lead.balance_currency || '₪'}` : 
                             'N/A'
                           }
                         </td>

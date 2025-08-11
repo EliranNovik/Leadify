@@ -2159,7 +2159,7 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                 <div>
                   <span className="text-xs text-gray-600">Balance</span>
                   <div className="font-medium">
-                    {lead.balance ? `${lead.balance} ${lead.balance_currency || 'USD'}` : 'N/A'}
+                    {lead.balance ? `${lead.balance} ${lead.balance_currency || '₪'}` : 'N/A'}
                   </div>
                 </div>
               </div>
@@ -2481,7 +2481,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads }) => {
           const value = Number(plan.value);
           let valueVat = 0;
           const currency = plan.currency || '₪';
-          if (currency === '₪' || currency === 'NIS' || currency === 'ILS') {
+          if (currency === '₪') {
             valueVat = Math.round(value * 0.18 * 100) / 100;
           }
           return {
@@ -2577,8 +2577,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads }) => {
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
-    if (currency === 'USD' || currency === '$') return '$';
-    if (currency === 'ILS' || currency === 'NIS' || currency === '₪') return '₪';
+    // Since we're now storing currency symbols directly, just return the currency
     return currency;
   };
 

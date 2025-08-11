@@ -512,7 +512,7 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
                   <div className="bg-gray-50 rounded-lg p-3">
                     <span className="text-xs text-gray-600 font-medium">Balance</span>
                     <div className="font-medium text-gray-900">
-                      {lead.balance ? `${lead.balance} ${lead.balance_currency || 'USD'}` : 'N/A'}
+                      {lead.balance ? `${lead.balance} ${lead.balance_currency || '₪'}` : 'N/A'}
                     </div>
                   </div>
                 </div>

@@ -268,7 +268,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const value = Number(plan.value);
             let valueVat = 0;
             const currency = plan.currency || '₪';
-            if (currency === '₪' || currency === 'NIS' || currency === 'ILS') {
+            if (currency === '₪') {
               valueVat = Math.round(value * 0.18 * 100) / 100;
             }
             return {
@@ -400,7 +400,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const value = Number(plan.value);
           let valueVat = 0;
           const currency = plan.currency || '₪';
-          if (currency === '₪' || currency === 'NIS' || currency === 'ILS') {
+          if (currency === '₪') {
             valueVat = Math.round(value * 0.18 * 100) / 100;
           }
           return {
@@ -461,9 +461,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const updateClientBalance = async (newBalance: number) => {
     if (!client?.id) return;
     try {
+      // Get the currency from the first payment in the finance plan
+      const currency = financePlan?.payments?.[0]?.currency || '₪';
+      
       const { error } = await supabase
         .from('leads')
-        .update({ balance: newBalance })
+        .update({ 
+          balance: newBalance,
+          balance_currency: currency
+        })
         .eq('id', client.id);
       
       if (error) {
@@ -1000,7 +1006,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         due_percent: autoPlanData.firstPaymentPercent,
         due_date: new Date().toISOString().split('T')[0], // Today's date
         value: firstPaymentAmount,
-        value_vat: autoPlanData.includeVat && (autoPlanData.currency === '₪' || autoPlanData.currency === 'NIS' || autoPlanData.currency === 'ILS') ? Math.round(firstPaymentAmount * 0.18 * 100) / 100 : 0,
+        value_vat: autoPlanData.includeVat && autoPlanData.currency === '₪' ? Math.round(firstPaymentAmount * 0.18 * 100) / 100 : 0,
         client_name: client?.name || 'Main Contact',
         payment_order: 'First Payment',
         notes: '',
@@ -1016,9 +1022,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           due_percent: paymentPercent,
           due_date: null, // No due date for subsequent payments
           value: remainingPaymentAmount,
-          value_vat: autoPlanData.includeVat && (autoPlanData.currency === '₪' || autoPlanData.currency === 'NIS' || autoPlanData.currency === 'ILS') ? Math.round(remainingPaymentAmount * 0.18 * 100) / 100 : 0,
+          value_vat: autoPlanData.includeVat && autoPlanData.currency === '₪' ? Math.round(remainingPaymentAmount * 0.18 * 100) / 100 : 0,
           client_name: client?.name || 'Main Contact',
-          payment_order: i === 1 ? 'Second Payment' : i === 2 ? 'Third Payment' : `${i + 1}th Payment`,
+          payment_order: i === 1 ? 'Intermediate Payment' : i === 2 ? 'Final Payment' : `${i + 1}th Payment`,
           notes: '',
           currency: autoPlanData.currency,
           created_by: currentUserName,
@@ -1219,8 +1225,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Helper to get currency symbol
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
-    if (currency === 'USD' || currency === '$') return '$';
-    if (currency === 'ILS' || currency === 'NIS' || currency === '₪') return '₪';
+    // Since we're now storing currency symbols directly, just return the currency
     return currency;
   };
 
@@ -1237,10 +1242,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   });
   const firstPaymentId = sortedPayments[0]?.id;
 
-  // Find the payment that should display the due date: 'payment 1' or 'archival' in order/label, or duePercent === '100'
+  // Find the payment that should display the due date: 'First Payment' or 'archival' in order/label, or duePercent === '100'
   const dueDatePayment = financePlan.payments.find(p => {
     const order = (p.order || '').toLowerCase();
-    return order.includes('payment 1') || order.includes('archival') || p.duePercent === '100';
+    return order.includes('first payment') || order.includes('archival') || p.duePercent === '100';
   });
   const dueDatePaymentId = dueDatePayment ? dueDatePayment.id : financePlan.payments[0]?.id;
 
@@ -1315,7 +1320,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           <div className="flex items-center justify-between pt-2 border-t border-gray-100">
                             <span className="text-sm font-medium text-gray-500">Total Amount</span>
                             <span className="text-lg font-bold text-purple-700">
-                              {contract.client_country === 'IL' ? '₪' : '$'}{contract.total_amount.toLocaleString()}
+                              {getCurrencySymbol(contract.client_country)}{contract.total_amount.toLocaleString()}
                             </span>
                           </div>
                         )}
@@ -1401,7 +1406,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         <>
                           {Object.entries(paymentsByCurrency).map(([currency, amount]) => (
                             <span key={currency}>
-                              {getCurrencySymbol(currency)}{financePlan.payments.filter(p => p.currency === currency).reduce((sum, p) => sum + Number(p.value), 0).toLocaleString()} <span className="text-gray-500 font-medium text-sm">+ VAT {getCurrencySymbol(currency)}{financePlan.payments.filter(p => p.currency === currency).reduce((sum, p) => sum + Number(p.valueVat), 0).toLocaleString()}</span>
+                              {getCurrencySymbol(currency)}{financePlan.payments.filter(p => p.currency === currency).reduce((sum, p) => sum + Number(p.value) + Number(p.valueVat), 0).toLocaleString()}
                             </span>
                           ))}
                         </>
@@ -1410,7 +1415,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         <>
                           {Object.entries(paymentsByCurrency).map(([currency, amount], idx) => (
                             <span key={currency}>
-                              {getCurrencySymbol(currency)}{financePlan.payments.filter(p => p.currency === currency).reduce((sum, p) => sum + Number(p.value), 0).toLocaleString()} <span className="text-gray-500 font-medium text-sm">+ VAT {getCurrencySymbol(currency)}{financePlan.payments.filter(p => p.currency === currency).reduce((sum, p) => sum + Number(p.valueVat), 0).toLocaleString()}</span>{idx < Object.entries(paymentsByCurrency).length - 1 ? ' | ' : ''}
+                              {getCurrencySymbol(currency)}{financePlan.payments.filter(p => p.currency === currency).reduce((sum, p) => sum + Number(p.value) + Number(p.valueVat), 0).toLocaleString()}{idx < Object.entries(paymentsByCurrency).length - 1 ? ' | ' : ''}
                             </span>
                           ))}
                         </>
@@ -1481,7 +1486,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   // Find the payment that should display the due date for this contact
                   const dueDatePayment = sortedContactPayments.find(p => {
                     const order = (p.order || '').toLowerCase();
-                    return order.includes('payment 1') || order.includes('archival') || p.duePercent === '100';
+                    return order.includes('first payment') || order.includes('archival') || p.duePercent === '100';
                   });
                   const dueDatePaymentId = dueDatePayment ? dueDatePayment.id : sortedContactPayments[0]?.id;
                   return (
@@ -1570,7 +1575,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">VAT</th>
+                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Total</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Contact</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
                                     <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
@@ -1672,7 +1677,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   )}
 </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                          <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <div className="flex items-center justify-center gap-2">
@@ -1970,24 +1975,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </div>
                                         </div>
                                         <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total</span>
                                           <div className="flex items-center gap-2">
                                             <input
                                               type="number"
                                               className={`input input-bordered input-lg w-28 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-                                              value={editPaymentData.valueVat}
-                                              readOnly={editingValueVatId !== p.id}
-                                              onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
+                                              value={editPaymentData.value + editPaymentData.valueVat}
+                                              readOnly={true}
                                             />
-                                            {editingValueVatId === p.id ? (
-                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT">
-                                                <CheckIcon className="w-4 h-4 text-green-600" />
-                                              </button>
-                                            ) : (
-                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Edit VAT">
-                                                <PencilIcon className="w-4 h-4 text-blue-600" />
-                                              </button>
-                                            )}
+                                            <span className="text-xs text-gray-500">(auto)</span>
                                           </div>
                                         </div>
                                         <div className="flex items-center justify-between py-3">
@@ -2058,10 +2054,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </span>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VAT</span>
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">TOTAL</span>
                                             <span className="text-sm font-bold text-gray-900">
                                               {getCurrencySymbol(p.currency)}
-                                              {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                             </span>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
