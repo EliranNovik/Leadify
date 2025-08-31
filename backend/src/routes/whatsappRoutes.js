@@ -55,4 +55,25 @@ router.get('/test', (req, res) => {
   });
 });
 
+// Test webhook endpoint to simulate status updates
+router.post('/test-webhook', (req, res) => {
+  console.log('🧪 Test webhook received:', req.body);
+  
+  // Simulate a status update
+  const mockStatus = {
+    id: req.body.messageId || 'test_message_id',
+    status: req.body.status || 'delivered',
+    timestamp: Math.floor(Date.now() / 1000)
+  };
+  
+  // Call the updateMessageStatus function
+  const whatsappController = require('../controllers/whatsappController');
+  whatsappController.updateMessageStatus(mockStatus);
+  
+  res.json({ 
+    message: 'Test webhook processed',
+    status: mockStatus
+  });
+});
+
 module.exports = router; 

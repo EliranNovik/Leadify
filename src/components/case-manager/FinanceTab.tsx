@@ -566,7 +566,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                       <span className="text-xs sm:text-sm font-semibold text-gray-700">
                         {contract.contract_type || 'Contract'}
                       </span>
-                      <span className="badge badge-xs sm:badge-sm badge-primary">
+                      <span className="badge badge-xs sm:badge-sm bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none shadow-sm">
                         {contract.status || 'Active'}
                       </span>
                     </div>
@@ -607,13 +607,13 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                 <div className="bg-white rounded-lg p-3 sm:p-4 border border-gray-200 shadow-sm hover:shadow-lg hover:shadow-purple-100 transition-all duration-300 cursor-pointer">
                   <div className="text-xs sm:text-sm text-gray-600">Total Amount</div>
                   <div className="text-lg sm:text-xl font-bold text-gray-900">
-                    {getCurrencySymbol(financePlan.payments[0]?.currency)}{financePlan.total.toLocaleString()}
+                    {getCurrencySymbol(financePlan.payments[0]?.currency)}{Math.round((financePlan.total - financePlan.vat) * 100) / 100}
                   </div>
                 </div>
                 <div className="bg-white rounded-lg p-3 sm:p-4 border border-gray-200 shadow-sm hover:shadow-lg hover:shadow-purple-100 transition-all duration-300 cursor-pointer">
                   <div className="text-xs sm:text-sm text-gray-600">Total</div>
                   <div className="text-lg sm:text-xl font-bold text-gray-900">
-                    {getCurrencySymbol(financePlan.payments[0]?.currency)}{(financePlan.total + financePlan.vat).toLocaleString()}
+                    {getCurrencySymbol(financePlan.payments[0]?.currency)}{Math.round(financePlan.total * 100) / 100}
                   </div>
                 </div>
                 <div className="bg-white rounded-lg p-3 sm:p-4 border border-gray-200 shadow-sm hover:shadow-lg hover:shadow-purple-100 transition-all duration-300 cursor-pointer">

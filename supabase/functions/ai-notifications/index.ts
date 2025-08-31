@@ -2,8 +2,6 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
 import { supabase } from '../_shared/supabase-client.ts';
 
-console.log(`Function "ai-notifications" up and running!`);
-
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
 
@@ -31,7 +29,7 @@ async function getNotifications(): Promise<NotificationData[]> {
   const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
   try {
-    // 1. Check for meetings today/tomorrow without expert assessment
+    // 1. Check for meetings today/tomorrow without expert assessment (NEW LEADS)
     const { data: meetings, error: meetingsError } = await supabase
       .from('meetings')
       .select(`
@@ -49,62 +47,95 @@ async function getNotifications(): Promise<NotificationData[]> {
       .in('meeting_date', [todayStr, tomorrowStr])
       .eq('leads.expert_eligibility_assessed', false);
 
-    if (meetingsError) throw meetingsError;
-
-    meetings?.forEach((meeting, index) => {
-      const meetingDate = new Date(meeting.meeting_date);
-      const isToday = meetingDate.toISOString().split('T')[0] === todayStr;
-      const timeStr = meeting.meeting_time ? ` at ${meeting.meeting_time}` : '';
-      
-      notifications.push({
-        id: `meeting-${index}`,
-        type: 'urgent',
-        message: `${isToday ? 'Today' : 'Tomorrow'} meeting with ${meeting.leads.name} (${meeting.leads.lead_number}) ${timeStr}`,
-        action: 'Assess Eligibility',
-        dueDate: isToday ? 'Today' : 'Tomorrow',
-        context: `Expert opinion missing. Meeting Brief: ${meeting.meeting_brief || 'No brief provided'}`,
-        leadId: meeting.leads.id,
-        leadNumber: meeting.leads.lead_number,
-        clientName: meeting.leads.name,
-        date: meeting.meeting_date,
-        priority: 'high'
+    if (meetingsError) {
+      console.error('Meetings error:', meetingsError);
+    } else {
+      meetings?.forEach((meeting, index) => {
+        const meetingDate = new Date(meeting.meeting_date);
+        const isToday = meetingDate.toISOString().split('T')[0] === todayStr;
+        const timeStr = meeting.meeting_time ? ` at ${meeting.meeting_time}` : '';
+        
+        notifications.push({
+          id: `meeting-new-${index}`,
+          type: 'urgent',
+          message: `${isToday ? 'Today' : 'Tomorrow'} meeting with ${meeting.leads.name} (${meeting.leads.lead_number}) ${timeStr}`,
+          action: 'Assess Eligibility',
+          dueDate: isToday ? 'Today' : 'Tomorrow',
+          context: `Expert opinion missing. Meeting Brief: ${meeting.meeting_brief || 'No brief provided'}`,
+          leadId: meeting.leads.id,
+          leadNumber: meeting.leads.lead_number,
+          clientName: meeting.leads.name,
+          date: meeting.meeting_date,
+          priority: 'high'
+        });
       });
-    });
+    }
 
-    // 2. Check for follow-ups due today/tomorrow
+    // 2. Check for follow-ups due today/tomorrow (NEW LEADS)
     const { data: followups, error: followupsError } = await supabase
       .from('leads')
       .select('id, lead_number, name, next_followup')
       .in('next_followup', [todayStr, tomorrowStr]);
 
-    if (followupsError) throw followupsError;
-
-    followups?.forEach((lead, index) => {
-      const followupDate = new Date(lead.next_followup);
-      const isToday = followupDate.toISOString().split('T')[0] === todayStr;
-      
-      notifications.push({
-        id: `followup-${index}`,
-        type: 'important',
-        message: `Follow up with ${lead.name} (${lead.lead_number})`,
-        action: 'Send Follow-up',
-        dueDate: isToday ? 'Today' : 'Tomorrow',
-        context: `Follow-up scheduled for ${lead.next_followup}`,
-        leadId: lead.id,
-        leadNumber: lead.lead_number,
-        clientName: lead.name,
-        date: lead.next_followup,
-        priority: 'medium'
+    if (followupsError) {
+      console.error('Followups error:', followupsError);
+    } else {
+      followups?.forEach((lead, index) => {
+        const followupDate = new Date(lead.next_followup);
+        const isToday = followupDate.toISOString().split('T')[0] === todayStr;
+        
+        notifications.push({
+          id: `followup-new-${index}`,
+          type: 'important',
+          message: `Follow up with ${lead.name} (${lead.lead_number})`,
+          action: 'Send Follow-up',
+          dueDate: isToday ? 'Today' : 'Tomorrow',
+          context: `Follow-up scheduled for ${lead.next_followup}`,
+          leadId: lead.id,
+          leadNumber: lead.lead_number,
+          clientName: lead.name,
+          date: lead.next_followup,
+          priority: 'medium'
+        });
       });
-    });
+    }
 
-    // 3. Check for payments due today/tomorrow from payment_plans table
+    // 3. Check for follow-ups due today/tomorrow (LEGACY LEADS)
+    const { data: legacyFollowups, error: legacyFollowupsError } = await supabase
+      .from('leads_lead')
+      .select('id, name, next_followup')
+      .in('next_followup', [todayStr, tomorrowStr]);
+
+    if (legacyFollowupsError) {
+      console.error('Legacy followups error:', legacyFollowupsError);
+    } else {
+      legacyFollowups?.forEach((lead, index) => {
+        const followupDate = new Date(lead.next_followup);
+        const isToday = followupDate.toISOString().split('T')[0] === todayStr;
+        
+        notifications.push({
+          id: `followup-legacy-${index}`,
+          type: 'important',
+          message: `Follow up with ${lead.name} (${lead.id})`,
+          action: 'Send Follow-up',
+          dueDate: isToday ? 'Today' : 'Tomorrow',
+          context: `Follow-up scheduled for ${lead.next_followup}`,
+          leadId: `legacy_${lead.id}`,
+          leadNumber: String(lead.id),
+          clientName: lead.name,
+          date: lead.next_followup,
+          priority: 'medium'
+        });
+      });
+    }
+
+    // 4. Check for payments due today/tomorrow from payment_plans table (NEW LEADS)
     const { data: payments, error: paymentsError } = await supabase
       .from('payment_plans')
       .select(`
         id,
         due_date,
-        leads!inner(
+        leads!payment_plans_lead_id_fkey!inner(
           id,
           lead_number,
           name
@@ -113,28 +144,30 @@ async function getNotifications(): Promise<NotificationData[]> {
       .in('due_date', [todayStr, tomorrowStr])
       .not('due_date', 'is', null);
 
-    if (paymentsError) throw paymentsError;
-
-    payments?.forEach((payment, index) => {
-      const paymentDate = new Date(payment.due_date);
-      const isToday = paymentDate.toISOString().split('T')[0] === todayStr;
-      
-      notifications.push({
-        id: `payment-${index}`,
-        type: 'urgent',
-        message: `Payment due ${isToday ? 'today' : 'tomorrow'} (${payment.due_date}), follow up with client`,
-        action: 'Check Payment',
-        dueDate: isToday ? 'Today' : 'Tomorrow',
-        context: `Client: ${payment.leads.name} (${payment.leads.lead_number})`,
-        leadId: payment.leads.id,
-        leadNumber: payment.leads.lead_number,
-        clientName: payment.leads.name,
-        date: payment.due_date,
-        priority: 'high'
+    if (paymentsError) {
+      console.error('Payments error:', paymentsError);
+    } else {
+      payments?.forEach((payment, index) => {
+        const paymentDate = new Date(payment.due_date);
+        const isToday = paymentDate.toISOString().split('T')[0] === todayStr;
+        
+        notifications.push({
+          id: `payment-new-${index}`,
+          type: 'urgent',
+          message: `Payment due ${isToday ? 'today' : 'tomorrow'} (${payment.due_date}), follow up with client`,
+          action: 'Check Payment',
+          dueDate: isToday ? 'Today' : 'Tomorrow',
+          context: `Client: ${payment.leads.name} (${payment.leads.lead_number})`,
+          leadId: payment.leads.id,
+          leadNumber: payment.leads.lead_number,
+          clientName: payment.leads.name,
+          date: payment.due_date,
+          priority: 'high'
+        });
       });
-    });
+    }
 
-    // 4. Check for documents uploaded today
+    // 5. Check for documents uploaded today (NEW LEADS)
     const { data: documents, error: documentsError } = await supabase
       .from('leads')
       .select('id, lead_number, name, documents_uploaded_date')
@@ -142,25 +175,27 @@ async function getNotifications(): Promise<NotificationData[]> {
       .lt('documents_uploaded_date', tomorrowStr)
       .not('documents_uploaded_date', 'is', null);
 
-    if (documentsError) throw documentsError;
-
-    documents?.forEach((lead, index) => {
-      notifications.push({
-        id: `documents-${index}`,
-        type: 'important',
-        message: `New documents uploaded for ${lead.name} (${lead.lead_number}), check it out now`,
-        action: 'Review Documents',
-        dueDate: 'Today',
-        context: `Documents uploaded on ${lead.documents_uploaded_date}`,
-        leadId: lead.id,
-        leadNumber: lead.lead_number,
-        clientName: lead.name,
-        date: lead.documents_uploaded_date,
-        priority: 'medium'
+    if (documentsError) {
+      console.error('Documents error:', documentsError);
+    } else {
+      documents?.forEach((lead, index) => {
+        notifications.push({
+          id: `documents-new-${index}`,
+          type: 'important',
+          message: `New documents uploaded for ${lead.name} (${lead.lead_number}), check it out now`,
+          action: 'Review Documents',
+          dueDate: 'Today',
+          context: `Documents uploaded on ${lead.documents_uploaded_date}`,
+          leadId: lead.id,
+          leadNumber: lead.lead_number,
+          clientName: lead.name,
+          date: lead.documents_uploaded_date,
+          priority: 'medium'
+        });
       });
-    });
+    }
 
-    // 5. Check for expert eligibility assessments completed today
+    // 6. Check for expert eligibility assessments completed today (NEW LEADS)
     const { data: assessments, error: assessmentsError } = await supabase
       .from('leads')
       .select('id, lead_number, name, expert_eligibility_date, expert_eligibility_assessed_by')
@@ -169,23 +204,25 @@ async function getNotifications(): Promise<NotificationData[]> {
       .eq('expert_eligibility_assessed', true)
       .not('expert_eligibility_date', 'is', null);
 
-    if (assessmentsError) throw assessmentsError;
-
-    assessments?.forEach((lead, index) => {
-      notifications.push({
-        id: `assessment-${index}`,
-        type: 'reminder',
-        message: `Express check done for ${lead.name} (${lead.lead_number})`,
-        action: 'Contact Client',
-        dueDate: 'Today',
-        context: `Assessed by ${lead.expert_eligibility_assessed_by || 'Unknown'} on ${lead.expert_eligibility_date}`,
-        leadId: lead.id,
-        leadNumber: lead.lead_number,
-        clientName: lead.name,
-        date: lead.expert_eligibility_date,
-        priority: 'low'
+    if (assessmentsError) {
+      console.error('Assessments error:', assessmentsError);
+    } else {
+      assessments?.forEach((lead, index) => {
+        notifications.push({
+          id: `assessment-new-${index}`,
+          type: 'reminder',
+          message: `Express check done for ${lead.name} (${lead.lead_number})`,
+          action: 'Contact Client',
+          dueDate: 'Today',
+          context: `Assessed by ${lead.expert_eligibility_assessed_by || 'Unknown'} on ${lead.expert_eligibility_date}`,
+          leadId: lead.id,
+          leadNumber: lead.lead_number,
+          clientName: lead.name,
+          date: lead.expert_eligibility_date,
+          priority: 'low'
+        });
       });
-    });
+    }
 
   } catch (error) {
     console.error('Error fetching notifications:', error);

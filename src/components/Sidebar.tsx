@@ -21,6 +21,7 @@ import {
   XMarkIcon,
   MagnifyingGlassIcon,
   ArrowRightOnRectangleIcon,
+  ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 
@@ -62,6 +63,7 @@ const desktopSidebarItems: SidebarItem[] = [
       { icon: FolderPlusIcon, label: 'New Cases', path: '/new-cases' },
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: PlusCircleIcon, label: 'Create New', path: '/create' },
+      { icon: ExclamationTriangleIcon, label: 'Double Leads', path: '/double-leads' },
     ],
   },
   { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
@@ -92,6 +94,7 @@ const mobileSidebarItems: SidebarItem[] = [
       { icon: FolderPlusIcon, label: 'New Cases', path: '/new-cases' },
       { icon: FolderPlusIcon, label: 'New Handler Cases', path: '/new-handler-cases' },
       { icon: PlusCircleIcon, label: 'Create New', path: '/create' },
+      { icon: ExclamationTriangleIcon, label: 'Double Leads', path: '/double-leads' },
     ],
   },
   { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
@@ -107,31 +110,46 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   const initials = userInitials || userName.split(' ').map(n => n[0]).join('');
   const { isAdmin } = useAdminRole();
   
-  // State for user role from database
+  // State for user role and department from database
   const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>('User');
+  const [userDepartment, setUserDepartment] = React.useState<string>('');
   
-  // Fetch user role from database
+  // Fetch user role and department from database
   React.useEffect(() => {
-    const fetchUserRole = async () => {
+    const fetchUserInfo = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (user && user.email) {
-          const { data, error } = await supabase
+          // Fetch user role from users table
+          const { data: userData, error: userError } = await supabase
             .from('users')
-            .select('role')
+            .select('role, full_name')
             .eq('email', user.email)
             .single();
           
-          if (!error && data && data.role) {
-            setUserRoleFromDB(data.role);
+          if (!userError && userData && userData.role) {
+            setUserRoleFromDB(userData.role);
+          }
+          
+          // Fetch department from employees table using full_name
+          if (userData && userData.full_name) {
+            const { data: employeeData, error: employeeError } = await supabase
+              .from('employees')
+              .select('department')
+              .eq('display_name', userData.full_name)
+              .single();
+            
+            if (!employeeError && employeeData && employeeData.department) {
+              setUserDepartment(employeeData.department);
+            }
           }
         }
       } catch (error) {
-        console.error('Error fetching user role:', error);
+        console.error('Error fetching user info:', error);
       }
     };
     
-    fetchUserRole();
+    fetchUserInfo();
   }, []);
 
   // Responsive: shrink gap on small desktop heights
@@ -307,6 +325,11 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                   <span className="text-white/70 text-xs truncate">
                     {userRoleFromDB}
                   </span>
+                  {userDepartment && (
+                    <span className="text-white/50 text-xs truncate">
+                      {userDepartment}
+                    </span>
+                  )}
                 </div>
               )}
             </div>
@@ -457,6 +480,11 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                   <span className="text-base-content/70 text-xs truncate">
                     {userRoleFromDB}
                   </span>
+                  {userDepartment && (
+                    <span className="text-base-content/50 text-xs truncate">
+                      {userDepartment}
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

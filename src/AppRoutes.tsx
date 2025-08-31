@@ -13,13 +13,15 @@ import WhatsAppPage from './pages/WhatsAppPage';
 import ProformaViewPage from './pages/ProformaViewPage';
 import ReportsPage from './pages/ReportsPage';
 import PublicContractView from './pages/PublicContractView';
+import PublicLegacyContractView from './pages/PublicLegacyContractView';
+import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
 
 interface AppRoutesProps {
   selectedClient: any;
   setSelectedClient: React.Dispatch<any>;
   isLoading: boolean;
   setIsLoading: React.Dispatch<React.SetStateAction<boolean>>;
-  refreshClientData: (clientId: number) => Promise<void>;
+  refreshClientData: (clientId: number | string) => Promise<void>;
 }
 
 const AppRoutes: React.FC<AppRoutesProps> = (props) => (
@@ -41,6 +43,8 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
     <Route path="/proforma/:id" element={<ProformaViewPage />} />
     <Route path="/reports" element={<ReportsPage />} />
     <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
+    <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
+    <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
     {/* Add other routes from your sidebar here */}
     <Route path="*" element={<Navigate to="/" replace />} />
   </Routes>

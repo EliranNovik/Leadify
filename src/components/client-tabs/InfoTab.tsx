@@ -4,45 +4,135 @@ import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XM
 import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 
+// Helper function to clean up text formatting
+const formatNoteText = (text: string): string => {
+  if (!text) return '';
+  
+  // Replace \r\n with \n, then \r with \n for proper line breaks
+  // Also handle escaped \r characters (\\r)
+  return text
+    .replace(/\\r\\n/g, '\n')  // Handle escaped \r\n
+    .replace(/\\r/g, '\n')     // Handle escaped \r
+    .replace(/\r\n/g, '\n')    // Handle actual \r\n
+    .replace(/\r/g, '\n')      // Handle actual \r
+    .trim();
+};
+
+// Helper function to detect Hebrew text and apply RTL alignment
+const getTextAlignment = (text: string): string => {
+  if (!text) return 'text-left';
+  
+  // Check if text contains Hebrew characters (Unicode range 0590-05FF)
+  const hebrewRegex = /[\u0590-\u05FF]/;
+  return hebrewRegex.test(text) ? 'text-right' : 'text-left';
+};
+
+// Helper function to get the correct field value based on lead type
+const getFieldValue = (client: any, fieldName: string, legacyFieldName?: string) => {
+  if (client.lead_type === 'legacy') {
+    // For legacy leads, use the legacy field name if provided, otherwise use the original
+    const fieldToUse = legacyFieldName || fieldName;
+    return client[fieldToUse];
+  }
+  // For new leads, use the original field name
+  return client[fieldName];
+};
+
+// Helper function to determine if this is a legacy lead
+const isLegacyLead = (client: any) => {
+  return client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+};
+
 const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
   }
 
-  const [probability, setProbability] = useState(client.probability || 50);
+  // Check if this is a legacy lead
+  const isLegacy = isLegacyLead(client);
+
+  // Get field values with proper mapping for legacy leads
+  const getProbability = () => {
+    const prob = getFieldValue(client, 'probability');
+    if (isLegacy && typeof prob === 'string') {
+      return parseInt(prob) || 50;
+    }
+    return prob || 50;
+  };
+
+  const getSpecialNotes = () => {
+    const notes = getFieldValue(client, 'special_notes');
+    return notes ? [notes] : [];
+  };
+
+  const getGeneralNotes = () => {
+    // For legacy leads, use 'notes' field instead of 'general_notes'
+    const notes = isLegacy ? getFieldValue(client, 'notes') : getFieldValue(client, 'general_notes');
+    return notes || '';
+  };
+
+  const getTags = () => {
+    // For legacy leads, use 'category' field instead of 'tags'
+    const tags = isLegacy ? getFieldValue(client, 'category') : getFieldValue(client, 'tags');
+    return tags || '';
+  };
+
+  const getAnchor = () => {
+    // For legacy leads, use 'anchor_full_name' field instead of 'anchor'
+    const anchor = isLegacy ? getFieldValue(client, 'anchor_full_name') : getFieldValue(client, 'anchor');
+    return anchor || '';
+  };
+
+  const getFacts = () => {
+    // For legacy leads, use 'description' field instead of 'facts'
+    const facts = isLegacy ? getFieldValue(client, 'description') : getFieldValue(client, 'facts');
+    return facts || '';
+  };
+
+  const getEligibilityStatus = () => {
+    // For legacy leads, use 'eligibile' field instead of 'eligibility_status'
+    const status = isLegacy ? getFieldValue(client, 'eligibile') : getFieldValue(client, 'eligibility_status');
+    return status || '';
+  };
+
+  const getNextFollowup = () => {
+    return getFieldValue(client, 'next_followup');
+  };
+
+  const [probability, setProbability] = useState(getProbability());
   const [isEditingSpecialNotes, setIsEditingSpecialNotes] = useState(false);
   const [isEditingGeneralNotes, setIsEditingGeneralNotes] = useState(false);
   const [isEditingTags, setIsEditingTags] = useState(false);
   const [isEditingAnchor, setIsEditingAnchor] = useState(false);
   const [isEditingFacts, setIsEditingFacts] = useState(false);
   
-  const [specialNotes, setSpecialNotes] = useState(client.special_notes ? [client.special_notes] : []);
-  const [generalNotes, setGeneralNotes] = useState(client.general_notes || '');
-  const [tags, setTags] = useState(client.tags || '');
-  const [anchor, setAnchor] = useState(client.anchor || '');
-  const [factsOfCase, setFactsOfCase] = useState(client.facts ? [client.facts] : []);
+  const [specialNotes, setSpecialNotes] = useState(getSpecialNotes());
+  const [generalNotes, setGeneralNotes] = useState(getGeneralNotes());
+  const [tags, setTags] = useState(getTags());
+  const [anchor, setAnchor] = useState(getAnchor());
+  const [factsOfCase, setFactsOfCase] = useState(getFacts() ? [getFacts()] : []);
 
   const [editedSpecialNotes, setEditedSpecialNotes] = useState(specialNotes.join('\n'));
   const [editedGeneralNotes, setEditedGeneralNotes] = useState(generalNotes);
   const [editedTags, setEditedTags] = useState(tags);
   const [editedAnchor, setEditedAnchor] = useState(anchor);
-  const [editedFacts, setEditedFacts] = useState(client.facts || '');
+  const [editedFacts, setEditedFacts] = useState(getFacts());
 
   // Update state when client data changes (e.g., after page refresh)
   useEffect(() => {
-    setProbability(client.probability || 50);
-    setSpecialNotes(client.special_notes ? [client.special_notes] : []);
-    setGeneralNotes(client.general_notes || '');
-    setTags(client.tags || '');
-    setAnchor(client.anchor || '');
-    setFactsOfCase(client.facts ? [client.facts] : []);
+    setProbability(getProbability());
+    setSpecialNotes(getSpecialNotes());
+    setGeneralNotes(getGeneralNotes());
+    setTags(getTags());
+    setAnchor(getAnchor());
+    setFactsOfCase(getFacts() ? [getFacts()] : []);
     
     // Update edited values as well
-    setEditedSpecialNotes(client.special_notes || '');
-    setEditedGeneralNotes(client.general_notes || '');
-    setEditedTags(client.tags || '');
-    setEditedAnchor(client.anchor || '');
-    setEditedFacts(client.facts || '');
+    setEditedSpecialNotes(getSpecialNotes().join('\n'));
+    setEditedGeneralNotes(getGeneralNotes());
+    setEditedTags(getTags());
+    setEditedAnchor(getAnchor());
+    setEditedFacts(getFacts());
   }, [client]);
 
   // State to hold current user's display name
@@ -72,10 +162,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setProbability(newProbability);
     
     try {
+      // Determine which table to update based on lead type
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const idField = isLegacy ? 'id' : 'id';
+      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+      
       const { error } = await supabase
-        .from('leads')
+        .from(tableName)
         .update({ probability: newProbability })
-        .eq('id', client.id);
+        .eq(idField, clientId);
       
       if (error) throw error;
       
@@ -139,11 +234,11 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const eligibilityDisplay = getEligibilityDisplay(client.eligibility_status);
+  const eligibilityDisplay = getEligibilityDisplay(getEligibilityStatus());
 
   // Follow-up status logic
   const today = new Date();
-  const nextFollowupDate = client.next_followup ? new Date(client.next_followup) : null;
+  const nextFollowupDate = getNextFollowup() ? new Date(getNextFollowup()) : null;
   let followupStatus = '';
   let followupCountdown = '';
   if (nextFollowupDate) {
@@ -167,8 +262,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
           <InformationCircleIcon className="w-6 h-6 text-white" />
         </div>
-        <div>
-          <h2 className="text-2xl font-bold">Client Information</h2>
+        <div className="flex-1">
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-bold">Client Information</h2>
+            {isLegacy && (
+              <span className="badge badge-warning badge-sm text-white">
+                Legacy Lead
+              </span>
+            )}
+          </div>
           <p className="text-sm text-gray-500">View and manage client details and case information</p>
         </div>
       </div>
@@ -241,9 +343,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <div className="p-6">
               <div className="flex justify-between items-center">
                 <span className="text-sm font-medium text-gray-500">Current Status</span>
-                <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-[#3b28c7] text-white ${client.eligibility_status === 'feasible_no_check' ? 'px-4 py-2 text-base rounded-xl' : ''}`}>
+                <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-[#3b28c7] text-white ${getEligibilityStatus() === 'feasible_no_check' ? 'px-4 py-2 text-base rounded-xl' : ''}`}>
                   {eligibilityDisplay.text}
-                  {['feasible_no_check', 'feasible_check'].includes(client.eligibility_status ?? '') && (client.section_eligibility ?? '') && (
+                  {['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && (client.section_eligibility ?? '') && (
                     <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs">
                       {(() => {
                         // Map section_eligibility to label as in ExpertTab
@@ -264,8 +366,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Row 2: Special Notes, General Notes, Tags */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 gap-y-12">
+        {/* Row 2: Special Notes */}
+        <div className="grid grid-cols-1 gap-6 gap-y-12">
           {/* Special Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -275,23 +377,27 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   isEditing={isEditingSpecialNotes}
                   onEdit={() => {
                     setIsEditingSpecialNotes(true);
-                    setEditedSpecialNotes(specialNotes.join('\n'));
+                    setEditedSpecialNotes(specialNotes.map(note => formatNoteText(note)).join('\n'));
                   }}
                   onSave={async () => {
                     try {
                       const userName = currentUserName;
+                      const tableName = isLegacy ? 'leads_lead' : 'leads';
+                      const idField = isLegacy ? 'id' : 'id';
+                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+                      
                       const { error } = await supabase
-                        .from('leads')
+                        .from(tableName)
                         .update({
-                          special_notes: editedSpecialNotes,
+                          special_notes: formatNoteText(editedSpecialNotes),
                           special_notes_last_edited_by: userName,
                           special_notes_last_edited_at: new Date().toISOString(),
                         })
-                        .eq('id', client.id);
+                        .eq(idField, clientId);
                       
                       if (error) throw error;
                       
-                      setSpecialNotes(editedSpecialNotes.split('\n').filter(note => note.trim() !== ''));
+                      setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
                       setIsEditingSpecialNotes(false);
                       
                       // Refresh client data in parent component
@@ -320,26 +426,29 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 />
               ) : (
                 <div className="space-y-3">
-                  <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
+                  <div className="min-h-[80px]">
                     {specialNotes.length > 0 ? (
                       specialNotes.map((note, index) => (
-                        <p key={index} className="text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words">{note}</p>
+                        <p key={index} className={`text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words ${getTextAlignment(formatNoteText(note))}`}>{formatNoteText(note)}</p>
                       ))
                     ) : (
                       <span className="text-gray-500">No special notes added</span>
                     )}
                   </div>
-                  {(client.special_notes_last_edited_by || client.special_notes_last_edited_at) && (
+                  {(getFieldValue(client, 'special_notes_last_edited_by') || getFieldValue(client, 'special_notes_last_edited_at')) && (
                     <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {client.special_notes_last_edited_by || 'Unknown'}</span>
-                      <span>{client.special_notes_last_edited_at ? new Date(client.special_notes_last_edited_at).toLocaleString() : ''}</span>
+                      <span>Last edited by {getFieldValue(client, 'special_notes_last_edited_by') || 'Unknown'}</span>
+                      <span>{getFieldValue(client, 'special_notes_last_edited_at') ? new Date(getFieldValue(client, 'special_notes_last_edited_at')).toLocaleString() : ''}</span>
                     </div>
                   )}
                 </div>
               )}
             </div>
           </div>
+        </div>
 
+        {/* Row 3: General Notes */}
+        <div className="grid grid-cols-1 gap-6 gap-y-12">
           {/* General Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -349,23 +458,27 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   isEditing={isEditingGeneralNotes}
                   onEdit={() => {
                     setIsEditingGeneralNotes(true);
-                    setEditedGeneralNotes(generalNotes);
+                    setEditedGeneralNotes(formatNoteText(generalNotes));
                   }}
                   onSave={async () => {
                     try {
                       const userName = currentUserName;
+                      const tableName = isLegacy ? 'leads_lead' : 'leads';
+                      const idField = isLegacy ? 'id' : 'id';
+                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+                      
                       const { error } = await supabase
-                        .from('leads')
+                        .from(tableName)
                         .update({
-                          general_notes: editedGeneralNotes,
-                          general_notes_last_edited_by: userName,
-                          general_notes_last_edited_at: new Date().toISOString(),
+                          [isLegacy ? 'notes' : 'general_notes']: formatNoteText(editedGeneralNotes),
+                          [isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by']: userName,
+                          [isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at']: new Date().toISOString(),
                         })
-                        .eq('id', client.id);
+                        .eq(idField, clientId);
                       
                       if (error) throw error;
                       
-                      setGeneralNotes(editedGeneralNotes);
+                      setGeneralNotes(formatNoteText(editedGeneralNotes));
                       setIsEditingGeneralNotes(false);
                       
                       // Refresh client data in parent component
@@ -394,17 +507,177 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 />
               ) : (
                 <div className="space-y-3">
-                  <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
+                  <div className="min-h-[80px]">
                     {generalNotes ? (
-                      <p className="text-gray-900 whitespace-pre-wrap break-words">{generalNotes}</p>
+                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(formatNoteText(generalNotes))}`}>{formatNoteText(generalNotes)}</p>
                     ) : (
                       <span className="text-gray-500">No general notes added</span>
                     )}
                   </div>
-                  {(client.general_notes_last_edited_by || client.general_notes_last_edited_at) && (
+                  {(getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by') || getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')) && (
                     <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {client.general_notes_last_edited_by || 'Unknown'}</span>
-                      <span>{client.general_notes_last_edited_at ? new Date(client.general_notes_last_edited_at).toLocaleString() : ''}</span>
+                      <span>Last edited by {getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by') || 'Unknown'}</span>
+                      <span>{getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')).toLocaleString() : ''}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Row 4: Facts of Case */}
+        <div className="grid grid-cols-1 gap-6 gap-y-12">
+          {/* Facts of Case */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
+                <EditButtons
+                  isEditing={isEditingFacts}
+                  onEdit={() => {
+                    setIsEditingFacts(true);
+                    setEditedFacts(factsOfCase.map(fact => formatNoteText(fact)).join('\n'));
+                  }}
+                  onSave={async () => {
+                    try {
+                      const userName = currentUserName;
+                      const tableName = isLegacy ? 'leads_lead' : 'leads';
+                      const idField = isLegacy ? 'id' : 'id';
+                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+                      
+                      const { error } = await supabase
+                        .from(tableName)
+                        .update({
+                          [isLegacy ? 'description' : 'facts']: formatNoteText(editedFacts),
+                          [isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by']: userName,
+                          [isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at']: new Date().toISOString(),
+                        })
+                        .eq(idField, clientId);
+                      
+                      if (error) throw error;
+                      
+                      setFactsOfCase(formatNoteText(editedFacts).split('\n').filter(fact => fact.trim() !== ''));
+                      setIsEditingFacts(false);
+                      
+                      // Refresh client data in parent component
+                      if (onClientUpdate) {
+                        await onClientUpdate();
+                      }
+                    } catch (error) {
+                      console.error('Error updating facts:', error);
+                      alert('Failed to update facts');
+                    }
+                  }}
+                  onCancel={() => setIsEditingFacts(false)}
+                  editButtonClassName="btn btn-ghost btn-sm"
+                  editIconClassName="w-5 h-5 text-black"
+                />
+              </div>
+              <div className="border-b border-gray-200 mt-2"></div>
+            </div>
+            <div className="p-6">
+              {isEditingFacts ? (
+                <textarea
+                  className="textarea textarea-bordered w-full h-32"
+                  value={editedFacts}
+                  onChange={(e) => setEditedFacts(e.target.value)}
+                  placeholder="Add case facts here..."
+                />
+              ) : (
+                <div className="space-y-3">
+                  <div className="min-h-[80px]">
+                    {factsOfCase.length > 0 ? (
+                      factsOfCase.map((fact, index) => (
+                        <p key={index} className={`text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words ${getTextAlignment(formatNoteText(fact))}`}>{formatNoteText(fact)}</p>
+                      ))
+                    ) : (
+                      <span className="text-gray-500">No case facts added</span>
+                    )}
+                  </div>
+                  {(getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')) && (
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>Last edited by {getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || 'Unknown'}</span>
+                      <span>{getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')).toLocaleString() : ''}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Row 5: Anchor and Tags */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
+          {/* Anchor */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-lg font-semibold text-black">Anchor</h4>
+                <EditButtons
+                  isEditing={isEditingAnchor}
+                  onEdit={() => {
+                    setIsEditingAnchor(true);
+                    setEditedAnchor(anchor);
+                  }}
+                  onSave={async () => {
+                    try {
+                      const userName = currentUserName;
+                      const tableName = isLegacy ? 'leads_lead' : 'leads';
+                      const idField = isLegacy ? 'id' : 'id';
+                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+                      
+                      const { error } = await supabase
+                        .from(tableName)
+                        .update({
+                          [isLegacy ? 'anchor_full_name' : 'anchor']: editedAnchor,
+                          [isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by']: userName,
+                          [isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at']: new Date().toISOString(),
+                        })
+                        .eq(idField, clientId);
+                      
+                      if (error) throw error;
+                      
+                      setAnchor(editedAnchor);
+                      setIsEditingAnchor(false);
+                      
+                      // Refresh client data in parent component
+                      if (onClientUpdate) {
+                        await onClientUpdate();
+                      }
+                    } catch (error) {
+                      console.error('Error updating anchor:', error);
+                      alert('Failed to update anchor');
+                    }
+                  }}
+                  onCancel={() => setIsEditingAnchor(false)}
+                  editButtonClassName="btn btn-ghost btn-sm"
+                  editIconClassName="w-5 h-5 text-black"
+                />
+              </div>
+              <div className="border-b border-gray-200 mt-2"></div>
+            </div>
+            <div className="p-6">
+              {isEditingAnchor ? (
+                <textarea
+                  className="textarea textarea-bordered w-full h-32"
+                  value={editedAnchor}
+                  onChange={(e) => setEditedAnchor(e.target.value)}
+                  placeholder="Add anchor information..."
+                />
+              ) : (
+                <div className="space-y-3">
+                  <div className="min-h-[80px]">
+                    {anchor ? (
+                      <p className={`text-gray-900 ${getTextAlignment(anchor)}`}>{anchor}</p>
+                    ) : (
+                      <span className="text-gray-500">No anchor information</span>
+                    )}
+                  </div>
+                  {(getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by') || getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at')) && (
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>Last edited by {getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by') || 'Unknown'}</span>
+                      <span>{getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at')).toLocaleString() : ''}</span>
                     </div>
                   )}
                 </div>
@@ -426,14 +699,18 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   onSave={async () => {
                     try {
                       const userName = currentUserName;
+                      const tableName = isLegacy ? 'leads_lead' : 'leads';
+                      const idField = isLegacy ? 'id' : 'id';
+                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+                      
                       const { error } = await supabase
-                        .from('leads')
+                        .from(tableName)
                         .update({
-                          tags: editedTags,
-                          tags_last_edited_by: userName,
-                          tags_last_edited_at: new Date().toISOString(),
+                          [isLegacy ? 'category' : 'tags']: editedTags,
+                          [isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by']: userName,
+                          [isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at']: new Date().toISOString(),
                         })
-                        .eq('id', client.id);
+                        .eq(idField, clientId);
                       
                       if (error) throw error;
                       
@@ -466,193 +743,17 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 />
               ) : (
                 <div className="space-y-3">
-                  <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
+                  <div className="min-h-[80px]">
                     {tags ? (
-                      <p className="text-gray-900 whitespace-pre-wrap break-words">{tags}</p>
+                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(tags)}`}>{tags}</p>
                     ) : (
                       <span className="text-gray-500">No tags added</span>
                     )}
                   </div>
-                  {(client.tags_last_edited_by || client.tags_last_edited_at) && (
+                  {(getFieldValue(client, isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by') || getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at')) && (
                     <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {client.tags_last_edited_by || 'Unknown'}</span>
-                      <span>{client.tags_last_edited_at ? new Date(client.tags_last_edited_at).toLocaleString() : ''}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Row 3: Facts of Case, Anchor */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
-          {/* Facts of Case */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
-                <EditButtons
-                  isEditing={isEditingFacts}
-                  onEdit={() => {
-                    setIsEditingFacts(true);
-                    setEditedFacts(client.facts || '');
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const { error } = await supabase
-                        .from('leads')
-                        .update({
-                          facts: editedFacts,
-                          facts_last_edited_by: userName,
-                          facts_last_edited_at: new Date().toISOString(),
-                        })
-                        .eq('id', client.id);
-                      
-                      if (error) throw error;
-                      
-                      setFactsOfCase(editedFacts.split('\n').filter(fact => fact.trim() !== ''));
-                      setIsEditingFacts(false);
-                      
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating facts:', error);
-                      alert('Failed to update facts');
-                    }
-                  }}
-                  onCancel={() => setIsEditingFacts(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
-              </div>
-            </div>
-            <div className="p-6">
-              {isEditingFacts ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-32"
-                  value={editedFacts}
-                  onChange={(e) => setEditedFacts(e.target.value)}
-                  placeholder="Add case facts here..."
-                />
-              ) : (
-                <div className="space-y-3">
-                  <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
-                    {client.facts ? (
-                      <div className="text-gray-900 text-sm">
-                        {(() => {
-                          try {
-                            // Try to parse as JSON and display only non-null values
-                            const parsed = JSON.parse(client.facts);
-                            const nonNullEntries = Object.entries(parsed)
-                              .filter(([key, value]) => value !== null && value !== undefined && value !== '')
-                              .map(([key, value]) => {
-                                // Format the key to be more readable
-                                const formattedKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-                                return `${formattedKey}: ${value}`;
-                              });
-                            
-                            if (nonNullEntries.length > 0) {
-                              return (
-                                <div className="flex flex-wrap gap-2">
-                                  {nonNullEntries.map((entry, index) => (
-                                    <span key={index} className="text-gray-900 text-sm">
-                                      {entry}
-                                    </span>
-                                  ))}
-                                </div>
-                              );
-                            } else {
-                              return <span className="text-gray-500">No case facts added</span>;
-                            }
-                          } catch (e) {
-                            // If it's not valid JSON, display as plain text
-                            return <span className="text-gray-900">{client.facts}</span>;
-                          }
-                        })()}
-                      </div>
-                    ) : (
-                      <span className="text-gray-500">No case facts added</span>
-                    )}
-                  </div>
-                  {(client.facts_last_edited_by || client.facts_last_edited_at) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {client.facts_last_edited_by || 'Unknown'}</span>
-                      <span>{client.facts_last_edited_at ? new Date(client.facts_last_edited_at).toLocaleString() : ''}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Anchor */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">Anchor</h4>
-                <EditButtons
-                  isEditing={isEditingAnchor}
-                  onEdit={() => {
-                    setIsEditingAnchor(true);
-                    setEditedAnchor(anchor);
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const { error } = await supabase
-                        .from('leads')
-                        .update({
-                          anchor: editedAnchor,
-                          anchor_last_edited_by: userName,
-                          anchor_last_edited_at: new Date().toISOString(),
-                        })
-                        .eq('id', client.id);
-                      
-                      if (error) throw error;
-                      
-                      setAnchor(editedAnchor);
-                      setIsEditingAnchor(false);
-                      
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating anchor:', error);
-                      alert('Failed to update anchor');
-                    }
-                  }}
-                  onCancel={() => setIsEditingAnchor(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
-              </div>
-            </div>
-            <div className="p-6">
-              {isEditingAnchor ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-32"
-                  value={editedAnchor}
-                  onChange={(e) => setEditedAnchor(e.target.value)}
-                  placeholder="Add anchor information..."
-                />
-              ) : (
-                <div className="space-y-3">
-                  <div className="bg-gray-50 rounded-lg p-4 min-h-[80px]">
-                    {anchor ? (
-                      <p className="text-gray-900">{anchor}</p>
-                    ) : (
-                      <span className="text-gray-500">No anchor information</span>
-                    )}
-                  </div>
-                  {(client.anchor_last_edited_by || client.anchor_last_edited_at) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {client.anchor_last_edited_by || 'Unknown'}</span>
-                      <span>{client.anchor_last_edited_at ? new Date(client.anchor_last_edited_at).toLocaleString() : ''}</span>
+                      <span>Last edited by {getFieldValue(client, isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by') || 'Unknown'}</span>
+                      <span>{getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at')).toLocaleString() : ''}</span>
                     </div>
                   )}
                 </div>

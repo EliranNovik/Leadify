@@ -15,8 +15,6 @@ const DropdownPortal: React.FC<{
 }> = ({ anchorRef, open, onClose, children }) => {
   const [style, setStyle] = useState<React.CSSProperties>({});
   
-  console.log('DropdownPortal render:', { open, anchorRef: anchorRef.current });
-  
   useEffect(() => {
     if (open && anchorRef.current) {
       const rect = anchorRef.current.getBoundingClientRect();
@@ -35,7 +33,6 @@ const DropdownPortal: React.FC<{
         zIndex: 9999999,
       };
       
-      console.log('Setting dropdown style:', newStyle);
       setStyle(newStyle);
     }
   }, [open, anchorRef]);
@@ -44,14 +41,12 @@ const DropdownPortal: React.FC<{
     if (!open) return;
     const handle = (e: MouseEvent) => {
       // Temporarily disable to test
-      console.log('Portal click outside detected, but disabled for testing');
       return;
       
       const target = e.target as Element;
       const isInsideDropdown = target.closest('.dropdown-content') || target.closest('.handler-dropdown') || target.closest('[data-dropdown]');
       
       if (!isInsideDropdown && anchorRef.current && !anchorRef.current.contains(target)) {
-        console.log('DropdownPortal click outside detected');
         onClose();
       }
     };
@@ -61,7 +56,6 @@ const DropdownPortal: React.FC<{
 
   if (!open) return null;
   
-  console.log('DropdownPortal rendering children');
   return createPortal(
     <div style={style} className="bg-base-100 shadow-xl rounded-lg border border-base-300 min-w-[240px]">
       {children}
@@ -105,7 +99,6 @@ const NewHandlerCasesPage: React.FC = () => {
       if (leadsError) {
         console.error('Error fetching leads:', leadsError);
       } else {
-        console.log('Leads fetched:', leadsData);
         setLeads(leadsData || []);
       }
 
@@ -120,7 +113,6 @@ const NewHandlerCasesPage: React.FC = () => {
         console.error('Error fetching handlers:', handlersError);
       } else {
         setHandlers(handlersData || []);
-        console.log('Handlers fetched:', handlersData);
       }
       
       setLoading(false);
@@ -130,15 +122,12 @@ const NewHandlerCasesPage: React.FC = () => {
   }, []);
 
   const assignHandler = async (leadId: string, handlerId: string) => {
-    console.log('assignHandler called:', { leadId, handlerId });
     setAssigningId(leadId);
     
     try {
       // Get current user info from MSAL
       const account = instance?.getActiveAccount();
       let currentUserFullName = account?.name || 'Unknown User';
-      
-      console.log('Current user:', { currentUserFullName, account });
       
       // Try to get full_name from database
       if (account?.username) {
@@ -161,8 +150,6 @@ const NewHandlerCasesPage: React.FC = () => {
       const handler = handlers.find(h => h.id === handlerId);
       const handlerName = handler ? (handler.full_name || `${handler.first_name} ${handler.last_name}`) : 'Unknown Handler';
       
-      console.log('Handler details:', { handler, handlerName });
-      
       // Update the lead with handler information
       const { error } = await supabase
         .from('leads')
@@ -173,8 +160,6 @@ const NewHandlerCasesPage: React.FC = () => {
           stage_changed_at: new Date().toISOString()
         })
         .eq('id', leadId);
-      
-      console.log('Database update result:', { error });
       
       if (error) {
         console.error('Error assigning handler:', error);
@@ -214,26 +199,19 @@ const NewHandlerCasesPage: React.FC = () => {
   };
 
   const handleAssignClick = (e: React.MouseEvent, leadId: string, handlerId: string) => {
-    console.log('handleAssignClick called:', { leadId, handlerId });
     e.stopPropagation();
     assignHandler(leadId, handlerId);
   };
 
   const toggleDropdown = (e: React.MouseEvent, leadId: string) => {
-    console.log('toggleDropdown called for lead:', leadId);
     e.stopPropagation();
     const newState = openDropdown === leadId ? null : leadId;
-    console.log('Setting dropdown state to:', newState);
     setOpenDropdown(newState);
   };
 
   // Close dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      // Temporarily disable to test
-      console.log('Click outside detected, but disabled for testing');
-      return;
-      
       // Check if the click is inside any dropdown
       const target = e.target as Element;
       const isInsideDropdown = target.closest('.dropdown-content') || target.closest('.handler-dropdown') || target.closest('[data-dropdown]');
@@ -245,11 +223,6 @@ const NewHandlerCasesPage: React.FC = () => {
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
-
-  // Debug dropdown state changes
-  useEffect(() => {
-    console.log('Dropdown state changed to:', openDropdown);
-  }, [openDropdown]);
 
   // Get the most recent contract for a lead
   const getLatestContract = (lead: any) => {
@@ -385,10 +358,7 @@ const NewHandlerCasesPage: React.FC = () => {
                       <button 
                         ref={el => { dropdownAnchors.current[lead.id] = el; }}
                         className="btn btn-sm bg-black text-white hover:bg-gray-800 border-none gap-2"
-                        onClick={(e) => {
-                          console.log('Assign button clicked for lead:', lead.id);
-                          toggleDropdown(e, lead.id);
-                        }}
+                        onClick={(e) => toggleDropdown(e, lead.id)}
                       >
                         <span>Assign</span>
                         <ChevronDownIcon className="w-4 h-4" />
@@ -409,10 +379,7 @@ const NewHandlerCasesPage: React.FC = () => {
                                 <button 
                                   key={handler.id}
                                   className="w-full text-center py-3 px-4 hover:bg-base-200 text-base font-medium block text-center" 
-                                  onClick={(e) => {
-                                    console.log('Button clicked for handler:', handler.id);
-                                    handleAssignClick(e, lead.id, handler.id);
-                                  }}
+                                  onClick={(e) => handleAssignClick(e, lead.id, handler.id)}
                                 >
                                   {assigningId === lead.id ? <span className="loading loading-spinner loading-xs"></span> : null}
                                   <span className="inline-block w-full text-center">{handler.full_name || `${handler.first_name} ${handler.last_name}`}</span>
@@ -490,10 +457,7 @@ const NewHandlerCasesPage: React.FC = () => {
                     <button 
                       ref={el => { dropdownAnchors.current[lead.id] = el; }}
                       className="btn bg-black text-white hover:bg-gray-800 border-none gap-2 w-full"
-                      onClick={(e) => {
-                        console.log('Assign Handler button clicked for lead:', lead.id);
-                        toggleDropdown(e, lead.id);
-                      }}
+                      onClick={(e) => toggleDropdown(e, lead.id)}
                     >
                       <span>Assign Handler</span>
                       <ChevronDownIcon className="w-5 h-5" />
@@ -514,10 +478,7 @@ const NewHandlerCasesPage: React.FC = () => {
                               <button 
                                 key={handler.id}
                                 className="w-full text-center py-3 px-4 hover:bg-base-200 text-base font-medium block text-center" 
-                                onClick={(e) => {
-                                  console.log('Button clicked for handler:', handler.id);
-                                  handleAssignClick(e, lead.id, handler.id);
-                                }}
+                                onClick={(e) => handleAssignClick(e, lead.id, handler.id)}
                               >
                                 {assigningId === lead.id ? <span className="loading loading-spinner loading-xs"></span> : null}
                                 <span className="inline-block w-full text-center">{handler.full_name || `${handler.first_name} ${handler.last_name}`}</span>

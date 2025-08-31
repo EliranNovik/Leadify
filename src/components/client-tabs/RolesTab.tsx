@@ -9,6 +9,7 @@ interface Role {
   title: string;
   assignee: string;
   fieldName: string;
+  legacyFieldName?: string; // For legacy leads
 }
 
 // Will be replaced by real users from DB
@@ -16,17 +17,23 @@ const defaultAssignees = ['---'];
 
 const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [allUsers, setAllUsers] = useState<{ full_name: string; role: string }[]>([]);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [expertOptions, setExpertOptions] = useState<string[]>(defaultAssignees);
   const [schedulerOptions, setSchedulerOptions] = useState<string[]>(defaultAssignees);
   const [handlerOptions, setHandlerOptions] = useState<string[]>(defaultAssignees);
+  const [closerOptions, setCloserOptions] = useState<string[]>(defaultAssignees);
   const [allUserOptions, setAllUserOptions] = useState<string[]>(defaultAssignees);
+  
+  // Check if this is a legacy lead
+  const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+  
   const [roles, setRoles] = useState<Role[]>([
-    { id: 'scheduler', title: 'Scheduler', assignee: '---', fieldName: 'scheduler' },
-    { id: 'manager', title: 'Manager', assignee: '---', fieldName: 'manager' },
-    { id: 'helper', title: 'Helper', assignee: '---', fieldName: 'helper' },
-    { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert' },
-    { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer' },
-    { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler' },
+    { id: 'scheduler', title: 'Scheduler', assignee: '---', fieldName: 'scheduler', legacyFieldName: 'meeting_scheduler_id' },
+    { id: 'manager', title: 'Manager', assignee: '---', fieldName: 'manager', legacyFieldName: 'meeting_manager_id' },
+    { id: 'helper', title: 'Helper', assignee: '---', fieldName: 'helper', legacyFieldName: 'meeting_lawyer_id' },
+    { id: 'expert', title: 'Expert', assignee: '---', fieldName: 'expert', legacyFieldName: 'expert_id' },
+    { id: 'closer', title: 'Closer', assignee: '---', fieldName: 'closer', legacyFieldName: 'closer_id' },
+    { id: 'handler', title: 'Handler', assignee: '---', fieldName: 'handler', legacyFieldName: 'case_handler_id' },
   ]);
 
   const [isEditing, setIsEditing] = useState(false);
@@ -34,34 +41,87 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Update roles when client data changes
   useEffect(() => {
+    const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
+      if (!employeeId || employeeId === '---') return '---';
+      // For legacy leads, the IDs should match tenants_employee table
+      const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+      return employee ? employee.display_name : employeeId; // Fallback to ID if not found
+    };
+
     const updatedRoles = [
-      { id: 'scheduler', title: 'Scheduler', assignee: client.scheduler || '---', fieldName: 'scheduler' },
-      { id: 'manager', title: 'Manager', assignee: client.manager || '---', fieldName: 'manager' },
-      { id: 'helper', title: 'Helper', assignee: client.helper || '---', fieldName: 'helper' },
-      { id: 'expert', title: 'Expert', assignee: client.expert || '---', fieldName: 'expert' },
-      { id: 'closer', title: 'Closer', assignee: client.closer || '---', fieldName: 'closer' },
-      { id: 'handler', title: 'Handler', assignee: client.handler || '---', fieldName: 'handler' },
+      { 
+        id: 'scheduler', 
+        title: 'Scheduler', 
+        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).meeting_scheduler_id) : client.scheduler || '---', 
+        fieldName: 'scheduler', 
+        legacyFieldName: 'meeting_scheduler_id' 
+      },
+      { 
+        id: 'manager', 
+        title: 'Manager', 
+        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).meeting_manager_id) : client.manager || '---', 
+        fieldName: 'manager', 
+        legacyFieldName: 'meeting_manager_id' 
+      },
+      { 
+        id: 'helper', 
+        title: 'Helper', 
+        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).meeting_lawyer_id) : client.helper || '---', 
+        fieldName: 'helper', 
+        legacyFieldName: 'meeting_lawyer_id' 
+      },
+      { 
+        id: 'expert', 
+        title: 'Expert', 
+        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).expert_id) : client.expert || '---', 
+        fieldName: 'expert', 
+        legacyFieldName: 'expert_id' 
+      },
+      { 
+        id: 'closer', 
+        title: 'Closer', 
+        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).closer_id) : getEmployeeDisplayName(client.closer), 
+        fieldName: 'closer', 
+        legacyFieldName: 'closer_id' 
+      },
+      { 
+        id: 'handler', 
+        title: 'Handler', 
+        assignee: isLegacyLead ? getEmployeeDisplayName((client as any).case_handler_id) : client.handler || '---', 
+        fieldName: 'handler', 
+        legacyFieldName: 'case_handler_id' 
+      },
     ];
     setRoles(updatedRoles);
     setOriginalRoles(updatedRoles);
-  }, [client]);
+  }, [client, isLegacyLead, allEmployees]);
 
-  // Fetch all users from DB for dropdowns
+  // Fetch all employees from tenants_employee table for dropdowns
   useEffect(() => {
-    const fetchUsers = async () => {
+    const fetchEmployees = async () => {
       const { data, error } = await supabase
-        .from('users')
-        .select('full_name, role')
-        .order('full_name', { ascending: true });
+        .from('tenants_employee')
+        .select('id, display_name, bonuses_role')
+        .order('display_name', { ascending: true });
+      
       if (!error && data) {
-        setAllUsers(data);
-        setExpertOptions(['---', ...data.filter((u: any) => u.role === 'expert').map((u: any) => u.full_name)]);
-        setSchedulerOptions(['---', ...data.filter((u: any) => u.role === 'scheduler').map((u: any) => u.full_name)]);
-        setHandlerOptions(['---', ...data.filter((u: any) => u.role === 'handler').map((u: any) => u.full_name)]);
-        setAllUserOptions(['---', ...data.map((u: any) => u.full_name)]);
+        setAllEmployees(data);
+        
+        // Filter employees by bonuses_role for specific dropdowns
+        const schedulerEmployees = data.map((emp: any) => emp.display_name); // Changed to fetch all employees for scheduler
+        const expertEmployees = data.filter((emp: any) => emp.bonuses_role === 'e').map((emp: any) => emp.display_name);
+        const handlerEmployees = data.filter((emp: any) => emp.bonuses_role === 'h').map((emp: any) => emp.display_name);
+        const closerEmployees = data.map((emp: any) => emp.display_name); // Changed to fetch all employees
+        const allEmployees = data.map((emp: any) => emp.display_name);
+
+        setSchedulerOptions(['---', ...schedulerEmployees]);
+        setExpertOptions(['---', ...expertEmployees]);
+        setHandlerOptions(['---', ...handlerEmployees]);
+        setCloserOptions(['---', ...closerEmployees]);
+        setAllUserOptions(['---', ...allEmployees]);
       }
     };
-    fetchUsers();
+    fetchEmployees();
   }, []);
 
   const handleRoleChange = (roleId: string, newAssignee: string) => {
@@ -75,13 +135,32 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Prepare update object with all role changes
       const updateData: any = {};
       roles.forEach(role => {
-        updateData[role.fieldName] = role.assignee;
+        if (isLegacyLead && role.legacyFieldName) {
+          // For legacy leads, use the legacy field names
+          updateData[role.legacyFieldName] = role.assignee === '---' ? null : role.assignee;
+        } else {
+          // For new leads, use the standard field names
+          updateData[role.fieldName] = role.assignee === '---' ? null : role.assignee;
+        }
       });
 
-      const { error } = await supabase
-        .from('leads')
-        .update(updateData)
-        .eq('id', client.id);
+      let error;
+      if (isLegacyLead) {
+        // Update legacy lead in leads_lead table
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const { error: legacyError } = await supabase
+          .from('leads_lead')
+          .update(updateData)
+          .eq('id', legacyId);
+        error = legacyError;
+      } else {
+        // Update new lead in leads table
+        const { error: newError } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', client.id);
+        error = newError;
+      }
 
       if (error) throw error;
 
@@ -105,10 +184,25 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const handleSetMeAsCloser = async () => {
     try {
-      const { error } = await supabase
-        .from('leads')
-        .update({ closer: 'Current User' }) // You can replace this with actual user name
-        .eq('id', client.id);
+      const updateData = { closer: 'Current User' }; // You can replace this with actual user name
+      let error;
+      
+      if (isLegacyLead) {
+        // Update legacy lead in leads_lead table
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const { error: legacyError } = await supabase
+          .from('leads_lead')
+          .update({ closer_id: 'Current User' })
+          .eq('id', legacyId);
+        error = legacyError;
+      } else {
+        // Update new lead in leads table
+        const { error: newError } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', client.id);
+        error = newError;
+      }
 
       if (error) throw error;
 
@@ -157,7 +251,9 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
         <div>
           <h2 className="text-2xl font-bold">Roles</h2>
-          <p className="text-sm text-gray-500">Manage team roles and assignments</p>
+          <p className="text-sm text-gray-500">
+            Manage team roles and assignments
+          </p>
         </div>
       </div>
 
@@ -203,8 +299,10 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                             ? schedulerOptions
                             : role.id === 'handler'
                               ? handlerOptions
-                              : allUserOptions
-                        ).map((assignee) => (
+                              : role.id === 'closer'
+                                ? closerOptions
+                                : allUserOptions
+                        ).map((assignee: string) => (
                           <option key={assignee} value={assignee}>
                             {assignee}
                           </option>

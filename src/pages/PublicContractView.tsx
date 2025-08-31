@@ -4,6 +4,35 @@ import { supabase } from '../lib/supabase';
 import SignaturePad from 'react-signature-canvas';
 import { handleContractSigned } from '../lib/contractAutomation';
 
+// Function to preprocess template placeholders
+function preprocessTemplatePlaceholders(content: any): any {
+  console.log('🔧 PublicContractView: preprocessTemplatePlaceholders called with:', content);
+  let textId = 1;
+  let signatureId = 1;
+  
+  function processContent(content: any): any {
+    if (!content) return content;
+    if (Array.isArray(content)) {
+      return content.map(processContent);
+    }
+    if (content.type === 'text' && content.text) {
+      console.log('🔧 PublicContractView: Processing text node:', content.text);
+      let newText = content.text.replace(/\{\{text\}\}/g, () => `{{text:text-${textId++}}}`)
+                               .replace(/\{\{signature\}\}/g, () => `{{signature:signature-${signatureId++}}}`);
+      console.log('🔧 PublicContractView: Processed text node:', newText);
+      return { ...content, text: newText };
+    }
+    if (content.content) {
+      return { ...content, content: processContent(content.content) };
+    }
+    return content;
+  }
+  
+  const result = processContent(content);
+  console.log('🔧 PublicContractView: preprocessTemplatePlaceholders result:', result);
+  return result;
+}
+
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
   if (!text) return text;
   let result = text;
@@ -82,12 +111,10 @@ const PublicContractView: React.FC = () => {
         let text = content.text;
         // Replace {{text:ID}} fields with actual client input values
         text = text.replace(/\{\{text:([^}]+)\}\}/g, (match: string, id: string) => {
-          console.log(`Replacing {{text:${id}}} with:`, clientFields[id] || '');
           return clientFields[id] || '';
         });
         // Replace {{signature:ID}} fields with signature data
         text = text.replace(/\{\{signature:([^}]+)\}\}/g, (match: string, id: string) => {
-          console.log(`Replacing {{signature:${id}}} with:`, clientSignature || '[Signed]');
           return clientSignature || '[Signed]';
         });
         return { ...content, text };
@@ -103,12 +130,20 @@ const PublicContractView: React.FC = () => {
 
   // Handler for text field changes
   const handleClientFieldChange = (key: string, value: string) => {
-    setClientFields(prev => ({ ...prev, [key]: value }));
+    console.log('🎯 PublicContractView: handleClientFieldChange called - Key:', key, 'Value:', value);
+    console.log('🎯 PublicContractView: Previous clientFields:', clientFields);
+    setClientFields(prev => {
+      const newFields = { ...prev, [key]: value };
+      console.log('🎯 PublicContractView: New clientFields:', newFields);
+      return newFields;
+    });
   };
 
   // Handler for signature
   const handleClientSignature = (dataUrl: string) => {
     setClientSignature(dataUrl);
+    // Also save to clientFields for database storage
+    setClientFields(prev => ({ ...prev, signature: dataUrl }));
   };
 
   useEffect(() => {
@@ -128,7 +163,20 @@ const PublicContractView: React.FC = () => {
         return;
       }
       setContract(contractData);
-      setTemplate(contractData.contract_templates);
+      console.log('📋 PublicContractView: Contract data:', contractData);
+      console.log('📋 PublicContractView: Template data:', contractData.contract_templates);
+      console.log('📋 PublicContractView: Original template content:', contractData.contract_templates.content);
+      
+      // Process template to add text and signature placeholders
+      console.log('🔧 PublicContractView: About to call preprocessTemplatePlaceholders');
+      const processedTemplate = {
+        ...contractData.contract_templates,
+        content: contractData.contract_templates.content ? 
+          preprocessTemplatePlaceholders(contractData.contract_templates.content) : 
+          contractData.contract_templates.content
+      };
+      console.log('📋 PublicContractView: Processed template:', processedTemplate);
+      setTemplate(processedTemplate);
       // Fetch client info
       const { data: leadData } = await supabase
         .from('leads')
@@ -147,15 +195,12 @@ const PublicContractView: React.FC = () => {
     setIsSubmitting(true);
     try {
       // Fill in client fields in the contract content
-      console.log('Before filling - clientFields:', clientFields);
-      console.log('Before filling - clientSignature:', clientSignature);
-      console.log('Before filling - contract content:', contract.custom_content || template.content?.content);
-      
       const filledContent = fillClientFieldsInContent(contract.custom_content || template.content?.content);
-      console.log('After filling - filled content:', filledContent);
       
+      console.log('🔍 PublicContractView: Saving client inputs:', clientFields);
       await supabase.from('contracts').update({
         custom_content: filledContent,
+        client_inputs: clientFields, // Save the actual client input values
         status: 'signed',
         signed_at: new Date().toISOString(),
       }).eq('id', contract.id);
@@ -184,47 +229,58 @@ const PublicContractView: React.FC = () => {
     keyPrefix = '',
     signaturePads?: { [key: string]: any },
     applicantPriceIndex?: { current: number },
-    paymentPlanIndex?: { current: number }
+    paymentPlanIndex?: { current: number },
+    placeholderIndex?: { text: number; signature: number }
   ): React.ReactNode {
     if (!content) return null;
     if (Array.isArray(content)) {
       if (!applicantPriceIndex) applicantPriceIndex = { current: 0 };
       if (!paymentPlanIndex) paymentPlanIndex = { current: 0 };
-      return content.map((n, i) => renderTiptapContent(n, keyPrefix + '-' + i, signaturePads, applicantPriceIndex, paymentPlanIndex));
+      if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0 };
+      return content.map((n, i) => renderTiptapContent(n, keyPrefix + '-' + i, signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex));
     }
-    if (content.type === 'text') {
-      let text = content.text;
-      text = fillAllPlaceholders(text, customPricing, client, contract);
-      // Render {{text:ID}} and {{signature:ID}} fields
-      if (text && /\{\{(text|signature):[^}]+\}\}/.test(text)) {
+          if (content.type === 'text') {
+        let text = content.text;
+        text = fillAllPlaceholders(text, customPricing, client, contract);
+        // Render {{text}} and {{signature}} fields (before preprocessing) or {{text:ID}} and {{signature:ID}} fields (after preprocessing)
+        console.log('🎨 PublicContractView: Checking text for placeholders:', text);
+        console.log('🎨 PublicContractView: Has placeholders:', /\{\{(text|signature)(:[^}]+)?\}\}/.test(text));
+        if (text && /\{\{(text|signature)(:[^}]+)?\}\}/.test(text)) {
+          // Ensure placeholderIndex is defined
+          if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0 };
         const parts = [];
         let lastIndex = 0;
-        const regex = /({{text:[^}]+}}|{{signature:[^}]+}}|\n)/g;
+        const regex = /({{text(:[^}]+)?}}|{{signature(:[^}]+)?}}|\n)/g;
         let match;
+        
         while ((match = regex.exec(text)) !== null) {
           if (match.index > lastIndex) {
             const normalText = text.slice(lastIndex, match.index);
             parts.push(normalText);
           }
           const placeholder = match[1];
-          const textMatch = placeholder.match(/^{{text:([^}]+)}}$/);
-          const sigMatch = placeholder.match(/^{{signature:([^}]+)}}$/);
+          const textMatch = placeholder.match(/^{{text(:[^}]+)?}}$/);
+          const sigMatch = placeholder.match(/^{{signature(:[^}]+)?}}$/);
+          
           if (textMatch) {
-            const id = textMatch[1];
+            const id = textMatch[1] ? textMatch[1].substring(1) : `text-${++placeholderIndex.text}`;
+            console.log('🎯 PublicContractView: Creating text input with ID:', id, 'Current value:', clientFields[id]);
             parts.push(
-              <span key={id} style={{ display: 'inline-block', minWidth: 150, verticalAlign: 'middle' }}>
-                <input
-                  className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
-                  placeholder="Enter text"
-                  value={clientFields[id] || ''}
-                  onChange={e => handleClientFieldChange(id, e.target.value)}
-                  disabled={contract?.status === 'signed'}
-                  style={{ minWidth: 150, display: 'inline-block' }}
-                />
-              </span>
+              <input
+                key={id}
+                className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
+                placeholder="Enter text"
+                value={clientFields[id] || ''}
+                onChange={e => {
+                  console.log('🎯 PublicContractView: Text input changed - ID:', id, 'New value:', e.target.value);
+                  handleClientFieldChange(id, e.target.value);
+                }}
+                disabled={contract?.status === 'signed'}
+                style={{ minWidth: 150, display: 'inline-block', verticalAlign: 'middle' }}
+              />
             );
           } else if (sigMatch) {
-            const id = sigMatch[1];
+            const id = sigMatch[1] ? sigMatch[1].substring(1) : `signature-${++placeholderIndex.signature}`;
             parts.push(
               <span key={id} style={{ display: 'inline-block', minWidth: 220, minHeight: 100, verticalAlign: 'middle' }}>
                 <span className="border-2 border-blue-300 rounded-lg bg-gray-50 p-3" style={{ display: 'inline-block' }}>
@@ -248,7 +304,10 @@ const PublicContractView: React.FC = () => {
                       }}
                       onEnd={() => {
                         if (signaturePads && signaturePads[id]) {
-                          handleClientSignature(signaturePads[id].toDataURL());
+                          const dataUrl = signaturePads[id].toDataURL();
+                          setClientSignature(dataUrl);
+                          // Save to clientFields with the correct ID
+                          setClientFields(prev => ({ ...prev, [id]: dataUrl }));
                         }
                       }}
                     />
@@ -350,7 +409,30 @@ const PublicContractView: React.FC = () => {
         return parts.length > 0 ? parts : text;
       }
       
-      // Handle line breaks in text content
+      // Apply text formatting (bold, italic, etc.)
+      if (content.marks && content.marks.length > 0) {
+        const formattedText = content.marks.reduce((acc: any, mark: any) => {
+          if (mark.type === 'bold') return <b key={keyPrefix}>{acc}</b>;
+          if (mark.type === 'italic') return <i key={keyPrefix}>{acc}</i>;
+          if (mark.type === 'underline') return <u key={keyPrefix}>{acc}</u>;
+          if (mark.type === 'strike') return <s key={keyPrefix}>{acc}</s>;
+          return acc;
+        }, text);
+        
+        // Handle line breaks after formatting
+        if (typeof formattedText === 'string' && formattedText.includes('\n')) {
+          const lines = formattedText.split('\n');
+          return lines.map((line: string, index: number) => (
+            <React.Fragment key={keyPrefix + '-line-' + index}>
+              {index > 0 && <br />}
+              {line}
+            </React.Fragment>
+          ));
+        }
+        return formattedText;
+      }
+      
+      // Handle line breaks in plain text
       if (text && text.includes('\n')) {
         const lines = text.split('\n');
         return lines.map((line: string, index: number) => (
@@ -366,10 +448,19 @@ const PublicContractView: React.FC = () => {
     }
     switch (content.type) {
       case 'paragraph':
-        const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', signaturePads, applicantPriceIndex, paymentPlanIndex);
+        const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex);
         // Only render paragraph if it has content
         if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
-          return <p key={keyPrefix} className="mb-2">{paragraphContent}</p>;
+          // Check if paragraph contains input fields (React elements)
+          const hasInputFields = React.isValidElement(paragraphContent) || 
+            (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
+          
+          if (hasInputFields) {
+            // Use div instead of p to avoid DOM nesting issues with input fields
+            return <div key={keyPrefix} className="mb-3">{paragraphContent}</div>;
+          } else {
+            return <p key={keyPrefix} className="mb-3">{paragraphContent}</p>;
+          }
         }
         return null;
       case 'heading': {
@@ -379,17 +470,17 @@ const PublicContractView: React.FC = () => {
         return React.createElement(
           HeadingTag,
           { key: keyPrefix },
-          renderTiptapContent(content.content, keyPrefix + '-h', signaturePads, applicantPriceIndex, paymentPlanIndex)
+          renderTiptapContent(content.content, keyPrefix + '-h', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)
         );
       }
       case 'bulletList':
-        return <ul key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-ul', signaturePads, applicantPriceIndex, paymentPlanIndex)}</ul>;
+        return <ul key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-ul', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}</ul>;
       case 'orderedList':
-        return <ol key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-ol', signaturePads, applicantPriceIndex, paymentPlanIndex)}</ol>;
+        return <ol key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-ol', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}</ol>;
       case 'listItem':
-        return <li key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-li', signaturePads, applicantPriceIndex, paymentPlanIndex)}</li>;
+        return <li key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-li', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}</li>;
       case 'blockquote':
-        return <blockquote key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-bq', signaturePads, applicantPriceIndex, paymentPlanIndex)}</blockquote>;
+        return <blockquote key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-bq', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}</blockquote>;
       case 'horizontalRule':
         return <hr key={keyPrefix} />;
       case 'hardBreak':
@@ -424,14 +515,20 @@ const PublicContractView: React.FC = () => {
         </h1>
         
         <div className="prose max-w-none">
-          {thankYou ? (
-            <>
-              <div className="alert alert-success text-lg font-semibold mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
-              {renderTiptapContent(contract.custom_content || convertTemplateToLineBreaks(template.content?.content), '', signaturePads)}
-            </>
-          ) : (
-            renderTiptapContent(contract.custom_content || convertTemplateToLineBreaks(template.content?.content), '', signaturePads)
-          )}
+                  {thankYou ? (
+          <>
+            <div className="alert alert-success text-lg font-semibold mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
+            {(() => {
+              console.log('🎯 PublicContractView: Rendering thank you with template.content:', template.content);
+              return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0 });
+            })()}
+          </>
+        ) : (
+          (() => {
+            console.log('🎯 PublicContractView: Rendering normal with template.content:', template.content);
+            return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0 });
+          })()
+        )}
         </div>
         {/* Submit Contract Button (only if not signed) */}
         {contract.status !== 'signed' && !thankYou && (

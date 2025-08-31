@@ -31,6 +31,16 @@ export interface Client extends Lead {
   last_stage_changed_at?: string;
   updated_at?: string;
   client_country?: string;
+  // Legacy lead support
+  lead_type?: 'legacy' | 'new';
+  handler?: string;
+  // Legacy lead role fields
+  meeting_scheduler_id?: string;
+  meeting_manager_id?: string;
+  meeting_lawyer_id?: string;
+  expert_id?: string;
+  closer_id?: string;
+  case_handler_id?: string;
 }
 
 export interface ClientTabProps {

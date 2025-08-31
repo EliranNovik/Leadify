@@ -2,8 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { supabase, type Lead } from '../lib/supabase';
 import { Link } from 'react-router-dom';
 import { BellAlertIcon } from '@heroicons/react/24/outline';
+import { getStageName, initializeStageNames } from '../lib/stageUtils';
 
-const getStageBadge = (stage: string) => {
+interface CombinedLead {
+  id: number | string;
+  lead_number: string;
+  name: string;
+  stage?: string;
+  topic?: string;
+  next_followup?: string;
+  lead_type: 'new' | 'legacy';
+}
+
+const getStageBadge = (stage: string | undefined) => {
     const style = {
         backgroundColor: '#edeafd',
         color: '#4638e2',
@@ -12,32 +23,110 @@ const getStageBadge = (stage: string) => {
         fontSize: '0.95em',
         letterSpacing: '0.01em',
     };
+    
+    if (!stage) {
+        return (
+            <span className="badge badge-md ml-2" style={style}>
+                No Stage
+            </span>
+        );
+    }
+    
+    // Use getStageName for proper stage name transformation
+    const stageName = getStageName(stage);
+    
     return (
         <span className="badge badge-md ml-2" style={style}>
-            {stage && typeof stage === 'string' && stage.trim() ? stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()) : 'No Stage'}
+            {stageName}
         </span>
     );
 };
 
 const OverdueFollowups: React.FC = () => {
-    const [overdueLeads, setOverdueLeads] = useState<Lead[]>([]);
+    const [overdueLeads, setOverdueLeads] = useState<CombinedLead[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         const fetchOverdueLeads = async () => {
             setLoading(true);
             try {
+                // Initialize stage names cache first
+                await initializeStageNames();
+                
                 const today = new Date().toISOString().split('T')[0];
-                const { data, error } = await supabase
+                const fiftyDaysAgo = new Date();
+                fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
+                const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
+                
+                // Fetch new leads with overdue follow-ups (not over 50 days)
+                const { data: newLeadsData, error: newLeadsError } = await supabase
                     .from('leads')
-                    .select('*')
+                    .select(`
+                        id,
+                        lead_number,
+                        name,
+                        stage,
+                        topic,
+                        next_followup
+                    `)
                     .lte('next_followup', today)
+                    .gte('next_followup', fiftyDaysAgoStr)
                     .not('next_followup', 'is', null);
 
-                if (error) throw error;
-                setOverdueLeads(data || []);
+                if (newLeadsError) throw newLeadsError;
+
+                // Fetch legacy leads with overdue follow-ups (not over 50 days)
+                const { data: legacyLeadsData, error: legacyLeadsError } = await supabase
+                    .from('leads_lead')
+                    .select(`
+                        id,
+                        name,
+                        stage,
+                        topic,
+                        next_followup
+                    `)
+                    .lte('next_followup', today)
+                    .gte('next_followup', fiftyDaysAgoStr)
+                    .not('next_followup', 'is', null)
+                    .eq('status', 0) // Only fetch active legacy leads
+                    .lt('stage', 100); // Don't fetch leads past stage 100 (Success)
+
+                if (legacyLeadsError) throw legacyLeadsError;
+
+                // Process new leads
+                const processedNewLeads: CombinedLead[] = (newLeadsData || []).map(lead => ({
+                    id: lead.id,
+                    lead_number: lead.lead_number,
+                    name: lead.name,
+                    stage: lead.stage,
+                    topic: lead.topic,
+                    next_followup: lead.next_followup,
+                    lead_type: 'new' as const
+                }));
+
+                // Process legacy leads
+                const processedLegacyLeads: CombinedLead[] = (legacyLeadsData || []).map(lead => ({
+                    id: `legacy_${lead.id}`,
+                    lead_number: lead.id?.toString() || '',
+                    name: lead.name || '',
+                    stage: lead.stage?.toString() || '',
+                    topic: lead.topic || 'Consultation',
+                    next_followup: lead.next_followup,
+                    lead_type: 'legacy' as const
+                }));
+
+                // Combine and sort by follow-up date (oldest first)
+                const allLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => {
+                    if (!a.next_followup && !b.next_followup) return 0;
+                    if (!a.next_followup) return 1;
+                    if (!b.next_followup) return -1;
+                    return new Date(a.next_followup).getTime() - new Date(b.next_followup).getTime();
+                });
+
+                setOverdueLeads(allLeads);
             } catch (error) {
                 console.error("Error fetching overdue leads:", error);
+                setOverdueLeads([]);
             } finally {
                 setLoading(false);
             }
@@ -78,6 +167,7 @@ const OverdueFollowups: React.FC = () => {
                                     <td>
                                         <Link to={`/clients/${lead.lead_number}`} className="font-bold" style={{ color: '#4638e2', fontWeight: 700, fontSize: '1.05em' }}>
                                             {lead.lead_number}
+                                            {lead.lead_type === 'legacy' && <span className="text-xs text-gray-500 ml-1">(L)</span>}
                                         </Link>
                                     </td>
                                     <td>

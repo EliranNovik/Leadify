@@ -1,10 +1,9 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
+import { supabase } from '../_shared/supabase-client.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
-
-console.log('Function "ai-timeline-summary" up and running!');
 
 function formatTimeline(interactions: any[]): string {
   return interactions

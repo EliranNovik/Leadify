@@ -353,15 +353,15 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
       {/* Records Table */}
       <div className="card bg-base-100 shadow-xl">
-        <div className="card-body">
+        <div className="card-body p-4">
           {loading ? (
             <div className="flex justify-center py-8">
               <div className="loading loading-spinner loading-lg"></div>
             </div>
           ) : (
             <>
-              <div className="overflow-x-auto">
-                <table className="table table-zebra w-full">
+              <div className="overflow-x-auto w-full">
+                <table className="table w-full">
                   <thead>
                     <tr>
                       {fields.filter(field => !field.hideInTable).map(field => (
@@ -369,14 +369,22 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                           {field.label}
                         </th>
                       ))}
-                      <th className="font-semibold">Actions</th>
+                      <th className="font-semibold w-20">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {records.map(record => (
-                      <tr key={record.id}>
+                      <tr 
+                        key={record.id}
+                        className="cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-lg hover:shadow-primary/20 hover:-translate-y-1 hover:bg-gradient-to-r hover:from-primary/5 hover:to-secondary/5 border-l-4 border-transparent hover:border-l-primary/30 group"
+                        onClick={() => openModal(record)}
+                        style={{
+                          transformStyle: 'preserve-3d',
+                          perspective: '1000px'
+                        }}
+                      >
                         {fields.filter(field => !field.hideInTable).map(field => (
-                          <td key={field.name}>
+                          <td key={field.name} className="transition-all duration-300 group-hover:bg-white/30 group-hover:transform group-hover:translate-z-1">
                             {field.type === 'boolean' ? (
                               <input
                                 type="checkbox"
@@ -394,21 +402,27 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                             )}
                           </td>
                         ))}
-                        <td>
-                          <div className="flex gap-2">
+                        <td className="transition-all duration-300 group-hover:bg-white/30 group-hover:transform group-hover:translate-z-1 w-20">
+                          <div className="flex gap-1 justify-center">
                             <button
-                              onClick={() => openModal(record)}
-                              className="btn btn-ghost btn-sm"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openModal(record);
+                              }}
+                              className="btn btn-ghost btn-xs hover:scale-110 transition-transform duration-200"
                               title="Edit"
                             >
-                              <PencilIcon className="w-4 h-4" />
+                              <PencilIcon className="w-3 h-3" />
                             </button>
                             <button
-                              onClick={() => openDeleteModal(record)}
-                              className="btn btn-ghost btn-sm text-error"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                openDeleteModal(record);
+                              }}
+                              className="btn btn-ghost btn-xs text-error hover:scale-110 transition-transform duration-200"
                               title="Delete"
                             >
-                              <TrashIcon className="w-4 h-4" />
+                              <TrashIcon className="w-3 h-3" />
                             </button>
                           </div>
                         </td>

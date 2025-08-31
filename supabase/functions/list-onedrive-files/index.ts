@@ -46,77 +46,35 @@ const customAuthProvider: AuthenticationProvider = {
 const graphClient = Client.initWithMiddleware({ authProvider: customAuthProvider });
 
 serve(async (req) => {
-  console.log('Function called with method:', req.method);
-  
-  // CORS preflight
+  // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
-    console.log('Handling CORS preflight');
     return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    console.log('Parsing request body...');
     const body = await req.json();
-    console.log('Request body:', body);
-    
     const { leadNumber } = body;
 
     if (!leadNumber) {
-      console.error('Missing leadNumber parameter');
-      throw new Error('Missing leadNumber parameter.');
-    }
-
-    console.log('Processing lead number:', leadNumber);
-
-    const folderName = `Lead_${leadNumber.replace(/ /g, '_')}`;
-    const folderPath = `/Leads/${folderName}`;
-    console.log('Looking for folder:', folderPath);
-
-    // Get the folder and its contents
-    const folderItems = await graphClient
-      .api(`/users/${targetUserId}/drive/root:${folderPath}:/children`)
-      .get();
-
-    if (!folderItems || !folderItems.value) {
-      return new Response(JSON.stringify({ 
-        success: true, 
-        files: [],
-        message: 'No files found in folder'
-      }), {
+      return new Response(JSON.stringify({ error: 'leadNumber is required' }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        status: 400
       });
     }
 
-    // Filter out folders and only return files
-    const files = folderItems.value
-      .filter((item: any) => !item.folder) // Only files, not folders
-      .map((file: any) => ({
-        id: file.id,
-        name: file.name,
-        size: file.size,
-        lastModified: file.lastModifiedDateTime,
-        downloadUrl: file['@microsoft.graph.downloadUrl'],
-        webUrl: file.webUrl,
-        fileType: file.file?.mimeType || 'application/octet-stream'
-      }));
+    // Get files from OneDrive
+    const files = await getOneDriveFiles(leadNumber);
 
-    return new Response(JSON.stringify({
-      success: true,
-      files: files,
-      message: `Found ${files.length} files`
-    }), {
+    return new Response(JSON.stringify({ files }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      status: 200
     });
 
   } catch (error) {
-    console.error('Function Error:', error.message);
-    console.error('Full error:', error);
-    return new Response(JSON.stringify({ 
-      error: error.message,
-      details: error.toString()
-    }), {
+    console.error('Error listing OneDrive files:', error);
+    return new Response(JSON.stringify({ error: 'Internal server error' }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      status: 500,
+      status: 500
     });
   }
 }); 

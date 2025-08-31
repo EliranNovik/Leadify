@@ -5,6 +5,46 @@ import moment from 'moment';
 import { PlusIcon, TrashIcon, PencilIcon, CheckIcon, XMarkIcon, ClockIcon, UserIcon, MapPinIcon, VideoCameraIcon, CalendarIcon, FunnelIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ChevronLeftIcon, ChevronRightIcon, CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 import { supabase } from '../lib/supabase';
+import TeamsMeetingModal from './TeamsMeetingModal';
+import { getOutlookTeamsMeetings, type OutlookTeamsMeeting } from '../lib/outlookTeamsMeetingsApi';
+
+// Interface for meetings table data (matching MeetingTab structure)
+interface MeetingData {
+  id: number;
+  client_id: number;
+  date: string;
+  time: string;
+  location: string;
+  manager: string;
+  currency: string;
+  amount: number;
+  brief: string;
+  scheduler: string;
+  helper: string;
+  expert: string;
+  link: string; // This is teams_meeting_url
+  status?: string;
+  expert_notes?: string;
+  handler_notes?: string;
+  eligibility_status?: string;
+  feasibility_notes?: string;
+  documents_link?: string;
+  lastEdited: {
+    timestamp: string;
+    user: string;
+  };
+}
+
+// Interface for leads table data
+interface LeadData {
+  id: number;
+  lead_number: string;
+  name: string;
+  manager: string;
+  helper: string;
+  category: string;
+  balance: number;
+}
 
 const localizer = momentLocalizer(moment);
 
@@ -85,6 +125,24 @@ function getDateString(year: number, month: number, day: number) {
 
 const OutlookCalendarPage: React.FC = () => {
   const { instance, accounts } = useMsal();
+
+  // Helper to extract a valid Teams join link from various formats (from CalendarPage)
+  const getValidTeamsLink = (link: string | undefined) => {
+    if (!link) return '';
+    try {
+      if (link.startsWith('http')) return link;
+      const obj = JSON.parse(link);
+      if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
+        return obj.joinUrl;
+      }
+      if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
+        return obj.joinWebUrl;
+      }
+    } catch (e) {
+      if (typeof link === 'string' && link.startsWith('http')) return link;
+    }
+    return '';
+  };
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const sharedMailboxes = DEFAULT_MAILBOXES;
@@ -99,6 +157,20 @@ const OutlookCalendarPage: React.FC = () => {
   const [viewMode, setViewMode] = useState<'list' | 'month'>('list');
   const [monthModalDay, setMonthModalDay] = useState<Date | null>(null);
   const [monthModalEvents, setMonthModalEvents] = useState<CalendarEvent[]>([]);
+  
+  // Teams meeting modal state
+  const [isTeamsMeetingModalOpen, setIsTeamsMeetingModalOpen] = useState(false);
+  const [selectedDateForMeeting, setSelectedDateForMeeting] = useState<Date | null>(null);
+  const [selectedTimeForMeeting, setSelectedTimeForMeeting] = useState<string>('');
+  
+  // Teams meetings from database
+  const [outlookTeamsMeetings, setOutlookTeamsMeetings] = useState<OutlookTeamsMeeting[]>([]);
+  
+  // Meetings from database for lead information
+  const [meetingsData, setMeetingsData] = useState<MeetingData[]>([]);
+  
+  // Leads from database for additional information
+  const [leadsData, setLeadsData] = useState<LeadData[]>([]);
 
   // Calendar state for dashboard-style calendar
   const [currentDate, setCurrentDate] = useState(new Date());
@@ -236,6 +308,103 @@ const OutlookCalendarPage: React.FC = () => {
     }
   };
 
+  // Fetch Teams meetings from database
+  const fetchOutlookTeamsMeetings = async () => {
+    try {
+      const { data, error } = await getOutlookTeamsMeetings();
+      if (error) {
+        console.error('Error fetching Teams meetings from database:', error);
+        return;
+      }
+      setOutlookTeamsMeetings(data || []);
+      console.log('Teams meetings from database:', data);
+    } catch (error) {
+      console.error('Exception fetching Teams meetings from database:', error);
+    }
+  };
+
+  // Fetch meetings data from database for lead information
+  const fetchMeetingsData = async () => {
+    try {
+      console.log('Fetching meetings data from database...');
+      const { data, error } = await supabase
+        .from('meetings')
+        .select('*')
+        .not('meeting_manager', 'is', null);
+      
+      console.log('Raw meetings data from database:', data);
+      console.log('Number of meetings found:', data?.length || 0);
+
+      if (error) {
+        console.error('Error fetching meetings data:', error);
+        return;
+      }
+      
+      // Format meetings data like in MeetingTab
+      const formattedMeetings = data?.map((m: any) => ({
+        id: m.id,
+        client_id: m.client_id,
+        date: m.meeting_date,
+        time: m.meeting_time,
+        location: m.meeting_location,
+        manager: m.meeting_manager,
+        currency: m.meeting_currency,
+        amount: m.meeting_amount,
+        brief: m.meeting_brief,
+        scheduler: m.scheduler,
+        helper: m.helper,
+        expert: m.expert,
+        link: m.teams_meeting_url, // This is the key field for Teams URL
+        status: m.status || 'scheduled',
+        expert_notes: m.expert_notes,
+        handler_notes: m.handler_notes,
+        eligibility_status: m.eligibility_status,
+        feasibility_notes: m.feasibility_notes,
+        documents_link: m.documents_link,
+        lastEdited: {
+          timestamp: m.last_edited_timestamp,
+          user: m.last_edited_by,
+        },
+      })) || [];
+      
+      setMeetingsData(formattedMeetings);
+      console.log('Formatted meetings data from database:', formattedMeetings);
+      console.log('Number of meetings found:', formattedMeetings.length);
+      
+      // Log meetings with Teams URLs
+      const meetingsWithTeamsUrls = formattedMeetings.filter(m => m.link);
+      console.log('Meetings with Teams URLs:', meetingsWithTeamsUrls);
+      console.log('Number of meetings with Teams URLs:', meetingsWithTeamsUrls.length);
+      
+      // Log some sample meetings for debugging
+      if (formattedMeetings.length > 0) {
+        console.log('Sample meetings:', formattedMeetings.slice(0, 3));
+      }
+    } catch (error) {
+      console.error('Exception fetching meetings data:', error);
+    }
+  };
+
+  // Fetch leads data from database for additional information
+  const fetchLeadsData = async () => {
+    try {
+      console.log('Fetching leads data from database...');
+      const { data, error } = await supabase
+        .from('leads')
+        .select('id, lead_number, name, manager, helper, category, balance');
+
+      if (error) {
+        console.error('Error fetching leads data:', error);
+        return;
+      }
+      setLeadsData(data || []);
+      console.log('Leads data from database:', data);
+      console.log('Number of leads found:', data?.length || 0);
+    } catch (error) {
+      console.error('Exception fetching leads data:', error);
+    }
+  };
+
   // Fetch calendar events
   const fetchCalendarEvents = async () => {
     setIsCalendarLoading(true);
@@ -358,6 +527,9 @@ const OutlookCalendarPage: React.FC = () => {
     };
     
     fetchEvents();
+    fetchOutlookTeamsMeetings();
+    fetchMeetingsData();
+    fetchLeadsData();
   }, [instance, accounts, sharedMailboxes]);
 
   const handleEventClick = (event: CalendarEvent) => {
@@ -527,6 +699,17 @@ const OutlookCalendarPage: React.FC = () => {
         </div>
         
         <div className="flex gap-1">
+          <button
+            className="btn btn-sm btn-primary flex items-center gap-2"
+            onClick={() => {
+              setSelectedDateForMeeting(new Date());
+              setSelectedTimeForMeeting('09:00');
+              setIsTeamsMeetingModalOpen(true);
+            }}
+          >
+            <VideoCameraIcon className="h-4 w-4" />
+            Create Teams Meeting
+          </button>
           {Object.entries(viewNames).map(([viewKey, viewName]) => (
             <button
               key={viewKey}
@@ -582,33 +765,193 @@ const OutlookCalendarPage: React.FC = () => {
           </td>
           <td>{event.start.toLocaleDateString()} at {event.start.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
           <td>{event.group}</td>
-          <td>{event.mailbox}</td>
-          <td>${event.resource?.amount?.toLocaleString() || '0'}</td>
+          <td className="max-w-xs">
+            {(() => {
+              // Check if this meeting exists in our database
+              const dbMeeting = outlookTeamsMeetings.find(m => 
+                m.teams_meeting_id === event.resource?.id || 
+                m.subject === event.title
+              );
+              
+              // For Potential Clients meetings, show lead information
+              if (event.group === 'Potential Clients') {
+                console.log('Potential Clients meeting found:', {
+                  title: event.title,
+                  resource: event.resource,
+                  teamsUrl: event.resource?.onlineMeeting?.joinUrl,
+                  webLink: event.resource?.webLink,
+                  meetingsData: meetingsData
+                });
+                
+                // Extract lead number from title (e.g., "[#L27] Norman King - Meeting" -> "L27")
+                const leadNumberMatch = event.title.match(/\[#(L\d+)\]/);
+                const leadNumber = leadNumberMatch ? leadNumberMatch[1] : null;
+                
+                console.log('Extracted lead number:', leadNumber);
+                
+                // Find matching meeting in database by Teams URL or subject
+                const matchingMeeting = meetingsData.find(m => {
+                  const urlMatch = m.link === event.resource?.onlineMeeting?.joinUrl ||
+                                  m.link === event.resource?.webLink;
+                  const subjectMatch = m.brief === event.title;
+                  
+                  console.log('Checking meeting match:', {
+                    meetingId: m.id,
+                    meetingSubject: m.brief,
+                    meetingUrl: m.link,
+                    eventTitle: event.title,
+                    eventUrl: event.resource?.onlineMeeting?.joinUrl,
+                    urlMatch,
+                    subjectMatch
+                  });
+                  
+                  return urlMatch || subjectMatch;
+                });
+                
+                // Find matching lead by lead number
+                const matchingLead = leadNumber ? leadsData.find(l => l.lead_number === leadNumber) : null;
+                
+                console.log('Matching meeting found:', matchingMeeting);
+                console.log('Matching lead found:', matchingLead);
+                
+                return (
+                  <div className="text-sm text-gray-700">
+                    <div className="space-y-1">
+                      <div><span className="font-medium">Manager:</span> {matchingMeeting?.manager || matchingLead?.manager || 'N/A'}</div>
+                      <div><span className="font-medium">Helper:</span> {matchingMeeting?.helper || matchingLead?.helper || 'N/A'}</div>
+                      <div><span className="font-medium">Category:</span> {matchingLead?.category || 'N/A'}</div>
+                      <div><span className="font-medium">Balance:</span> ${(matchingLead?.balance || 0).toLocaleString()}</div>
+                    </div>
+                  </div>
+                );
+              }
+              
+              // For other meetings, show regular description
+              const description = dbMeeting?.description || event.description;
+              
+              if (description) {
+                // Strip HTML tags and format nicely
+                const cleanDescription = description
+                  .replace(/<[^>]*>/g, '') // Remove HTML tags
+                  .replace(/\s+/g, ' ') // Normalize whitespace
+                  .trim();
+                
+                return (
+                  <div className="text-sm text-gray-700" title={cleanDescription}>
+                    {cleanDescription.length > 100 
+                      ? (
+                        <div>
+                          <div>{cleanDescription.substring(0, 100)}...</div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            Hover to see full description
+                          </div>
+                        </div>
+                      ) 
+                      : cleanDescription
+                    }
+                  </div>
+                );
+              } else {
+                return (
+                  <span className="text-gray-400 italic text-sm">No description</span>
+                );
+              }
+            })()}
+          </td>
           <td><span className="badge badge-success">{event.resource?.status || 'Scheduled'}</span></td>
           <td>
-            <button 
-              className="btn btn-primary btn-sm gap-2"
-              onClick={() => {
-                const joinUrl = event.resource?.onlineMeeting?.joinUrl
-                  || event.resource?.teamsMeetingUrl
-                  || event.resource?.webLink
-                  || event.resource?.location?.uri;
-                if (joinUrl) {
-                  window.open(joinUrl, '_blank');
-                } else {
-                  alert('No meeting URL available');
+            {(() => {
+              // Check outlook_teams_meetings table for staff meetings (DON'T CHANGE THIS LOGIC)
+              const outlookDbMeeting = outlookTeamsMeetings.find(m => 
+                m.teams_meeting_id === event.resource?.id || 
+                m.subject === event.title
+              );
+
+              // Check meetings table for potential clients meetings
+              const meetingsTableMeeting = meetingsData.find(m => {
+                // Extract lead number from event title (e.g., "[#L30] Bernhard Meisler - Meeting" -> lead_number = 30)
+                const leadMatch = event.title.match(/\[#L(\d+)\]/);
+                if (leadMatch) {
+                  const leadNumber = parseInt(leadMatch[1]);
+                  // Find matching lead by lead number
+                  const matchingLead = leadsData.find(lead => lead.lead_number === leadNumber.toString());
+                  if (matchingLead && m.client_id === matchingLead.id) {
+                    return true;
+                  }
                 }
-              }}
-            >
-              <VideoCameraIcon className="w-4 h-4" />
-              Join Meeting
-            </button>
+                return false;
+              });
+
+              // Check if this is a Teams meeting based on Graph API data or database tables
+              const hasTeamsMeeting = outlookDbMeeting?.teams_join_url
+                || outlookDbMeeting?.teams_meeting_url
+                || meetingsTableMeeting?.link
+                || event.resource?.onlineMeeting?.joinUrl 
+                || event.resource?.teamsMeetingUrl 
+                || event.resource?.teams_meeting_url
+                || event.resource?.webLink
+                || (event.resource?.location?.displayName && event.resource.location.displayName.includes('Microsoft Teams Meeting'))
+                || (event.resource?.onlineMeeting && Object.keys(event.resource.onlineMeeting).length > 0);
+              
+              // Get the location from the event or meeting data
+              let location = event.location || 'N/A';
+              
+              // For potential clients meetings, try to get location from meetings table
+              if (event.group === 'Potential Clients' && meetingsTableMeeting) {
+                location = meetingsTableMeeting.location || location;
+              }
+              
+              // If it's a Teams meeting, show the Teams button
+              if (hasTeamsMeeting) {
+                return (
+                  <button 
+                    className="btn btn-sm btn-primary gap-2"
+                    title={((outlookDbMeeting?.teams_join_url || meetingsTableMeeting?.link || event.resource?.onlineMeeting?.joinUrl || event.resource?.webLink) ? 'Join Teams Meeting' : 'Teams Meeting (check Outlook/Teams for join link)')}
+                    onClick={() => {
+                      // Priority order: outlook_teams_meetings -> meetings table -> Graph API
+                      let url = null;
+                      
+                      // Check outlook_teams_meetings table (for staff meetings)
+                      if (outlookDbMeeting?.teams_join_url) {
+                        url = getValidTeamsLink(outlookDbMeeting.teams_join_url);
+                      }
+                      
+                      // Check meetings table (for potential clients meetings)
+                      if (!url && meetingsTableMeeting?.link) {
+                        url = getValidTeamsLink(meetingsTableMeeting.link);
+                      }
+                      
+                      // Fallback to Graph API data
+                      if (!url) {
+                        url = getValidTeamsLink(event.resource?.onlineMeeting?.joinUrl || event.resource?.webLink);
+                      }
+                      
+                      if (url) {
+                        window.open(url, '_blank');
+                      } else {
+                        alert('No meeting URL available');
+                      }
+                    }}
+                  >
+                    <VideoCameraIcon className="w-4 h-4" />
+                    {((outlookDbMeeting?.teams_join_url || meetingsTableMeeting?.link || event.resource?.onlineMeeting?.joinUrl || event.resource?.webLink) ? 'Join Teams Meeting' : 'Teams Meeting')}
+                  </button>
+                );
+              }
+              
+              // For non-Teams meetings, show the location
+              return (
+                <span className="text-sm font-medium text-gray-700">
+                  {location}
+                </span>
+              );
+            })()}
           </td>
         </tr>
         {/* Expanded Details Row */}
         {isExpanded && (
           <tr>
-            <td colSpan={7} className="p-0">
+            <td colSpan={6} className="p-0">
               <div className="bg-base-100/50 p-4 border-t border-base-200">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div className="bg-base-200/50 p-4 rounded-lg">
@@ -630,7 +973,7 @@ const OutlookCalendarPage: React.FC = () => {
                       )}
                     </div>
                   </div>
-                  <div className="md:col-span-2 flex justify-center">
+                  <div className="md:col-span-2 flex justify-center gap-4">
                     <button
                       onClick={() => {
                         setSelectedEvent(event);
@@ -641,6 +984,50 @@ const OutlookCalendarPage: React.FC = () => {
                       <FolderIcon className="w-5 h-5" />
                       Documents
                     </button>
+                                          {(() => {
+                        // Check outlook_teams_meetings table for staff meetings
+                        const expandedOutlookDbMeeting = outlookTeamsMeetings.find(m => 
+                          m.teams_meeting_id === event.resource?.id || 
+                          m.subject === event.title
+                        );
+                        
+                        // Check meetings table for potential clients meetings
+                        const expandedMeetingsTableMeeting = meetingsData.find(m => {
+                          const leadMatch = event.title.match(/\[#L(\d+)\]/);
+                          if (leadMatch) {
+                            const leadNumber = parseInt(leadMatch[1]);
+                            // Find matching lead by lead number
+                            const matchingLead = leadsData.find(lead => lead.lead_number === leadNumber.toString());
+                            if (matchingLead && m.client_id === matchingLead.id) {
+                              return true;
+                            }
+                          }
+                          return false;
+                        });
+                        
+                        // Priority order: outlook_teams_meetings -> meetings table -> Graph API
+                        let teamsUrl = null;
+                        
+                        if (expandedOutlookDbMeeting?.teams_join_url) {
+                          teamsUrl = getValidTeamsLink(expandedOutlookDbMeeting.teams_join_url);
+                        } else if (expandedMeetingsTableMeeting?.link) {
+                          teamsUrl = getValidTeamsLink(expandedMeetingsTableMeeting.link);
+                        } else {
+                          teamsUrl = getValidTeamsLink(event.resource?.onlineMeeting?.joinUrl || event.resource?.webLink);
+                        }
+                        
+                        return teamsUrl && (
+                        <a
+                          href={teamsUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn btn-primary flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg shadow hover:bg-primary/90 transition-colors"
+                        >
+                          <VideoCameraIcon className="w-5 h-5" />
+                          Open Teams Meeting
+                        </a>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -649,7 +1036,7 @@ const OutlookCalendarPage: React.FC = () => {
         )}
         {/* Toggle Row */}
         <tr>
-          <td colSpan={7} className="p-0">
+          <td colSpan={6} className="p-0">
             <div
               className="bg-base-200 hover:bg-base-300 cursor-pointer transition-colors p-2 text-center"
               onClick={() => setExpandedEventId(expandedEventId === event.id ? null : event.id)}
@@ -842,10 +1229,23 @@ const OutlookCalendarPage: React.FC = () => {
 
       {/* Filters */}
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
-        <h1 className="text-3xl font-bold flex items-center gap-3">
-          <CalendarIcon className="w-8 h-8 text-primary" />
-          Outlook Calendar
-        </h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-3xl font-bold flex items-center gap-3">
+            <CalendarIcon className="w-8 h-8 text-primary" />
+            Outlook Calendar
+          </h1>
+          <button
+            className="btn btn-primary flex items-center gap-2"
+            onClick={() => {
+              setSelectedDateForMeeting(new Date());
+              setSelectedTimeForMeeting('09:00');
+              setIsTeamsMeetingModalOpen(true);
+            }}
+          >
+            <VideoCameraIcon className="h-5 w-5" />
+            Create Teams Meeting
+          </button>
+        </div>
         <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
           <div className="flex items-center gap-2">
             <FunnelIcon className="w-5 h-5 text-gray-500" />
@@ -888,10 +1288,9 @@ const OutlookCalendarPage: React.FC = () => {
                 <th>Title</th>
                 <th>Date & Time</th>
                 <th>Group</th>
-                <th>Mailbox</th>
-                <th>Amount</th>
+                <th>Description</th>
                 <th>Status</th>
-                <th>Actions</th>
+                <th>Location</th>
               </tr>
             </thead>
             <tbody>
@@ -900,7 +1299,7 @@ const OutlookCalendarPage: React.FC = () => {
               ) : filteredEvents.length > 0 ? (
                 filteredEvents.map(renderEventRow)
               ) : (
-                <tr><td colSpan={7} className="text-center p-8">No events found for the selected filters.</td></tr>
+                <tr><td colSpan={6} className="text-center p-8">No events found for the selected filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -989,155 +1388,17 @@ const OutlookCalendarPage: React.FC = () => {
         </div>
       )}
 
-      {/* Calendar Box */}
-      <div className="w-full mt-12">
-        <div className="w-full bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col justify-between">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center justify-center w-8 h-8 rounded-lg" style={{ background: '#edeafd', border: '1px solid #4638e2' }}>
-                <CalendarIcon className="w-5 h-5" style={{ color: '#4638e2' }} />
-              </div>
-              <span className="text-lg font-bold" style={{ color: '#4638e2' }}>Calendar</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <button onClick={goToPreviousMonthCalendar} className="btn btn-ghost btn-xs" style={{ color: '#4638e2' }}>
-                <ChevronLeftIcon className="w-3 h-3" />
-              </button>
-              <button onClick={goToTodayCalendar} className="btn btn-xs text-xs" style={{ color: '#fff', background: '#4638e2' }}>
-                Today
-              </button>
-              <button onClick={goToNextMonthCalendar} className="btn btn-ghost btn-xs" style={{ color: '#4638e2' }}>
-                <ChevronRightIcon className="w-3 h-3" />
-              </button>
-            </div>
-          </div>
-          <div className="text-center mb-4">
-            <span className="text-base font-semibold" style={{ color: '#4638e2' }}>
-              {currentDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
-            </span>
-          </div>
-          {/* Calendar Grid */}
-          <div className="grid grid-cols-7 gap-1 mb-4">
-            {['S', 'M', 'T', 'W', 'T', 'F', 'S'].map(day => (
-              <div key={day} className="text-center text-sm font-semibold p-1" style={{ color: '#4638e2', opacity: 0.8 }}>
-                {day}
-              </div>
-            ))}
-            {(() => {
-              const { daysInMonth, firstDayOfMonth } = getDaysInMonth(currentDate);
-              const days = [];
-              for (let i = 0; i < firstDayOfMonth; i++) {
-                days.push(<div key={`empty-${i}`} className="h-10"></div>);
-              }
-              for (let day = 1; day <= daysInMonth; day++) {
-                const dateStr = getDateString(currentDate.getFullYear(), currentDate.getMonth(), day);
-                const events = getEventsForDate(dateStr);
-                const isToday = dateStr === getDateString(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
-                days.push(
-                  <div
-                    key={day}
-                    className={`h-10 border p-1 text-sm relative cursor-pointer rounded-lg transition-colors duration-150 ${isToday ? 'bg-[#edeafd] text-[#4638e2] font-bold' : 'hover:bg-[#edeafd] text-black'}`}
-                    style={{ borderColor: '#4638e2' }}
-                    onClick={() => handleDateClick(dateStr)}
-                  >
-                    <div className="text-right leading-none">{day}</div>
-                    <div className="flex flex-col gap-0.5 mt-0.5">
-                      {events.slice(0, 2).map(event => (
-                        <div key={event.id} className="flex items-center gap-1">
-                          <div
-                            className="w-2 h-2 rounded-full mx-auto"
-                            style={{ backgroundColor: event.type === 'meeting' ? '#4638e2' : '#b3aaf7' }}
-                            title={event.type === 'meeting' ? (event.clientName || '') : event.title}
-                          />
-                        </div>
-                      ))}
-                      {events.length > 2 && (
-                        <div className="text-xs text-gray-400 text-center">+{events.length - 2}</div>
-                      )}
-                    </div>
-                  </div>
-                );
-              }
-              return days;
-            })()}
-          </div>
-          {/* Legend */}
-          <div className="flex items-center justify-center gap-4 text-sm mt-2">
-            <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full" style={{ background: '#4638e2' }}></div>
-              <span style={{ color: '#4638e2', fontWeight: 600 }}>Meetings</span>
-            </div>
-            <div className="flex items-center gap-1">
-              <div className="w-2 h-2 rounded-full" style={{ background: '#b3aaf7' }}></div>
-              <span style={{ color: '#4638e2', fontWeight: 600 }}>Outlook</span>
-            </div>
-          </div>
-        </div>
-        {/* Calendar Event Details Modal */}
-        {isDrawerOpen && selectedCalendarDate && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl p-6 relative border border-gray-200">
-              <button
-                className="absolute top-4 right-4 btn btn-ghost btn-sm btn-circle"
-                onClick={closeDrawer}
-                aria-label="Close"
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-              <div className="mb-4 flex items-center gap-2">
-                <CalendarIcon className="w-6 h-6 text-primary" />
-                <span className="text-xl font-bold text-primary">Events for {selectedCalendarDate}</span>
-              </div>
-              <div className="space-y-4 max-h-[60vh] overflow-y-auto">
-                {getEventsForSelectedDate().length === 0 ? (
-                  <div className="text-gray-500 text-center py-8">No events for this day.</div>
-                ) : (
-                  getEventsForSelectedDate().map(event => (
-                    <div key={event.id} className="border border-gray-200 rounded-xl p-4 flex flex-col gap-2 bg-gray-50">
-                      <div className="flex items-center gap-2">
-                        <span className={`inline-block w-2 h-2 rounded-full ${event.type === 'meeting' ? 'bg-[#4638e2]' : 'bg-[#b3aaf7]'}`}></span>
-                        <span className="font-semibold text-lg text-gray-900">{event.title}</span>
-                        {event.type === 'meeting' && event.leadNumber && (
-                          <span className="ml-2 text-xs text-gray-500">Lead: {event.leadNumber}</span>
-                        )}
-                        {event.type === 'meeting' && event.clientName && (
-                          <span className="ml-2 text-xs text-gray-500">Client: {event.clientName}</span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap gap-4 items-center text-sm text-gray-700">
-                        {event.meetingTime && <span>Time: {event.meetingTime}</span>}
-                        {event.manager && <span>Manager: {event.manager}</span>}
-                        {((event.resource && event.resource.location && (typeof event.resource.location === 'string' ? event.resource.location : event.resource.location.displayName)) || null) && (
-                          <span>Location: {typeof event.resource.location === 'string' ? event.resource.location : event.resource.location?.displayName || 'N/A'}</span>
-                        )}
-                        {event.description && <span>Description: {event.description}</span>}
-                      </div>
-                      {event.type === 'meeting' && event.resource && event.resource.teams_meeting_url && (
-                        <button
-                          className="btn btn-primary btn-sm mt-2 w-fit"
-                          onClick={() => window.open(event.resource.teams_meeting_url, '_blank')}
-                        >
-                          Join Meeting
-                        </button>
-                      )}
-                      {event.type === 'outlook' && event.resource && event.resource.webLink && (
-                        <a
-                          className="btn btn-outline btn-sm mt-2 w-fit"
-                          href={event.resource.webLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                          Open in Outlook
-                        </a>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+      {/* Teams Meeting Modal */}
+      <TeamsMeetingModal
+        isOpen={isTeamsMeetingModalOpen}
+        onClose={() => {
+          setIsTeamsMeetingModalOpen(false);
+          // Refresh Teams meetings data when modal closes
+          fetchOutlookTeamsMeetings();
+        }}
+        selectedDate={selectedDateForMeeting || undefined}
+        selectedTime={selectedTimeForMeeting}
+      />
     </div>
   );
 };

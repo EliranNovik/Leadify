@@ -1,77 +1,52 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import './index.css'
 import App from './App'
-import { PublicClientApplication, EventType, EventMessage, AuthenticationResult, AuthError } from '@azure/msal-browser'
-import { MsalProvider } from '@azure/msal-react'
+import './index.css'
 import { msalConfig } from './msalConfig'
+import { PublicClientApplication, EventType, AuthenticationResult } from '@azure/msal-browser'
+import { MsalProvider } from '@azure/msal-react'
+import { supabase, sessionManager } from './lib/supabase'
+
+// Expose Supabase client globally for debugging (remove in production)
+(window as any).supabase = supabase;
+(window as any).sessionManager = sessionManager;
 
 // Force light theme
-if (typeof document !== 'undefined') {
-  document.documentElement.setAttribute('data-theme', 'light');
-}
+document.documentElement.setAttribute('data-theme', 'light');
 
 // Initialize MSAL
 const msalInstance = new PublicClientApplication(msalConfig);
 
-// Default to using the first account if available
+// Initialize MSAL instance before using it
 msalInstance.initialize().then(() => {
-  // Optional - This will update the account state if a user signs in from another tab/window
-  msalInstance.enableAccountStorageEvents();
-  
-  // Account selection logic is app dependent. Adjust as needed for different use cases.
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) {
-    msalInstance.setActiveAccount(accounts[0]);
-  }
-  
-  msalInstance.addEventCallback((event: EventMessage) => {
-    console.log('MSAL Event:', event.eventType, event);
-    
-    if (event.eventType === EventType.LOGIN_SUCCESS && event.payload && 'account' in event.payload) {
+  // MSAL event logging
+  msalInstance.addEventCallback((event) => {
+    if (event.eventType === EventType.LOGIN_SUCCESS) {
       const payload = event.payload as AuthenticationResult;
-      if (payload.account) {
-        console.log('Login successful, setting active account:', payload.account);
-        msalInstance.setActiveAccount(payload.account);
-      }
-    }
-    
-    if (event.eventType === EventType.LOGIN_FAILURE) {
-      console.error('Login failed:', event.error);
-      if (event.error && 'errorCode' in event.error) {
-        const authError = event.error as AuthError;
-        console.error('Error details:', {
-          errorCode: authError.errorCode,
-          errorMessage: authError.errorMessage,
-          subError: authError.subError,
-          correlationId: authError.correlationId
-        });
-      }
-    }
-    
-    if (event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) {
-      console.log('Token acquired successfully');
-    }
-    
-    if (event.eventType === EventType.ACQUIRE_TOKEN_FAILURE) {
-      console.error('Token acquisition failed:', event.error);
+      msalInstance.setActiveAccount(payload.account);
     }
   });
 
-  // Render the application
+  // MSAL token acquisition logging
+  msalInstance.addEventCallback((event) => {
+    if (event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) {
+      // Token acquired successfully
+    }
+  });
+
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <MsalProvider instance={msalInstance}>
         <App />
       </MsalProvider>
-    </React.StrictMode>
-  );
+    </React.StrictMode>,
+  )
 }).catch(error => {
-  console.error('Error initializing MSAL:', error);
-  // Render the application without MSAL if initialization fails
+  console.error('Failed to initialize MSAL:', error);
+  // Render app without MSAL if initialization fails
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <App />
-    </React.StrictMode>
-  );
+    </React.StrictMode>,
+  )
 });

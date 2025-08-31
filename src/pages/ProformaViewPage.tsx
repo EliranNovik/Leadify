@@ -230,13 +230,6 @@ const ProformaViewPage: React.FC = () => {
         setSendingEmail(false);
         return;
       }
-      console.log('[Proforma Email] Payment link created:', paymentLink);
-      // --- Remove global CSS before PDF generation ---
-      console.log('[Proforma Email] Removing global CSS for PDF generation...');
-      const head = document.head;
-      const styleLinks = Array.from(head.querySelectorAll('link[rel="stylesheet"], style'));
-      const removedNodes = styleLinks.map(node => node.parentNode ? node.parentNode.removeChild(node) : null);
-      console.log('[Proforma Email] CSS removed. Starting PDF generation...');
       // 1. Generate PDF Blob from minimal invoice
       const pdfBlob: Blob = await html2pdf()
         .from(minimalInvoiceRef.current)
@@ -248,26 +241,16 @@ const ProformaViewPage: React.FC = () => {
           jsPDF: { unit: 'pt', format: 'a4', orientation: 'portrait' },
         })
         .outputPdf('blob');
-      console.log('[Proforma Email] PDF Blob generated:', pdfBlob);
-      // --- Restore CSS after PDF generation ---
-      removedNodes.forEach((node, i) => {
-        if (node) head.appendChild(styleLinks[i]);
-      });
-      console.log('[Proforma Email] CSS restored after PDF generation.');
       // 2. Convert Blob to base64
       const pdfBase64 = await blobToBase64(pdfBlob);
-      console.log('[Proforma Email] PDF base64 length:', pdfBase64.length);
       // 3. Acquire Graph token
       let tokenResponse;
       try {
-        console.log('[Proforma Email] Acquiring Graph token silently...');
         tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
       } catch (error) {
-        console.log('[Proforma Email] Silent token failed, using popup...', error);
         tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
       }
       const accessToken = tokenResponse.accessToken;
-      console.log('[Proforma Email] Access token acquired.');
       // 4. Prepare email
       const senderName = accounts[0]?.name || 'Your Team';
       const subject = `Proforma Invoice: ${proforma.proformaName || ''}`;
@@ -287,36 +270,29 @@ const ProformaViewPage: React.FC = () => {
         toRecipients: [{ emailAddress: { address: proforma.email } }],
         attachments,
       };
-      console.log('[Proforma Email] Draft message prepared:', draftMessage);
       // 5. Send email via Graph API (draft + send)
       // Create draft
-      console.log('[Proforma Email] Creating draft message...');
       const draftRes = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(draftMessage),
       });
-      console.log('[Proforma Email] Draft response status:', draftRes.status);
       if (!draftRes.ok) {
         throw new Error('Failed to create email draft.');
       }
       const createdDraft = await draftRes.json();
       const messageId = createdDraft.id;
-      console.log('[Proforma Email] Draft created, messageId:', messageId);
       if (!messageId) throw new Error('Could not get message ID from draft.');
       // Send draft
-      console.log('[Proforma Email] Sending draft message...');
       const sendRes = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken}` },
       });
-      console.log('[Proforma Email] Send response status:', sendRes.status);
       if (!sendRes.ok) {
         throw new Error('Failed to send email.');
       }
       toast.success('Proforma sent to client!');
     } catch (e: any) {
-      console.error('[Proforma Email] Error:', e);
       toast.error(e?.message || 'Failed to send email.');
     }
     setSendingEmail(false);

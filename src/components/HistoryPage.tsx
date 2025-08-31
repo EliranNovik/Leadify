@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeftIcon, DocumentTextIcon, UserIcon, PencilSquareIcon, ChatBubbleLeftRightIcon, PhoneIcon, EnvelopeIcon, BanknotesIcon, ArrowPathIcon, UserPlusIcon } from '@heroicons/react/24/outline';
+import { ArrowLeftIcon, DocumentTextIcon, UserIcon, PencilSquareIcon, ChatBubbleLeftRightIcon, PhoneIcon, EnvelopeIcon, BanknotesIcon, ArrowPathIcon, UserPlusIcon, NoSymbolIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { Client } from '../types/client';
 
 interface HistoryEntry {
   id: string;
-  type: 'edit' | 'interaction' | 'stage_change' | 'lead_created' | 'finance_change';
+  type: 'edit' | 'interaction' | 'stage_change' | 'lead_created' | 'finance_change' | 'unactivation' | 'activation';
   field?: string;
   old_value?: string;
   new_value?: string;
@@ -19,6 +19,8 @@ interface HistoryEntry {
   // Finance change specific fields
   finance_change_type?: string;
   finance_notes?: string;
+  // Unactivation specific fields
+  unactivation_reason?: string;
 }
 
 const HistoryPage: React.FC = () => {
@@ -27,7 +29,7 @@ const HistoryPage: React.FC = () => {
   const [client, setClient] = useState<Client | null>(null);
   const [historyData, setHistoryData] = useState<HistoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filterType, setFilterType] = useState<'all' | 'edits' | 'interactions' | 'stage_changes' | 'lead_created' | 'finance_changes'>('all');
+  const [filterType, setFilterType] = useState<'all' | 'edits' | 'interactions' | 'stage_changes' | 'lead_created' | 'finance_changes' | 'unactivation'>('all');
 
   useEffect(() => {
     if (lead_number) {
@@ -123,6 +125,21 @@ const HistoryPage: React.FC = () => {
           changed_at: clientData.stage_changed_at
         });
       }
+
+      // Add unactivation history
+      if (clientData.unactivated_by && clientData.unactivated_at) {
+        historyEntries.push({
+          id: 'unactivation',
+          type: 'unactivation',
+          changed_by: clientData.unactivated_by,
+          changed_at: clientData.unactivated_at,
+          unactivation_reason: clientData.unactivation_reason || 'No reason provided'
+        });
+      }
+
+      // Note: Activation events would need to be tracked separately since they clear the unactivation data
+      // For now, we'll only show unactivation events. Activation events could be added to a separate table
+      // or tracked in the lead_changes table in the future.
 
       // Add manual interactions from the interactions field
       if (clientData.manual_interactions && Array.isArray(clientData.manual_interactions)) {
@@ -253,18 +270,30 @@ const HistoryPage: React.FC = () => {
       // Add lead changes to history entries
       if (!leadChangesError && leadChanges) {
         leadChanges.forEach((change: any) => {
-          const fieldDisplayName = getFieldDisplayName(change.field_name);
-          
-          historyEntries.push({
-            id: `lead_change_${change.id}`,
-            type: 'edit',
-            field: change.field_name,
-            old_value: change.old_value,
-            new_value: change.new_value,
-            changed_by: change.changed_by,
-            changed_at: change.changed_at,
-            user_full_name: change.changed_by
-          });
+          // Handle activation events specially
+          if (change.field_name === 'lead_activated') {
+            historyEntries.push({
+              id: `lead_change_${change.id}`,
+              type: 'activation',
+              changed_by: change.changed_by,
+              changed_at: change.changed_at,
+              user_full_name: change.changed_by
+            });
+          } else {
+            // Handle regular field changes
+            const fieldDisplayName = getFieldDisplayName(change.field_name);
+            
+            historyEntries.push({
+              id: `lead_change_${change.id}`,
+              type: 'edit',
+              field: change.field_name,
+              old_value: change.old_value,
+              new_value: change.new_value,
+              changed_by: change.changed_by,
+              changed_at: change.changed_at,
+              user_full_name: change.changed_by
+            });
+          }
         });
       }
 
@@ -415,6 +444,10 @@ const HistoryPage: React.FC = () => {
         return <UserPlusIcon className="w-4 h-4 text-green-500" />;
       case 'finance_change':
         return <BanknotesIcon className="w-4 h-4 text-purple-500" />;
+      case 'unactivation':
+        return <NoSymbolIcon className="w-4 h-4 text-red-500" />;
+      case 'activation':
+        return <CheckCircleIcon className="w-4 h-4 text-green-500" />;
       default:
         return <DocumentTextIcon className="w-4 h-4 text-gray-500" />;
     }
@@ -441,6 +474,7 @@ const HistoryPage: React.FC = () => {
     if (filterType === 'stage_changes' && entry.type === 'stage_change') return true;
     if (filterType === 'lead_created' && entry.type === 'lead_created') return true;
     if (filterType === 'finance_changes' && entry.type === 'finance_change') return true;
+    if (filterType === 'unactivation' && (entry.type === 'unactivation' || entry.type === 'activation')) return true;
     return false;
   });
 
@@ -491,6 +525,7 @@ const HistoryPage: React.FC = () => {
           <option value="stage_changes">Stage Changes</option>
           <option value="lead_created">Lead Created</option>
           <option value="finance_changes">Finance Changes</option>
+          <option value="unactivation">Unactivation Events</option>
         </select>
       </div>
 
@@ -514,6 +549,10 @@ const HistoryPage: React.FC = () => {
                           ? getFinanceChangeDisplayName(entry.finance_change_type || '')
                           : entry.type === 'interaction'
                           ? `${entry.interaction_type?.toUpperCase()} ${entry.interaction_direction}`
+                          : entry.type === 'unactivation'
+                          ? 'Lead Unactivated'
+                          : entry.type === 'activation'
+                          ? 'Lead Activated'
                           : entry.field 
                           ? `${getFieldDisplayName(entry.field)} Updated`
                           : entry.type.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
@@ -550,6 +589,18 @@ const HistoryPage: React.FC = () => {
                   {entry.type === 'stage_change' && entry.new_value && (
                     <div className="text-sm text-gray-700 bg-gray-50 p-2 rounded">
                       <span className="font-medium">New stage:</span> {entry.new_value}
+                    </div>
+                  )}
+                  
+                  {entry.type === 'unactivation' && entry.unactivation_reason && (
+                    <div className="text-sm text-gray-700 bg-red-50 p-2 rounded border border-red-200">
+                      <span className="font-medium text-red-700">Reason:</span> {entry.unactivation_reason.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
+                    </div>
+                  )}
+                  
+                  {entry.type === 'activation' && (
+                    <div className="text-sm text-gray-700 bg-green-50 p-2 rounded border border-green-200">
+                      <span className="font-medium text-green-700">Lead reactivated</span>
                     </div>
                   )}
                 </div>

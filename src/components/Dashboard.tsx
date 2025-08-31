@@ -12,6 +12,7 @@ import { useMsal } from '@azure/msal-react';
 import { DateTime } from 'luxon';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
+import { getStageName } from '../lib/stageUtils';
 
 
 
@@ -47,8 +48,94 @@ const Dashboard: React.FC = () => {
   // 1. Add state for real overdue leads
   const [realOverdueLeads, setRealOverdueLeads] = useState<any[]>([]);
   const [overdueLeadsLoading, setOverdueLeadsLoading] = useState(false);
+  
+  // Removed cache - simplified approach
+  
+  // State for "Show More" functionality
+  const [showAllOverdueLeads, setShowAllOverdueLeads] = useState(false);
+  const [allOverdueLeads, setAllOverdueLeads] = useState<any[]>([]);
+  const [loadingMoreLeads, setLoadingMoreLeads] = useState(false);
+  const [overdueCountFetched, setOverdueCountFetched] = useState(false);
 
   const navigate = useNavigate();
+
+  // Simple function to fetch overdue leads data
+  const fetchOverdueLeadsData = async (fetchAll = false) => {
+    try {
+      // Get current user's full name
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        return { newLeads: [], legacyLeads: [], totalCount: 0 };
+      }
+
+      const { data: userData } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('auth_id', user.id)
+        .single();
+
+      if (!userData?.full_name) {
+        return { newLeads: [], legacyLeads: [], totalCount: 0 };
+      }
+
+      const userFullName = userData.full_name;
+      
+      const today = new Date().toISOString().split('T')[0];
+      const fiftyDaysAgo = new Date();
+      fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
+      const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
+      
+      // Get employee ID for legacy leads
+      const { data: employeeData } = await supabase
+        .from('tenants_employee')
+        .select('id')
+        .eq('display_name', userFullName)
+        .single();
+
+      const userEmployeeId = employeeData?.id;
+      
+      // Fetch new leads
+      const { data: newLeadsData, error: newLeadsError } = await supabase
+        .from('leads')
+        .select('id, lead_number, name, stage, topic, next_followup, expert, manager, meeting_manager, category, balance, balance_currency, probability')
+        .lte('next_followup', today)
+        .gte('next_followup', fiftyDaysAgoStr)
+        .not('next_followup', 'is', null)
+        .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName}`)
+        .limit(fetchAll ? 1000 : 12);
+
+      if (newLeadsError) throw newLeadsError;
+
+      // Fetch legacy leads
+      let legacyLeadsQuery = supabase
+        .from('leads_lead')
+        .select('id, name, stage, topic, next_followup, expert_id, meeting_manager_id, category_id, total, currency_id')
+        .lte('next_followup', today)
+        .gte('next_followup', fiftyDaysAgoStr)
+        .not('next_followup', 'is', null)
+        .eq('status', 0)
+        .lt('stage', 100);
+
+      if (userEmployeeId) {
+        legacyLeadsQuery = legacyLeadsQuery.or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`);
+      }
+
+      const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.limit(fetchAll ? 1000 : 12);
+
+      if (legacyLeadsError) throw legacyLeadsError;
+
+      const result = {
+        newLeads: newLeadsData || [],
+        legacyLeads: legacyLeadsData || [],
+        totalCount: (newLeadsData?.length || 0) + (legacyLeadsData?.length || 0)
+      };
+      
+      return result;
+    } catch (error) {
+      console.warn('Error fetching overdue leads data:', error);
+      return { newLeads: [], legacyLeads: [], totalCount: 0 };
+    }
+  };
 
   // Helper function to extract valid Teams link from stored data
   const getValidTeamsLink = (link: string | undefined): string => {
@@ -77,12 +164,14 @@ const Dashboard: React.FC = () => {
   const [meetingsLoading, setMeetingsLoading] = useState(false);
 
   useEffect(() => {
-    // Fetch today's meetings (real data, similar to Meetings.tsx)
+    // Fetch today's meetings (real data, similar to Calendar page)
     const fetchMeetings = async () => {
       setMeetingsLoading(true);
       try {
         const today = new Date();
         const todayStr = today.toISOString().split('T')[0];
+        
+        // Fetch all meetings with proper joins to both leads and leads_lead tables
         const { data: meetings, error } = await supabase
           .from('meetings')
           .select(`
@@ -97,37 +186,69 @@ const Dashboard: React.FC = () => {
             helper,
             teams_meeting_url,
             meeting_brief,
-            leads:client_id (
-              lead_number,
-              name,
-              status,
-              topic,
-              stage,
-              manager
+            lead:leads!client_id(
+              id, name, lead_number, manager, topic
+            ),
+            legacy_lead:leads_lead!legacy_lead_id(
+              id, name, meeting_manager_id, meeting_lawyer_id, category, category_id
             )
           `)
           .eq('meeting_date', todayStr)
-          .not('teams_meeting_url', 'is', null);
+          .not('teams_meeting_url', 'is', null)
+          .or('status.is.null,status.neq.canceled');
+          
         if (!error && meetings) {
+          // Process the meetings to combine lead data from both tables
+          const processedMeetings = (meetings || []).map((meeting: any) => {
+            // Determine which lead data to use
+            let leadData = null;
+            
+            if (meeting.legacy_lead) {
+              // Use legacy lead data and map column names to match new leads structure
+              leadData = {
+                ...meeting.legacy_lead,
+                lead_type: 'legacy',
+                // Map legacy column names to new structure
+                manager: meeting.legacy_lead.meeting_manager_id,
+                helper: meeting.legacy_lead.meeting_lawyer_id,
+                // For legacy leads, use the ID as lead_number
+                lead_number: meeting.legacy_lead.id?.toString(),
+                // Use category_id if category is null
+                topic: meeting.legacy_lead.category || meeting.legacy_lead.category_id
+              };
+            } else if (meeting.lead) {
+              // Use new lead data
+              leadData = {
+                ...meeting.lead,
+                lead_type: 'new'
+              };
+            }
+            
+            return {
+              ...meeting,
+              lead: leadData
+            };
+          });
+          
           setTodayMeetings(
-            meetings.map((meeting: any) => ({
+            processedMeetings.map((meeting: any) => ({
               id: meeting.id,
-              lead: meeting.leads?.lead_number || 'N/A',
-              name: meeting.leads?.name || 'Unknown',
-              topic: meeting.leads?.topic || 'Consultation',
+              lead: meeting.lead?.lead_number || 'N/A',
+              name: meeting.lead?.name || 'Unknown',
+              topic: meeting.lead?.topic || 'Consultation',
               expert: meeting.expert || 'Unassigned',
               time: meeting.meeting_time,
               location: meeting.meeting_location || 'Teams',
               manager: meeting.meeting_manager,
               value: meeting.meeting_amount ? `${meeting.meeting_currency} ${meeting.meeting_amount}` : '0',
               link: meeting.teams_meeting_url,
-              stage: meeting.leads?.stage,
             }))
           );
         } else {
           setTodayMeetings([]);
         }
       } catch (e) {
+        console.error('Error fetching meetings:', e);
         setTodayMeetings([]);
       }
       setMeetingsLoading(false);
@@ -182,11 +303,77 @@ const Dashboard: React.FC = () => {
       const { data } = await supabase.from('meetings').select('id').eq('meeting_date', today);
       setMeetingsToday(data?.length || 0);
     })();
-    // Fetch overdue followups
+    // Fetch overdue followups - simple count query
     (async () => {
-      const today = new Date().toISOString().split('T')[0];
-      const { data } = await supabase.from('leads').select('id').lte('next_followup', today).not('next_followup', 'is', null);
-      setOverdueFollowups(data?.length || 0);
+      // Prevent multiple calls
+      if (overdueCountFetched) return;
+      setOverdueCountFetched(true);
+      
+      try {
+        // Get current user's full name
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          setOverdueFollowups(0);
+          return;
+        }
+
+        const { data: userData } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('auth_id', user.id)
+          .single();
+
+        if (!userData?.full_name) {
+          setOverdueFollowups(0);
+          return;
+        }
+
+        const userFullName = userData.full_name;
+        
+        const today = new Date().toISOString().split('T')[0];
+        const fiftyDaysAgo = new Date();
+        fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
+        const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
+        
+        // Get employee ID for legacy leads
+        const { data: employeeData } = await supabase
+          .from('tenants_employee')
+          .select('id')
+          .eq('display_name', userFullName)
+          .single();
+
+        const userEmployeeId = employeeData?.id;
+        
+        // Simple count queries for total
+        const [newLeadsCount, legacyLeadsCount] = await Promise.all([
+          supabase
+            .from('leads')
+            .select('*', { count: 'exact', head: true })
+            .lte('next_followup', today)
+            .gte('next_followup', fiftyDaysAgoStr)
+            .not('next_followup', 'is', null)
+            .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName}`),
+          
+          userEmployeeId ? 
+            supabase
+              .from('leads_lead')
+              .select('*', { count: 'exact', head: true })
+              .lte('next_followup', today)
+              .gte('next_followup', fiftyDaysAgoStr)
+              .not('next_followup', 'is', null)
+              .eq('status', 0)
+              .lt('stage', 100)
+              .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`) :
+            Promise.resolve({ count: 0, error: null })
+        ]);
+        
+        const totalCount = (newLeadsCount.count || 0) + (legacyLeadsCount.count || 0);
+        setOverdueFollowups(totalCount);
+        
+      } catch (error) {
+        console.warn('Error fetching overdue count:', error);
+        setOverdueFollowups(0);
+      }
     })();
     // Fetch new messages (real data from emails and WhatsApp)
     (async () => {
@@ -534,10 +721,7 @@ const Dashboard: React.FC = () => {
         const startOfThisMonth = new Date(thisYear, thisMonth, 1, 0, 0, 0, 0);
         const endOfThisMonth = new Date(thisYear, thisMonth + 1, 0, 23, 59, 59, 999);
 
-        console.log('Date range:', {
-          startOfThisMonth: startOfThisMonth.toISOString(),
-          endOfThisMonth: endOfThisMonth.toISOString()
-        });
+
 
         // Get new leads created this month
         const { data: newLeadsData, error: newLeadsError } = await supabase
@@ -546,8 +730,7 @@ const Dashboard: React.FC = () => {
           .gte('created_at', startOfThisMonth.toISOString())
           .lte('created_at', endOfThisMonth.toISOString());
 
-        console.log('New leads this month:', newLeadsData);
-        console.log('New leads error:', newLeadsError);
+
 
         // Get meetings scheduled this month (no duplicates per client)
         const { data: meetingsData, error: meetingsError } = await supabase
@@ -557,8 +740,7 @@ const Dashboard: React.FC = () => {
           .lte('created_at', endOfThisMonth.toISOString())
           .eq('status', 'scheduled');
 
-        console.log('Meetings this month:', meetingsData);
-        console.log('Meetings error:', meetingsError);
+
 
         if (!newLeadsError && newLeadsData) {
           setTotalExistingLeads(newLeadsData.length);
@@ -570,7 +752,7 @@ const Dashboard: React.FC = () => {
           // Remove duplicates per client (client_id)
           const uniqueClientIds = [...new Set(meetingsData.map(meeting => meeting.client_id))];
           setMeetingsScheduledThisMonth(uniqueClientIds.length);
-          console.log('Unique client IDs with meetings:', uniqueClientIds);
+
         } else {
           setMeetingsScheduledThisMonth(0);
         }
@@ -673,34 +855,75 @@ const Dashboard: React.FC = () => {
     "Austria and Germany",
     "Total"
   ];
-  const scoreboardData = {
+  // Agreement signed data (first table)
+  const agreementData = {
     Today: [
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
+      { count: 1, amount: 2500, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
-      { count: 3, amount: 18396, expected: 20000 },
-      { count: 3, amount: 18396, expected: 20000 },
+      { count: 1, amount: 2500, expected: 0 },
     ],
     "Last 30d": [
       { count: 0, amount: 0, expected: 0 },
-      { count: 7, amount: 113629, expected: 100000 },
-      { count: 26, amount: 47920, expected: 70000 },
-      { count: 11, amount: 109675, expected: 150000 },
-      { count: 18, amount: 166332, expected: 250000 },
-      { count: 71, amount: 1505920, expected: 1700000 },
-      { count: 133, amount: 1943476, expected: 2350000 },
+      { count: 10, amount: 76652, expected: 0 },
+      { count: 39, amount: 67443, expected: 0 },
+      { count: 15, amount: 130084, expected: 0 },
+      { count: 43, amount: 389933, expected: 0 },
+      { count: 84, amount: 1730117, expected: 0 },
+      { count: 191, amount: 2394231, expected: 0 },
+    ],
+    "August": [
+      { count: 51, amount: 994981, expected: 1600000 },
+      { count: 0, amount: 0, expected: 100000 },
+      { count: 5, amount: 54672, expected: 70000 },
+      { count: 25, amount: 40500, expected: 150000 },
+      { count: 8, amount: 64500, expected: 250000 },
+      { count: 27, amount: 194638, expected: 1700000 },
+      { count: 116, amount: 1349291, expected: 3870000 },
+    ],
+  };
+
+  // Invoiced data (second table)
+  const invoicedData = {
+    Today: [
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 1, amount: 2500, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 1, amount: 2500, expected: 0 },
+    ],
+    "Last 30d": [
+      { count: 0, amount: 0, expected: 0 },
+      { count: 6, amount: 71204, expected: 0 },
+      { count: 35, amount: 63709, expected: 0 },
+      { count: 35, amount: 147667, expected: 0 },
+      { count: 53, amount: 236008, expected: 0 },
+      { count: 175, amount: 1149596, expected: 0 },
+      { count: 305, amount: 1671621, expected: 0 },
+    ],
+    "August": [
+      { count: 0, amount: 0, expected: 100000 },
+      { count: 3, amount: 48311, expected: 70000 },
+      { count: 21, amount: 36716, expected: 150000 },
+      { count: 14, amount: 63636, expected: 250000 },
+      { count: 30, amount: 110782, expected: 1700000 },
+      { count: 102, amount: 676346, expected: 0 },
+      { count: 170, amount: 935792, expected: 2350000 },
     ],
   };
   const scoreboardHighlights = {
-    June: [
+    August: [
       null,
       null,
+      { amount: 100000 },
       { amount: 70000 },
       { amount: 150000 },
       { amount: 250000 },
-      { amount: 80000 },
       { amount: 1700000 },
       { amount: 2350000 },
     ],
@@ -720,24 +943,24 @@ const Dashboard: React.FC = () => {
     .filter(({ cat }) => cat !== 'General' && cat !== 'Total')
     .map(({ idx }) => idx);
 
-  // Stable random targets for Today where not provided
+  // Stable targets for Today where not provided
   const randomTodayTargetsRef = useRef<number[]>([]);
   useEffect(() => {
     if (randomTodayTargetsRef.current.length === 0) {
       randomTodayTargetsRef.current = scoreboardCategories.map((_, idx) => {
-        const provided = scoreboardData['Today'][idx]?.expected;
-        return provided || Math.floor(20000 + Math.random() * 180000);
+        const provided = agreementData['Today'][idx]?.expected;
+        return provided || 0;
       });
     }
   }, []);
 
-  const sumTodayCount = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Today'][i]?.count || 0), 0);
-  const sumTodayAmount = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Today'][i]?.amount || 0), 0);
-  const sumTodayExpected = includedDeptIndexes.reduce((sum, i) => sum + ((scoreboardData['Today'][i]?.expected || randomTodayTargetsRef.current[i] || 0)), 0);
+  const sumTodayCount = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Today'][i]?.count || 0), 0);
+  const sumTodayAmount = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Today'][i]?.amount || 0), 0);
+  const sumTodayExpected = includedDeptIndexes.reduce((sum, i) => sum + ((agreementData['Today'][i]?.expected || randomTodayTargetsRef.current[i] || 0)), 0);
 
-  const sum30Count = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Last 30d'][i]?.count || 0), 0);
-  const sum30Amount = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Last 30d'][i]?.amount || 0), 0);
-  const sum30Expected = includedDeptIndexes.reduce((sum, i) => sum + (scoreboardData['Last 30d'][i]?.expected || 0), 0);
+  const sum30Count = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Last 30d'][i]?.count || 0), 0);
+  const sum30Amount = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Last 30d'][i]?.amount || 0), 0);
+  const sum30Expected = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Last 30d'][i]?.expected || 0), 0);
 
   const sumMonthCount = sum30Count; // using 30d as proxy for this month (demo)
   const sumMonthAmount = sum30Amount;
@@ -804,27 +1027,27 @@ const Dashboard: React.FC = () => {
   // Mock data for Score Board bar charts
   const scoreboardBarDataToday = [
     { category: 'General', signed: 0, due: 0 },
-    { category: 'Commercial & Civil', signed: 20000, due: 15000 },
-    { category: 'Small cases', signed: 5000, due: 7000 },
-    { category: 'USA - Immigration', signed: 8000, due: 12000 },
-    { category: 'Immigration to Israel', signed: 12000, due: 9000 },
-    { category: 'Austria and Germany', signed: 50000, due: 35000 },
+    { category: 'Commercial & Civil', signed: 0, due: 0 },
+    { category: 'Small cases', signed: 0, due: 0 },
+    { category: 'USA - Immigration', signed: 0, due: 0 },
+    { category: 'Immigration to Israel', signed: 2500, due: 0 },
+    { category: 'Austria and Germany', signed: 0, due: 0 },
   ];
-  const scoreboardBarDataJune = [
+  const scoreboardBarDataAugust = [
     { category: 'General', signed: 0, due: 0 },
-    { category: 'Commercial & Civil', signed: 113629, due: 100000 },
-    { category: 'Small cases', signed: 47920, due: 70000 },
-    { category: 'USA - Immigration', signed: 109675, due: 150000 },
-    { category: 'Immigration to Israel', signed: 166332, due: 250000 },
-    { category: 'Austria and Germany', signed: 1505920, due: 1700000 },
+    { category: 'Commercial & Civil', signed: 54672, due: 100000 },
+    { category: 'Small cases', signed: 40500, due: 70000 },
+    { category: 'USA - Immigration', signed: 64500, due: 150000 },
+    { category: 'Immigration to Israel', signed: 194638, due: 250000 },
+    { category: 'Austria and Germany', signed: 994981, due: 1700000 },
   ];
   const scoreboardBarData30d = [
     { category: 'General', signed: 0, due: 0 },
-    { category: 'Commercial & Civil', signed: 113629, due: 130000 },
-    { category: 'Small cases', signed: 47920, due: 50000 },
-    { category: 'USA - Immigration', signed: 109675, due: 80000 },
-    { category: 'Immigration to Israel', signed: 166332, due: 90000 },
-    { category: 'Austria and Germany', signed: 1505920, due: 950000 },
+    { category: 'Commercial & Civil', signed: 76652, due: 0 },
+    { category: 'Small cases', signed: 67443, due: 0 },
+    { category: 'USA - Immigration', signed: 130084, due: 0 },
+    { category: 'Immigration to Israel', signed: 389933, due: 0 },
+    { category: 'Austria and Germany', signed: 1730117, due: 0 },
   ];
 
   // Custom Tooltip for My Performance chart
@@ -974,6 +1197,9 @@ const Dashboard: React.FC = () => {
     if (showLast30Cols) visibleColumns.push('Last 30d');
     if (showLastMonthCols) visibleColumns.push(new Date().toLocaleDateString('en-US', { month: 'long' }));
 
+    // Use the correct data based on table type
+    const dataSource = tableType === 'agreement' ? agreementData : invoicedData;
+
     return (
       <table className="min-w-full text-sm">
         <thead className="bg-slate-50 border-b border-slate-200">
@@ -997,10 +1223,10 @@ const Dashboard: React.FC = () => {
                 <tr className="hover:bg-slate-50">
                   <td className="px-5 py-3 font-semibold text-slate-700">{columnType}</td>
                   {categories.map((category, index) => {
-                    const data = isToday ? scoreboardData["Today"][index] : 
-                                isLast30 ? scoreboardData["Last 30d"][index] : 
-                                scoreboardData["Last 30d"][index]; // This month uses Last 30d data
-                    const amount = isThisMonth ? (scoreboardBarData30d[index]?.signed || 0) : (data?.amount || 0);
+                    const data = isToday ? dataSource["Today"][index] : 
+                                isLast30 ? dataSource["Last 30d"][index] : 
+                                dataSource["August"][index]; // This month uses August data
+                    const amount = data?.amount || 0;
                     const target = data?.expected || 0;
                     const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
                     
@@ -1017,51 +1243,63 @@ const Dashboard: React.FC = () => {
                   {/* Total column for this time period */}
                   <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
                     <div className="space-y-1">
-                                              <div className="flex items-center justify-center">
-                          <div className="badge badge-white font-semibold px-2 py-1" style={{color: '#411cce'}}>
-                            {isToday ? sumTodayCount : isLast30 ? sum30Count : sumMonthCount}
-                          </div>
+                      <div className="flex items-center justify-center">
+                        <div className="badge badge-white font-semibold px-2 py-1" style={{color: '#411cce'}}>
+                          {(() => {
+                            if (isToday) {
+                              return dataSource["Today"].slice(1, -1).reduce((sum, item) => sum + (item.count || 0), 0);
+                            } else if (isLast30) {
+                              return dataSource["Last 30d"].slice(1, -1).reduce((sum, item) => sum + (item.count || 0), 0);
+                            } else {
+                              return dataSource["August"].slice(1, -1).reduce((sum, item) => sum + (item.count || 0), 0);
+                            }
+                          })()}
                         </div>
+                      </div>
                       <div className="border-t border-white/20 my-1"></div>
                       <div className="font-semibold text-white">
-                        ₪{(isToday ? sumTodayAmount : isLast30 ? sum30Amount : sumMonthAmount).toLocaleString()}
+                        ₪{(() => {
+                          if (isToday) {
+                            return dataSource["Today"].slice(1, -1).reduce((sum, item) => sum + (item.amount || 0), 0);
+                          } else if (isLast30) {
+                            return dataSource["Last 30d"].slice(1, -1).reduce((sum, item) => sum + (item.amount || 0), 0);
+                          } else {
+                            return dataSource["August"].slice(1, -1).reduce((sum, item) => sum + (item.amount || 0), 0);
+                          }
+                        })().toLocaleString()}
                       </div>
                     </div>
                   </td>
                 </tr>
-                {/* Target row */}
-                <tr className="bg-white border-2 border-purple-600">
-                  <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
-                  {categories.map((category, index) => {
-                    const data = isToday ? scoreboardData["Today"][index] : 
-                                isLast30 ? scoreboardData["Last 30d"][index] : 
-                                scoreboardData["Last 30d"][index];
-                    const amount = isToday ? (data?.amount || 0) : 
-                                  isLast30 ? (data?.amount || 0) : 
-                                  (scoreboardBarData30d[index]?.signed || 0);
-                    const target = isToday ? (data?.expected || randomTodayTargetsRef.current[index] || 0) : (data?.expected || 0);
-                    const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                    
-                    return (
-                      <td key={`${category}-target`} className={`px-5 py-3 text-center font-semibold ${targetClass}`}>
-                        {target ? `₪${target.toLocaleString()}` : '—'}
-                      </td>
-                    );
-                  })}
-                  {/* Total target column */}
-                  <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
-                    {(() => {
-                      const totalAmount = isToday ? sumTodayAmount : isLast30 ? sum30Amount : sumMonthAmount;
-                      const totalTarget = isToday ? sumTodayExpected : isLast30 ? sum30Expected : sumMonthTarget;
-                      const targetClass = 'text-white';
+                {/* Target row - only show for current month */}
+                {isThisMonth && (
+                  <tr className="bg-white border-2 border-purple-600">
+                    <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
+                    {categories.map((category, index) => {
+                      const data = dataSource["August"][index];
+                      const amount = data?.amount || 0;
+                      const target = data?.expected || 0;
+                      const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                      
                       return (
-                        <span className={`font-semibold ${targetClass}`}>
-                          {totalTarget ? `₪${totalTarget.toLocaleString()}` : '—'}
-                        </span>
+                        <td key={`${category}-target`} className={`px-5 py-3 text-center font-semibold ${targetClass}`}>
+                          {target ? `₪${target.toLocaleString()}` : '—'}
+                        </td>
                       );
-                    })()}
-                  </td>
-                </tr>
+                    })}
+                    {/* Total target column */}
+                    <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
+                      {(() => {
+                        const totalTarget = dataSource["August"].slice(1, -1).reduce((sum, item) => sum + (item.expected || 0), 0);
+                        return (
+                          <span className="font-semibold text-white">
+                            {totalTarget ? `₪${totalTarget.toLocaleString()}` : '—'}
+                          </span>
+                        );
+                      })()}
+                    </td>
+                  </tr>
+                )}
               </React.Fragment>
             );
           })}
@@ -1142,17 +1380,16 @@ const Dashboard: React.FC = () => {
     const fetchOverdueLeads = async () => {
       setOverdueLeadsLoading(true);
       try {
-        const today = new Date().toISOString().split('T')[0];
-        const { data, error } = await supabase
-          .from('leads')
-          .select('*')
-          .lte('next_followup', today)
-          .not('next_followup', 'is', null);
-
-        if (error) throw error;
-        setRealOverdueLeads(data || []);
+        // Fetch first 12 leads for display
+        const { newLeads, legacyLeads, totalCount } = await fetchOverdueLeadsData(false);
+        
+        // Process the leads for display
+        const combinedLeads = [...newLeads, ...legacyLeads];
+        const processedLeads = await processOverdueLeadsForDisplay(combinedLeads);
+        
+        setRealOverdueLeads(processedLeads);
       } catch (error) {
-        console.error("Error fetching overdue leads:", error);
+        console.warn('Error fetching overdue leads for display:', error);
         setRealOverdueLeads([]);
       } finally {
         setOverdueLeadsLoading(false);
@@ -1161,6 +1398,134 @@ const Dashboard: React.FC = () => {
 
     fetchOverdueLeads();
   }, [expanded]);
+
+  // Function to load all overdue leads
+  const loadAllOverdueLeads = async () => {
+    setLoadingMoreLeads(true);
+    try {
+      const { newLeads, legacyLeads, totalCount } = await fetchOverdueLeadsData(true);
+      
+      // Process all leads for display - pass true to indicate we want all leads
+      const processedLeads = await processOverdueLeadsForDisplay([...newLeads, ...legacyLeads], true);
+      
+      setAllOverdueLeads(processedLeads);
+      setShowAllOverdueLeads(true);
+    } catch (error) {
+      console.warn('Error loading all overdue leads:', error);
+    } finally {
+      setLoadingMoreLeads(false);
+    }
+  };
+
+  // Helper function to process overdue leads for display
+  const processOverdueLeadsForDisplay = async (leadsData: any[], processAll = false) => {
+    try {
+      console.log('Processing leads data:', leadsData.length, 'leads');
+      console.log('Sample lead data:', leadsData.slice(0, 2));
+      
+      // Separate new and legacy leads based on table structure
+      // New leads come from 'leads' table and have lead_number field
+      // Legacy leads come from 'leads_lead' table and have expert_id field
+      const newLeads = leadsData.filter(lead => lead.lead_number); // New leads have lead_number
+      const legacyLeads = leadsData.filter(lead => lead.expert_id); // Legacy leads have expert_id
+      
+      console.log('New leads:', newLeads.length, 'Legacy leads:', legacyLeads.length);
+
+      // Process new leads
+      const processedNewLeads = newLeads.map(lead => ({
+        ...lead,
+        lead_type: 'new' as const,
+        stage_name: lead.stage || 'Follow-up Required',
+        expert_name: lead.expert || 'Not assigned',
+        manager_name: lead.manager || 'Not assigned',
+        category_name: lead.category || 'Not specified',
+        amount: lead.balance || 0,
+        currency: lead.balance_currency || '₪',
+        topic: lead.topic || 'Not specified',
+        probability: lead.probability || 0
+      }));
+
+      // Process legacy leads with related data
+      let stageNameMap: { [key: number]: string } = {};
+      let employeeNameMap: { [key: number]: string } = {};
+      let categoryNameMap: { [key: number]: string } = {};
+
+      if (legacyLeads.length > 0) {
+        const limitedLegacyLeads = (showAllOverdueLeads || processAll) ? legacyLeads : legacyLeads.slice(0, 10); // Use all leads when showing all or processing all
+        
+        // Collect unique IDs from limited leads
+        const stageIds = [...new Set(limitedLegacyLeads.map(lead => lead.stage).filter(Boolean))];
+        const employeeIds = [...new Set([
+          ...limitedLegacyLeads.map(lead => lead.expert_id).filter(Boolean),
+          ...limitedLegacyLeads.map(lead => lead.meeting_manager_id).filter(Boolean)
+        ])];
+        const categoryIds = [...new Set(limitedLegacyLeads.map(lead => lead.category_id).filter(Boolean))];
+
+        console.log('Fetching related data for:', { stageIds, employeeIds, categoryIds });
+
+        // Fetch all related data in parallel for better performance
+        const [stageResult, employeeResult, categoryResult] = await Promise.allSettled([
+          stageIds.length > 0 ? supabase.from('lead_stages').select('id, name').in('id', stageIds) : Promise.resolve({ data: [] }),
+          employeeIds.length > 0 ? supabase.from('tenants_employee').select('id, display_name').in('id', employeeIds) : Promise.resolve({ data: [] }),
+          categoryIds.length > 0 ? supabase.from('misc_category').select('id, name').in('id', categoryIds) : Promise.resolve({ data: [] })
+        ]);
+
+        // Build maps from results
+        if (stageResult.status === 'fulfilled' && stageResult.value.data) {
+          stageNameMap = stageResult.value.data.reduce((acc: { [key: number]: string }, stage: any) => {
+            acc[stage.id] = stage.name;
+            return acc;
+          }, {});
+        }
+
+        if (employeeResult.status === 'fulfilled' && employeeResult.value.data) {
+          employeeNameMap = employeeResult.value.data.reduce((acc: { [key: number]: string }, employee: any) => {
+            acc[employee.id] = employee.display_name;
+            return acc;
+          }, {});
+        }
+
+        if (categoryResult.status === 'fulfilled' && categoryResult.value.data) {
+          categoryNameMap = categoryResult.value.data.reduce((acc: { [key: number]: string }, category: any) => {
+            acc[category.id] = category.name;
+            return acc;
+          }, {});
+        }
+      }
+
+      // Process legacy leads (use all when showing all or processing all, otherwise limit to 10)
+      const leadsToProcess = (showAllOverdueLeads || processAll) ? legacyLeads : legacyLeads.slice(0, 10);
+        
+      const processedLegacyLeads = leadsToProcess.map(lead => ({
+        ...lead,
+        id: `legacy_${lead.id}`,
+        lead_number: lead.id?.toString() || '',
+        lead_type: 'legacy' as const,
+        stage_name: stageNameMap[lead.stage] || `Stage ${lead.stage}`,
+        expert_name: employeeNameMap[lead.expert_id] || 'Not assigned',
+        manager_name: employeeNameMap[lead.meeting_manager_id] || 'Not assigned',
+        category_name: categoryNameMap[lead.category_id] || 'Not specified',
+        amount: lead.total || 0,
+        currency: lead.currency_id || 1,
+        topic: lead.topic || 'Not specified',
+        probability: 0 // Legacy leads don't have probability field
+      }));
+
+      // Combine and sort by follow-up date (oldest first)
+      const allLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => {
+        if (!a.next_followup && !b.next_followup) return 0;
+        if (!a.next_followup) return 1;
+        if (!b.next_followup) return -1;
+        return new Date(a.next_followup).getTime() - new Date(b.next_followup).getTime();
+      });
+
+      console.log('Final processed leads:', allLeads.length);
+      return allLeads;
+    } catch (error) {
+      console.warn('Error processing overdue leads for display:', error);
+      return [];
+    }
+  };
 
   return (
     <div className="p-0 md:p-6 space-y-8">
@@ -1265,13 +1630,7 @@ const Dashboard: React.FC = () => {
                         <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
                         <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
                       </div>
-                      {/* Stage */}
-                      <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Stage</span>
-                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
-                            {meeting.stage ? meeting.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase()) : 'Meeting Scheduled'}
-                        </span>
-                      </div>
+
                       <div className="space-y-2 divide-y divide-gray-100">
                         {/* Time */}
                         <div className="flex justify-between items-center py-1">
@@ -1328,7 +1687,12 @@ const Dashboard: React.FC = () => {
       )}
       {expanded === 'overdue' && (
         <div className="glass-card mt-4 animate-fade-in">
-          <div className="font-bold text-lg mb-4 text-base-content/80">Overdue Follow-ups</div>
+          <div className="flex justify-between items-center mb-4">
+            <div className="font-bold text-lg text-base-content/80">Overdue Follow-ups</div>
+            <div className="text-sm text-gray-500">
+              Showing {realOverdueLeads.length} of {overdueFollowups} leads
+            </div>
+          </div>
           {overdueLeadsLoading ? (
             <div className="flex justify-center items-center py-12">
               <span className="loading loading-spinner loading-lg text-primary"></span>
@@ -1349,48 +1713,62 @@ const Dashboard: React.FC = () => {
                         <div className="flex-1 flex flex-col">
                           {/* Lead Number and Name */}
                           <div className="mb-3 flex items-center gap-2">
-                            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                            <span className="text-sm font-semibold text-gray-400 tracking-widest">
+                              {lead.lead_number}
+                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                            </span>
                             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
-                            <span className="text-xs font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
+                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
                           </div>
                           {/* Stage */}
                           <div className="flex justify-between items-center py-1">
-                            <span className="text-xs font-semibold text-gray-500">Stage</span>
-                            <span className="text-xs font-bold text-black">Follow-up Required</span>
+                            <span className="text-sm font-semibold text-gray-500">Stage</span>
+                            <span className="text-sm font-bold text-black">
+                              {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
+                            </span>
                           </div>
                           <div className="space-y-2 divide-y divide-gray-100 mt-2">
                             {/* Category */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Category</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.category || 'Not specified'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Category</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
+                              </span>
                             </div>
                             {/* Topic */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Topic</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Topic</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
                             </div>
                             {/* Expert */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Expert</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.expert || 'Not assigned'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Expert</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                              </span>
                             </div>
                             {/* Amount */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Amount</span>
-                              <span className="text-xs font-bold text-gray-800">
-                                {lead.balance_currency || '₪'}{(lead.balance || 0).toLocaleString()}
+                              <span className="text-sm font-semibold text-gray-500">Amount</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' 
+                                  ? `₪${(lead.amount || 0).toLocaleString()}` 
+                                  : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                }
                               </span>
                             </div>
                             {/* Manager */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Manager</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.manager || 'Not assigned'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Manager</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                              </span>
                             </div>
                             {/* Probability */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Probability</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.probability || 0}%</span>
+                              <span className="text-sm font-semibold text-gray-500">Probability</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
                             </div>
                           </div>
                         </div>
@@ -1413,48 +1791,62 @@ const Dashboard: React.FC = () => {
                         <div className="flex-1 flex flex-col">
                           {/* Lead Number and Name */}
                           <div className="mb-3 flex items-center gap-2">
-                            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                            <span className="text-sm font-semibold text-gray-400 tracking-widest">
+                              {lead.lead_number}
+                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                            </span>
                             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
-                            <span className="text-xs font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
+                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
                           </div>
                           {/* Stage */}
                           <div className="flex justify-between items-center py-1">
-                            <span className="text-xs font-semibold text-gray-500">Stage</span>
-                            <span className="text-xs font-bold text-black">Follow-up Required</span>
+                            <span className="text-sm font-semibold text-gray-500">Stage</span>
+                            <span className="text-sm font-bold text-black">
+                              {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
+                            </span>
                           </div>
                           <div className="space-y-2 divide-y divide-gray-100 mt-2">
                             {/* Category */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Category</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.category || 'Not specified'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Category</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
+                              </span>
                             </div>
                             {/* Topic */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Topic</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Topic</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
                             </div>
                             {/* Expert */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Expert</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.expert || 'Not assigned'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Expert</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                              </span>
                             </div>
                             {/* Amount */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Amount</span>
-                              <span className="text-xs font-bold text-gray-800">
-                                {lead.balance_currency || '₪'}{(lead.balance || 0).toLocaleString()}
+                              <span className="text-sm font-semibold text-gray-500">Amount</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' 
+                                  ? `₪${(lead.amount || 0).toLocaleString()}` 
+                                  : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                }
                               </span>
                             </div>
                             {/* Manager */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Manager</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.manager || 'Not assigned'}</span>
+                              <span className="text-sm font-semibold text-gray-500">Manager</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                              </span>
                             </div>
                             {/* Probability */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-xs font-semibold text-gray-500">Probability</span>
-                              <span className="text-xs font-bold text-gray-800">{lead.probability || 0}%</span>
+                              <span className="text-sm font-semibold text-gray-500">Probability</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
                             </div>
                           </div>
                         </div>
@@ -1463,6 +1855,187 @@ const Dashboard: React.FC = () => {
                   })
                 )}
               </div>
+              
+              {/* Show More Button */}
+              {!showAllOverdueLeads && realOverdueLeads.length > 0 && (
+                <div className="flex justify-center mt-6">
+                  <button 
+                    className="btn btn-primary btn-lg gap-2"
+                    onClick={loadAllOverdueLeads}
+                    disabled={loadingMoreLeads}
+                  >
+                    {loadingMoreLeads ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm"></span>
+                        Loading...
+                      </>
+                    ) : (
+                      <>
+                        Show All {overdueFollowups} Leads
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </>
+                    )}
+                  </button>
+                </div>
+              )}
+              
+              {/* Show All Leads */}
+              {showAllOverdueLeads && allOverdueLeads.length > 0 && (
+                <>
+                  <div className="mt-6 mb-4">
+                    <h4 className="text-lg font-semibold text-gray-800 mb-2">All Overdue Follow-ups</h4>
+                    <p className="text-sm text-gray-600">Showing all {allOverdueLeads.length} leads</p>
+                  </div>
+                  
+                  {/* Desktop Card Grid View for All Leads */}
+                  <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-6">
+                    {allOverdueLeads.map((lead, index) => {
+                      const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                      return (
+                        <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
+                          <div className="flex-1 flex flex-col">
+                            {/* Lead Number and Name */}
+                            <div className="mb-3 flex items-center gap-2">
+                              <span className="text-sm font-semibold text-gray-400 tracking-widest">
+                                {lead.lead_number}
+                                {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                              </span>
+                              <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                              <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                              <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
+                            </div>
+                            {/* Stage */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Stage</span>
+                              <span className="text-sm font-bold text-black">
+                                {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
+                              </span>
+                            </div>
+                            <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                              {/* Category */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Category</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
+                                </span>
+                              </div>
+                              {/* Topic */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Topic</span>
+                                <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                              </div>
+                              {/* Expert */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Expert</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                                </span>
+                              </div>
+                              {/* Amount */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Amount</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' 
+                                    ? `₪${(lead.amount || 0).toLocaleString()}` 
+                                    : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                  }
+                                </span>
+                              </div>
+                              {/* Manager */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Manager</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                                </span>
+                              </div>
+                              {/* Probability */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Probability</span>
+                                <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  {/* Mobile Card View for All Leads */}
+                  <div className="md:hidden space-y-4">
+                    {allOverdueLeads.map((lead, index) => {
+                      const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                      return (
+                        <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
+                          <div className="flex-1 flex flex-col">
+                            {/* Lead Number and Name */}
+                            <div className="mb-3 flex items-center gap-2">
+                              <span className="text-sm font-semibold text-gray-400 tracking-widest">
+                                {lead.lead_number}
+                                {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                              </span>
+                              <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                              <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                              <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
+                            </div>
+                            {/* Stage */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Stage</span>
+                              <span className="text-sm font-bold text-black">
+                                {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
+                              </span>
+                            </div>
+                            <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                              {/* Category */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Category</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
+                                </span>
+                              </div>
+                              {/* Topic */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Topic</span>
+                                <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                              </div>
+                              {/* Expert */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Expert</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                                </span>
+                              </div>
+                              {/* Amount */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Amount</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' 
+                                    ? `₪${(lead.amount || 0).toLocaleString()}` 
+                                    : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                  }
+                                </span>
+                              </div>
+                              {/* Manager */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Manager</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                                </span>
+                              </div>
+                              {/* Probability */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Probability</span>
+                                <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </>
           )}
         </div>
@@ -1477,7 +2050,7 @@ const Dashboard: React.FC = () => {
                      onClick={() => {
                        // Navigate to client's interactions tab
                        if (message.client_id) {
-                         console.log('Navigating to client:', message.lead_number, 'with message:', message);
+  
                          navigate(`/clients/${message.lead_number}?tab=interactions`);
                        }
                      }}>
@@ -1735,16 +2308,10 @@ const Dashboard: React.FC = () => {
                           <tr>
                             <th className="text-left px-5 py-3 font-semibold text-slate-700">Department</th>
                             {showTodayCols && (
-                              <>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700">Today</th>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target Today</th>
-                              </>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Today</th>
                             )}
                             {showLast30Cols && (
-                              <>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700">Last 30d</th>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target 30d</th>
-                              </>
+                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Last 30d</th>
                             )}
                             {showLastMonthCols && (
                               <>
@@ -1752,145 +2319,210 @@ const Dashboard: React.FC = () => {
                                 <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target {new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
                               </>
                             )}
-                            
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                    {scoreboardCategories.map((category, index) => {
-                                            const todayData = scoreboardData["Today"][index];
-                      const last30Data = scoreboardData["Last 30d"][index];
-                      const isFlipped = flippedCards.has(category);
-                      const chartData = generateDepartmentData(category);
-                            const thisMonthCount = last30Data.count; // placeholder using 30d count
-                            const lastMonthNis = scoreboardBarData30d[index]?.signed || 0; // reuse demo data
-                            const targetMonth = last30Data.expected || 0;
-                            const performancePct = last30Data.expected > 0 ? Math.round((last30Data.amount / last30Data.expected) * 100) : 0;
-                            const perfClass = '';
-                            const todayAmount = todayData.amount || 0;
-                            const todayTarget = todayData.expected || randomTodayTargetsRef.current[index] || 0;
-                            const todayAmountClass = todayTarget > 0 ? (todayAmount >= todayTarget ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                            const last30Amount = last30Data.amount || 0;
-                            const last30Target = last30Data.expected || 0;
-                            const last30AmountClass = last30Target > 0 ? (last30Amount >= last30Target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                            const thisMonthAmount = lastMonthNis || 0;
-                            const thisMonthTargetVal = targetMonth || 0;
-                            const thisMonthAmountClass = thisMonthTargetVal > 0 ? (thisMonthAmount >= thisMonthTargetVal ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                            if (category === 'General' || category === 'Total') return null; // remove General and built-in Total rows
-                            const rowClass = 'hover:bg-slate-50';
-                            const nameClass = 'font-semibold text-slate-800';
-                            const strongCell = 'text-slate-700 font-semibold';
-                            const normalCell = 'text-slate-700';
-                            const targetCell = 'text-slate-600';
-                            const perfBadgeClass = perfClass;
-                      return (
-                              <React.Fragment key={category}>
-                                <tr className={`${rowClass} cursor-pointer transition-colors`} onClick={() => handleCardFlip(category)}>
-                                  <td className="px-5 py-3">
-                                    <span className={`${nameClass}`}>{category}</span>
-                                  </td>
-                                  {showTodayCols && (<>
-                                    <td className="px-5 py-3 text-right">
-                                      <div className="space-y-1">
-                                        <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{todayData.count}</div>
-                                        <div className="border-t border-slate-200 my-1"></div>
-                                        <div className="font-semibold text-slate-700">₪{(todayAmount).toLocaleString()}</div>
-                                      </div>
-                                    </td>
-                                    <td className={`px-5 py-3 text-right font-semibold ${todayAmountClass} bg-slate-100`}>
-                                      <div className="text-right">{todayTarget ? `₪${todayTarget.toLocaleString()}` : '—'}</div>
-                                    </td>
-                                  </>)}
-                                  {showLast30Cols && (<>
-                                    <td className="px-5 py-3 text-right">
-                                      <div className="space-y-1">
-                                        <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{last30Data.count}</div>
-                                        <div className="border-t border-slate-200 my-1"></div>
-                                        <div className="font-semibold text-slate-700">₪{(last30Amount).toLocaleString()}</div>
-                                      </div>
-                                    </td>
-                                    <td className={`px-5 py-3 text-right font-semibold ${last30AmountClass} bg-slate-100`}>
-                                      <div className="text-right">{last30Data.expected ? `₪${last30Data.expected.toLocaleString()}` : '—'}</div>
-                                    </td>
-                                  </>)}
-                                  {showLastMonthCols && (<>
-                                    <td className="px-5 py-3 text-right">
-                                      <div className="space-y-1">
-                                        <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{thisMonthCount}</div>
-                                        <div className="border-t border-slate-200 my-1"></div>
-                                        <div className="font-semibold text-slate-700">₪{thisMonthAmount.toLocaleString()}</div>
-                                      </div>
-                                    </td>
-                                    <td className={`px-5 py-3 text-right font-semibold ${thisMonthAmountClass} bg-slate-100`}>
-                                      <div className="text-right">{targetMonth ? `₪${targetMonth.toLocaleString()}` : '—'}</div>
-                                    </td>
-                                  </>)}
-                                </tr>
-                                <tr className={isFlipped ? '' : 'hidden'}>
-                                  <td colSpan={1 + (showTodayCols ? 2 : 0) + (showLast30Cols ? 2 : 0) + (showLastMonthCols ? 2 : 0)} className="p-0">
-                                    <div className="relative overflow-hidden" style={{ perspective: '1000px' }}>
-                                      <div className="bg-gradient-to-br from-purple-500 to-indigo-600 p-4 transition-transform duration-500" style={{ transformOrigin: 'top', transform: isFlipped ? 'rotateX(0deg)' : 'rotateX(-90deg)' }}>
-                                        <div className="text-white text-xs font-semibold mb-2 text-center">{category} - 30 Day Trend</div>
-                                        <div className="w-full h-72">
-                                          <ResponsiveContainer width="100%" height="100%">
-                                            <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                              <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
-                                              <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={30} />
-                                              <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }}
-                                                       labelStyle={{ color: '#374151', fontWeight: 'bold' }}
-                                                       itemStyle={{ color: '#6366f1', fontWeight: 600 }}
-                                                       labelFormatter={(label) => {
-                                                         const d = chartData.find(x => x.date === label);
-                                                         return d ? `Date: ${d.fullDate}` : label;
-                                                       }}
-                                                       formatter={(value: number) => [`${value} ${value === 1 ? 'contract' : 'contracts'}`, 'Contracts Signed']} />
-                                              <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} activeDot={{ r: 5, fill: '#fbbf24', stroke: '#fff', strokeWidth: 2 }} />
-                                            </LineChart>
-                                          </ResponsiveContainer>
-                                        </div>
-                                      </div>
-                                    </div>
-                                  </td>
-                                </tr>
-                              </React.Fragment>
-                            );
-                          })}
-                          {/* Calculated Total row */}
-                          <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
-                            <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
-                            {showTodayCols && (<>
+                          {/* Commercial & Civil */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Commercial & Civil</td>
+                            {showTodayCols && (
                               <td className="px-5 py-3 text-right">
                                 <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumTodayCount}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{sumTodayAmount.toLocaleString()}</div>
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[1].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[1].amount.toLocaleString()}</div>
                                 </div>
                               </td>
-                              <td className="px-5 py-3 text-right text-white font-semibold">
-                                <div className="text-right">{sumTodayExpected ? `₪${sumTodayExpected.toLocaleString()}` : '—'}</div>
-                              </td>
-                            </>)}
-                            {showLast30Cols && (<>
+                            )}
+                            {showLast30Cols && (
                               <td className="px-5 py-3 text-right">
                                 <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sum30Count}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{sum30Amount.toLocaleString()}</div>
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][1].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][1].amount.toLocaleString()}</div>
                                 </div>
                               </td>
-                              <td className="px-5 py-3 text-right text-white font-semibold">
-                                <div className="text-right">{sum30Expected ? `₪${sum30Expected.toLocaleString()}` : '—'}</div>
-                              </td>
-                            </>)}
+                            )}
                             {showLastMonthCols && (<>
                               <td className="px-5 py-3 text-right">
                                 <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumMonthCount}</div>
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[1].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.August[1].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{agreementData.August[1].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Small cases */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Small cases</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[2].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[2].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][2].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][2].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[2].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.August[2].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{agreementData.August[2].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* USA - Immigration */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">USA - Immigration</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[3].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[3].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][3].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][3].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[3].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.August[3].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{agreementData.August[3].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Immigration to Israel */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Immigration to Israel</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[4].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[4].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][4].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][4].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[4].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.August[4].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{agreementData.August[4].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Austria and Germany */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Austria and Germany</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[5].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[5].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][5].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][5].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[5].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{agreementData.August[5].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{agreementData.August[5].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Total */}
+                          <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
+                            <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[6].count}</div>
                                   <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{sumMonthAmount.toLocaleString()}</div>
+                                  <div className="font-semibold text-white">₪{agreementData.Today[6].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][6].count}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{agreementData["Last 30d"][6].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[6].count}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{agreementData.August[6].amount.toLocaleString()}</div>
                                 </div>
                               </td>
                               <td className="px-5 py-3 text-right text-white font-semibold">
-                                <div className="text-right">{sumMonthTarget ? `₪${sumMonthTarget.toLocaleString()}` : '—'}</div>
+                                <div className="text-right">₪{agreementData.August[6].expected.toLocaleString()}</div>
                               </td>
                             </>)}
                           </tr>
@@ -1925,132 +2557,226 @@ const Dashboard: React.FC = () => {
                           <thead className="bg-slate-50 border-b border-slate-200">
                           <tr>
                             <th className="text-left px-5 py-3 font-semibold text-slate-700">Department</th>
-                            {showTodayCols && (<>
+                            {showTodayCols && (
                               <th className="text-right px-5 py-3 font-semibold text-slate-700">Today</th>
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target Today</th>
-                            </>)}
-                            {showLast30Cols && (<>
+                            )}
+                            {showLast30Cols && (
                               <th className="text-right px-5 py-3 font-semibold text-slate-700">Last 30d</th>
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target 30d</th>
-                            </>)}
-                            {showLastMonthCols && (<>
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700">{new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target {new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
-                            </>)}
+                            )}
+                            {showLastMonthCols && (
+                              <>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700">{new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
+                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target {new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
+                              </>
+                            )}
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {scoreboardCategories.map((category, index) => {
-                            const todayData = scoreboardData["Today"][index];
-                            const last30Data = scoreboardData["Last 30d"][index];
-                            if (category === 'General' || category === 'Total') return null;
-                            const todayAmount = todayData.amount || 0;
-                            const todayTarget = todayData.expected || randomTodayTargetsRef.current[index] || 0;
-                            const todayAmountClass = todayTarget > 0 ? (todayAmount >= todayTarget ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                            const last30Amount = last30Data.amount || 0;
-                            const last30Target = last30Data.expected || 0;
-                            const last30AmountClass = last30Target > 0 ? (last30Amount >= last30Target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                            const thisMonthCount = last30Data.count;
-                            const thisMonthAmount = scoreboardBarData30d[index]?.signed || 0;
-                            const targetMonth = last30Data.expected || 0;
-                            const thisMonthAmountClass = targetMonth > 0 ? (thisMonthAmount >= targetMonth ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                            return (
-                              <>
-                              <tr key={`inv-${category}`} className="hover:bg-slate-50 cursor-pointer" onClick={() => handleCardFlip(`inv-${category}`)}>
-                                <td className="px-5 py-3 font-semibold text-slate-800">{category}</td>
-                                {showTodayCols && (<>
-                                  <td className="px-5 py-3 text-right">
-                                    <div className="space-y-1">
-                                      <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{todayData.count}</div>
-                                      <div className="border-t border-slate-200 my-1"></div>
-                                      <div className="font-semibold text-slate-700">₪{todayAmount.toLocaleString()}</div>
-                                    </div>
-                                  </td>
-                                  <td className={`px-5 py-3 text-right font-semibold ${todayAmountClass} bg-slate-100`}>{todayTarget ? `₪${todayTarget.toLocaleString()}` : '—'}</td>
-                                </>)}
-                                {showLast30Cols && (<>
-                                  <td className="px-5 py-3 text-right">
-                                    <div className="space-y-1">
-                                      <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{last30Data.count}</div>
-                                      <div className="border-t border-slate-200 my-1"></div>
-                                      <div className="font-semibold text-slate-700">₪{last30Amount.toLocaleString()}</div>
-                                    </div>
-                                  </td>
-                                  <td className={`px-5 py-3 text-right font-semibold ${last30AmountClass} bg-slate-100`}>{last30Target ? `₪${last30Target.toLocaleString()}` : '—'}</td>
-                                </>)}
-                                {showLastMonthCols && (<>
-                                  <td className="px-5 py-3 text-right">
-                                    <div className="space-y-1">
-                                      <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{thisMonthCount}</div>
-                                      <div className="border-t border-slate-200 my-1"></div>
-                                      <div className="font-semibold text-slate-700">₪{thisMonthAmount.toLocaleString()}</div>
-                                    </div>
-                                  </td>
-                                  <td className={`px-5 py-3 text-right font-semibold ${thisMonthAmountClass} bg-slate-100`}>{targetMonth ? `₪${targetMonth.toLocaleString()}` : '—'}</td>
-                                </>)}
-                              </tr>
-                              <tr className={flippedCards.has(`inv-${category}`) ? '' : 'hidden'}>
-                                <td colSpan={1 + (showTodayCols ? 2 : 0) + (showLast30Cols ? 2 : 0) + (showLastMonthCols ? 2 : 0)} className="p-0">
-                                  <div className="relative overflow-hidden" style={{ perspective: '1000px' }}>
-                                    <div className="bg-gradient-to-br from-purple-500 to-indigo-600 p-4 transition-transform duration-500" style={{ transformOrigin: 'top', transform: flippedCards.has(`inv-${category}`) ? 'rotateX(0deg)' : 'rotateX(-90deg)' }}>
-                                      <div className="text-white text-xs font-semibold mb-2 text-center">{category} - 30 Day Trend</div>
-                                      <div className="w-full h-72">
-                                        <ResponsiveContainer width="100%" height="100%">
-                                          <LineChart data={generateDepartmentData(category)} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                            <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
-                                            <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={30} />
-                                            <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} labelStyle={{ color: '#374151', fontWeight: 'bold' }} itemStyle={{ color: '#6366f1', fontWeight: 600 }} />
-                                            <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} activeDot={{ r: 5, fill: '#fbbf24', stroke: '#fff', strokeWidth: 2 }} />
-                                          </LineChart>
-                                        </ResponsiveContainer>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </td>
-                              </tr>
-                              </>
-                            );
-                                                      })}
-                            <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
-                              <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
-                              {showTodayCols && (<>
-                                <td className="px-5 py-3 text-right">
-                                  <div className="space-y-1">
-                                    <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumTodayCount}</div>
-                                    <div className="border-t border-white/20 my-1"></div>
-                                    <div className="font-semibold text-white">₪{sumTodayAmount.toLocaleString()}</div>
-                                  </div>
-                                </td>
-                                <td className="px-5 py-3 text-right text-white font-semibold">
-                                  <div className="text-right">{sumTodayExpected ? `₪${sumTodayExpected.toLocaleString()}` : '—'}</div>
-                                </td>
-                              </>)}
-                              {showLast30Cols && (<>
-                                <td className="px-5 py-3 text-right">
-                                  <div className="space-y-1">
-                                    <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sum30Count}</div>
-                                    <div className="border-t border-white/20 my-1"></div>
-                                    <div className="font-semibold text-white">₪{sum30Amount.toLocaleString()}</div>
-                                  </div>
-                                </td>
-                                <td className="px-5 py-3 text-right text-white font-semibold">
-                                  <div className="text-right">{sum30Expected ? `₪${sum30Expected.toLocaleString()}` : '—'}</div>
-                                </td>
-                              </>)}
-                              {showLastMonthCols && (<>
-                                <td className="px-5 py-3 text-right">
-                                  <div className="space-y-1">
-                                    <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{sumMonthCount}</div>
-                                    <div className="border-t border-white/20 my-1"></div>
-                                    <div className="font-semibold text-white">₪{sumMonthAmount.toLocaleString()}</div>
-                                  </div>
-                                </td>
-                                <td className="px-5 py-3 text-right text-white font-semibold">
-                                  <div className="text-right">{sumMonthTarget ? `₪${sumMonthTarget.toLocaleString()}` : '—'}</div>
-                                </td>
-                              </>)}
-                            </tr>
-                          </tbody>
+                          {/* Commercial & Civil */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Commercial & Civil</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[1].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[1].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][1].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][1].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[1].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[1].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{invoicedData.August[1].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Small cases */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Small cases</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[2].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[2].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][2].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][2].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[2].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[2].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{invoicedData.August[2].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* USA - Immigration */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">USA - Immigration</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[3].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[3].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][3].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][3].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[3].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[3].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{invoicedData.August[3].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Immigration to Israel */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Immigration to Israel</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[4].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[4].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][4].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][4].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[4].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[4].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{invoicedData.August[4].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Austria and Germany */}
+                          <tr className="hover:bg-slate-50">
+                            <td className="px-5 py-3 font-semibold text-slate-700">Austria and Germany</td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[5].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[5].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][5].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][5].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[5].count}</div>
+                                  <div className="border-t border-slate-200 my-1"></div>
+                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[5].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
+                                <div className="text-right">₪{invoicedData.August[5].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                          {/* Total */}
+                          <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
+                            <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
+                            {showTodayCols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[6].count}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{invoicedData.Today[6].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLast30Cols && (
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][6].count}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{invoicedData["Last 30d"][6].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                            )}
+                            {showLastMonthCols && (<>
+                              <td className="px-5 py-3 text-right">
+                                <div className="space-y-1">
+                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[6].count}</div>
+                                  <div className="border-t border-white/20 my-1"></div>
+                                  <div className="font-semibold text-white">₪{invoicedData.August[6].amount.toLocaleString()}</div>
+                                </div>
+                              </td>
+                              <td className="px-5 py-3 text-right text-white font-semibold">
+                                <div className="text-right">₪{invoicedData.August[6].expected.toLocaleString()}</div>
+                              </td>
+                            </>)}
+                          </tr>
+                        </tbody>
                         </table>
                       )}
                     </div>
@@ -2059,8 +2785,8 @@ const Dashboard: React.FC = () => {
                   {/* Mobile: keep card grid */}
                   <div className="grid grid-cols-1 gap-4 md:hidden">
                     {scoreboardCategories.map((category, index) => {
-                      const todayData = scoreboardData["Today"][index];
-                      const last30Data = scoreboardData["Last 30d"][index];
+                      const todayData = agreementData["Today"][index];
+                      const last30Data = agreementData["Last 30d"][index];
                       const isFlipped = flippedCards.has(category);
                       const chartData = generateDepartmentData(category);
                       return (
@@ -2150,7 +2876,7 @@ const Dashboard: React.FC = () => {
                   <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
                     <div className="w-full h-[450px]">
                       {(() => {
-                        const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
+                        const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
                         return (
                           <ResponsiveContainer width="100%" height="100%">
                             <BarChart
@@ -2237,8 +2963,8 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="text-2xl font-bold text-gray-900">
                         {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
-                          return data.reduce((sum, item) => sum + item.signed, 0);
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
+                          return data.reduce((sum: number, item: any) => sum + item.signed, 0);
                         })()}
                       </div>
                     </div>
@@ -2249,8 +2975,8 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="text-2xl font-bold text-gray-900">
                         {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
-                          return data.reduce((sum, item) => sum + item.due, 0);
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
+                          return data.reduce((sum: number, item: any) => sum + item.due, 0);
                         })()}
                       </div>
                     </div>
@@ -2261,9 +2987,9 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="text-2xl font-bold text-gray-900">
                         {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'June' || scoreTab === currentMonthName ? scoreboardBarDataJune : scoreboardBarData30d;
-                          const signed = data.reduce((sum, item) => sum + item.signed, 0);
-                          const due = data.reduce((sum, item) => sum + item.due, 0);
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
+                          const signed = data.reduce((sum: number, item: any) => sum + item.signed, 0);
+                          const due = data.reduce((sum: number, item: any) => sum + item.due, 0);
                           const total = signed + due;
                           return total > 0 ? `${Math.round((signed / total) * 100)}%` : '0%';
                         })()}

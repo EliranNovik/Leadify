@@ -15,6 +15,7 @@ import {
   FaceSmileIcon,
   ChevronDownIcon,
   SparklesIcon,
+  ExclamationTriangleIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useMsal } from '@azure/msal-react';
@@ -30,6 +31,7 @@ import { useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../../lib/api';
+import { fetchLegacyInteractions, testLegacyInteractionsAccess } from '../../lib/legacyInteractionsApi';
 
 interface Attachment {
   id: string;
@@ -53,7 +55,8 @@ interface Interaction {
   observation: string;
   editable: boolean;
   status?: string;
-  subject?: string; // <-- add this line
+  subject?: string;
+  error_message?: string; // Add error message field for WhatsApp failures
 }
 
 const contactMethods = [
@@ -286,6 +289,7 @@ async function syncClientEmails(token: string, client: ClientTabProps['client'])
   }
 
   // 4. Prepare data for Supabase (upsert to avoid duplicates)
+  const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
   const emailsToUpsert = clientMessages.map((msg: any) => {
     const isOutgoing = msg.from?.emailAddress?.address.toLowerCase().includes('lawoffice.org.il');
     const originalBody = msg.body?.content || '';
@@ -293,7 +297,8 @@ async function syncClientEmails(token: string, client: ClientTabProps['client'])
 
     return {
       message_id: msg.id,
-      client_id: client.id,
+      client_id: isLegacyLead ? null : client.id, // Set to null for legacy leads
+      legacy_id: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null, // Set legacy_id for legacy leads
       thread_id: msg.conversationId,
       sender_name: msg.from?.emailAddress?.name,
       sender_email: msg.from?.emailAddress?.address,
@@ -307,7 +312,24 @@ async function syncClientEmails(token: string, client: ClientTabProps['client'])
   });
 
   // 5. Upsert into our database
-  await supabase.from('emails').upsert(emailsToUpsert, { onConflict: 'message_id' });
+  console.log('📧 Syncing emails to database:', {
+    isLegacyLead,
+    clientId: client.id,
+    legacyId: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null,
+    emailCount: emailsToUpsert.length
+  });
+  
+  if (emailsToUpsert.length > 0) {
+    console.log('📧 Sample email data:', emailsToUpsert[0]);
+  }
+  
+  const { data: syncData, error: syncError } = await supabase.from('emails').upsert(emailsToUpsert, { onConflict: 'message_id' });
+  
+  if (syncError) {
+    console.error('❌ Error syncing emails to database:', syncError);
+  } else {
+    console.log('✅ Emails synced to database successfully');
+  }
 }
 
 // Microsoft Graph API: Send email (as a new message or reply)
@@ -457,6 +479,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const navigate = useNavigate();
   // 1. Add state for WhatsApp messages from DB
   const [whatsAppMessages, setWhatsAppMessages] = useState<any[]>([]);
+  // Add state for WhatsApp error messages
+  const [whatsAppError, setWhatsAppError] = useState<string | null>(null);
+  
+  // Debug: Log when whatsAppError changes
+  useEffect(() => {
+    console.log('🔍 WhatsApp error state changed:', whatsAppError);
+  }, [whatsAppError]);
 
   // Find the index of the last email in the sorted interactions
   const sortedInteractions = [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
@@ -565,6 +594,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   // Handle WhatsApp modal close and navigation back to Calendar
   const handleWhatsAppClose = () => {
     setIsWhatsAppOpen(false);
+    setWhatsAppInput('');
+    setSelectedFile(null);
+    setSelectedMedia(null);
+    setActiveWhatsAppId(null);
+    setWhatsAppError(null); // Clear any error messages when closing
     
     // Check if WhatsApp was opened from Calendar
     if (localStorage.getItem('whatsAppFromCalendar') === 'true') {
@@ -577,11 +611,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   useEffect(() => {
     async function fetchWhatsAppMessages() {
       if (!client?.id) return;
-      const { data, error } = await supabase
-        .from('whatsapp_messages')
-        .select('*')
-        .eq('lead_id', client.id)
-        .order('sent_at', { ascending: true });
+      
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      let query = supabase.from('whatsapp_messages').select('*');
+      
+      if (isLegacyLead) {
+        const legacyId = parseInt(client.id.replace('legacy_', ''));
+        query = query.eq('legacy_id', legacyId);
+      } else {
+        query = query.eq('lead_id', client.id);
+      }
+      
+      const { data, error } = await query.order('sent_at', { ascending: true });
       if (!error && data) {
         setWhatsAppMessages(data);
       } else {
@@ -593,62 +634,150 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   }, [isWhatsAppOpen, client.id]);
 
+  // 3. Periodically check status of pending messages
+  useEffect(() => {
+    if (!isWhatsAppOpen || !client?.id) return;
+
+    const interval = setInterval(async () => {
+      // Check if there are any pending messages
+      const hasPendingMessages = whatsAppMessages.some(msg => msg.whatsapp_status === 'pending');
+      
+      if (hasPendingMessages) {
+        // Refetch messages to get updated statuses
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        let query = supabase.from('whatsapp_messages').select('*');
+        
+        if (isLegacyLead) {
+          const legacyId = parseInt(client.id.replace('legacy_', ''));
+          query = query.eq('legacy_id', legacyId);
+        } else {
+          query = query.eq('lead_id', client.id);
+        }
+        
+        const { data, error } = await query.order('sent_at', { ascending: true });
+        if (!error && data) {
+          setWhatsAppMessages(data);
+        }
+      }
+    }, 5000); // Check every 5 seconds
+
+    return () => clearInterval(interval);
+  }, [isWhatsAppOpen, client.id, whatsAppMessages]);
+
   // 3. On send, save to DB and refetch messages
   const handleSendWhatsApp = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!whatsAppInput.trim()) return;
+
+    // Clear any previous errors
+    setWhatsAppError(null);
+
+    // Check if client has phone number
+    console.log('🔍 Checking phone numbers:', { phone: client.phone, mobile: client.mobile });
+    if (!client.phone && !client.mobile) {
+      console.log('❌ No phone number found, setting error');
+      setWhatsAppError('❌ No phone number available for this client. Please add a phone number first.');
+      // Add a small delay to ensure the error is displayed
+      setTimeout(() => {
+        console.log('🔍 Error should be visible now');
+      }, 100);
+      return;
+    }
+
+    // Validate phone number format
+    const phoneNumber = client.phone || client.mobile;
+    console.log('🔍 Phone number to use:', phoneNumber);
+    if (!phoneNumber || phoneNumber.trim() === '') {
+      console.log('❌ Phone number is empty, setting error');
+      setWhatsAppError('❌ No phone number available for this client. Please add a phone number first.');
+      return;
+    }
+    
     const now = new Date();
-    let senderId = null;
     let senderName = 'You';
+    let whatsappStatus = 'sent';
+    let errorMessage = null;
+    
     try {
+      // Get current user's full name from users table
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.id) {
         const { data: userRow, error: userLookupError } = await supabase
           .from('users')
-          .select('id, full_name, email')
+          .select('full_name, email')
           .eq('auth_id', user.id)
           .single();
         if (!userLookupError && userRow) {
-          senderId = userRow.id;
           senderName = userRow.full_name || userRow.email || 'You';
         }
       }
-      const { error: insertError } = await supabase
-        .from('whatsapp_messages')
-        .insert([
-          {
-            lead_id: client.id,
-            sender_id: senderId,
-            sender_name: senderName,
-            direction: 'out',
-            message: whatsAppInput,
-            sent_at: now.toISOString(),
-            status: 'sent',
-          }
-        ]);
-      if (insertError) {
-        toast.error('Failed to save WhatsApp message: ' + insertError.message);
-        return;
+      
+      // Try to send via WhatsApp API first
+      const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leadId: client.id,
+          message: whatsAppInput.trim(),
+          phoneNumber: client.phone || client.mobile,
+          sender_name: senderName
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        let errorMessage = '';
+        if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
+          errorMessage = '⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity. The customer needs to reply first to reset the timer.';
+        } else if (result.error?.includes('phone') || result.error?.includes('invalid') || result.error?.includes('format')) {
+          errorMessage = '❌ Invalid phone number format. Please check the client\'s phone number.';
+        } else if (result.error?.includes('not found') || result.error?.includes('404')) {
+          errorMessage = '❌ Phone number not found or not registered on WhatsApp.';
+        } else {
+          errorMessage = `❌ WhatsApp API Error: ${result.error || 'Unknown error'}`;
+        }
+        
+        setWhatsAppError(errorMessage);
+        return; // Don't save to database if API call failed
       }
+      
+      // Message sent successfully via WhatsApp API - backend will save to database
+      console.log('✅ WhatsApp message sent successfully, backend will save to database');
+      
       setWhatsAppInput('');
-      // Refetch messages
-      const { data, error } = await supabase
-        .from('whatsapp_messages')
-        .select('*')
-        .eq('lead_id', client.id)
-        .order('sent_at', { ascending: true });
+      
+      // Refetch messages - handle both new and legacy leads
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      let query = supabase.from('whatsapp_messages').select('*');
+      if (isLegacyLead) {
+        const legacyId = parseInt(client.id.replace('legacy_', ''));
+        query = query.eq('legacy_id', legacyId);
+      } else {
+        query = query.eq('lead_id', client.id);
+      }
+      
+      const { data, error } = await query.order('sent_at', { ascending: true });
       if (!error && data) {
         setWhatsAppMessages(data);
       }
+      
       // Optionally, update interactions timeline
       if (onClientUpdate) await onClientUpdate();
+      
+      // Clear any previous errors and show success
+      setWhatsAppError(null);
+      
     } catch (err) {
-      toast.error('Unexpected error saving WhatsApp message.');
+      console.error('Unexpected error sending WhatsApp message:', err);
+      setWhatsAppError('Unexpected error sending WhatsApp message: ' + (err instanceof Error ? err.message : 'Unknown error'));
     }
   };
 
   // Helper function to render WhatsApp-style message status
-  const renderMessageStatus = (status?: string) => {
+  const renderMessageStatus = (status?: string, errorMessage?: string) => {
     if (!status) return null;
     
     const baseClasses = "w-7 h-7";
@@ -658,6 +787,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         return (
           <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+          </svg>
+        );
+      case 'pending':
+        return (
+          <svg className={`${baseClasses} text-gray-400 animate-pulse`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
           </svg>
         );
       case 'delivered':
@@ -673,6 +808,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
           </svg>
+        );
+      case 'failed':
+        return (
+          <div className="relative group">
+            <svg className={`${baseClasses} text-red-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            {errorMessage && (
+              <div className="absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-3 py-2 bg-red-600 text-white text-xs rounded-lg opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-50 max-w-xs">
+                {errorMessage}
+                <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-red-600"></div>
+              </div>
+            )}
+          </div>
         );
       default:
         return null;
@@ -691,7 +840,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const handleSendMedia = async () => {
     if (!selectedFile || !client) return;
 
+    // Clear any previous errors
+    setWhatsAppError(null);
+
+    // Check if client has phone number
+    console.log('🔍 Media: Checking phone numbers:', { phone: client.phone, mobile: client.mobile });
+    if (!client.phone && !client.mobile) {
+      console.log('❌ Media: No phone number found, setting error');
+      setWhatsAppError('❌ No phone number available for this client. Please add a phone number first.');
+      // Add a small delay to ensure the error is displayed
+      setTimeout(() => {
+        console.log('🔍 Media: Error should be visible now');
+      }, 100);
+      return;
+    }
+
     setUploadingMedia(true);
+    let whatsappStatus = 'sent';
+    let errorMessage = null;
+    
     try {
       // Create FormData for file upload
       const formData = new FormData();
@@ -707,7 +874,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       const uploadResult = await uploadResponse.json();
 
       if (!uploadResponse.ok) {
-        throw new Error(uploadResult.error || 'Failed to upload media');
+        errorMessage = uploadResult.error || 'Failed to upload media';
+        whatsappStatus = 'failed';
+        throw new Error(errorMessage);
       }
 
       // Send media message
@@ -731,36 +900,58 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.error || 'Failed to send media');
+        if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
+          errorMessage = '⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity.';
+          whatsappStatus = 'failed';
+        } else if (result.error?.includes('phone') || result.error?.includes('invalid') || result.error?.includes('format')) {
+          errorMessage = '❌ Invalid phone number format. Please check the client\'s phone number.';
+          whatsappStatus = 'failed';
+        } else if (result.error?.includes('not found') || result.error?.includes('404')) {
+          errorMessage = '❌ Phone number not found or not registered on WhatsApp.';
+          whatsappStatus = 'failed';
+        } else {
+          errorMessage = result.error || 'Failed to send media';
+          whatsappStatus = 'failed';
+        }
+        throw new Error(errorMessage);
       }
 
-      // Add message to local state
-      const newMsg = {
-        id: Date.now(),
-        lead_id: client.id,
-        sender_id: null,
-        sender_name: senderName,
-        direction: 'out',
-        message: whatsAppInput.trim() || `${mediaType} message`,
-        sent_at: new Date().toISOString(),
-        status: 'sent',
-        message_type: mediaType,
-        whatsapp_status: 'sent',
-        whatsapp_message_id: result.messageId,
-        media_url: uploadResult.mediaId,
-        caption: whatsAppInput.trim() || undefined
-      };
-
-      setWhatsAppMessages(prev => [...prev, newMsg]);
-      setWhatsAppInput('');
-      setSelectedFile(null);
-      toast.success('Media sent via WhatsApp!');
-    } catch (error) {
-      console.error('Error sending media:', error);
-      toast.error('Failed to send media: ' + (error as Error).message);
-    } finally {
+      // Media sent successfully - clear any previous errors
+      setWhatsAppError(null);
+      
+    } catch (apiError) {
+      // API call failed - don't save to database
+      console.error('WhatsApp Media API Error:', apiError);
+      const errorMessage = apiError instanceof Error ? apiError.message : 'Unknown API error';
+      setWhatsAppError('Failed to send media: ' + errorMessage);
       setUploadingMedia(false);
+      return; // Don't save to database if API call failed
     }
+
+    // Media sent successfully - backend will save to database
+    console.log('✅ WhatsApp media sent successfully, backend will save to database');
+    
+    setWhatsAppInput('');
+    setSelectedFile(null);
+    setUploadingMedia(false);
+    
+    // Refetch messages to update the display
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    let query = supabase.from('whatsapp_messages').select('*');
+    if (isLegacyLead) {
+      const legacyId = parseInt(client.id.replace('legacy_', ''));
+      query = query.eq('legacy_id', legacyId);
+    } else {
+      query = query.eq('lead_id', client.id);
+    }
+    
+    const { data, error } = await query.order('sent_at', { ascending: true });
+    if (!error && data) {
+      setWhatsAppMessages(data);
+    }
+    
+    // Optionally, update interactions timeline
+    if (onClientUpdate) await onClientUpdate();
   };
 
   // 4. Use whatsAppMessages for chat display
@@ -885,11 +1076,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       // 3. WhatsApp messages from DB
       let whatsAppDbMessages: any[] = [];
       if (client?.id) {
-        const { data, error } = await supabase
-          .from('whatsapp_messages')
-          .select('*')
-          .eq('lead_id', client.id)
-          .order('sent_at', { ascending: true });
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        let query = supabase.from('whatsapp_messages').select('*');
+        
+        if (isLegacyLead) {
+          const legacyId = parseInt(client.id.replace('legacy_', ''));
+          query = query.eq('legacy_id', legacyId);
+        } else {
+          query = query.eq('lead_id', client.id);
+        }
+        
+        const { data, error } = await query.order('sent_at', { ascending: true });
         if (!error && data) {
           whatsAppDbMessages = data.map((msg: any) => ({
             id: msg.id,
@@ -901,15 +1098,33 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             kind: 'whatsapp',
             length: '',
             content: msg.message,
-            observation: '',
+            observation: msg.error_message || '', // Include error message if any
             editable: false,
+            status: msg.whatsapp_status, // Include WhatsApp status
+            error_message: msg.error_message, // Include error message for status rendering
           }));
         }
       }
+      
+      // 4. Legacy interactions for legacy leads
+      let legacyInteractions: any[] = [];
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      if (isLegacyLead && client?.id) {
+        try {
+          legacyInteractions = await fetchLegacyInteractions(client.id, client.name);
+        } catch (error) {
+          console.error('Error fetching legacy interactions:', error);
+        }
+      }
+      
       // Combine all
-      const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages];
+      const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...legacyInteractions];
       const sorted = combined.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
-      if (isMounted) setInteractions(sorted as Interaction[]);
+      if (isMounted) {
+        setInteractions(sorted as Interaction[]);
+        // Note: Interaction count is now calculated upfront when entering the client page
+        // No need to update it here anymore
+      }
       // Also update the local emails state for the modal
       const formattedEmailsForModal = clientEmails.map((e: any) => ({
         id: e.message_id,
@@ -1007,24 +1222,60 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       ]);
 
       // --- Upsert sent email directly to Supabase ---
-      await supabase.from('emails').upsert([
-        {
-          message_id: optimisticEmail.message_id,
-          client_id: client.id,
-          thread_id: sentEmail.conversationId || null,
-          sender_name: senderName,
-          sender_email: account.username || account.name || 'Me',
-          recipient_list: client.email,
-          subject: composeSubject,
-          body_preview: composeBody,
-          sent_at: now.toISOString(),
-          direction: 'outgoing',
-          attachments: composeAttachments,
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const emailData = {
+        message_id: optimisticEmail.message_id,
+        client_id: isLegacyLead ? null : client.id, // Set to null for legacy leads
+        legacy_id: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null, // Set legacy_id for legacy leads
+        thread_id: sentEmail.conversationId || null,
+        sender_name: senderName,
+        sender_email: account.username || account.name || 'Me',
+        recipient_list: client.email,
+        subject: composeSubject,
+        body_preview: composeBody,
+        sent_at: now.toISOString(),
+        direction: 'outgoing',
+        attachments: composeAttachments,
+      };
+      
+      console.log('📧 Saving email to database:', {
+        isLegacyLead,
+        clientId: client.id,
+        legacyId: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null,
+        emailData
+      });
+      
+      const { data: upsertData, error: upsertError } = await supabase.from('emails').upsert([emailData], { onConflict: 'message_id' });
+      
+      if (upsertError) {
+        console.error('❌ Error saving email to database:', upsertError);
+        toast.error('Failed to save email to database: ' + upsertError.message);
+      } else {
+        console.log('✅ Email saved to database successfully:', upsertData);
+      }
+      
+      // Update latest_interaction timestamp for new leads
+      if (!isLegacyLead) {
+        const { error: timestampError } = await supabase
+          .from('leads')
+          .update({ latest_interaction: now.toISOString() })
+          .eq('id', client.id);
+        
+        if (timestampError) {
+          console.error('❌ Error updating latest_interaction timestamp:', timestampError);
+        } else {
+          console.log('✅ Latest interaction timestamp updated successfully');
         }
-      ], { onConflict: 'message_id' });
+      }
       
       // After sending, trigger a sync to get the new email
       await runGraphSync();
+      
+      // Force refresh the client data to get updated emails
+      if (onClientUpdate) {
+        console.log('🔄 Triggering client data refresh after email send');
+        await onClientUpdate();
+      }
 
       // Clear the body input after sending
       setComposeBody('');
@@ -1185,11 +1436,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         if (updatedManualInteraction) {
           const allManualInteractions = updatedInteractions.filter(i => i.id.toString().startsWith('manual_'));
           
-          const { error } = await supabase
-            .from('leads')
-            .update({ manual_interactions: allManualInteractions })
-            .eq('id', client.id);
-          if (error) throw error;
+          // Update manual_interactions and latest_interaction timestamp for new leads
+          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+          if (!isLegacyLead) {
+            const { error } = await supabase
+              .from('leads')
+              .update({ 
+                manual_interactions: allManualInteractions,
+                latest_interaction: new Date().toISOString()
+              })
+              .eq('id', client.id);
+            if (error) throw error;
+          } else {
+            const { error } = await supabase
+              .from('leads')
+              .update({ manual_interactions: allManualInteractions })
+              .eq('id', client.id);
+            if (error) throw error;
+          }
         }
       } else {
         const { error } = await supabase
@@ -1283,9 +1547,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       const existingInteractions = client.manual_interactions || [];
       const updatedInteractions = [...existingInteractions, newInteraction];
 
+      // Update manual_interactions and latest_interaction timestamp
       const { error: updateError } = await supabase
         .from('leads')
-        .update({ manual_interactions: updatedInteractions })
+        .update({ 
+          manual_interactions: updatedInteractions,
+          latest_interaction: now.toISOString()
+        })
         .eq('id', client.id);
 
       if (updateError) throw updateError;
@@ -1405,6 +1673,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             <SparklesIcon className="w-5 h-5" />
             AI Smart Recap
           </button>
+          
+          {/* Legacy Interactions Test Button - only show for legacy leads */}
+          {(client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_')) && (
+            <button 
+              className="btn btn-outline btn-warning text-xs"
+              onClick={async () => {
+                console.log('🧪 Testing legacy interactions access...');
+                await testLegacyInteractionsAccess();
+                toast.success('Check console for legacy interactions test results');
+              }}
+              title="Test legacy interactions database access"
+            >
+              Test Legacy
+            </button>
+          )}
+          
+
         </div>
         
         {/* Timeline container with proper mobile layout */}
@@ -1516,23 +1801,35 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                               {row.length}
                             </span>
                           )}
+
+                          {/* WhatsApp status indicator */}
+                          {row.kind === 'whatsapp' && row.status && (
+                            <div className="flex items-center gap-1">
+                              {renderMessageStatus(row.status, (row as any).error_message)}
+                              {row.status === 'failed' && (
+                                <span className="px-2 py-1 rounded-full font-medium shadow-sm bg-red-100 text-red-700 text-xs">
+                                  Failed
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </div>
                         
                         {row.content && (
-                          <div className="text-xs md:text-sm text-gray-700 break-words overflow-hidden">
+                          <div className={`text-xs md:text-sm text-gray-700 break-words ${row.id.toString().startsWith('legacy_') ? 'overflow-visible' : 'overflow-hidden'}`}>
                             {/* Subject in bold with colon, then body with spacing */}
                             {row.subject ? (
                               <>
                                 <span className="font-bold mr-1">{row.subject}:</span>
                                 <br />
-                                <span className="ml-1">
+                                <span className="ml-1 whitespace-pre-wrap">
                                   {typeof row.content === 'string'
                                     ? row.content.replace(new RegExp(`^${row.subject}\s*:?[\s\-]*`, 'i'), '').trim()
                                     : row.content}
                                 </span>
                               </>
                             ) : (
-                              <span>{row.content}</span>
+                              <span className="whitespace-pre-wrap">{row.content}</span>
                             )}
                           </div>
                         )}
@@ -2007,7 +2304,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         </span>
                         {message.direction === 'out' && (
                           <span className="inline-block align-middle text-current">
-                            {renderMessageStatus(message.whatsapp_status)}
+                            {renderMessageStatus(message.whatsapp_status, message.error_message)}
                           </span>
                         )}
                       </div>
@@ -2016,6 +2313,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 ))
               )}
             </div>
+
+            {/* Error Display Area */}
+            {whatsAppError && (
+              <div className="flex-shrink-0 p-4 bg-red-50 border-t border-red-200">
+                <div className="flex items-center gap-2 p-3 bg-red-100 border border-red-300 rounded-lg">
+                  <ExclamationTriangleIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm text-red-800 font-medium">{whatsAppError}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setWhatsAppError(null)}
+                    className="text-red-600 hover:text-red-800"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Message Input - Fixed */}
             <div className="flex-shrink-0 p-4 bg-white border-t border-gray-200">
@@ -2154,7 +2470,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         </div>,
         document.body
       )}
-      
       {/* AI Smart Recap Drawer for Mobile */}
       {aiDrawerOpen && createPortal(
         <div className="fixed inset-0 z-[999] flex lg:hidden">

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
+import { CalendarIcon, ClockIcon } from '@heroicons/react/24/outline';
 
 interface AccessLog {
   id: number;
@@ -37,7 +38,7 @@ const AccessLogsManager: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      console.log('Fetching access logs...');
+      console.log('Fetching access logs for /api/hook/catch endpoint...');
 
       // First, check if user is authenticated
       const { data: { user }, error: userError } = await supabase.auth.getUser();
@@ -47,14 +48,12 @@ const AccessLogsManager: React.FC = () => {
       let query = supabase
         .from('access_logs')
         .select('*', { count: 'exact' })
+        .eq('endpoint', '/api/hook/catch')
         .order('created_at', { ascending: false });
 
-      // Apply filters
+      // Apply additional filters (excluding endpoint filter since we're already filtering for /api/hook/catch)
       if (filters.method) {
         query = query.eq('request_method', filters.method);
-      }
-      if (filters.endpoint) {
-        query = query.ilike('endpoint', `%${filters.endpoint}%`);
       }
       if (filters.responseCode) {
         query = query.eq('response_code', parseInt(filters.responseCode));
@@ -97,7 +96,17 @@ const AccessLogsManager: React.FC = () => {
   }, [currentPage, filters]);
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleString();
+    const date = new Date(dateString);
+    const day = date.getDate().toString().padStart(2, '0');
+    const month = (date.getMonth() + 1).toString().padStart(2, '0');
+    const year = date.getFullYear();
+    const hours = date.getHours().toString().padStart(2, '0');
+    const minutes = date.getMinutes().toString().padStart(2, '0');
+    
+    return {
+      date: `${day}/${month}/${year}`,
+      time: `${hours}:${minutes}`
+    };
   };
 
   const truncateText = (text: string, maxLength: number = 100) => {
@@ -141,8 +150,8 @@ const AccessLogsManager: React.FC = () => {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Access Logs</h2>
-        <p className="text-gray-600">View all backend API access logs and requests</p>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Hook Endpoint Logs</h2>
+        <p className="text-gray-600">View access logs for /api/hook/catch endpoint only</p>
         <button
           onClick={fetchLogs}
           className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
@@ -154,7 +163,7 @@ const AccessLogsManager: React.FC = () => {
       {/* Filters */}
       <div className="bg-white p-4 rounded-lg shadow-sm mb-6">
         <h3 className="text-lg font-semibold mb-4">Filters</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Method</label>
             <select
@@ -170,16 +179,7 @@ const AccessLogsManager: React.FC = () => {
             </select>
           </div>
           
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Endpoint</label>
-            <input
-              type="text"
-              value={filters.endpoint}
-              onChange={(e) => setFilters(prev => ({ ...prev, endpoint: e.target.value }))}
-              placeholder="Filter by endpoint"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
+
           
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Response Code</label>
@@ -216,7 +216,6 @@ const AccessLogsManager: React.FC = () => {
             <button
               onClick={() => setFilters({
                 method: '',
-                endpoint: '',
                 responseCode: '',
                 dateFrom: '',
                 dateTo: ''
@@ -277,7 +276,16 @@ const AccessLogsManager: React.FC = () => {
                          onClick={() => toggleRowExpansion(log.id)}
                        >
                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                           {formatDate(log.created_at)}
+                           <div className="flex flex-col space-y-1">
+                             <div className="flex items-center space-x-2">
+                               <CalendarIcon className="w-4 h-4 text-gray-500" />
+                               <span>{formatDate(log.created_at).date}</span>
+                             </div>
+                             <div className="flex items-center space-x-2">
+                               <ClockIcon className="w-4 h-4 text-gray-500" />
+                               <span>{formatDate(log.created_at).time}</span>
+                             </div>
+                           </div>
                          </td>
                          <td className="px-6 py-4 whitespace-nowrap">
                            <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getMethodColor(log.request_method)}`}>

@@ -11,7 +11,7 @@ ADD COLUMN IF NOT EXISTS media_mime_type VARCHAR(100),
 ADD COLUMN IF NOT EXISTS media_size INTEGER,
 ADD COLUMN IF NOT EXISTS caption TEXT,
 ADD COLUMN IF NOT EXISTS whatsapp_message_id VARCHAR(255),
-ADD COLUMN IF NOT EXISTS whatsapp_status VARCHAR(50) DEFAULT 'sent' CHECK (whatsapp_status IN ('sent', 'delivered', 'read', 'failed')),
+ADD COLUMN IF NOT EXISTS whatsapp_status VARCHAR(50) DEFAULT 'sent' CHECK (whatsapp_status IN ('pending', 'sent', 'delivered', 'read', 'failed')),
 ADD COLUMN IF NOT EXISTS whatsapp_timestamp TIMESTAMP WITH TIME ZONE,
 ADD COLUMN IF NOT EXISTS error_message TEXT;
 

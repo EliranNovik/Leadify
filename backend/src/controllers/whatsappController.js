@@ -20,10 +20,13 @@ const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN;
 // Check if we're in development mode (no WhatsApp credentials)
 const isDevelopmentMode = !PHONE_NUMBER_ID || !ACCESS_TOKEN;
 
-console.log('WhatsApp Controller initialized in:', isDevelopmentMode ? 'DEVELOPMENT MODE' : 'PRODUCTION MODE');
-console.log('Debug - PHONE_NUMBER_ID:', PHONE_NUMBER_ID ? 'SET' : 'NOT SET');
-console.log('Debug - ACCESS_TOKEN:', ACCESS_TOKEN ? 'SET' : 'NOT SET');
-console.log('Debug - Token preview:', ACCESS_TOKEN ? ACCESS_TOKEN.substring(0, 20) + '...' : 'NOT SET');
+// Debug environment variables
+console.log('WhatsApp Environment Check:');
+console.log('PHONE_NUMBER_ID:', PHONE_NUMBER_ID ? 'SET' : 'NOT SET');
+console.log('ACCESS_TOKEN:', ACCESS_TOKEN ? 'SET' : 'NOT SET');
+console.log('isDevelopmentMode:', isDevelopmentMode);
+
+// WhatsApp Controller initialized
 
 // Verify webhook endpoint
 const verifyWebhook = async (req, res) => {
@@ -43,7 +46,6 @@ const verifyWebhook = async (req, res) => {
 // Handle incoming webhook messages
 const handleWebhook = async (req, res) => {
   try {
-    console.log('📥 Webhook received:', JSON.stringify(req.body, null, 2));
     const body = req.body;
     
     if (body.object === 'whatsapp_business_account') {
@@ -53,13 +55,11 @@ const handleWebhook = async (req, res) => {
       
       if (value.messages && value.messages.length > 0) {
         const message = value.messages[0];
-        console.log('📨 Processing incoming message:', message);
         await processIncomingMessage(message);
       }
       
       if (value.statuses && value.statuses.length > 0) {
         const status = value.statuses[0];
-        console.log('📊 Processing status update:', status);
         await updateMessageStatus(status);
       }
     }
@@ -113,9 +113,7 @@ const processIncomingMessage = async (message) => {
       incomingNormalized.replace(/^0/, '972'), // Replace 0 with 972
     ];
     
-    console.log('🔍 Phone variations to check:', incomingVariations);
-    
-    console.log('🔍 Searching for lead with phone:', { phoneNumber, phoneWithoutCountry, phoneWithCountry, phoneWithPlus, phoneWithoutPlus, incomingNormalized });
+
     
     // Get all leads and find by normalized phone number
     const { data: allLeads, error: allLeadsError } = await supabase
@@ -131,8 +129,6 @@ const processIncomingMessage = async (message) => {
     
     // Find lead by normalized phone number comparison
     let lead = null;
-    console.log('🔍 Checking', allLeads.length, 'leads for phone match...');
-    
     for (const potentialLead of allLeads) {
       const leadPhoneNormalized = normalizePhone(potentialLead.phone);
       const leadMobileNormalized = normalizePhone(potentialLead.mobile);
@@ -149,36 +145,15 @@ const processIncomingMessage = async (message) => {
         }
       }
       
-      console.log('  Checking lead:', potentialLead.name, {
-        originalPhone: potentialLead.phone,
-        originalMobile: potentialLead.mobile,
-        normalizedPhone: leadPhoneNormalized,
-        normalizedMobile: leadMobileNormalized,
-        incomingVariations: incomingVariations,
-        foundMatch: foundMatch,
-        matchType: matchType
-      });
-      
       if (foundMatch) {
         lead = potentialLead;
-        console.log('✅ Found lead by phone variation:', { 
-          leadName: lead.name, 
-          leadPhone: lead.phone, 
-          leadMobile: lead.mobile,
-          matchType: matchType
-        });
         break;
       }
     }
 
     if (!lead) {
-      console.log('❌ Lead not found for phone number:', phoneNumber);
-      console.log('🔍 Available leads with phone numbers:');
-      console.log('📋 Sample leads:', allLeads);
       return;
     }
-    
-    console.log('✅ Found lead:', { id: lead.id, name: lead.name, lead_number: lead.lead_number, phone: lead.phone, mobile: lead.mobile });
 
     // Prepare message data with actual lead information
     let messageData = {
@@ -201,7 +176,6 @@ const processIncomingMessage = async (message) => {
     
     // Update the lead's phone number if it doesn't match exactly
     if (lead.phone !== phoneNumber && lead.mobile !== phoneNumber) {
-      console.log('📞 Updating lead phone number to match incoming message');
       await supabase
         .from('leads')
         .update({ phone: phoneNumber })
@@ -274,7 +248,7 @@ const processIncomingMessage = async (message) => {
     if (insertError) {
       console.error('Error saving incoming message:', insertError);
     } else {
-      console.log('Incoming message saved:', whatsappMessageId);
+  
     }
 
   } catch (error) {
@@ -285,12 +259,12 @@ const processIncomingMessage = async (message) => {
 // Download and store media file
 const downloadAndStoreMedia = async (mediaId, type, leadId) => {
   try {
-    console.log('📥 Downloading media from WhatsApp:', mediaId);
+
     
     // In production mode, we don't need to download and store locally
     // Just store the WhatsApp media ID for later retrieval
     if (!isDevelopmentMode) {
-      console.log('✅ Media ID stored for later retrieval:', mediaId);
+  
       return;
     }
     
@@ -329,7 +303,7 @@ const downloadAndStoreMedia = async (mediaId, type, leadId) => {
 
     return new Promise((resolve, reject) => {
       writer.on('finish', () => {
-        console.log('✅ Media downloaded and saved:', fileName);
+    
         resolve();
       });
       writer.on('error', reject);
@@ -362,6 +336,12 @@ const getFileExtension = (mimeType) => {
 const updateMessageStatus = async (status) => {
   try {
     const { id: whatsappMessageId, status: messageStatus, timestamp } = status;
+    
+    console.log('📱 WhatsApp Status Update:', {
+      messageId: whatsappMessageId,
+      status: messageStatus,
+      timestamp: timestamp
+    });
 
     const { error } = await supabase
       .from('whatsapp_messages')
@@ -374,7 +354,7 @@ const updateMessageStatus = async (status) => {
     if (error) {
       console.error('Error updating message status:', error);
     } else {
-      console.log('Message status updated:', whatsappMessageId, messageStatus);
+      console.log('✅ Message status updated successfully:', messageStatus);
     }
 
   } catch (error) {
@@ -385,21 +365,55 @@ const updateMessageStatus = async (status) => {
 // Send WhatsApp message
 const sendMessage = async (req, res) => {
   try {
-    const { leadId, message, phoneNumber } = req.body;
+    console.log('📨 Received send message request:', { 
+      leadId: req.body.leadId, 
+      phoneNumber: req.body.phoneNumber, 
+      messageLength: req.body.message?.length, 
+      isTemplate: req.body.isTemplate,
+      templateName: req.body.templateName,
+      templateParameters: req.body.templateParameters
+    });
+    const { leadId, message, phoneNumber, isTemplate, templateName, templateLanguage, templateParameters } = req.body;
 
     if (!message || !phoneNumber) {
       return res.status(400).json({ error: 'Message and phone number are required' });
     }
 
-    // Get lead information
-    const { data: lead, error: leadError } = await supabase
-      .from('leads')
-      .select('id, name, lead_number')
-      .eq('id', leadId)
-      .single();
+    // Check if this is a legacy lead
+    const isLegacyLead = leadId.toString().startsWith('legacy_');
+    let lead = null;
+    
+    if (isLegacyLead) {
+      // For legacy leads, get from leads_lead table
+      const legacyId = parseInt(leadId.replace('legacy_', ''));
+      const { data: legacyLead, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select('id, name')
+        .eq('id', legacyId)
+        .single();
 
-    if (leadError || !lead) {
-      return res.status(404).json({ error: 'Lead not found' });
+      if (legacyError || !legacyLead) {
+        return res.status(404).json({ error: 'Legacy lead not found' });
+      }
+      
+      lead = {
+        id: legacyId,
+        name: legacyLead.name,
+        lead_number: legacyId.toString()
+      };
+    } else {
+      // For new leads, get from leads table
+      const { data: newLead, error: newError } = await supabase
+        .from('leads')
+        .select('id, name, lead_number')
+        .eq('id', leadId)
+        .single();
+
+      if (newError || !newLead) {
+        return res.status(404).json({ error: 'Lead not found' });
+      }
+      
+      lead = newLead;
     }
 
     let whatsappMessageId;
@@ -407,7 +421,10 @@ const sendMessage = async (req, res) => {
 
     if (isDevelopmentMode) {
       // Mock WhatsApp API response for development
-      console.log('🔄 DEVELOPMENT MODE: Mocking WhatsApp message send');
+      console.log('📱 Sending message in DEVELOPMENT MODE (mock)');
+      console.log('📱 Message:', message);
+      console.log('📱 Phone:', phoneNumber);
+
       whatsappMessageId = `mock_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       responseData = {
         success: true,
@@ -415,15 +432,52 @@ const sendMessage = async (req, res) => {
         message: 'Message sent successfully (MOCK MODE)'
       };
     } else {
-      // Send message via real WhatsApp API
-      const response = await axios.post(
-        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
-        {
+      console.log('📱 Sending message via REAL WhatsApp API');
+      console.log('📱 Message:', message);
+      console.log('📱 Phone:', phoneNumber);
+      console.log('📱 Is Template:', isTemplate);
+      
+      let messagePayload;
+      
+      if (isTemplate) {
+        console.log('📱 Sending TEMPLATE message');
+        // Send template message
+        messagePayload = {
+          messaging_product: 'whatsapp',
+          to: phoneNumber,
+          type: 'template',
+          template: {
+            name: templateName || 'second_test',
+            language: {
+              code: templateLanguage || 'en_US'
+            }
+          }
+        };
+        
+        // Add components if template parameters are provided
+        if (templateParameters && templateParameters.length > 0) {
+          messagePayload.template.components = [
+            {
+              type: 'body',
+              parameters: templateParameters
+            }
+          ];
+        }
+        
+        console.log('📱 Template payload:', messagePayload);
+      } else {
+        // Send regular text message
+        messagePayload = {
           messaging_product: 'whatsapp',
           to: phoneNumber,
           type: 'text',
           text: { body: message }
-        },
+        };
+      }
+      
+      const response = await axios.post(
+        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
+        messagePayload,
         {
           headers: {
             'Authorization': `Bearer ${ACCESS_TOKEN}`,
@@ -442,14 +496,15 @@ const sendMessage = async (req, res) => {
 
     // Save message to database
     const messageData = {
-      lead_id: leadId,
+      lead_id: isLegacyLead ? null : leadId, // Set to null for legacy leads
+      legacy_id: isLegacyLead ? lead.id : null, // Set legacy_id for legacy leads
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
-      message: message,
+      message: isTemplate ? `[Template: ${templateName}] ${templateParameters?.[0]?.text || ''}` : message,
       sent_at: new Date().toISOString(),
       whatsapp_message_id: whatsappMessageId,
-      whatsapp_status: 'sent',
-      message_type: 'text',
+      whatsapp_status: 'pending', // Start as pending, will be updated by webhook
+      message_type: isTemplate ? 'template' : 'text',
       whatsapp_timestamp: new Date().toISOString()
     };
 
@@ -462,41 +517,78 @@ const sendMessage = async (req, res) => {
       return res.status(500).json({ error: 'Failed to save message' });
     }
 
+    console.log('✅ Message sent successfully:', responseData);
     res.json(responseData);
 
   } catch (error) {
     console.error('Error sending message:', error);
-    res.status(500).json({ error: 'Failed to send message' });
+    
+    // Check if it's a WhatsApp API error
+    if (error.response && error.response.data && error.response.data.error) {
+      const whatsappError = error.response.data.error;
+      if (whatsappError.code === 131047) {
+        res.status(400).json({ 
+          error: 'Message failed: More than 24 hours have passed since the customer last replied. You can only send template messages after 24 hours.',
+          code: 'RE_ENGAGEMENT_REQUIRED'
+        });
+      } else {
+        res.status(400).json({ 
+          error: `WhatsApp API Error: ${whatsappError.message}`,
+          code: whatsappError.code
+        });
+      }
+    } else {
+      res.status(500).json({ error: 'Failed to send message' });
+    }
   }
 };
 
 // Send WhatsApp media
 const sendMedia = async (req, res) => {
   try {
-    console.log('📤 Send media request received:', {
-      leadId: req.body.leadId,
-      mediaUrl: req.body.mediaUrl,
-      mediaType: req.body.mediaType,
-      caption: req.body.caption,
-      phoneNumber: req.body.phoneNumber
-    });
+
 
     const { leadId, mediaUrl, mediaType, caption, phoneNumber } = req.body;
 
     if (!mediaUrl || !phoneNumber) {
-      console.log('❌ Missing required fields:', { mediaUrl: !!mediaUrl, phoneNumber: !!phoneNumber });
       return res.status(400).json({ error: 'Media URL and phone number are required' });
     }
 
-    // Get lead information
-    const { data: lead, error: leadError } = await supabase
-      .from('leads')
-      .select('id, name, lead_number')
-      .eq('id', leadId)
-      .single();
+    // Check if this is a legacy lead
+    const isLegacyLead = leadId.toString().startsWith('legacy_');
+    let lead = null;
+    
+    if (isLegacyLead) {
+      // For legacy leads, get from leads_lead table
+      const legacyId = parseInt(leadId.replace('legacy_', ''));
+      const { data: legacyLead, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select('id, name')
+        .eq('id', legacyId)
+        .single();
 
-    if (leadError || !lead) {
-      return res.status(404).json({ error: 'Lead not found' });
+      if (legacyError || !legacyLead) {
+        return res.status(404).json({ error: 'Legacy lead not found' });
+      }
+      
+      lead = {
+        id: legacyId,
+        name: legacyLead.name,
+        lead_number: legacyId.toString()
+      };
+    } else {
+      // For new leads, get from leads table
+      const { data: newLead, error: newError } = await supabase
+        .from('leads')
+        .select('id, name, lead_number')
+        .eq('id', leadId)
+        .single();
+
+      if (newError || !newLead) {
+        return res.status(404).json({ error: 'Lead not found' });
+      }
+      
+      lead = newLead;
     }
 
     let whatsappMessageId;
@@ -504,7 +596,7 @@ const sendMedia = async (req, res) => {
 
     if (isDevelopmentMode) {
       // Mock WhatsApp API response for development
-      console.log('🔄 DEVELOPMENT MODE: Mocking WhatsApp media send');
+
       whatsappMessageId = `mock_media_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
       responseData = {
         success: true,
@@ -526,7 +618,7 @@ const sendMedia = async (req, res) => {
         messagePayload[mediaType].caption = caption;
       }
 
-      console.log('📤 Sending media message to WhatsApp:', messagePayload);
+
 
       const response = await axios.post(
         `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
@@ -549,13 +641,14 @@ const sendMedia = async (req, res) => {
 
     // Save message to database
     const messageData = {
-      lead_id: leadId,
+      lead_id: isLegacyLead ? null : leadId, // Set to null for legacy leads
+      legacy_id: isLegacyLead ? lead.id : null, // Set legacy_id for legacy leads
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
       message: caption || `${mediaType} message`,
       sent_at: new Date().toISOString(),
       whatsapp_message_id: whatsappMessageId,
-      whatsapp_status: 'sent',
+      whatsapp_status: 'pending', // Start as pending, will be updated by webhook
       message_type: mediaType,
       media_url: mediaUrl,
       caption: caption
@@ -652,19 +745,12 @@ const findLeadsByPhone = async (req, res) => {
 // Upload media to WhatsApp
 const uploadMedia = async (req, res) => {
   try {
-    console.log('📤 Upload media request received:', {
-      hasFile: !!req.file,
-      fileSize: req.file?.size,
-      fileName: req.file?.originalname,
-      leadId: req.body.leadId,
-      caption: req.body.caption
-    });
+
 
     const { file } = req;
     const { leadId, caption } = req.body;
 
     if (!file) {
-      console.log('❌ No file uploaded');
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
@@ -684,7 +770,7 @@ const uploadMedia = async (req, res) => {
 
     if (isDevelopmentMode) {
       // Mock media upload for development
-      console.log('🔄 DEVELOPMENT MODE: Mocking media upload');
+
       mediaId = fileName; // Use the actual filename as the media ID
       responseData = {
         success: true,
@@ -697,7 +783,7 @@ const uploadMedia = async (req, res) => {
       formData.append('messaging_product', 'whatsapp');
       formData.append('file', fs.createReadStream(filePath));
 
-      console.log('📤 Uploading media to WhatsApp...');
+
 
       const response = await axios.post(
         `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/media`,
@@ -717,7 +803,7 @@ const uploadMedia = async (req, res) => {
         fileName: fileName
       };
       
-      console.log('✅ Media uploaded to WhatsApp:', mediaId);
+
     }
 
     res.json(responseData);
@@ -737,24 +823,19 @@ const getMedia = async (req, res) => {
       return res.status(400).json({ error: 'Media ID is required' });
     }
 
-    console.log('📥 Getting media from WhatsApp:', mediaId);
-
     // Check if this is a mock/test media ID
     if (mediaId.includes('mock_') || mediaId.includes('test_')) {
-      console.log('⚠️ Mock media ID detected, skipping:', mediaId);
       return res.status(404).json({ error: 'Mock media not available in production' });
     }
 
     if (isDevelopmentMode) {
       // In development mode, serve from local uploads
       const uploadsDir = path.join(__dirname, '../../uploads');
-      console.log('🔍 Looking for media ID:', mediaId);
-      console.log('📁 Uploads directory:', uploadsDir);
+
       
       // First try exact match
       let filePath = path.join(uploadsDir, mediaId);
       if (fs.existsSync(filePath)) {
-        console.log('✅ File found (exact match):', filePath);
         return res.sendFile(filePath);
       }
       
@@ -765,11 +846,8 @@ const getMedia = async (req, res) => {
         
         if (matchingFile) {
           filePath = path.join(uploadsDir, matchingFile);
-          console.log('✅ File found (contains media ID):', filePath);
           return res.sendFile(filePath);
         } else {
-          console.log('❌ No file found containing media ID:', mediaId);
-          console.log('📁 Available files:', files);
           return res.status(404).json({ error: 'Media not found' });
         }
       } catch (error) {
@@ -779,8 +857,6 @@ const getMedia = async (req, res) => {
     } else {
       // Get media URL from WhatsApp
       try {
-        console.log('🔗 Fetching media URL from WhatsApp API...');
-        
         const mediaResponse = await axios.get(
           `${WHATSAPP_API_URL}/${mediaId}`,
           {
@@ -790,20 +866,15 @@ const getMedia = async (req, res) => {
           }
         );
 
-        console.log('✅ Media URL received:', mediaResponse.data.url);
         const mediaUrl = mediaResponse.data.url;
         
         // Download and serve the media
-        console.log('📥 Downloading media file...');
         const fileResponse = await axios.get(mediaUrl, {
           headers: {
             'Authorization': `Bearer ${ACCESS_TOKEN}`
           },
           responseType: 'stream'
         });
-
-        console.log('✅ Media file downloaded, content-type:', fileResponse.headers['content-type']);
-        console.log('📏 Content length:', fileResponse.headers['content-length']);
 
         // Set appropriate headers
         res.setHeader('Content-Type', fileResponse.headers['content-type'] || 'application/octet-stream');
@@ -815,13 +886,10 @@ const getMedia = async (req, res) => {
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
         
-        console.log('📤 Streaming media to client...');
         // Pipe the file stream to response
         fileResponse.data.pipe(res);
       } catch (error) {
-        console.error('❌ Error getting media from WhatsApp API:', error.response?.data || error.message);
-        console.error('❌ Error status:', error.response?.status);
-        console.error('❌ Error headers:', error.response?.headers);
+        console.error('Error getting media from WhatsApp API:', error.response?.data || error.message);
         
         // If it's a 400 error (media not found), return a proper error
         if (error.response?.status === 400) {
@@ -836,8 +904,7 @@ const getMedia = async (req, res) => {
     }
 
   } catch (error) {
-    console.error('❌ Error getting media:', error);
-    console.error('❌ Error stack:', error.stack);
+    console.error('Error getting media:', error);
     res.status(500).json({ error: 'Failed to get media' });
   }
 };
@@ -851,5 +918,6 @@ module.exports = {
   getConversation,
   findLeadsByPhone,
   uploadMedia,
-  getMedia
+  getMedia,
+  updateMessageStatus
 }; 

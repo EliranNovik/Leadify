@@ -11,46 +11,79 @@ import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { InteractionRequiredAuthError, IPublicClientApplication, AccountInfo } from '@azure/msal-browser';
 import { toast } from 'react-hot-toast';
+import { getStageName, initializeStageNames } from '../lib/stageUtils';
 
 interface LeadForPipeline {
-  id: number;
+  id: number | string;
   lead_number: string;
   name: string;
   created_at: string;
   expert?: string;
-  topic?: string;
+  manager?: string;
+  scheduler?: string;
+  closer?: string;
+  topic?: string | null;
+  category?: string | null;
   handler_notes?: { content: string }[];
   expert_notes?: { content: string }[];
   meetings: { meeting_date: string }[];
-  onedrive_folder_link?: string;
+  onedrive_folder_link?: string | null;
   stage?: string;
-  number_of_applicants_meeting?: number;
-  potential_applicants_meeting?: number;
-  balance?: number;
-  balance_currency?: string;
-  probability?: number;
+  number_of_applicants_meeting?: number | null;
+  potential_applicants_meeting?: number | null;
+  balance?: number | null;
+  balance_currency?: string | null;
+  probability?: number | null;
   eligibility_status?: string | null;
   next_followup?: string | null;
   manual_interactions?: any[];
-  email?: string;
-  mobile?: string;
-  phone?: string;
+  email?: string | null;
+  mobile?: string | null;
+  phone?: string | null;
   comments?: { text: string; timestamp: string; user: string }[];
-  label?: string;
+  label?: string | null;
   highlighted_by?: string[];
+  // Legacy lead support
+  lead_type?: 'legacy' | 'new';
+  // Legacy lead specific fields
+  meeting_manager_id?: string | null;
+  meeting_lawyer_id?: string | null;
+  category_id?: number | null;
+  total?: number | null;
+  meeting_total_currency_id?: number | null;
+  expert_id?: string | null;
+  language_id?: number | null;
+  latest_interaction?: string;
 }
 
-const getCurrencySymbol = (currencyCode?: string) => {
+const getCurrencySymbol = (currencyCode?: string | null) => {
+  // Handle currency codes
   switch (currencyCode) {
     case 'USD':
       return '$';
     case 'EUR':
       return '€';
+    case 'ILS':
+      return '₪';
     case 'NIS':
       return '₪';
-    default:
-      return '$';
+    case 'GBP':
+      return '£';
   }
+  
+  // Handle currency symbols (if the database stores symbols instead of codes)
+  switch (currencyCode) {
+    case '$':
+      return '$';
+    case '€':
+      return '€';
+    case '₪':
+      return '₪';
+    case '£':
+      return '£';
+  }
+  
+  return '$';
 };
 
 const LABEL_OPTIONS = [
@@ -68,7 +101,7 @@ const PipelinePage: React.FC = () => {
   const [filterCreatedDateFrom, setFilterCreatedDateFrom] = useState('');
   const [filterCreatedDateTo, setFilterCreatedDateTo] = useState('');
   const [filterBalanceMin, setFilterBalanceMin] = useState('');
-  const [filterBy, setFilterBy] = useState('followup_upcoming');
+  const [filterBy, setFilterBy] = useState('all');
   const [sortColumn, setSortColumn] = useState<'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up' | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [selectedLead, setSelectedLead] = useState<LeadForPipeline | null>(null);
@@ -121,7 +154,49 @@ const PipelinePage: React.FC = () => {
   const [userId, setUserId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
   const [showSignedAgreements, setShowSignedAgreements] = useState(false);
+  const [pipelineMode, setPipelineMode] = useState<'closer' | 'scheduler'>('closer');
+  const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   
+  // Assignment modal state
+  const [assignmentModalOpen, setAssignmentModalOpen] = useState(false);
+  const [assignmentLeads, setAssignmentLeads] = useState<LeadForPipeline[]>([]);
+  const [assignmentLoading, setAssignmentLoading] = useState(false);
+  const [assigningLead, setAssigningLead] = useState<string | null>(null);
+  
+  // Assignment modal search and sort state
+  const [assignmentSearchQuery, setAssignmentSearchQuery] = useState('');
+  const [assignmentSortColumn, setAssignmentSortColumn] = useState<'created_at' | 'offer' | 'probability' | null>(null);
+  const [assignmentSortDirection, setAssignmentSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [assignmentStageFilter, setAssignmentStageFilter] = useState<string>('');
+
+  // Status filter state
+  const [showUnassignedOnly, setShowUnassignedOnly] = useState(false);
+  const [showLostInteractionsOnly, setShowLostInteractionsOnly] = useState(false);
+
+  // Dynamically collect all unique stages from leads with proper stage names
+  const stageOptions = useMemo(() => {
+    const stages = new Set<string>();
+    leads.forEach(lead => { 
+      if (lead.stage) {
+        const stageName = getStageName(lead.stage);
+        stages.add(stageName);
+      }
+    });
+    return Array.from(stages);
+  }, [leads]);
+
+  // Get stage options for assignment modal
+  const assignmentStageOptions = useMemo(() => {
+    const stages = new Set<string>();
+    assignmentLeads.forEach(lead => { 
+      if (lead.stage) {
+        const stageName = getStageName(lead.stage);
+        stages.add(stageName);
+      }
+    });
+    return Array.from(stages).sort();
+  }, [assignmentLeads]);
+
   // Helper function to check if a lead is a signed agreement or past that stage
   const isSignedAgreementLead = (lead: LeadForPipeline) => {
     const stage = lead.stage || '';
@@ -155,97 +230,321 @@ const PipelinePage: React.FC = () => {
     return isSignedAgreement || isPastSignedAgreement;
   };
 
-  // Dynamically collect all unique stages from leads
-  const stageOptions = useMemo(() => {
-    const stages = new Set<string>();
-    leads.forEach(lead => { if (lead.stage) stages.add(lead.stage); });
-    return Array.from(stages);
-  }, [leads]);
-
-  // Calculate summary statistics
-  const summaryStats = useMemo(() => {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    // Contracts signed in last 30 days (stage includes 'Client signed agreement')
-    const contractsSignedLeads = leads.filter(lead => 
-      isSignedAgreementLead(lead) && new Date(lead.created_at) >= thirtyDaysAgo
-    );
-    const contractsSigned = contractsSignedLeads.length;
-
-    // Count total leads in pipeline (excluding signed agreements)
-    const pipelineLeads = leads.filter(lead => !isSignedAgreementLead(lead));
-    const totalLeads = pipelineLeads.length;
-
-    // Calculate top worker (expert with most contracts signed in last 30 days)
-    const expertCounts: Record<string, number> = {};
-    contractsSignedLeads.forEach(lead => {
-      const expert = lead.expert || 'Unknown';
-      expertCounts[expert] = (expertCounts[expert] || 0) + 1;
-    });
-    let topWorker = 'N/A';
-    let topWorkerCount = 0;
-    Object.entries(expertCounts).forEach(([expert, count]) => {
-      if (count > topWorkerCount) {
-        topWorker = expert;
-        topWorkerCount = count;
-      }
-    });
-
-    return {
-      contractsSigned,
-      totalLeads,
-      topWorker,
-      topWorkerCount
-    };
-  }, [leads]);
-
-  useEffect(() => {
-    const fetchLeads = async () => {
-      setIsLoading(true);
-      const { data, error } = await supabase
-        .from('leads')
-        .select(`
-          id,
-          lead_number,
-          name,
-          created_at,
-          expert,
-          topic,
-          handler_notes,
-          expert_notes,
-          meetings (
-            meeting_date
-          ),
-          onedrive_folder_link,
-          stage,
-          number_of_applicants_meeting,
-          potential_applicants_meeting,
-          balance,
-          balance_currency,
-          probability,
-          eligibility_status,
-          next_followup,
-          manual_interactions,
-          email,
-          mobile,
-          phone,
-          comments,
-          label,
-          highlighted_by
-        `)
-        .order('created_at', { ascending: false });
-      console.log('PipelinePage leads fetch:', { data, error });
-      if (error) {
-        console.error('Error fetching leads for pipeline page:', error);
-        setLeads([]);
+  // Helper function to check if a lead is unassigned
+  const isUnassignedLead = (lead: LeadForPipeline) => {
+    if (lead.lead_type === 'legacy') {
+      // For legacy leads, check the ID fields
+      if (pipelineMode === 'closer') {
+        return !lead.expert_id || lead.expert_id === '';
       } else {
-        setLeads(data as LeadForPipeline[]);
+        return !lead.meeting_manager_id || lead.meeting_manager_id === '';
       }
-      setIsLoading(false);
-    };
+    } else {
+      // For new leads, check the name fields
+      if (pipelineMode === 'closer') {
+        return !lead.closer || lead.closer === '';
+      } else {
+        return !lead.scheduler || lead.scheduler === '';
+      }
+    }
+  };
+
+  // Helper function to check if a lead has lost interactions
+  const hasLostInteractions = (lead: LeadForPipeline) => {
+    const twoWeeksAgo = new Date();
+    twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
+    
+    // If latest_interaction is available, use it for both new and legacy leads
+    if (lead.latest_interaction) {
+      const latestInteractionDate = new Date(lead.latest_interaction);
+      const isRecent = latestInteractionDate >= twoWeeksAgo;
+      return !isRecent;
+    }
+    
+    // Fallback to manual_interactions for legacy leads
+    if (lead.lead_type === 'legacy') {
+      const hasRecentInteractions = lead.manual_interactions && lead.manual_interactions.some((interaction: any) => {
+        if (!interaction.raw_date) return false;
+        const interactionDate = new Date(interaction.raw_date);
+        const isRecent = interactionDate >= twoWeeksAgo;
+        return isRecent;
+      });
+      return !hasRecentInteractions;
+    } else {
+      // For new leads with no latest_interaction, assume lost interactions
+      return true;
+    }
+  };
+
+  // Define fetchLeads function outside useEffect so it can be reused
+  const fetchLeads = async () => {
+    setIsLoading(true);
+    
+    // Add timeout to prevent hanging
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Fetch timeout after 30 seconds')), 30000);
+    });
+    
+    try {
+      await Promise.race([
+        (async () => {
+          // Initialize stage names cache first
+          console.log('🔍 Initializing stage names cache...');
+          await initializeStageNames();
+          console.log('✅ Stage names cache initialized');
+          
+          // Build filter based on pipeline mode and current user
+          console.log('🔍 Current user full name:', currentUserFullName);
+          console.log('🔍 Pipeline mode:', pipelineMode);
+          
+          // For debugging: let's see what fields are available
+          console.log('🔍 Will filter by:');
+          if (pipelineMode === 'closer') {
+            console.log('  - New leads: expert field');
+            console.log('  - Legacy leads: closer_id field');
+          } else if (pipelineMode === 'scheduler') {
+            console.log('  - New leads: manager field');
+            console.log('  - Legacy leads: meeting_scheduler_id field');
+          }
+          
+          // If no user name, fetch all leads for debugging
+          if (!currentUserFullName) {
+            console.log('🔍 WARNING: No user full name available, fetching all leads for debugging');
+          }
+          
+          // Fetch new leads - optimized for performance
+          let newLeadsQuery = supabase
+            .from('leads')
+            .select(`
+              id,
+              lead_number,
+              name,
+              created_at,
+              expert,
+              manager,
+              scheduler,
+              closer,
+              topic,
+              stage,
+              number_of_applicants_meeting,
+              potential_applicants_meeting,
+              balance,
+              balance_currency,
+              probability,
+              next_followup,
+              email,
+              phone,
+              comments,
+              label,
+              latest_interaction,
+              meetings (
+                meeting_date
+              )
+            `);
+          
+          // Apply filter if user is logged in
+          if (currentUserFullName) {
+            console.log(`🔍 Applying filter for ${pipelineMode} mode with user: ${currentUserFullName}`);
+            if (pipelineMode === 'closer') {
+              console.log('🔍 Filtering new leads by closer field');
+              newLeadsQuery = newLeadsQuery.eq('closer', currentUserFullName);
+            } else if (pipelineMode === 'scheduler') {
+              console.log('🔍 Filtering new leads by scheduler field');
+              newLeadsQuery = newLeadsQuery.eq('scheduler', currentUserFullName);
+            }
+          } else {
+            console.log('🔍 No current user full name, fetching all leads');
+          }
+          
+          const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
+
+          if (newLeadsError) {
+            console.error('Error fetching new leads:', newLeadsError);
+            throw newLeadsError;
+          }
+          
+          console.log('🔍 New leads fetched:', newLeadsData?.length || 0);
+
+          // Fetch legacy leads - optimized for performance
+          let legacyLeadsQuery = supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              name,
+              cdate,
+              stage,
+              closer_id,
+              meeting_scheduler_id,
+              total,
+              currency_id,
+              probability,
+              phone,
+              email,
+              next_followup,
+              no_of_applicants,
+              potential_applicants,
+              comments,
+              label,
+              status,
+              latest_interaction,
+              category_id
+            `)
+            .limit(1000)
+            .eq('status', 0) // Only fetch leads where status is 0
+            .neq('stage', 91) // Exclude Dropped (Spam/Irrelevant) stage by ID only
+            .neq('stage', 51) // Exclude Client declined price offer stage by ID only
+            .neq('stage', 35); // Exclude Meeting Irrelevant stage by ID only
+          
+          // Apply filter if user is logged in
+          if (currentUserFullName) {
+            console.log(`🔍 Applying legacy filter for ${pipelineMode} mode with user: ${currentUserFullName}`);
+            if (pipelineMode === 'closer') {
+              console.log('🔍 Filtering legacy leads by closer_id field');
+              legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', currentUserFullName);
+            } else if (pipelineMode === 'scheduler') {
+              console.log('🔍 Filtering legacy leads by meeting_scheduler_id field');
+              legacyLeadsQuery = legacyLeadsQuery.eq('meeting_scheduler_id', currentUserFullName);
+            }
+          } else {
+            console.log('🔍 No current user full name, fetching all legacy leads');
+          }
+          
+          const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.order('cdate', { ascending: false });
+
+          console.log('🔍 Legacy leads query result:', { data: legacyLeadsData, error: legacyLeadsError });
+
+          if (legacyLeadsError) {
+            console.error('Error fetching legacy leads:', legacyLeadsError);
+            throw legacyLeadsError;
+          }
+          
+          // Fetch currency data separately - optimized
+          const currencyIds = legacyLeadsData?.map(lead => lead.currency_id).filter(id => id !== null) || [];
+          let currencyMap: Record<number, string> = {};
+          
+          if (currencyIds.length > 0) {
+            const { data: currencyData, error: currencyError } = await supabase
+              .from('accounting_currencies')
+              .select('id, iso_code')
+              .in('id', currencyIds);
+            
+            if (currencyError) {
+              console.error('Error fetching currencies:', currencyError);
+            } else {
+              currencyMap = currencyData?.reduce((acc, curr) => {
+                acc[curr.id] = curr.iso_code;
+                return acc;
+              }, {} as Record<number, string>) || {};
+            }
+          }
+          
+          // Fetch category data separately - optimized
+          const categoryIds = legacyLeadsData?.map(lead => lead.category_id).filter(id => id !== null) || [];
+          let categoryMap: Record<number, string> = {};
+          
+          if (categoryIds.length > 0) {
+            // Query misc_category table for legacy leads
+            const { data: categoryData, error: categoryError } = await supabase
+              .from('misc_category')
+              .select('id, name')
+              .in('id', categoryIds);
+            
+            if (categoryError) {
+              console.error('Error fetching categories from misc_category:', categoryError);
+            } else if (categoryData) {
+              categoryMap = categoryData.reduce((acc, cat) => {
+                acc[cat.id] = cat.name;
+                return acc;
+              }, {} as Record<number, string>);
+              console.log('🔍 Category map created from misc_category:', categoryMap);
+            }
+          }
+          
+          console.log('🔍 Legacy leads fetched:', legacyLeadsData?.length || 0);
+
+          // Process new leads
+          const processedNewLeads = (newLeadsData || []).map(lead => ({
+            ...lead,
+            meetings: lead.meetings || [], // Ensure meetings is always an array
+            lead_type: 'new' as const
+          }));
+
+          // Process legacy leads
+          const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
+            const currencyCode = currencyMap[lead.currency_id] || null;
+            // Removed excessive logging for performance
+            
+            return {
+              id: `legacy_${lead.id}`,
+              lead_number: lead.id?.toString() || '',
+              name: lead.name || '',
+              created_at: lead.cdate || new Date().toISOString(),
+              expert: lead.closer_id, // Use closer_id as expert for legacy leads
+              topic: null, // Legacy leads don't have topic field
+              category: lead.category_id ? categoryMap[lead.category_id] || null : null,
+              handler_notes: [],
+              expert_notes: [],
+              meetings: [], // Legacy leads don't have meetings relationship
+              onedrive_folder_link: null,
+              stage: lead.stage?.toString() || '',
+              number_of_applicants_meeting: lead.no_of_applicants,
+              potential_applicants_meeting: lead.potential_applicants,
+              balance: lead.total,
+              balance_currency: currencyCode,
+              probability: typeof lead.probability === 'string' ? parseFloat(lead.probability) : lead.probability,
+              eligibility_status: null,
+              next_followup: lead.next_followup,
+              manual_interactions: [],
+              email: lead.email,
+              mobile: null,
+              phone: lead.phone,
+              comments: lead.comments || [],
+              label: lead.label || null,
+              highlighted_by: [],
+              latest_interaction: lead.latest_interaction,
+              lead_type: 'legacy' as const,
+              // Legacy specific fields
+              meeting_manager_id: lead.meeting_scheduler_id, // Use meeting_scheduler_id as manager
+              meeting_lawyer_id: null,
+              category_id: null,
+              total: lead.total,
+              meeting_total_currency_id: null,
+              expert_id: lead.closer_id,
+              language_id: null
+            };
+          });
+
+          // Combine and sort all leads by creation date
+          const allLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => 
+            new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+          );
+
+          console.log('PipelinePage leads fetch:', { 
+            newLeads: processedNewLeads.length, 
+            legacyLeads: processedLegacyLeads.length,
+            totalLeads: allLeads.length 
+          });
+
+          setLeads(allLeads as LeadForPipeline[]);
+        })(),
+        timeoutPromise
+      ]);
+    } catch (error) {
+      console.error('Error fetching leads for pipeline page:', error);
+      setLeads([]);
+    }
+    setIsLoading(false);
+  };
+
+  // Only fetch leads when we have a valid user name
+  useEffect(() => {
+    if (!currentUserFullName) {
+      console.log('🔍 Skipping leads fetch - no user name available yet');
+      return;
+    }
+    console.log('🔍 Starting leads fetch with user:', currentUserFullName);
     fetchLeads();
-  }, []);
+  }, [pipelineMode, currentUserFullName]);
 
   // Get signed agreement leads
   const signedAgreementLeads = useMemo(() => {
@@ -258,7 +557,10 @@ const PipelinePage: React.FC = () => {
       showSignedAgreements,
       totalLeads: leads.length,
       signedAgreements: signedAgreementLeads.length,
-      signedStages: signedAgreementLeads.map(lead => ({ name: lead.name, stage: lead.stage }))
+      filterBy,
+      searchQuery,
+      pipelineMode,
+      currentUserFullName
     });
 
     // If showing signed agreements, return all signed agreement leads
@@ -267,32 +569,77 @@ const PipelinePage: React.FC = () => {
       return signedAgreementLeads;
     }
     
-    // Otherwise, exclude leads with "Client signed agreement" stage from the pipeline
+    // Start with all leads, excluding signed agreements
     let filtered = leads.filter(lead => !isSignedAgreementLead(lead));
-    console.log('Showing pipeline leads (excluding signed agreements):', filtered.length);
+    console.log('Base filtered leads (excluding signed agreements):', filtered.length);
     
-    return filtered;
+    // Apply search filter
+    if (searchQuery) {
+      filtered = filtered.filter(lead => {
+        const leadNameLower = lead.name.toLowerCase();
+        const leadNumberLower = lead.lead_number.toLowerCase();
+        const searchLower = searchQuery.toLowerCase();
+        return leadNameLower.includes(searchLower) || leadNumberLower.includes(searchLower);
+      });
+      console.log('After search filter:', filtered.length);
+    }
     
-    // Then apply other filters
-    filtered = filtered.filter(lead => {
-      const leadNameLower = lead.name.toLowerCase();
-      const leadNumberLower = lead.lead_number.toLowerCase();
-      const searchLower = searchQuery.toLowerCase();
-      const matchesSearch = leadNameLower.includes(searchLower) || leadNumberLower.includes(searchLower);
-      const createdDate = format(parseISO(lead.created_at), 'yyyy-MM-dd');
-      const matchesFrom = filterCreatedDateFrom ? createdDate >= filterCreatedDateFrom : true;
-      const matchesTo = filterCreatedDateTo ? createdDate <= filterCreatedDateTo : true;
-      // Balance filter
-      const balance = lead.balance !== undefined && lead.balance !== null ? Number(lead.balance) : null;
-      const matchesBalanceMin = filterBalanceMin ? (balance !== null && balance >= Number(filterBalanceMin)) : true;
-      const matchesLabel = labelFilter ? lead.label === labelFilter : true;
-      return matchesSearch && matchesFrom && matchesTo && matchesBalanceMin && matchesLabel;
-    });
+    // Apply date filters
+    if (filterCreatedDateFrom || filterCreatedDateTo) {
+      filtered = filtered.filter(lead => {
+        const createdDate = format(parseISO(lead.created_at), 'yyyy-MM-dd');
+        const matchesFrom = filterCreatedDateFrom ? createdDate >= filterCreatedDateFrom : true;
+        const matchesTo = filterCreatedDateTo ? createdDate <= filterCreatedDateTo : true;
+        return matchesFrom && matchesTo;
+      });
+      console.log('After date filter:', filtered.length);
+    }
+    
+    // Apply balance filter
+    if (filterBalanceMin) {
+      filtered = filtered.filter(lead => {
+        const balance = lead.balance !== undefined && lead.balance !== null ? Number(lead.balance) : null;
+        return balance !== null && balance >= Number(filterBalanceMin);
+      });
+      console.log('After balance filter:', filtered.length);
+    }
+    
+    // Apply label filter
+    if (labelFilter) {
+      filtered = filtered.filter(lead => lead.label === labelFilter);
+      console.log('After label filter:', filtered.length);
+    }
+    
+    // Apply status filters
+    if (showUnassignedOnly) {
+      filtered = filtered.filter(lead => isUnassignedLead(lead));
+      console.log('After unassigned filter:', filtered.length);
+    }
+    
+    if (showLostInteractionsOnly) {
+      filtered = filtered.filter(lead => hasLostInteractions(lead));
+      console.log('After lost interactions filter:', filtered.length);
+    }
+    
+    // Apply stage filter
+    if (filterBy.startsWith('stage:')) {
+      const selectedStageName = filterBy.replace('stage:', '');
+      console.log('Filtering by stage:', selectedStageName);
+      filtered = filtered.filter(lead => {
+        if (!lead.stage) return false;
+        const leadStageName = getStageName(lead.stage);
+        const matches = leadStageName === selectedStageName;
+        console.log(`Lead ${lead.name}: stage "${lead.stage}" -> "${leadStageName}" matches "${selectedStageName}": ${matches}`);
+        return matches;
+      });
+      console.log('After stage filter:', filtered.length);
+    }
+    
+    // Apply other specific filters
     const today = new Date();
     today.setHours(0,0,0,0);
-    if (filterBy === 'all') {
-      return filtered;
-    } else if (filterBy === 'followup_missed') {
+    
+    if (filterBy === 'followup_missed') {
       // Only leads with a past follow up date, sorted by oldest first, then leads with no date
       const past = filtered.filter(lead => lead.next_followup && parseISO(lead.next_followup) < today)
         .sort((a, b) => parseISO(a.next_followup!).getTime() - parseISO(b.next_followup!).getTime());
@@ -300,17 +647,25 @@ const PipelinePage: React.FC = () => {
       return [...past, ...noDate];
     } else if (filterBy === 'followup_upcoming') {
       // Only leads with a today/future follow up date, sorted by soonest first, then leads with no date
+      console.log('🔍 followup_upcoming filter - checking leads:', filtered.length);
+      filtered.forEach(lead => {
+        console.log(`🔍 Lead ${lead.name}: next_followup = ${lead.next_followup}, has followup = ${!!lead.next_followup}`);
+        if (lead.next_followup) {
+          const followupDate = parseISO(lead.next_followup);
+          const isFuture = followupDate >= today;
+          console.log(`🔍 Lead ${lead.name}: followup date = ${followupDate.toISOString()}, today = ${today.toISOString()}, isFuture = ${isFuture}`);
+        }
+      });
+      
       const future = filtered.filter(lead => lead.next_followup && parseISO(lead.next_followup) >= today)
         .sort((a, b) => parseISO(a.next_followup!).getTime() - parseISO(b.next_followup!).getTime());
       const noDate = filtered.filter(lead => !lead.next_followup);
+      
+      console.log(`🔍 followup_upcoming results: future = ${future.length}, noDate = ${noDate.length}, total = ${future.length + noDate.length}`);
       return [...future, ...noDate];
     } else if (filterBy === 'commented') {
       // Only leads with at least one comment
       return filtered.filter(lead => lead.comments && lead.comments.length > 0);
-    } else if (filterBy.startsWith('stage:')) {
-      // Only leads with the selected stage
-      const stage = filterBy.replace('stage:', '');
-      return filtered.filter(lead => lead.stage === stage);
     } else if (filterBy === 'top10_offer') {
       // Top 10 highest offer
       return [...filtered]
@@ -324,8 +679,9 @@ const PipelinePage: React.FC = () => {
         .sort((a, b) => (b.probability || 0) - (a.probability || 0))
         .slice(0, 10);
     }
+    
     return filtered;
-  }, [leads, showSignedAgreements, searchQuery, filterCreatedDateFrom, filterCreatedDateTo, filterBalanceMin, filterBy, labelFilter]);
+  }, [leads, showSignedAgreements, searchQuery, filterCreatedDateFrom, filterCreatedDateTo, filterBalanceMin, filterBy, labelFilter, showUnassignedOnly, showLostInteractionsOnly]);
 
   const handleSort = (column: 'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up') => {
     if (sortColumn === column) {
@@ -396,6 +752,60 @@ const PipelinePage: React.FC = () => {
     }
     return leadsToSort;
   }, [filteredLeads, sortColumn, sortDirection]);
+
+  // Calculate summary statistics from the actual filtered leads being displayed
+  const summaryStats = useMemo(() => {
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    // Use the filtered leads that are actually being displayed
+    const displayedLeads = filteredLeads;
+    
+    // Contracts signed in last 30 days (stage includes 'Client signed agreement')
+    const contractsSignedLeads = displayedLeads.filter(lead => 
+      isSignedAgreementLead(lead) && new Date(lead.created_at) >= thirtyDaysAgo
+    );
+    const contractsSigned = contractsSignedLeads.length;
+
+    // Count total leads in pipeline (excluding signed agreements)
+    const pipelineLeads = displayedLeads.filter(lead => !isSignedAgreementLead(lead));
+    const totalLeads = pipelineLeads.length;
+    
+    console.log('🔍 Summary stats calculation:', {
+      totalLeadsFromDB: displayedLeads.length,
+      signedAgreements: contractsSignedLeads.length,
+      pipelineLeads: pipelineLeads.length,
+      pipelineMode,
+      currentUserFullName
+    });
+
+    // Calculate top worker based on pipeline mode
+    const roleCounts: Record<string, number> = {};
+    contractsSignedLeads.forEach(lead => {
+      let roleValue = 'Unknown';
+      if (pipelineMode === 'closer') {
+        roleValue = lead.closer || 'Unknown';
+      } else if (pipelineMode === 'scheduler') {
+        roleValue = lead.scheduler || 'Unknown';
+      }
+      roleCounts[roleValue] = (roleCounts[roleValue] || 0) + 1;
+    });
+    let topWorker = 'N/A';
+    let topWorkerCount = 0;
+    Object.entries(roleCounts).forEach(([role, count]) => {
+      if (count > topWorkerCount) {
+        topWorker = role;
+        topWorkerCount = count;
+      }
+    });
+
+    return {
+      contractsSigned,
+      totalLeads,
+      topWorker,
+      topWorkerCount
+    };
+  }, [filteredLeads, pipelineMode]);
 
   const handleRowClick = (lead: LeadForPipeline) => {
     setSelectedLead(lead);
@@ -705,42 +1115,119 @@ const PipelinePage: React.FC = () => {
     const newCommentObj = { text: newComment.trim(), timestamp: now, user: userName };
     const updatedComments = [...(selectedLead.comments || []), newCommentObj];
     try {
-      const { error } = await supabase
-        .from('leads')
-        .update({ comments: updatedComments })
-        .eq('id', selectedLead.id);
-      if (error) throw error;
+      if (selectedLead.lead_type === 'legacy') {
+        // For legacy leads, extract numeric ID and update leads_lead table
+        const numericId = typeof selectedLead.id === 'string' ? parseInt(selectedLead.id.replace('legacy_', '')) : selectedLead.id;
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ comments: updatedComments })
+          .eq('id', numericId);
+        if (error) throw error;
+      } else {
+        // For new leads
+        const { error } = await supabase
+          .from('leads')
+          .update({ comments: updatedComments })
+          .eq('id', selectedLead.id);
+        if (error) throw error;
+      }
+      
       setSelectedLead({ ...selectedLead, comments: updatedComments });
       setNewComment('');
       // Optionally refresh leads
       setLeads(leads => leads.map(l => l.id === selectedLead.id ? { ...l, comments: updatedComments } : l));
     } catch (err) {
+      console.error('Error adding comment:', err);
       // Optionally show error
     }
     setCommentSubmitting(false);
   };
 
-  const handleLabelChange = async (leadId: number, label: string) => {
+  const handleLabelChange = async (leadId: number | string, label: string) => {
     setLabelSubmitting(true);
     try {
-      const { error } = await supabase
-        .from('leads')
-        .update({ label })
-        .eq('id', leadId);
-      if (error) throw error;
+      // Determine which table to update based on lead type
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) return;
+
+      if (lead.lead_type === 'legacy') {
+        // For legacy leads, we need to extract the numeric ID
+        const numericId = typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId;
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ label })
+          .eq('id', numericId);
+        if (error) throw error;
+      } else {
+        // For new leads
+        const { error } = await supabase
+          .from('leads')
+          .update({ label })
+          .eq('id', leadId);
+        if (error) throw error;
+      }
+      
       setLeads(leads => leads.map(l => l.id === leadId ? { ...l, label } : l));
       setLabelDropdownOpen(null);
     } catch (err) {
+      console.error('Error updating label:', err);
       // Optionally show error
     }
     setLabelSubmitting(false);
   };
 
-  // Fetch user id on mount
+  // Fetch user id and full name on mount
   useEffect(() => {
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      setUserId(user?.id || null);
+      console.log('🔍 Fetching user data...');
+      try {
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        console.log('🔍 Auth user:', user);
+        console.log('🔍 Auth error:', authError);
+        
+        if (authError) {
+          console.error('🔍 Authentication error:', authError);
+          // Set a fallback name to allow the page to function
+          setCurrentUserFullName('Eliran');
+          return;
+        }
+        
+        setUserId(user?.id || null);
+        
+        // Fetch current user's full name
+        if (user?.email) {
+          console.log('🔍 Fetching user data for email:', user.email);
+          const { data: userData, error: userError } = await supabase
+            .from('users')
+            .select('full_name')
+            .eq('email', user.email)
+            .single();
+          
+          console.log('🔍 User data result:', { userData, userError });
+          
+          if (userError) {
+            console.error('🔍 User data fetch error details:', userError);
+            // Set fallback name if database query fails
+            setCurrentUserFullName('Eliran');
+            return;
+          }
+          
+          if (userData?.full_name) {
+            console.log('🔍 Setting full name:', userData.full_name);
+            setCurrentUserFullName(userData.full_name);
+          } else {
+            console.log('🔍 No user name found in database, using fallback');
+            setCurrentUserFullName('Eliran');
+          }
+        } else {
+          console.log('🔍 No user email found, using fallback');
+          setCurrentUserFullName('Eliran');
+        }
+      } catch (error) {
+        console.error('�� Error in user data fetching:', error);
+        // Set fallback name to ensure page functionality
+        setCurrentUserFullName('Eliran');
+      }
     })();
   }, []);
 
@@ -788,13 +1275,453 @@ const PipelinePage: React.FC = () => {
     setHighlightPanelOpen(false);
   };
 
+  // Fetch leads for assignment modal
+  const fetchAssignmentLeads = async () => {
+    setAssignmentLoading(true);
+    try {
+      const twoWeeksAgo = new Date();
+      twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
+      const twoWeeksAgoISO = twoWeeksAgo.toISOString();
+
+      // Fetch new leads for assignment
+      let newLeadsQuery = supabase
+        .from('leads')
+        .select(`
+          id,
+          lead_number,
+          name,
+          created_at,
+          expert,
+          manager,
+          scheduler,
+          closer,
+          topic,
+          stage,
+          number_of_applicants_meeting,
+          potential_applicants_meeting,
+          balance,
+          balance_currency,
+          probability,
+          next_followup,
+          email,
+          phone,
+          comments,
+          label,
+          unactivated_at,
+          latest_interaction,
+          meetings (
+            meeting_date
+          )
+        `)
+        .is('unactivated_at', null) // Only fetch leads where unactivated_at is NULL
+        .or('eligibility_status.is.null,eligibility_status.eq.""')
+        .neq('stage', 91) // Exclude Dropped (Spam/Irrelevant) stage by ID only
+        .neq('stage', 51) // Exclude Client declined price offer stage by ID only
+        .neq('stage', 35); // Exclude Meeting Irrelevant stage by ID only
+
+      // Apply stage filtering based on pipeline mode
+      if (pipelineMode === 'closer') {
+        // For closer pipeline: only fetch stages from ID 30 (Meeting complete) and up to 40 (Waiting for Mtng sum)
+        newLeadsQuery = newLeadsQuery.gte('stage', 30).lte('stage', 40);
+      } else {
+        // For scheduler pipeline: only fetch stages up to 21
+        newLeadsQuery = newLeadsQuery.lte('stage', 21);
+      }
+
+      // Filter based on pipeline mode for assignment
+      if (pipelineMode === 'closer') {
+        // Unassigned closers OR closers with old interactions
+        newLeadsQuery = newLeadsQuery.or('closer.is.null,closer.eq."",closer.neq.' + currentUserFullName);
+      } else {
+        // Unassigned schedulers OR schedulers with old interactions
+        newLeadsQuery = newLeadsQuery.or('scheduler.is.null,scheduler.eq."",scheduler.neq.' + currentUserFullName);
+      }
+
+      // Add filter for leads with lost interactions (latest_interaction older than 2 weeks or null)
+      newLeadsQuery = newLeadsQuery.or(`latest_interaction.is.null,latest_interaction.lt.${twoWeeksAgoISO}`);
+
+      const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
+
+      if (newLeadsError) {
+        console.error('Error fetching new leads for assignment:', newLeadsError);
+        throw newLeadsError;
+      }
+
+      // Fetch legacy leads for assignment
+      let legacyLeadsQuery = supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          name,
+          cdate,
+          stage,
+          closer_id,
+          meeting_scheduler_id,
+          total,
+          currency_id,
+          probability,
+          phone,
+          email,
+          next_followup,
+          no_of_applicants,
+          potential_applicants,
+          comments,
+          label,
+          status,
+          latest_interaction,
+          category_id,
+          topic
+        `)
+        .limit(1000)
+        .eq('status', 0) // Only fetch leads where status is 0
+        .neq('stage', 91) // Exclude Dropped (Spam/Irrelevant) stage by ID only
+        .neq('stage', 51) // Exclude Client declined price offer stage by ID only
+        .neq('stage', 35); // Exclude Meeting Irrelevant stage by ID only
+
+      // Apply stage filtering based on pipeline mode
+      if (pipelineMode === 'closer') {
+        // For closer pipeline: only fetch stages from ID 30 (Meeting complete) and up to 40 (Waiting for Mtng sum)
+        legacyLeadsQuery = legacyLeadsQuery.gte('stage', 30).lte('stage', 40);
+      } else {
+        // For scheduler pipeline: only fetch stages up to 21
+        legacyLeadsQuery = legacyLeadsQuery.lte('stage', 21);
+      }
+
+      // Filter based on pipeline mode
+      if (pipelineMode === 'closer') {
+        // Unassigned closers OR closers with old interactions
+        legacyLeadsQuery = legacyLeadsQuery.or('closer_id.is.null,closer_id.eq."",closer_id.neq.' + currentUserFullName);
+      } else {
+        // Unassigned schedulers OR schedulers with old interactions
+        legacyLeadsQuery = legacyLeadsQuery.or('meeting_scheduler_id.is.null,meeting_scheduler_id.eq."",meeting_scheduler_id.neq.' + currentUserFullName);
+      }
+
+      const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.order('cdate', { ascending: false });
+
+      if (legacyLeadsError) {
+        console.error('Error fetching legacy leads for assignment:', legacyLeadsError);
+        throw legacyLeadsError;
+      }
+
+      // Fetch currency data for legacy leads
+      const currencyIds = legacyLeadsData?.map(lead => lead.currency_id).filter(id => id !== null) || [];
+      let currencyMap: Record<number, string> = {};
+      
+      if (currencyIds.length > 0) {
+        const { data: currencyData, error: currencyError } = await supabase
+          .from('accounting_currencies')
+          .select('id, iso_code')
+          .in('id', currencyIds);
+        
+        if (!currencyError && currencyData) {
+          currencyMap = currencyData.reduce((acc, curr) => {
+            acc[curr.id] = curr.iso_code;
+            return acc;
+          }, {} as Record<number, string>);
+        }
+      }
+
+      // Fetch category data for legacy leads
+      const categoryIds = legacyLeadsData?.map(lead => lead.category_id).filter(id => id !== null) || [];
+      let categoryMap: Record<number, string> = {};
+      
+      console.log('🔍 Assignment Modal - Raw category IDs from legacy leads:', categoryIds);
+      
+      if (categoryIds.length > 0) {
+        // Query misc_category table for legacy leads
+        const { data: categoryData, error: categoryError } = await supabase
+          .from('misc_category')
+          .select('id, name')
+          .in('id', categoryIds);
+        
+        console.log('🔍 Assignment Modal - Misc category query result:', { data: categoryData, error: categoryError });
+        
+        if (categoryError) {
+          console.error('Error fetching categories from misc_category:', categoryError);
+        } else if (categoryData) {
+          categoryMap = categoryData.reduce((acc, cat) => {
+            acc[cat.id] = cat.name;
+            return acc;
+          }, {} as Record<number, string>);
+          console.log('🔍 Assignment Modal - Category map created from misc_category:', categoryMap);
+        }
+      }
+
+      // Process new leads
+      const processedNewLeads = (newLeadsData || []).map(lead => ({
+        ...lead,
+        meetings: lead.meetings || [],
+        lead_type: 'new' as const
+      }));
+
+      console.log('🔍 Assignment Modal - New leads sample:', processedNewLeads.slice(0, 2).map(lead => ({
+        id: lead.id,
+        name: lead.name,
+        topic: lead.topic
+      })));
+
+      // Process legacy leads
+      const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
+        const currencyCode = currencyMap[lead.currency_id] || null;
+        const categoryName = lead.category_id ? categoryMap[lead.category_id] || null : null;
+        
+        console.log(`🔍 Processing legacy lead ${lead.id}: category_id=${lead.category_id}, categoryMap[${lead.category_id}]=${categoryMap[lead.category_id]}, final_category=${categoryName}`);
+        
+        return {
+          id: `legacy_${lead.id}`,
+          lead_number: lead.id?.toString() || '',
+          name: lead.name || '',
+          created_at: lead.cdate || new Date().toISOString(),
+          expert: lead.closer_id,
+          topic: lead.topic,
+          category: categoryName,
+          handler_notes: [],
+          expert_notes: [],
+          meetings: [],
+          onedrive_folder_link: null,
+          stage: lead.stage?.toString() || '',
+          number_of_applicants_meeting: lead.no_of_applicants,
+          potential_applicants_meeting: lead.potential_applicants,
+          balance: lead.total,
+          balance_currency: currencyCode,
+          probability: typeof lead.probability === 'string' ? parseFloat(lead.probability) : lead.probability,
+          eligibility_status: null,
+          next_followup: lead.next_followup,
+          manual_interactions: [],
+          email: lead.email,
+          mobile: null,
+          phone: lead.phone,
+          comments: lead.comments || [],
+          label: lead.label || null,
+          highlighted_by: [],
+          latest_interaction: lead.latest_interaction,
+          lead_type: 'legacy' as const,
+          meeting_manager_id: lead.meeting_scheduler_id,
+          meeting_lawyer_id: null,
+          category_id: lead.category_id, // Preserve the original category_id
+          total: lead.total,
+          meeting_total_currency_id: null,
+          expert_id: lead.closer_id,
+          language_id: null
+        };
+      });
+
+      console.log('🔍 Assignment Modal - Legacy leads sample:', processedLegacyLeads.slice(0, 2).map(lead => ({
+        id: lead.id,
+        name: lead.name,
+        topic: lead.topic,
+        category: lead.category,
+        category_id: lead.category_id
+      })));
+      
+      console.log('🔍 Assignment Modal - Category map:', categoryMap);
+      console.log('🔍 Assignment Modal - Category IDs found:', categoryIds);
+
+      // Combine and sort all leads
+      const allAssignmentLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+
+      setAssignmentLeads(allAssignmentLeads as LeadForPipeline[]);
+    } catch (error) {
+      console.error('Error fetching assignment leads:', error);
+      setAssignmentLeads([]);
+    }
+    setAssignmentLoading(false);
+  };
+
+  // Sort assignment leads
+  const sortedAssignmentLeads = useMemo(() => {
+    let leadsToSort = [...assignmentLeads];
+    
+    // Apply search filter
+    if (assignmentSearchQuery) {
+      leadsToSort = leadsToSort.filter(lead => {
+        const leadNameLower = lead.name.toLowerCase();
+        const leadNumberLower = lead.lead_number.toLowerCase();
+        const searchLower = assignmentSearchQuery.toLowerCase();
+        return leadNameLower.includes(searchLower) || leadNumberLower.includes(searchLower);
+      });
+    }
+    
+    // Apply stage filter
+    if (assignmentStageFilter) {
+      leadsToSort = leadsToSort.filter(lead => {
+        if (!lead.stage) return false;
+        const leadStageName = getStageName(lead.stage);
+        return leadStageName === assignmentStageFilter;
+      });
+    }
+    
+    // Apply status filters
+    if (showUnassignedOnly) {
+      leadsToSort = leadsToSort.filter(lead => isUnassignedLead(lead));
+    }
+    
+    if (showLostInteractionsOnly) {
+      leadsToSort = leadsToSort.filter(lead => hasLostInteractions(lead));
+    }
+    
+    // Apply sorting
+    if (assignmentSortColumn) {
+      leadsToSort.sort((a, b) => {
+        let aValue, bValue;
+        if (assignmentSortColumn === 'created_at') {
+          aValue = a.created_at;
+          bValue = b.created_at;
+        } else if (assignmentSortColumn === 'offer') {
+          aValue = typeof a.balance === 'number' ? a.balance : (typeof a.balance === 'string' ? parseFloat(a.balance) || 0 : 0);
+          bValue = typeof b.balance === 'number' ? b.balance : (typeof b.balance === 'string' ? parseFloat(b.balance) || 0 : 0);
+        } else if (assignmentSortColumn === 'probability') {
+          aValue = a.probability || 0;
+          bValue = b.probability || 0;
+        }
+        
+        if (!aValue && !bValue) return 0;
+        if (!aValue) return assignmentSortDirection === 'asc' ? -1 : 1;
+        if (!bValue) return assignmentSortDirection === 'asc' ? 1 : -1;
+        if (aValue < bValue) return assignmentSortDirection === 'asc' ? -1 : 1;
+        if (aValue > bValue) return assignmentSortDirection === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+    
+    return leadsToSort;
+  }, [assignmentLeads, assignmentSearchQuery, assignmentStageFilter, assignmentSortColumn, assignmentSortDirection, showUnassignedOnly, showLostInteractionsOnly]);
+
+  // Handle assignment sort
+  const handleAssignmentSort = (column: 'created_at' | 'offer' | 'probability') => {
+    if (assignmentSortColumn === column) {
+      setAssignmentSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setAssignmentSortColumn(column);
+      setAssignmentSortDirection('desc');
+    }
+  };
+
+  // Assign current user to a lead
+  const handleAssignToLead = async (lead: LeadForPipeline) => {
+    setAssigningLead(lead.id.toString());
+    try {
+      if (lead.lead_type === 'legacy') {
+        // For legacy leads, get employee ID from tenants_employee table
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select('id')
+          .eq('display_name', currentUserFullName)
+          .single();
+
+        if (employeeError || !employeeData) {
+          console.error('Error finding employee record:', employeeError);
+          throw new Error('Could not find employee record');
+        }
+
+        const numericId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+        
+        if (pipelineMode === 'closer') {
+          // Assign as closer
+          const { error } = await supabase
+            .from('leads_lead')
+            .update({ closer_id: currentUserFullName })
+            .eq('id', numericId);
+          
+          if (error) throw error;
+        } else {
+          // Assign as scheduler
+          const { error } = await supabase
+            .from('leads_lead')
+            .update({ meeting_scheduler_id: currentUserFullName })
+            .eq('id', numericId);
+          
+          if (error) throw error;
+        }
+      } else {
+        // For new leads, assign directly using full name
+        if (pipelineMode === 'closer') {
+          // Assign as closer
+          const { error } = await supabase
+            .from('leads')
+            .update({ closer: currentUserFullName })
+            .eq('id', lead.id);
+          
+          if (error) throw error;
+        } else {
+          // Assign as scheduler
+          const { error } = await supabase
+            .from('leads')
+            .update({ scheduler: currentUserFullName })
+            .eq('id', lead.id);
+          
+          if (error) throw error;
+        }
+      }
+
+      // Remove the assigned lead from the assignment list
+      setAssignmentLeads(prev => prev.filter(l => l.id !== lead.id));
+      
+      // Refresh the main leads list
+      await fetchLeads();
+      
+    } catch (error) {
+      console.error('Error assigning lead:', error);
+      // You might want to show a toast notification here
+    } finally {
+      setAssigningLead(null);
+    }
+  };
+
   return (
     <div className="p-4 md:p-6 lg:p-8">
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
-        <h1 className="text-3xl font-bold flex items-center gap-3">
-          <ChartBarIcon className="w-8 h-8 text-primary" />
-          {showSignedAgreements ? 'Signed Agreements' : 'Pipeline'}
-        </h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-3xl font-bold flex items-center gap-3">
+            <ChartBarIcon className="w-8 h-8 text-primary" />
+            {showSignedAgreements ? 'Signed Agreements' : 'Pipeline'}
+          </h1>
+          
+          {/* Pipeline Mode Switch */}
+          <div className="flex items-center gap-2 bg-base-200 rounded-lg p-1">
+            <button
+              className={`px-4 py-2 rounded-md font-medium transition-all ${
+                pipelineMode === 'closer' 
+                  ? 'bg-primary text-primary-content shadow-md' 
+                  : 'text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setPipelineMode('closer')}
+            >
+              Closer
+            </button>
+            <button
+              className={`px-4 py-2 rounded-md font-medium transition-all ${
+                pipelineMode === 'scheduler' 
+                  ? 'bg-primary text-primary-content shadow-md' 
+                  : 'text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setPipelineMode('scheduler')}
+            >
+              Scheduler
+            </button>
+          </div>
+        </div>
+        
+        {/* Current User Info */}
+        {currentUserFullName && (
+          <div className="text-sm text-base-content/70">
+            Viewing {pipelineMode} pipeline for: <span className="font-semibold">{currentUserFullName}</span>
+          </div>
+        )}
+        
+        {/* Assignment Button */}
+        <button
+          onClick={() => {
+            setAssignmentModalOpen(true);
+            fetchAssignmentLeads();
+          }}
+          className="btn btn-primary btn-sm flex items-center gap-2"
+        >
+          <UserIcon className="w-4 h-4" />
+          Assign Leads
+        </button>
       </div>
       {/* Filters and Search */}
       <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
@@ -879,11 +1806,67 @@ const PipelinePage: React.FC = () => {
           </div>
         </div>
       </div>
+      
+      {/* Status Filter Buttons */}
+      <div className="mb-6 flex flex-wrap gap-3">
+        <button
+          onClick={() => setShowUnassignedOnly(!showUnassignedOnly)}
+          className={`btn btn-sm font-medium transition-all duration-200 ${
+            showUnassignedOnly 
+              ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg border border-red-400' 
+              : 'btn-outline border-red-300 text-red-600 hover:bg-red-50'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${showUnassignedOnly ? 'bg-white animate-pulse' : 'bg-red-500'}`}></div>
+            No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'} Assigned
+            {showUnassignedOnly && (
+              <span className="badge badge-sm bg-white/20 text-white border-white/30">
+                {filteredLeads.filter(lead => isUnassignedLead(lead)).length}
+              </span>
+            )}
+          </div>
+        </button>
+        
+        <button
+          onClick={() => setShowLostInteractionsOnly(!showLostInteractionsOnly)}
+          className={`btn btn-sm font-medium transition-all duration-200 ${
+            showLostInteractionsOnly 
+              ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-lg border border-amber-400' 
+              : 'btn-outline border-amber-300 text-amber-600 hover:bg-amber-50'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${showLostInteractionsOnly ? 'bg-white animate-pulse' : 'bg-amber-500'}`}></div>
+            Lost Interactions
+            {showLostInteractionsOnly && (
+              <span className="badge badge-sm bg-white/20 text-white border-white/30">
+                {filteredLeads.filter(lead => hasLostInteractions(lead)).length}
+              </span>
+            )}
+          </div>
+        </button>
+        
+        {/* Clear All Filters Button */}
+        {(showUnassignedOnly || showLostInteractionsOnly || assignmentStageFilter) && (
+          <button
+            onClick={() => {
+              setShowUnassignedOnly(false);
+              setShowLostInteractionsOnly(false);
+              setAssignmentStageFilter('');
+            }}
+            className="btn btn-sm btn-ghost text-gray-500 hover:text-gray-700"
+          >
+            Clear Filters
+          </button>
+        )}
+      </div>
+      
       {/* Summary Statistics Cards */}
       <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Contracts Signed */}
+        {/* Contracts Signed / Meetings Created */}
         <div 
-          className="bg-gradient-to-br from-green-400 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 cursor-pointer"
+          className="bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 cursor-pointer"
           onClick={() => {
             console.log('Contracts Signed box clicked! Current state:', showSignedAgreements);
             setShowSignedAgreements(!showSignedAgreements);
@@ -891,9 +1874,13 @@ const PipelinePage: React.FC = () => {
         >
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-green-100 text-sm font-medium">Contracts Signed</p>
+              <p className="text-white/90 text-sm font-medium">
+                {pipelineMode === 'closer' ? 'Contracts Signed' : 'Meetings Created'}
+              </p>
               <p className="text-3xl font-bold">{summaryStats.contractsSigned}</p>
-              <p className="text-green-100 text-xs mt-1">Last 30 days</p>
+              <p className="text-white/90 text-xs mt-1">
+                {pipelineMode === 'closer' ? 'Last 30 days' : 'Last 30 days'}
+              </p>
             </div>
             <div className="flex items-center gap-2 bg-white/20 rounded-full p-3">
               <FileText className="w-7 h-7 text-white/90" />
@@ -903,12 +1890,17 @@ const PipelinePage: React.FC = () => {
         </div>
 
         {/* Top Worker */}
-        <div className="bg-gradient-to-br from-blue-400 via-blue-500 to-blue-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
+        <div className="bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-blue-100 text-sm font-medium">Top Closer</p>
+              <p className="text-white/90 text-sm font-medium">Top {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}</p>
               <p className="text-xl font-bold truncate">{summaryStats.topWorker}</p>
-              <p className="text-blue-100 text-xs mt-1">{summaryStats.topWorkerCount} contract{summaryStats.topWorkerCount === 1 ? '' : 's'} signed (last 30 days)</p>
+              <p className="text-white/90 text-xs mt-1">
+                {pipelineMode === 'closer' 
+                  ? `${summaryStats.topWorkerCount} contract${summaryStats.topWorkerCount === 1 ? '' : 's'} signed (last 30 days)`
+                  : `${summaryStats.topWorkerCount} meeting${summaryStats.topWorkerCount === 1 ? '' : 's'} created (last 30 days)`
+                }
+              </p>
             </div>
             <div className="bg-white/20 rounded-full p-3">
               <UserIcon className="w-8 h-8" />
@@ -917,12 +1909,12 @@ const PipelinePage: React.FC = () => {
         </div>
 
         {/* Total Leads */}
-        <div className="bg-gradient-to-br from-purple-400 via-purple-500 to-purple-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
+        <div className="bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-purple-100 text-sm font-medium">Total Leads</p>
+              <p className="text-white/90 text-sm font-medium">Total Leads</p>
               <p className="text-3xl font-bold">{summaryStats.totalLeads}</p>
-              <p className="text-purple-100 text-xs mt-1">In pipeline</p>
+              <p className="text-white/90 text-xs mt-1">In pipeline</p>
             </div>
             <div className="bg-white/20 rounded-full p-3">
               <ChartBarIcon className="w-8 h-8" />
@@ -963,10 +1955,10 @@ const PipelinePage: React.FC = () => {
               >
                 <div onClick={() => handleRowClick(lead)} className="flex-1 cursor-pointer flex flex-col">
                   {/* Lead Number and Name */}
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                  <div className="mb-3 flex items-center gap-2 pr-20">
+                    <span className="text-sm font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
                     <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                    <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                    <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
                     {lead.label && (
                       <span className="ml-2 px-2 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary border-2 border-primary">{lead.label}</span>
                     )}
@@ -977,33 +1969,59 @@ const PipelinePage: React.FC = () => {
                       <QuestionMarkCircleIcon className="w-6 h-6 text-yellow-400 ml-2" title="Feasibility not chosen" />
                     )}
                   </div>
+                  
+                  {/* Status Badges - Top Right */}
+                  <div className="absolute top-4 right-4 flex flex-col gap-1">
+                    {/* No Scheduler/Closer Assigned Badge */}
+                    {isUnassignedLead(lead) && (
+                      <div className="bg-gradient-to-r from-red-500 to-red-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg border border-red-400 transform hover:scale-105 transition-all duration-200">
+                        <div className="flex items-center gap-1">
+                          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                          No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}
+                        </div>
+                      </div>
+                    )}
+                    
+                    {/* Lost Interactions Badge */}
+                    {hasLostInteractions(lead) && (
+                      <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg border border-amber-400 transform hover:scale-105 transition-all duration-200">
+                        <div className="flex items-center gap-1">
+                          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
+                          Lost Interactions
+                        </div>
+                      </div>
+                    )}
+                  </div>
                   {/* Stage */}
                   <div className="flex justify-between items-center py-1">
-                    <span className="text-xs font-semibold text-gray-500">Stage</span>
+                    <span className="text-sm font-semibold text-gray-500">Stage</span>
                     <span className={
                       'text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white'
                     }>
-                      {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}
+                      {lead.stage ? getStageName(lead.stage) : 'N/A'}
                     </span>
                   </div>
                   <div className="space-y-2 divide-y divide-gray-100">
                     {/* Category */}
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Category</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">{lead.topic || 'N/A'}</span>
+                      <span className="text-sm font-semibold text-gray-500">Category</span>
+                      <span className="text-sm font-bold text-gray-800 ml-2">{lead.topic ?? 'N/A'}</span>
                     </div>
                     {/* Offer (Balance) */}
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Offer</span>
+                      <span className="text-sm font-semibold text-gray-500">Offer</span>
                       <span className="text-sm font-bold text-gray-800 ml-2">
                         {lead.balance !== undefined && lead.balance !== null 
-                          ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance}` 
+                          ? (() => {
+                              // Removed excessive logging for performance
+                              return `${getCurrencySymbol(lead.balance_currency)}${lead.balance}`;
+                            })()
                           : 'N/A'}
                       </span>
                     </div>
                     {/* Probability */}
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Probability</span>
+                      <span className="text-sm font-semibold text-gray-500">Probability</span>
                       <span className={`text-sm font-bold ml-2 ${
                         (lead.probability || 0) >= 80 ? 'text-green-600' :
                         (lead.probability || 0) >= 60 ? 'text-yellow-600' :
@@ -1015,21 +2033,21 @@ const PipelinePage: React.FC = () => {
                     </div>
                     {/* Total Applicants */}
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Total Applicants</span>
+                      <span className="text-sm font-semibold text-gray-500">Total Applicants</span>
                       <span className="text-sm font-bold text-gray-800 ml-2">
                         {lead.number_of_applicants_meeting ?? 'N/A'}
                       </span>
                     </div>
                     {/* Potential Applicants */}
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Potential Applicants</span>
+                      <span className="text-sm font-semibold text-gray-500">Potential Applicants</span>
                       <span className="text-sm font-bold text-gray-800 ml-2">
                         {lead.potential_applicants_meeting ?? 'N/A'}
                       </span>
                     </div>
                     {/* Follow Up Date */}
                     <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Follow Up Date</span>
+                      <span className="text-sm font-semibold text-gray-500">Follow Up Date</span>
                       {lead.next_followup ? (() => {
                         const followupDate = parseISO(lead.next_followup);
                         const today = new Date();
@@ -1048,7 +2066,7 @@ const PipelinePage: React.FC = () => {
                   </div>
 
                   {/* Meeting Date (if available) */}
-                  {lead.meetings.length > 0 && (
+                  {lead.meetings && lead.meetings.length > 0 && (
                     <div className="mt-3 flex items-center gap-2 text-xs text-gray-500">
                       <CalendarIcon className="w-4 h-4" />
                       <span>Meeting: {lead.meetings[0].meeting_date}</span>
@@ -1153,7 +2171,7 @@ const PipelinePage: React.FC = () => {
                     {/* Stage */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <span className="badge badge-sm bg-[#3b28c7] text-white font-bold">
-                        {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}
+                        {lead.stage ? getStageName(lead.stage) : 'N/A'}
                       </span>
                     </td>
                     {/* Offer */}
@@ -1260,7 +2278,7 @@ const PipelinePage: React.FC = () => {
               <div className="flex items-center gap-3">
                 <ChatBubbleLeftRightIcon className="w-6 h-6 text-base-content/70" />
                 <span className="font-medium">Category:</span>
-                <span>{selectedLead.topic || <span className='text-base-content/40'>N/A</span>}</span>
+                <span>{selectedLead.topic ?? <span className='text-base-content/40'>N/A</span>}</span>
               </div>
               {/* Documents Button */}
               <div>
@@ -1879,7 +2897,7 @@ const PipelinePage: React.FC = () => {
                     <div className="flex flex-row gap-4 text-xs mb-1">
                       <div className="flex items-center gap-1">
                         <span className="font-semibold">Stage:</span>
-                        <span>{lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : 'N/A'}</span>
+                        <span>{lead.stage ? getStageName(lead.stage) : 'N/A'}</span>
                       </div>
                       <div className="flex items-center gap-1">
                         <span className="font-semibold">Offer:</span>
@@ -1925,6 +2943,291 @@ const PipelinePage: React.FC = () => {
       >
         <svg className={`w-6 h-6 transition-transform ${highlightPanelOpen ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
       </button>
+
+      {/* Assignment Modal */}
+      {assignmentModalOpen && createPortal(
+        <div className="fixed inset-0 bg-black/50 z-[999] flex items-center justify-center p-4">
+          <div className="bg-base-100 rounded-2xl shadow-xl w-full h-full max-w-none max-h-none flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-base-300">
+              <div>
+                <h3 className="text-2xl font-bold">Assign {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'} to Leads</h3>
+                <p className="text-base-content/70 mt-1">
+                  {pipelineMode === 'closer' 
+                    ? 'Unassigned leads and leads with old closer interactions' 
+                    : 'Unassigned leads and leads with old scheduler interactions'
+                  }
+                </p>
+              </div>
+              <button 
+                className="btn btn-ghost btn-circle" 
+                onClick={() => setAssignmentModalOpen(false)}
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Search and Sort Controls */}
+            <div className="p-6 border-b border-base-300">
+              <div className="flex flex-col gap-4">
+                {/* Search and Sort Row */}
+                <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
+                  {/* Search Bar */}
+                  <div className="relative flex items-center w-full md:w-80">
+                    <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/50" />
+                    <input
+                      type="text"
+                      placeholder="Search by name or lead number..."
+                      className="input input-bordered w-full pl-10"
+                      value={assignmentSearchQuery}
+                      onChange={e => setAssignmentSearchQuery(e.target.value)}
+                    />
+                  </div>
+                  
+                  {/* Stage Filter Dropdown */}
+                  <div className="flex items-center gap-2">
+                    <select
+                      className="select select-bordered select-sm"
+                      value={assignmentStageFilter}
+                      onChange={e => setAssignmentStageFilter(e.target.value)}
+                    >
+                      <option value="">All Stages</option>
+                      {assignmentStageOptions.map(stage => (
+                        <option key={stage} value={stage}>{stage}</option>
+                      ))}
+                    </select>
+                  </div>
+                  
+                  {/* Sort Controls */}
+                  <div className="flex gap-2">
+                    <button
+                      className={`btn btn-sm ${assignmentSortColumn === 'created_at' ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => handleAssignmentSort('created_at')}
+                    >
+                      Date Created
+                      {assignmentSortColumn === 'created_at' && (
+                        <span className="ml-1">{assignmentSortDirection === 'asc' ? '▲' : '▼'}</span>
+                      )}
+                    </button>
+                    <button
+                      className={`btn btn-sm ${assignmentSortColumn === 'offer' ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => handleAssignmentSort('offer')}
+                    >
+                      Offer Amount
+                      {assignmentSortColumn === 'offer' && (
+                        <span className="ml-1">{assignmentSortDirection === 'asc' ? '▲' : '▼'}</span>
+                      )}
+                    </button>
+                    <button
+                      className={`btn btn-sm ${assignmentSortColumn === 'probability' ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => handleAssignmentSort('probability')}
+                    >
+                      Probability
+                      {assignmentSortColumn === 'probability' && (
+                        <span className="ml-1">{assignmentSortDirection === 'asc' ? '▲' : '▼'}</span>
+                      )}
+                    </button>
+                  </div>
+                </div>
+                
+                {/* Status Filter Buttons */}
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={() => setShowUnassignedOnly(!showUnassignedOnly)}
+                    className={`btn btn-sm font-medium transition-all duration-200 ${
+                      showUnassignedOnly 
+                        ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg border border-red-400' 
+                        : 'btn-outline border-red-300 text-red-600 hover:bg-red-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${showUnassignedOnly ? 'bg-white animate-pulse' : 'bg-red-500'}`}></div>
+                      No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'} Assigned
+                      {showUnassignedOnly && (
+                        <span className="badge badge-sm bg-white/20 text-white border-white/30">
+                          {sortedAssignmentLeads.filter(lead => isUnassignedLead(lead)).length}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  
+                  <button
+                    onClick={() => setShowLostInteractionsOnly(!showLostInteractionsOnly)}
+                    className={`btn btn-sm font-medium transition-all duration-200 ${
+                      showLostInteractionsOnly 
+                        ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-lg border border-amber-400' 
+                        : 'btn-outline border-amber-300 text-amber-600 hover:bg-amber-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${showLostInteractionsOnly ? 'bg-white animate-pulse' : 'bg-amber-500'}`}></div>
+                      Lost Interactions
+                      {showLostInteractionsOnly && (
+                        <span className="badge badge-sm bg-white/20 text-white border-white/30">
+                          {sortedAssignmentLeads.filter(lead => hasLostInteractions(lead)).length}
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                  
+                  {/* Clear All Filters Button */}
+                  {(showUnassignedOnly || showLostInteractionsOnly) && (
+                    <button
+                      onClick={() => {
+                        setShowUnassignedOnly(false);
+                        setShowLostInteractionsOnly(false);
+                      }}
+                      className="btn btn-sm btn-ghost text-gray-500 hover:text-gray-700"
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {assignmentLoading ? (
+                <div className="text-center p-8">
+                  <div className="loading loading-spinner loading-lg"></div>
+                  <p className="mt-4 text-base-content/60">Loading leads for assignment...</p>
+                </div>
+              ) : sortedAssignmentLeads.length === 0 ? (
+                <div className="text-center p-8">
+                  <UserIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                  <p className="text-lg font-medium">
+                    {assignmentSearchQuery ? 'No leads match your search' : 'No leads available for assignment'}
+                  </p>
+                  <p className="text-sm text-base-content/60">
+                    {assignmentSearchQuery 
+                      ? 'Try adjusting your search terms'
+                      : 'All leads are properly assigned or have recent interactions'
+                    }
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  {sortedAssignmentLeads.map((lead) => (
+                    <div
+                      key={lead.id}
+                      className="bg-white rounded-xl p-4 pt-12 shadow-md border border-gray-100 hover:shadow-lg transition-all duration-200 cursor-pointer relative min-h-[280px]"
+                      onClick={() => window.open(`/clients/${lead.lead_number}`, '_blank')}
+                    >
+                      {/* Status Badges - Top Right */}
+                      <div className="absolute top-3 right-3 flex flex-row gap-1 z-10">
+                        {/* No Scheduler/Closer Assigned Badge */}
+                        {isUnassignedLead(lead) && (
+                          <div className="bg-gradient-to-r from-red-500 to-red-600 text-white px-2 py-1 rounded-full text-xs font-bold shadow-lg border border-red-400 transform hover:scale-105 transition-all duration-200">
+                            <div className="flex items-center gap-1">
+                              <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
+                              No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {/* Lost Interactions Badge */}
+                        {hasLostInteractions(lead) && (
+                          <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-2 py-1 rounded-full text-xs font-bold shadow-lg border border-amber-400 transform hover:scale-105 transition-all duration-200">
+                            <div className="flex items-center gap-1">
+                              <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
+                              Lost Interactions
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      {/* Lead Header */}
+                      <div className="flex items-center justify-between mb-3 pr-32">
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          <span className="text-xs font-semibold text-gray-400 tracking-widest flex-shrink-0">{lead.lead_number}</span>
+                          <span className="w-1 h-1 bg-gray-300 rounded-full flex-shrink-0"></span>
+                          <span className="text-sm font-bold text-gray-900 truncate">{lead.name}</span>
+                        </div>
+                        {lead.label && (
+                          <span className="px-2 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary border border-primary/20 flex-shrink-0 ml-2">
+                            {lead.label}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Lead Details */}
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Stage:</span>
+                          <span className="font-semibold">{lead.stage ? getStageName(lead.stage) : 'N/A'}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Probability:</span>
+                          <span className={`font-semibold ${
+                            (lead.probability || 0) >= 80 ? 'text-green-600' :
+                            (lead.probability || 0) >= 60 ? 'text-yellow-600' :
+                            (lead.probability || 0) >= 40 ? 'text-orange-600' :
+                            'text-red-600'
+                          }`}>
+                            {lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Offer:</span>
+                          <span className="font-semibold">
+                            {lead.balance !== undefined && lead.balance !== null 
+                              ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance}` 
+                              : 'N/A'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Created:</span>
+                          <span className="font-semibold">{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</span>
+                        </div>
+                        {/* Debug: Always show topic and category to see what's happening */}
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Topic:</span>
+                          <span className="font-semibold truncate max-w-[120px]" title={lead.topic || 'null'}>{lead.topic || 'N/A'}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">Category:</span>
+                          <span className="font-semibold truncate max-w-[120px]" title={lead.category || 'null'}>{lead.category || 'N/A'}</span>
+                        </div>
+                        {lead.meetings && lead.meetings.length > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-gray-500">Meeting:</span>
+                            <span className="font-semibold">{lead.meetings[0].meeting_date}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Assignment Button */}
+                      <div className="mt-4 pt-3 border-t border-gray-100">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation(); // Prevent card click when clicking button
+                            handleAssignToLead(lead);
+                          }}
+                          disabled={assigningLead === lead.id.toString()}
+                          className="btn btn-primary btn-sm w-full flex items-center justify-center gap-2"
+                        >
+                          {assigningLead === lead.id.toString() ? (
+                            <>
+                              <div className="loading loading-spinner loading-xs"></div>
+                              Assigning...
+                            </>
+                          ) : (
+                            <>
+                              <UserIcon className="w-4 h-4" />
+                              Assign as {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 };

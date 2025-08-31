@@ -14,6 +14,6 @@ router.post('/:callId/reject', teamsCallingController.rejectCall);
 router.post('/:callId/mute', teamsCallingController.muteCall);
 
 // Callback endpoint for Teams call events
-router.post('/callbacks', teamsCallingController.handleCallCallback);
+router.post('/callbacks', teamsCallingController.handleCallback);
 
 module.exports = router; 

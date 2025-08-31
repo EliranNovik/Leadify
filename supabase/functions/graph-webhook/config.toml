@@ -1,0 +1,2 @@
+[functions.graph-webhook]
+verify_jwt = false

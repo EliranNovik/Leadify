@@ -174,17 +174,14 @@ class TeamsBotController {
   // Bot callback endpoint for Teams call events
   async handleBotCallback(req, res) {
     try {
-      console.log('[Teams Bot] Callback received:', req.body);
-
-      // Handle different call events
-      const { resourceData, resourceUri, changeType } = req.body;
+      const { resourceUri, changeType, resourceData } = req.body;
 
       if (changeType === 'created') {
-        console.log('[Teams Bot] Call created:', resourceUri);
+        // Call created
       } else if (changeType === 'updated') {
-        console.log('[Teams Bot] Call updated:', resourceUri);
+        // Call updated
       } else if (changeType === 'deleted') {
-        console.log('[Teams Bot] Call deleted:', resourceUri);
+        // Call deleted
       }
 
       // Always respond with 200 to acknowledge receipt

@@ -20,7 +20,7 @@ CREATE TABLE whatsapp_messages (
     media_size INTEGER,
     caption TEXT,
     whatsapp_message_id VARCHAR(255),
-    whatsapp_status VARCHAR(50) DEFAULT 'sent' CHECK (whatsapp_status IN ('sent', 'delivered', 'read', 'failed')),
+    whatsapp_status VARCHAR(50) DEFAULT 'sent' CHECK (whatsapp_status IN ('pending', 'sent', 'delivered', 'read', 'failed')),
     whatsapp_timestamp TIMESTAMP WITH TIME ZONE,
     error_message TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

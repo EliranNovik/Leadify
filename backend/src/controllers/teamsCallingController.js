@@ -171,33 +171,23 @@ class TeamsCallingController {
     }
   }
 
-  // Callback endpoint for Teams call events
-  async handleCallCallback(req, res) {
+  // Handle Teams Calling callbacks
+  async handleCallback(req, res) {
     try {
-      console.log('[Teams Calling] Callback received:', req.body);
-
-      // Handle different call events
-      const { resourceData, resourceUri, changeType } = req.body;
+      const { resourceUri, changeType, resourceData } = req.body;
 
       if (changeType === 'created') {
-        console.log('[Teams Calling] Call created:', resourceUri);
+        // Call created
       } else if (changeType === 'updated') {
-        console.log('[Teams Calling] Call updated:', resourceUri);
+        // Call updated
       } else if (changeType === 'deleted') {
-        console.log('[Teams Calling] Call deleted:', resourceUri);
+        // Call deleted
       }
 
-      // Always respond with 200 to acknowledge receipt
-      res.status(200).json({
-        success: true,
-        message: 'Callback received'
-      });
+      res.sendStatus(200);
     } catch (error) {
-      console.error('[Teams Calling Controller] Error handling callback:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Failed to handle callback'
-      });
+      console.error('Error handling Teams Calling callback:', error);
+      res.sendStatus(500);
     }
   }
 }

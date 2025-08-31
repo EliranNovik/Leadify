@@ -7,16 +7,28 @@ export async function createTeamsMeeting(accessToken: string, meetingDetails: {
   endDateTime: string;   // ISO string
   attendees?: { email: string }[];
 }) {
-  const url = 'https://graph.microsoft.com/v1.0/me/onlineMeetings';
+  // Create meeting in potential clients calendar instead of personal calendar
+  const potentialClientsCalendarEmail = 'shared-potentialclients@lawoffice.org.il';
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(potentialClientsCalendarEmail)}/calendar/events`;
+  
   const body = {
     subject: meetingDetails.subject,
-    startDateTime: meetingDetails.startDateTime,
-    endDateTime: meetingDetails.endDateTime,
-    participants: {
-      attendees: (meetingDetails.attendees || []).map(a => ({
-        upn: a.email
-      }))
-    }
+    start: {
+      dateTime: meetingDetails.startDateTime,
+      timeZone: 'UTC'
+    },
+    end: {
+      dateTime: meetingDetails.endDateTime,
+      timeZone: 'UTC'
+    },
+    attendees: (meetingDetails.attendees || []).map(a => ({
+      emailAddress: {
+        address: a.email
+      },
+      type: 'required'
+    })),
+    isOnlineMeeting: true,
+    onlineMeetingProvider: 'teamsForBusiness'
   };
 
   const response = await fetch(url, {
@@ -30,12 +42,76 @@ export async function createTeamsMeeting(accessToken: string, meetingDetails: {
 
   if (!response.ok) {
     const error = await response.json();
+    console.error('Teams meeting creation error:', error);
     throw new Error(error.error?.message || 'Failed to create Teams meeting');
   }
 
   const data = await response.json();
-  // data.joinUrl is the Teams meeting link
-  return data;
+  
+  // Return the online meeting URL if available, otherwise the join URL
+  return {
+    joinUrl: data.onlineMeeting?.joinUrl || data.webLink,
+    id: data.id,
+    onlineMeeting: data.onlineMeeting
+  };
+}
+
+export async function createStaffTeamsMeeting(
+  accessToken: string,
+  meetingDetails: {
+    subject: string;
+    startDateTime: string;
+    endDateTime: string;
+    attendees?: { email: string }[];
+  }
+) {
+  // Create meeting in staff calendar
+  const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events`;
+  
+  const body = {
+    subject: meetingDetails.subject,
+    start: {
+      dateTime: meetingDetails.startDateTime,
+      timeZone: 'UTC'
+    },
+    end: {
+      dateTime: meetingDetails.endDateTime,
+      timeZone: 'UTC'
+    },
+    attendees: (meetingDetails.attendees || []).map(a => ({
+      emailAddress: {
+        address: a.email
+      },
+      type: 'required'
+    })),
+    isOnlineMeeting: true,
+    onlineMeetingProvider: 'teamsForBusiness'
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    console.error('Staff Teams meeting creation error:', error);
+    throw new Error(error.error?.message || 'Failed to create Staff Teams meeting');
+  }
+
+  const data = await response.json();
+  
+  // Return the online meeting URL if available, otherwise the join URL
+  return {
+    joinUrl: data.onlineMeeting?.joinUrl || data.webLink,
+    id: data.id,
+    onlineMeeting: data.onlineMeeting
+  };
 }
 
 // Teams Calling Functions

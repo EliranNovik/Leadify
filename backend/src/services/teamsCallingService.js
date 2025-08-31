@@ -68,8 +68,6 @@ class TeamsCallingService {
         '@odata.context': 'https://graph.microsoft.com/v1.0/$metadata#communications/calls/$entity'
       };
 
-      console.log('[Teams Calling] Initiating call with SPA approach:', JSON.stringify(callData, null, 2));
-
       const response = await axios.post(
         'https://graph.microsoft.com/v1.0/communications/calls',
         callData,

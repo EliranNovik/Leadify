@@ -8,69 +8,77 @@ const webhookController = {
    */
   async catchFormData(req, res) {
     try {
-      console.log('Webhook received form data:', {
-        body: req.body,
-        headers: req.headers,
-        method: req.method,
-        url: req.url
-      });
-      
-      // Debug: Log the facts field specifically
-      console.log('Facts field received:', req.body.facts);
-      console.log('Facts type:', typeof req.body.facts);
+      // Log the received form data
+      const formData = {
+        name: req.body.name,
+        email: req.body.email,
+        phone: req.body.phone,
+        topic: req.body.topic,
+        facts: req.body.facts,
+        source: req.body.source || 'webhook'
+      };
 
-      // Extract form data from request body
-      const formData = req.body;
-      
       // Validate required fields
-      if (!formData.name || !formData.email) {
-        return res.status(400).json({
-          success: false,
-          error: 'Missing required fields: name and email are required'
+      if (!formData.name || !formData.email || !formData.phone) {
+        return res.status(400).json({ 
+          error: 'Missing required fields: name, email, phone' 
         });
       }
 
-      // Generate lead number (format: L + current year + sequential number)
-      const currentYear = new Date().getFullYear();
-      const { data: existingLeads } = await supabase
+      // Check for duplicate leads
+      const { data: existingLeads, error: checkError } = await supabase
         .from('leads')
-        .select('lead_number')
-        .order('lead_number', { ascending: false })
-        .limit(1);
+        .select('id, name, email, phone, created_at')
+        .or(`email.eq.${formData.email},phone.eq.${formData.phone}`)
+        .order('created_at', { ascending: false })
+        .limit(5);
 
-      let leadNumber;
-      if (existingLeads && existingLeads.length > 0) {
-        const lastLeadNumber = existingLeads[0].lead_number;
-        // Extract the numeric part from the last lead number
-        const numericPart = lastLeadNumber.replace(/^L/, '');
-        const nextNumber = parseInt(numericPart) + 1;
-        leadNumber = `L${nextNumber}`;
-      } else {
-        leadNumber = `L1`;
+      if (checkError) {
+        console.error('Error checking for duplicates:', checkError);
+        return res.status(500).json({ error: 'Database error' });
       }
 
-      // Prepare lead data - only include fields that exist in the database
+      // Check for recent duplicates (within last 24 hours)
+      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const recentDuplicates = existingLeads?.filter(lead => 
+        new Date(lead.created_at) > oneDayAgo
+      ) || [];
+
+      if (recentDuplicates.length > 0) {
+        // Store duplicate for review
+        const duplicateData = {
+          original_lead_id: recentDuplicates[0].id,
+          duplicate_data: formData,
+          created_at: new Date().toISOString()
+        };
+
+        const { error: duplicateError } = await supabase
+          .from('duplicate_leads')
+          .insert([duplicateData]);
+
+        if (duplicateError) {
+          console.error('Error storing duplicate:', duplicateError);
+        }
+
+        return res.status(409).json({ 
+          error: 'Duplicate lead detected',
+          message: 'A lead with this email or phone already exists'
+        });
+      }
+
+      // Prepare lead data
       const leadData = {
-        lead_number: leadNumber,
         name: formData.name,
         email: formData.email,
-        phone: formData.phone || null,
-        mobile: formData.mobile || null,
-        topic: formData.topic || formData.category || 'Inquiry',
+        phone: formData.phone,
+        topic: formData.topic,
+        facts: formData.facts,
+        source: formData.source,
         stage: 'created',
-        status: 'new',
-        source: formData.source || 'Web Form',
-        language: formData.language || 'English',
-        created_at: new Date().toISOString(),
-        // Store additional fields as JSON in facts column
-        facts: formData.facts || null
+        created_at: new Date().toISOString()
       };
-      
-      // Debug: Log the lead data being inserted
-      console.log('Lead data to be inserted:', leadData);
-      console.log('Facts field in lead data:', leadData.facts);
 
-      // Insert new lead into database
+      // Insert new lead
       const { data: newLead, error: insertError } = await supabase
         .from('leads')
         .insert([leadData])
@@ -78,40 +86,19 @@ const webhookController = {
         .single();
 
       if (insertError) {
-        console.error('❌ Error creating lead:', insertError);
-        return res.status(500).json({
-          success: false,
-          error: 'Failed to create lead',
-          details: insertError.message
-        });
+        console.error('Error creating lead:', insertError);
+        return res.status(500).json({ error: 'Failed to create lead' });
       }
 
-      console.log('✅ Lead created successfully:', {
-        lead_number: newLead.lead_number,
-        name: newLead.name,
-        email: newLead.email
-      });
-
-      // Return success response
-      res.status(201).json({
-        success: true,
-        message: 'Lead created successfully',
-        data: {
-          lead_number: newLead.lead_number,
-          id: newLead.id,
-          name: newLead.name,
-          email: newLead.email,
-          created_at: newLead.created_at
-        }
+      res.status(201).json({ 
+        success: true, 
+        lead_id: newLead.id,
+        message: 'Lead created successfully' 
       });
 
     } catch (error) {
-      console.error('❌ Webhook error:', error);
-      res.status(500).json({
-        success: false,
-        error: 'Internal server error',
-        message: error.message
-      });
+      console.error('Webhook error:', error);
+      res.status(500).json({ error: 'Internal server error' });
     }
   },
 

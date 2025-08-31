@@ -9,7 +9,7 @@ import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import AIChatWindow from './components/AIChatWindow';
 import EmailThreadModal from './components/EmailThreadModal';
-import { supabase } from './lib/supabase';
+import { supabase, sessionManager } from './lib/supabase';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon } from '@heroicons/react/24/outline';
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
@@ -25,6 +25,7 @@ import PipelinePage from './components/PipelinePage';
 import NewCasesPage from './pages/NewCasesPage';
 import NewHandlerCasesPage from './pages/NewHandlerCasesPage';
 import CaseManagerPageNew from './components/CaseManagerPageNew';
+import DoubleLeadsPage from './pages/DoubleLeadsPage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
 import WhatsAppPage from './pages/WhatsAppPage';
@@ -38,11 +39,15 @@ import TimelinePage from './components/TimelinePage';
 import HistoryPage from './components/HistoryPage';
 import ContractPage from './components/ContractPage';
 import PublicContractView from './pages/PublicContractView';
+import PublicLegacyContractView from './pages/PublicLegacyContractView';
 import PaymentPage from './pages/PaymentPage';
 import ProformaCreatePage from './pages/ProformaCreatePage';
 import AboutPage from './pages/AboutPage';
 import ContactPage from './pages/ContactPage';
 import HowItWorksPage from './pages/HowItWorksPage';
+import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
+import SimpleTestPage from './pages/SimpleTestPage';
+import DebugTestPage from './pages/DebugTestPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -62,16 +67,106 @@ const AppContentInner: React.FC = () => {
   const [appJustLoggedIn, setAppJustLoggedIn] = useState(false);
   const prevUser = useRef<any>(null);
 
-  const refreshClientData = useCallback(async (clientId: number) => {
+  const refreshClientData = useCallback(async (clientId: number | string) => {
     if (!clientId) return;
     try {
-      const { data, error } = await supabase
-        .from('leads')
-        .select('*, emails (*)')
-        .eq('id', clientId)
-        .single();
-      if (error) throw error;
-      setSelectedClient(data);
+      // Check if it's a legacy lead
+      if (clientId.toString().startsWith('legacy_')) {
+        const legacyId = parseInt(clientId.toString().replace('legacy_', ''));
+        console.log('🔄 Refreshing legacy client data for ID:', legacyId);
+        
+        // Fetch legacy lead data with currency information
+        const { data: legacyLead, error: legacyError } = await supabase
+          .from('leads_lead')
+          .select(`
+            *,
+            accounting_currencies!leads_lead_currency_id_fkey (
+              name,
+              iso_code
+            )
+          `)
+          .eq('id', legacyId)
+          .single();
+          
+        if (legacyError) throw legacyError;
+        
+        // Fetch emails for legacy lead
+        const { data: legacyEmails, error: emailsError } = await supabase
+          .from('emails')
+          .select('*')
+          .eq('legacy_id', legacyId)
+          .order('sent_at', { ascending: false });
+          
+        if (emailsError) {
+          console.error('Error fetching legacy emails:', emailsError);
+        }
+        
+        // Transform legacy lead to match new lead structure
+        const clientData = {
+          ...legacyLead,
+          id: `legacy_${legacyLead.id}`,
+          lead_number: String(legacyLead.id),
+          stage: String(legacyLead.stage || ''),
+          source: String(legacyLead.source_id || ''),
+          created_at: legacyLead.cdate,
+          updated_at: legacyLead.udate,
+          notes: legacyLead.notes || '',
+          special_notes: legacyLead.special_notes || '',
+          next_followup: legacyLead.next_followup || '',
+          probability: String(legacyLead.probability || ''),
+          category: String(legacyLead.category_id || legacyLead.category || ''),
+          language: String(legacyLead.language_id || ''),
+          balance: String(legacyLead.total || ''),
+          balance_currency: legacyLead.accounting_currencies?.name || (() => {
+            // Fallback currency mapping based on currency_id
+            switch (legacyLead.currency_id) {
+              case 1: return '₪';
+              case 2: return '€';
+              case 3: return '$';
+              case 4: return '£';
+              default: return '₪';
+            }
+          })(),
+          lead_type: 'legacy',
+          client_country: null,
+          emails: legacyEmails || [],
+          closer: null,
+          handler: null,
+          unactivation_reason: null,
+          deactivate_note: legacyLead.deactivate_note || null,
+        };
+        
+        console.log('✅ Legacy client data refreshed:', { 
+          emailsFound: legacyEmails?.length || 0,
+          clientId: clientData.id 
+        });
+        
+        // Check if this should be shown as unactivated view
+        const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
+        const unactivationReason = isLegacy ? clientData.deactivate_note : clientData.unactivation_reason;
+        const isUnactivated = isLegacy ? 
+          (String(clientData.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
+          ((unactivationReason && unactivationReason.trim() !== '') || false);
+        
+        console.log('🔍 App.tsx - Legacy unactivation check:', {
+          isLegacy,
+          stage: clientData.stage,
+          deactivate_note: clientData.deactivate_note,
+          unactivation_reason: clientData.unactivation_reason,
+          isUnactivated
+        });
+        
+        setSelectedClient(clientData);
+      } else {
+        // Handle new leads
+        const { data, error } = await supabase
+          .from('leads')
+          .select('*, emails (*)')
+          .eq('id', clientId)
+          .single();
+        if (error) throw error;
+        setSelectedClient(data);
+      }
     } catch (error) {
       console.error('Error refreshing client data:', error);
     }
@@ -94,6 +189,23 @@ const AppContentInner: React.FC = () => {
     prevUser.current = user;
   }, [user]);
 
+  // Set up session monitoring with refresh token support
+  useEffect(() => {
+    if (user) {
+      // Set up periodic session check with automatic refresh
+      const checkInterval = setInterval(async () => {
+        const session = await sessionManager.getSession();
+        if (!session) {
+          // Session expired and refresh failed, user will be logged out
+        } else {
+          // Session is valid, continue monitoring
+        }
+      }, 10 * 60 * 1000); // Check every 10 minutes
+
+      return () => clearInterval(checkInterval);
+    }
+  }, [user]);
+
   const authUser = user || msalAccount;
 
   // Don't block the app on auth loading - allow it to render immediately
@@ -106,6 +218,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/contact" element={<ContactPage />} />
       <Route path="/how-it-works" element={<HowItWorksPage />} />
       <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
+      <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
       <Route path="/payment/:token" element={<PaymentPage />} />
       <Route
         path="/*"
@@ -148,6 +261,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/new-cases" element={<NewCasesPage />} />
                     <Route path="/new-handler-cases" element={<NewHandlerCasesPage />} />
                     <Route path="/case-manager" element={<CaseManagerPageNew />} />
+                    <Route path="/double-leads" element={<DoubleLeadsPage />} />
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />
                     <Route path="/whatsapp" element={<WhatsAppPage />} />
@@ -157,6 +271,9 @@ const AppContentInner: React.FC = () => {
                     <Route path="/proforma/create/:paymentId" element={<ProformaCreatePage />} />
                     <Route path="/reports" element={<ReportsPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
+                    <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
+                    <Route path="/simple-test" element={<SimpleTestPage />} />
+                    <Route path="/debug-test" element={<DebugTestPage />} />
                   </Routes>
                 </main>
               </div>

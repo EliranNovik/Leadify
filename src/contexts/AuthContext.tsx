@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, sessionManager } from '../lib/supabase';
 
 interface AuthState {
   user: any;
@@ -11,13 +11,15 @@ interface AuthState {
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
 
-export const useAuthContext = () => {
+function useAuthContext() {
   const context = useContext(AuthContext);
   if (context === undefined) {
     throw new Error('useAuthContext must be used within an AuthProvider');
   }
   return context;
-};
+}
+
+export { useAuthContext };
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [authState, setAuthState] = useState<AuthState>({
@@ -31,12 +33,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Add a fallback timeout to prevent infinite loading
   useEffect(() => {
     const fallbackTimeout = setTimeout(() => {
-      console.log('Auth initialization timeout - allowing app to proceed');
-      setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
+      if (!authState.isInitialized) {
+        // Auth initialization timeout - allowing app to proceed
+        setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
+      }
     }, 2000); // 2 second fallback
 
     return () => clearTimeout(fallbackTimeout);
-  }, []);
+  }, [authState.isInitialized]);
 
   const fetchUserDetails = useCallback(async (user: any, retryCount = 0) => {
     if (!user?.email) return;
@@ -95,10 +99,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const handleAuthStateChange = useCallback(async (event: string, session: any) => {
-    console.log('Auth state change:', event, session?.user?.email);
     
     if (event === 'SIGNED_IN' && session?.user) {
-      console.log('User signed in, updating state');
       setAuthState(prev => ({ 
         ...prev, 
         user: session.user,
@@ -108,7 +110,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       // Fetch user details in background
       fetchUserDetails(session.user);
     } else if (event === 'SIGNED_OUT') {
-      console.log('User signed out, clearing state');
       setAuthState(prev => ({
         ...prev,
         user: null,
@@ -118,7 +119,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isInitialized: true
       }));
     } else if (event === 'INITIAL_SESSION' && session?.user) {
-      console.log('Initial session found, updating state');
       setAuthState(prev => ({ 
         ...prev, 
         user: session.user,
@@ -133,20 +133,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     const initializeAuth = async () => {
       try {
-        console.log('Initializing auth...');
         
         // Set up auth state change listener FIRST
         const { data: { subscription } } = supabase.auth.onAuthStateChange(handleAuthStateChange);
         
-        // Try to get session with timeout
+        // Try to get session with proper session management
         try {
-          const sessionPromise = supabase.auth.getSession();
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Session check timeout')), 1500)
-          );
-          
-          const { data: { session }, error } = await Promise.race([sessionPromise, timeoutPromise]) as any;
-          console.log('Session check result:', { session, error, hasUser: !!session?.user });
+          const session = await sessionManager.getSession();
           
           if (session?.user) {
             setAuthState(prev => ({ ...prev, user: session.user }));
@@ -154,15 +147,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             fetchUserDetails(session.user);
           }
         } catch (sessionError) {
-          console.log('Session check failed, but auth listener is active:', sessionError);
           // Don't fail completely - the auth listener will handle state changes
         }
         
         setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
         
-        return () => subscription.unsubscribe();
+        return () => {
+          subscription.unsubscribe();
+        };
       } catch (error) {
-        console.error('Error initializing auth:', error);
         // Even if auth fails, don't block the app
         setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
       }

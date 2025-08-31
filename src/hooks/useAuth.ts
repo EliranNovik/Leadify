@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, sessionManager } from '../lib/supabase';
 
 interface User {
   id: string;
@@ -72,7 +72,6 @@ export const useAuth = () => {
       // Retry logic for network errors
       const errorMessage = error instanceof Error ? error.message : String(error);
       if (retryCount < 3 && (errorMessage.includes('network') || errorMessage.includes('timeout'))) {
-        console.log(`Retrying user details fetch (attempt ${retryCount + 1})`);
         setTimeout(() => fetchUserDetails(user, retryCount + 1), 1000 * (retryCount + 1));
         return;
       }
@@ -87,8 +86,6 @@ export const useAuth = () => {
   }, []);
 
   const handleAuthStateChange = useCallback(async (event: string, session: any) => {
-    console.log('Auth state change:', event, session?.user?.email);
-    
     try {
       switch (event) {
         case 'INITIAL_SESSION':
@@ -115,7 +112,6 @@ export const useAuth = () => {
           break;
 
         case 'SIGNED_OUT':
-          console.log('User signed out');
           setAuthState({
             user: null,
             userFullName: null,
@@ -127,7 +123,6 @@ export const useAuth = () => {
           break;
 
         case 'TOKEN_REFRESHED':
-          console.log('Token refreshed successfully');
           if (session?.user) {
             setAuthState(prev => ({ ...prev, user: session.user }));
             await fetchUserDetails(session.user);
@@ -202,26 +197,23 @@ export const useAuth = () => {
     };
   }, [handleAuthStateChange]);
 
-  // Auto-refresh token mechanism
+  // Session monitoring with refresh token support
   useEffect(() => {
     if (!authState.user) return;
 
-    const refreshToken = async () => {
+    const monitorSession = async () => {
       try {
-        const { data, error } = await supabase.auth.refreshSession();
-        if (error) {
-          console.error('Token refresh failed:', error);
+        const session = await sessionManager.getSession();
+        if (!session) {
           await supabase.auth.signOut();
-        } else {
-          console.log('Token refreshed automatically');
         }
       } catch (error) {
-        console.error('Error refreshing token:', error);
+        console.error('Error monitoring session:', error);
       }
     };
 
-    const refreshInterval = setInterval(refreshToken, 50 * 60 * 1000);
-    return () => clearInterval(refreshInterval);
+    const monitorInterval = setInterval(monitorSession, 50 * 60 * 1000);
+    return () => clearInterval(monitorInterval);
   }, [authState.user]);
 
   return authState;

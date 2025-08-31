@@ -256,7 +256,6 @@ const AISuggestions = forwardRef((props, ref) => {
           navigate('/clients');
           break;
         case 'prepare docs':
-        case 'prepare docs':
           // Navigate to expert page
           navigate('/expert');
           break;

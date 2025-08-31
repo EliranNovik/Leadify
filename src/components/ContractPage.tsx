@@ -25,11 +25,11 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     result = result.replace(/{{applicant_count}}/g, customPricing.applicant_count?.toString() || '');
     result = result.replace(/{{total_amount}}/g, customPricing.total_amount?.toLocaleString() || '');
     result = result.replace(/{{final_amount}}/g, customPricing.final_amount?.toLocaleString() || '');
-    
+
     // Handle discount placeholders - only show if there's an actual discount
     const discountPercentage = Number(customPricing.discount_percentage) || 0;
     const discountAmount = Number(customPricing.discount_amount) || 0;
-    
+
     if (discountPercentage > 0 && discountAmount > 0) {
       // Only replace discount placeholders if there's an actual discount
       result = result.replace(/{{discount_percentage}}/g, discountPercentage.toString());
@@ -41,23 +41,119 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
       result = result.replace(/.*{{discount_percentage}}.*/g, ''); // Remove lines with discount percentage placeholder
       result = result.replace(/.*{{discount_amount}}.*/g, ''); // Remove lines with discount amount placeholder
     }
-    
+
     result = result.replace(/{{currency}}/g, customPricing.currency || '');
-    
+
     // Handle payment plan placeholders
     if (customPricing.payment_plan && Array.isArray(customPricing.payment_plan)) {
       customPricing.payment_plan.forEach((row: any, index: number) => {
         const placeholder = `{{payment_${index + 1}_percent}}`;
         const valuePlaceholder = `{{payment_${index + 1}_value}}`;
         const duePlaceholder = `{{payment_${index + 1}_due}}`;
-        
+
+        // Handle the new value format "value + VAT" or just "value"
+        let displayValue = '0';
+        if (row.value) {
+          if (typeof row.value === 'string' && row.value.includes('+')) {
+            // Parse "value + VAT" format
+            const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+            const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
+            displayValue = totalValue.toLocaleString();
+          } else {
+            // Handle numeric value or simple string
+            const numValue = parseFloat(row.value) || 0;
+            displayValue = numValue.toLocaleString();
+          }
+        }
+
         result = result.replace(new RegExp(placeholder, 'g'), row.percent?.toString() || '0');
-        result = result.replace(new RegExp(valuePlaceholder, 'g'), `${customPricing.currency} ${row.value?.toLocaleString() || '0'}`);
+        result = result.replace(new RegExp(valuePlaceholder, 'g'), `${customPricing.currency} ${displayValue}`);
         result = result.replace(new RegExp(duePlaceholder, 'g'), row.payment_order || row.label || '');
       });
     }
+
+    // Handle payment plan row placeholders
+    if (result && result.includes('{{payment_plan_row}}') && customPricing && customPricing.payment_plan) {
+      // Handle specific payment plan row placeholders like {{payment_1_row}}, {{payment_2_row}}, etc.
+      customPricing.payment_plan.forEach((row: any, index: number) => {
+        const specificPlaceholder = `{{payment_${index + 1}_row}}`;
+        if (result.includes(specificPlaceholder)) {
+          // Handle the new value format "value + VAT" or just "value"
+          let displayValue = '0';
+          if (row.value) {
+            if (typeof row.value === 'string' && row.value.includes('+')) {
+              // Parse "value + VAT" format
+              const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+              const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
+              displayValue = totalValue.toLocaleString();
+            } else {
+              // Handle numeric value or simple string
+              const numValue = parseFloat(row.value) || 0;
+              displayValue = numValue.toLocaleString();
+            }
+          }
+          result = result.replace(new RegExp(specificPlaceholder, 'g'), `${row.percent}% = ${customPricing.currency} ${displayValue}`);
+        }
+      });
+
+      // Also handle generic {{payment_plan_row}} placeholders (sequential replacement)
+      let rowIndex = 0;
+      result = result.replace(/\{\{payment_plan_row\}\}/g, (match: string) => {
+        const row = customPricing.payment_plan[rowIndex];
+        rowIndex++;
+        if (row) {
+          // Use the exact same value format as shown in the payment plan panel
+          let displayValue = '0';
+          if (row.value) {
+            if (typeof row.value === 'string' && row.value.includes('+')) {
+              // Keep the "value + VAT" format exactly as it appears in the panel
+              displayValue = row.value;
+            } else {
+              // Handle numeric value or simple string
+              const numValue = parseFloat(row.value) || 0;
+              displayValue = numValue.toString();
+            }
+          }
+          return `${row.percent}% = ${customPricing.currency} ${displayValue}`;
+        }
+        return '';
+      });
+    }
+
+    // Handle pricing tiers
+    if (customPricing.pricing_tiers) {
+      const currency = customPricing.currency || 'USD';
+      const tierStructure = [
+        { key: '1', label: 'For one applicant' },
+        { key: '2', label: 'For 2 applicants' },
+        { key: '3', label: 'For 3 applicants' },
+        { key: '4-7', label: 'For 4-7 applicants' },
+        { key: '8-9', label: 'For 8-9 applicants' },
+        { key: '10-15', label: 'For 10-15 applicants' },
+        { key: '16+', label: 'For 16 applicants or more' }
+      ];
+
+      // Handle {{price_per_applicant}} placeholders
+      tierStructure.forEach(tier => {
+        const lineRegex = new RegExp(`(${tier.label}[^\n]*?):?\s*\{\{price_per_applicant\}\}`, 'g');
+        result = result.replace(lineRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+      });
+
+      // Also handle specific tier placeholders that might be in the template
+      tierStructure.forEach(tier => {
+        const placeholder = `{{price_${tier.key}}}`;
+        result = result.replace(new RegExp(placeholder, 'g'), `${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+      });
+
+      // Handle any existing pricing lines that need to be updated
+      tierStructure.forEach(tier => {
+        // Replace lines that already have a price but need updating
+        const existingPriceRegex = new RegExp(`(${tier.label}[^\\n]*?):?\\s*[₪$]\\s*[\\d,]+`, 'g');
+        result = result.replace(existingPriceRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+      });
+    }
   }
-  
+
   // Use contact information if available, otherwise fall back to client
   if (contract && contract.contact_name) {
     result = result.replace(/{{client_name}}/g, contract.contact_name || '');
@@ -68,27 +164,269 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     result = result.replace(/{{client_phone}}/g, client.phone || client.mobile || '');
     result = result.replace(/{{client_email}}/g, client.email || '');
   }
-  
+
   result = result.replace(/{{date}}/g, new Date().toLocaleDateString());
   return result;
 }
 
-let globalTextId = 1;
-let globalSignatureId = 1;
-function preprocessTemplatePlaceholders(content: any): any {
+// Function to fill placeholders in TipTap content structure (preserves {{text}} and {{signature}})
+function fillPlaceholdersInTiptapContent(content: any, customPricing: any, client: any, contract?: any, editing?: boolean, globalRowIndex?: { current: number }): any {
   if (!content) return content;
+
   if (Array.isArray(content)) {
-    return content.map(preprocessTemplatePlaceholders);
+    const processedArray = content.map(item => fillPlaceholdersInTiptapContent(item, customPricing, client, contract, editing, globalRowIndex));
+    // Filter out undefined values and empty text nodes
+    return processedArray.filter(item => {
+      if (item === undefined || item === null) return false;
+      if (item.type === 'text') {
+        return item.text && item.text.trim() !== '';
+      }
+      return true;
+    });
   }
+
   if (content.type === 'text' && content.text) {
-    let newText = content.text.replace(/\{\{text\}\}/g, () => `{{text:text-${globalTextId++}}}`)
-                             .replace(/\{\{signature\}\}/g, () => `{{signature:signature-${globalSignatureId++}}}`);
-    return { ...content, text: newText };
+    // Fill all placeholders except {{text}} and {{signature}} (preserve those for interactive elements)
+    let text = content.text;
+
+    // Apply all the same placeholder replacements as fillAllPlaceholders but skip {{text}} and {{signature}}
+    if (customPricing) {
+      text = text.replace(/{{applicant_count}}/g, customPricing.applicant_count?.toString() || '');
+      text = text.replace(/{{total_amount}}/g, customPricing.total_amount?.toLocaleString() || '');
+      text = text.replace(/{{final_amount}}/g, customPricing.final_amount?.toLocaleString() || '');
+
+      // Handle discount placeholders
+      const discountPercentage = Number(customPricing.discount_percentage) || 0;
+      const discountAmount = Number(customPricing.discount_amount) || 0;
+
+      if (discountPercentage > 0 && discountAmount > 0) {
+        text = text.replace(/{{discount_percentage}}/g, discountPercentage.toString());
+        text = text.replace(/{{discount_amount}}/g, discountAmount.toLocaleString());
+      } else {
+        text = text.replace(/.*discount.*total.*%.*/gi, '');
+        text = text.replace(/.*The client receives a discount.*/gi, '');
+        text = text.replace(/.*{{discount_percentage}}.*/g, '');
+        text = text.replace(/.*{{discount_amount}}.*/g, '');
+      }
+
+      text = text.replace(/{{currency}}/g, customPricing.currency || '');
+
+      // Handle payment plan placeholders
+      if (customPricing.payment_plan && Array.isArray(customPricing.payment_plan)) {
+        customPricing.payment_plan.forEach((row: any, index: number) => {
+          const placeholder = `{{payment_${index + 1}_percent}}`;
+          const valuePlaceholder = `{{payment_${index + 1}_value}}`;
+          const duePlaceholder = `{{payment_${index + 1}_due}}`;
+
+          // Handle the new value format "value + VAT" or just "value"
+          let displayValue = '0';
+          if (row.value) {
+            if (typeof row.value === 'string' && row.value.includes('+')) {
+              // Parse "value + VAT" format
+              const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+              const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
+              displayValue = totalValue.toLocaleString();
+            } else {
+              // Handle numeric value or simple string
+              const numValue = parseFloat(row.value) || 0;
+              displayValue = numValue.toLocaleString();
+            }
+          }
+
+          text = text.replace(new RegExp(placeholder, 'g'), row.percent?.toString() || '0');
+          text = text.replace(new RegExp(valuePlaceholder, 'g'), `${customPricing.currency} ${displayValue}`);
+          text = text.replace(new RegExp(duePlaceholder, 'g'), row.payment_order || row.label || '');
+        });
+      }
+
+      // Handle payment plan row placeholders
+      if (text && text.includes('{{payment_plan_row}}') && customPricing && customPricing.payment_plan) {
+        // Handle specific payment plan row placeholders like {{payment_1_row}}, {{payment_2_row}}, etc.
+        customPricing.payment_plan.forEach((row: any, index: number) => {
+          const specificPlaceholder = `{{payment_${index + 1}_row}}`;
+          if (text.includes(specificPlaceholder)) {
+            // Handle the new value format "value + VAT" or just "value"
+            let displayValue = '0';
+            if (row.value) {
+              if (typeof row.value === 'string' && row.value.includes('+')) {
+                // Parse "value + VAT" format
+                const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+                const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
+                displayValue = totalValue.toLocaleString();
+              } else {
+                // Handle numeric value or simple string
+                const numValue = parseFloat(row.value) || 0;
+                displayValue = numValue.toLocaleString();
+              }
+            }
+            text = text.replace(new RegExp(specificPlaceholder, 'g'), `${row.percent}% = ${customPricing.currency} ${displayValue}`);
+          }
+        });
+
+        // Also handle generic {{payment_plan_row}} placeholders (sequential replacement)
+        if (!globalRowIndex) globalRowIndex = { current: 0 };
+        text = text.replace(/\{\{payment_plan_row\}\}/g, (match: string) => {
+          const row = customPricing.payment_plan[globalRowIndex!.current];
+          globalRowIndex!.current++;
+          if (row) {
+            // Use the exact same value format as shown in the payment plan panel
+            let displayValue = '0';
+            if (row.value) {
+              if (typeof row.value === 'string' && row.value.includes('+')) {
+                // Keep the "value + VAT" format exactly as it appears in the panel
+                displayValue = row.value;
+              } else {
+                // Handle numeric value or simple string
+                const numValue = parseFloat(row.value) || 0;
+                displayValue = numValue.toString();
+              }
+            }
+            return `${row.percent}% = ${customPricing.currency} ${displayValue}`;
+          }
+          return '';
+        });
+      }
+
+      // Handle pricing tiers
+      if (customPricing.pricing_tiers) {
+        const currency = customPricing.currency || 'USD';
+        const tierStructure = [
+          { key: '1', label: 'For one applicant' },
+          { key: '2', label: 'For 2 applicants' },
+          { key: '3', label: 'For 3 applicants' },
+          { key: '4-7', label: 'For 4-7 applicants' },
+          { key: '8-9', label: 'For 8-9 applicants' },
+          { key: '10-15', label: 'For 10-15 applicants' },
+          { key: '16+', label: 'For 16 applicants or more' }
+        ];
+
+        // Handle {{price_per_applicant}} placeholders
+        tierStructure.forEach(tier => {
+          const lineRegex = new RegExp(`(${tier.label}[^\n]*?):?\s*\{\{price_per_applicant\}\}`, 'g');
+          text = text.replace(lineRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+        });
+
+        // Also handle specific tier placeholders that might be in the template
+        tierStructure.forEach(tier => {
+          const placeholder = `{{price_${tier.key}}}`;
+          text = text.replace(new RegExp(placeholder, 'g'), `${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+        });
+
+        // Handle any existing pricing lines that need to be updated
+        tierStructure.forEach(tier => {
+          // Replace lines that already have a price but need updating
+          const existingPriceRegex = new RegExp(`(${tier.label}[^\\n]*?):?\\s*[₪$]\\s*[\\d,]+`, 'g');
+          text = text.replace(existingPriceRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+        });
+      }
+    }
+
+    // Handle client information
+    if (contract && contract.contact_name) {
+      text = text.replace(/{{client_name}}/g, contract.contact_name || '');
+      text = text.replace(/{{client_phone}}/g, contract.contact_phone || contract.contact_mobile || '');
+      text = text.replace(/{{client_email}}/g, contract.contact_email || '');
+    } else if (client) {
+      text = text.replace(/{{client_name}}/g, client.name || '');
+      text = text.replace(/{{client_phone}}/g, client.phone || client.mobile || '');
+      text = text.replace(/{{client_email}}/g, client.email || '');
+    }
+
+    text = text.replace(/{{date}}/g, new Date().toLocaleDateString());
+
+    // Replace {{text}} and {{signature}} with styled placeholders for view mode
+    if (!editing) {
+      text = text.replace(/\{\{text\}\}/g, '<span class="text-field-placeholder">[Text Field]</span>');
+      text = text.replace(/\{\{signature\}\}/g, '<span class="signature-placeholder"></span>');
+    }
+
+    // Skip empty text nodes by returning undefined (will be filtered out)
+    if (!text || text.trim() === '') {
+      return undefined;
+    }
+
+    return { ...content, text };
   }
+
   if (content.content) {
-    return { ...content, content: preprocessTemplatePlaceholders(content.content) };
+    const processedContent = fillPlaceholdersInTiptapContent(content.content, customPricing, client, contract, editing, globalRowIndex);
+    // Filter out undefined/null values (empty text nodes)
+    if (Array.isArray(processedContent)) {
+      const filteredContent = processedContent.filter(item => item !== undefined && item !== null);
+      return { ...content, content: filteredContent };
+    }
+    return { ...content, content: processedContent };
   }
+
   return content;
+}
+
+// Helper function to clean up TipTap content and remove empty nodes
+function cleanTiptapContent(content: any): any {
+  if (!content) return content;
+
+  if (Array.isArray(content)) {
+    const cleanedArray = content.map(item => cleanTiptapContent(item));
+    return cleanedArray.filter(item => {
+      if (item === undefined || item === null) return false;
+      if (item.type === 'text') {
+        return item.text && item.text.trim() !== '';
+      }
+      if (item.type === 'paragraph') {
+        return item.content && item.content.length > 0;
+      }
+      return true;
+    });
+  }
+
+  if (content.type === 'text') {
+    if (!content.text || content.text.trim() === '') {
+      return null;
+    }
+    return content;
+  }
+
+  if (content.content) {
+    const cleanedContent = cleanTiptapContent(content.content);
+    if (Array.isArray(cleanedContent)) {
+      const filteredContent = cleanedContent.filter(item => item !== null);
+      if (filteredContent.length === 0) {
+        return null;
+      }
+      return { ...content, content: filteredContent };
+    }
+    return { ...content, content: cleanedContent };
+  }
+
+  return content;
+}
+
+function preprocessTemplatePlaceholders(content: any): any {
+  console.log('🔧 preprocessTemplatePlaceholders called with:', content);
+  let textId = 1;
+  let signatureId = 1;
+
+  function processContent(content: any): any {
+    if (!content) return content;
+    if (Array.isArray(content)) {
+      return content.map(processContent);
+    }
+    if (content.type === 'text' && content.text) {
+      console.log('🔧 Processing text node:', content.text);
+      let newText = content.text.replace(/\{\{text\}\}/g, () => `{{text:text-${textId++}}}`)
+        .replace(/\{\{signature\}\}/g, () => `{{signature:signature-${signatureId++}}}`);
+      console.log('🔧 Processed text node:', newText);
+      return { ...content, text: newText };
+    }
+    if (content.content) {
+      return { ...content, content: processContent(content.content) };
+    }
+    return content;
+  }
+
+  const result = processContent(content);
+  console.log('🔧 preprocessTemplatePlaceholders result:', result);
+  return result;
 }
 
 // Function to convert template content to preserve line breaks
@@ -97,7 +435,7 @@ function convertTemplateToLineBreaks(content: any): any {
   if (Array.isArray(content)) {
     return content.map(convertTemplateToLineBreaks);
   }
-  
+
   // If this is a paragraph with multiple text nodes, combine them with line breaks
   if (content.type === 'paragraph' && content.content && content.content.length > 1) {
     const textNodes = content.content.filter((node: any) => node.type === 'text');
@@ -110,7 +448,7 @@ function convertTemplateToLineBreaks(content: any): any {
       };
     }
   }
-  
+
   if (content.content) {
     return { ...content, content: convertTemplateToLineBreaks(content.content) };
   }
@@ -142,17 +480,17 @@ const ContractPage: React.FC = () => {
   const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber: string; contractId?: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  
+
   // Extract leadNumber from URL path manually
   const leadNumber = paramLeadNumber || location.pathname.split('/')[2];
   // Extract contractId from URL if available
   const contractId = paramContractId || new URLSearchParams(location.search).get('contractId');
-  
+
   const [contract, setContract] = useState<any>(null);
   const [template, setTemplate] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [viewAsClient, setViewAsClient] = useState(false);
+
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
   const [editing, setEditing] = useState(false);
   const [contractStatuses, setContractStatuses] = useState<{ [id: string]: { status: string; signed_at?: string } }>({});
@@ -175,34 +513,115 @@ const ContractPage: React.FC = () => {
     ],
     content: { type: 'doc', content: [] }, // Default empty content
     editable: false,
+    parseOptions: {
+      preserveWhitespace: 'full',
+    },
   });
 
   // Add at the top, after useState declarations
   const [clientInputs, setClientInputs] = useState<{ [key: string]: string }>({});
 
+  // Fetch client data
+  useEffect(() => {
+    const fetchClient = async () => {
+      try {
+        console.log('ContractPage: fetchClient called with leadNumber:', leadNumber);
+
+        // Check if this is a legacy lead
+        const isLegacyLead = leadNumber?.toString().startsWith('legacy_') ||
+          (!isNaN(Number(leadNumber)));
+
+        console.log('ContractPage: fetchClient - isLegacyLead:', isLegacyLead);
+
+        let clientData = null;
+
+        if (isLegacyLead) {
+          // For legacy leads, fetch from leads_lead table
+          const legacyId = leadNumber.toString().replace('legacy_', '');
+          console.log('ContractPage: fetchClient - fetching from leads_lead with id:', legacyId);
+
+          const { data: legacyClient, error: legacyError } = await supabase
+            .from('leads_lead')
+            .select('*')
+            .eq('id', legacyId)
+            .single();
+
+          if (legacyError) {
+            console.error('ContractPage: Error fetching legacy client:', legacyError);
+            return;
+          }
+
+          if (legacyClient) {
+            // Transform legacy client to match new client structure
+            clientData = {
+              ...legacyClient,
+              id: `legacy_${legacyClient.id}`,
+              lead_number: String(legacyClient.id),
+              stage: String(legacyClient.stage || ''),
+              source: String(legacyClient.source_id || ''),
+              created_at: legacyClient.cdate,
+              updated_at: legacyClient.udate,
+              notes: legacyClient.notes || '',
+              special_notes: legacyClient.special_notes || '',
+              next_followup: legacyClient.next_followup || '',
+              probability: String(legacyClient.probability || ''),
+              category: String(legacyClient.category_id || legacyClient.category || ''),
+              language: String(legacyClient.language_id || ''),
+              balance: String(legacyClient.total || ''),
+              lead_type: 'legacy',
+              client_country: null,
+              closer: null,
+              handler: null,
+              unactivation_reason: null,
+            };
+          }
+        } else {
+          // For new leads, fetch from leads table
+          console.log('ContractPage: fetchClient - fetching from leads with id:', leadNumber);
+
+          const { data: newClient, error: newError } = await supabase
+            .from('leads')
+            .select('*')
+            .eq('lead_number', leadNumber)
+            .single();
+
+          if (newError) {
+            console.error('ContractPage: Error fetching new client:', newError);
+            return;
+          }
+
+          clientData = newClient;
+        }
+
+        console.log('ContractPage: fetchClient - setting client data:', clientData);
+        setClient(clientData);
+
+      } catch (error) {
+        console.error('ContractPage: Error in fetchClient:', error);
+      }
+    };
+
+    if (leadNumber) {
+      fetchClient();
+    }
+  }, [leadNumber]);
+
   // Fetch contract data
   useEffect(() => {
-    if (!leadNumber) {
-      return;
-    }
-    
-    let mounted = true;
-    (async () => {
+    const fetchContract = async () => {
       try {
-        // First get the lead by lead_number
-        const { data: leadData, error: leadError } = await supabase
-          .from('leads')
-          .select('id, name, email, phone, mobile')
-          .eq('lead_number', leadNumber)
-          .single();
-          
-        if (leadError) {
-          console.error('Error fetching lead:', leadError);
-          throw leadError;
-        }
-        
-        // Then get the specific contract or the most recent contract for this lead
-        let contractQuery = supabase
+        console.log('ContractPage: fetchContract called with:', { leadNumber, contractId });
+
+        // Check if this is a legacy lead
+        // Legacy leads can be identified by:
+        // 1. Starting with 'legacy_' prefix
+        // 2. Being a numeric string (UUIDs are not numeric)
+        const isLegacyLead = leadNumber?.toString().startsWith('legacy_') ||
+          (!isNaN(Number(leadNumber)));
+
+        console.log('ContractPage: isLegacyLead:', isLegacyLead, 'leadNumber:', leadNumber);
+
+        let query = supabase
           .from('contracts')
           .select(`
             *,
@@ -211,173 +630,134 @@ const ContractPage: React.FC = () => {
               name,
               content
             )
-          `)
-          .eq('client_id', leadData.id);
-        
-        if (contractId) {
-          // If contractId is provided, fetch that specific contract
-          contractQuery = contractQuery.eq('id', contractId);
+          `);
+
+        if (isLegacyLead) {
+          // For legacy leads, use legacy_id
+          const legacyId = leadNumber.toString().replace('legacy_', '');
+          console.log('ContractPage: Using legacy_id:', legacyId);
+          query = query.eq('legacy_id', legacyId);
         } else {
-          // Otherwise, get the most recent contract
-          contractQuery = contractQuery.order('created_at', { ascending: false }).limit(1);
-        }
-        
-        const { data: contractData, error: contractError } = await contractQuery.single();
-          
-        if (contractError) {
-          console.error('Error fetching contract:', contractError);
-          // If no contract found, still set the client and show a message
-          if (contractError.code === 'PGRST116') {
-            if (mounted) {
-              setClient(leadData);
-              setContract(null);
-              setTemplate(null);
-              setLoading(false);
-            }
+          // For new leads, we need to get the UUID from the leads table first
+          console.log('ContractPage: Fetching UUID for lead_number:', leadNumber);
+          const { data: leadData, error: leadError } = await supabase
+            .from('leads')
+            .select('id')
+            .eq('lead_number', leadNumber)
+            .single();
+
+          if (leadError) {
+            console.error('ContractPage: Error fetching lead UUID:', leadError);
             return;
           }
-          throw contractError;
+
+          if (!leadData) {
+            console.error('ContractPage: No lead found for lead_number:', leadNumber);
+            return;
+          }
+
+          console.log('ContractPage: Using client_id (UUID):', leadData.id);
+          query = query.eq('client_id', leadData.id);
         }
-        
-        if (mounted) {
-          setContract(contractData);
-          setTemplate(contractData.contract_templates);
-          setClient(leadData);
-          setLoading(false);
 
-          // If contract is signed, ensure we have the latest data including filled-in client inputs
-          if (contractData.status === 'signed' && contractData.custom_content) {
-            console.log('Contract is signed, displaying filled-in content:', contractData.custom_content);
-            console.log('Full contract data:', contractData);
-            console.log('Custom content details:', JSON.stringify(contractData.custom_content, null, 2));
-          }
+        // If we have a specific contractId, filter by that too
+        if (contractId) {
+          console.log('ContractPage: Also filtering by contractId:', contractId);
+          query = query.eq('id', contractId);
+        }
 
-          // Initialize customPricing with tier-based pricing structure
-          if (!contractData.custom_pricing) {
-            const applicantCount = contractData.applicant_count || 1;
-            const isIsraeli = contractData.client_country === 'IL';
-            const currency = isIsraeli ? 'NIS' : 'USD';
-            
-            // Initialize pricing tiers to match contract structure
-            const pricingTiers: { [key: string]: number } = {};
-            
-            // Define the tier structure that matches the contract
-            const tierStructure = [
-              { key: '1', label: 'For one applicant', count: 1 },
-              { key: '2', label: 'For 2 applicants', count: 2 },
-              { key: '3', label: 'For 3 applicants', count: 3 },
-              { key: '4-7', label: 'For 4-7 applicants', count: 4 },
-              { key: '8-9', label: 'For 8-9 applicants', count: 8 },
-              { key: '10-15', label: 'For 10-15 applicants', count: 10 },
-              { key: '16+', label: 'For 16 applicants or more', count: 16 }
-            ];
-            
-            tierStructure.forEach(tier => {
-              const priceTier = getPricePerApplicant(tier.count, isIsraeli);
-              const pricePerApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
-              pricingTiers[tier.key] = pricePerApplicant;
-            });
-            
-            // Calculate current total based on selected applicant count
-            const getCurrentTierKey = (count: number) => {
-              if (count === 1) return '1';
-              if (count === 2) return '2';
-              if (count === 3) return '3';
-              if (count >= 4 && count <= 7) return '4-7';
-              if (count >= 8 && count <= 9) return '8-9';
-              if (count >= 10 && count <= 15) return '10-15';
-              return '16+';
-            };
-            
-            const currentTierKey = getCurrentTierKey(applicantCount);
-            const currentPricePerApplicant = pricingTiers[currentTierKey];
-            const total = currentPricePerApplicant * applicantCount;
-            const discount = 0;
-            const discountAmount = 0;
-            const finalAmount = total;
-            
-            // Default payment plan: 50/25/25
-            const paymentPlan = [
-              { percent: 50, due_date: 'On signing', value: Math.round(finalAmount * 0.5) },
-              { percent: 25, due_date: '30 days', value: Math.round(finalAmount * 0.25) },
-              { percent: 25, due_date: '60 days', value: Math.round(finalAmount * 0.25) },
-            ];
-            
-            setCustomPricing({
-              applicant_count: applicantCount,
-              pricing_tiers: pricingTiers,
-              total_amount: total,
-              discount_percentage: discount,
-              discount_amount: discountAmount,
-              final_amount: finalAmount,
-              payment_plan: paymentPlan,
-              currency,
-            });
-          } else {
-            // Check if existing custom_pricing has pricing_tiers, if not, initialize them
-            const existingPricing = contractData.custom_pricing;
-            if (!existingPricing.pricing_tiers) {
-              const applicantCount = existingPricing.applicant_count || contractData.applicant_count || 1;
-              const isIsraeli = contractData.client_country === 'IL';
-              
-              // Initialize pricing tiers from existing data or defaults
-              const pricingTiers: { [key: string]: number } = {};
-              
-              // Define the tier structure that matches the contract
-              const tierStructure = [
-                { key: '1', label: 'For one applicant', count: 1 },
-                { key: '2', label: 'For 2 applicants', count: 2 },
-                { key: '3', label: 'For 3 applicants', count: 3 },
-                { key: '4-7', label: 'For 4-7 applicants', count: 4 },
-                { key: '8-9', label: 'For 8-9 applicants', count: 8 },
-                { key: '10-15', label: 'For 10-15 applicants', count: 10 },
-                { key: '16+', label: 'For 16 applicants or more', count: 16 }
-              ];
-              
-              tierStructure.forEach(tier => {
-                const priceTier = getPricePerApplicant(tier.count, isIsraeli);
-                const pricePerApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
-                pricingTiers[tier.key] = pricePerApplicant;
-              });
-              
-              setCustomPricing({
-                ...existingPricing,
-                pricing_tiers: pricingTiers,
-              });
-            } else {
-              setCustomPricing(existingPricing);
+        console.log('ContractPage: Executing query...');
+        const { data: contractData, error } = await query.single();
+
+        console.log('ContractPage: Query result:', { contractData, error });
+
+        if (error) {
+          console.error('Error fetching contract:', error);
+          return;
+        }
+
+        console.log('ContractPage: Setting contract data:', contractData);
+        setContract(contractData);
+
+        // Set the template if available
+        if (contractData.contract_templates) {
+          console.log('Original template content:', contractData.contract_templates.content);
+          // Process template to add text and signature placeholders
+          const processedTemplate = {
+            ...contractData.contract_templates,
+            content: contractData.contract_templates.content ?
+              preprocessTemplatePlaceholders(contractData.contract_templates.content) :
+              contractData.contract_templates.content
+          };
+          console.log('📋 Processed template content:', processedTemplate.content);
+          console.log('📋 Setting template:', processedTemplate);
+          setTemplate(processedTemplate);
+
+          // Immediately set the editor content if editor is available
+          if (editor && processedTemplate.content) {
+            console.log('🎯 Setting editor content immediately:', processedTemplate.content);
+            let processedContent = JSON.parse(JSON.stringify(processedTemplate.content)); // Deep clone
+
+            if (customPricing && client) {
+              // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
+              processedContent = fillPlaceholdersInTiptapContent(processedContent, customPricing, client, contract, editing, { current: 0 });
             }
-          }
 
-          // In the useEffect that loads the contract/template, after loading template, if contract.custom_content is not set, preprocess the template and set it as custom_content in state (and optionally in DB)
-          if (!contractData.custom_content && contractData.contract_templates && contractData.contract_templates.content) {
-            globalTextId = 1; globalSignatureId = 1;
-            // First convert template to preserve line breaks, then preprocess placeholders
-            const convertedContent = convertTemplateToLineBreaks(contractData.contract_templates.content.content);
-            const processed = preprocessTemplatePlaceholders(convertedContent);
-            // Save processed template as custom_content in DB
-            await supabase.from('contracts').update({ custom_content: processed }).eq('id', contractData.id);
-            // Immediately reload the contract from the DB to get the new custom_content
-            const { data: refreshedContract, error: refreshError } = await supabase
-              .from('contracts')
-              .select('*')
-              .eq('id', contractData.id)
-              .single();
-            if (!refreshError && refreshedContract) {
-              setContract(refreshedContract);
-            } else {
-              setContract((prev: any) => ({ ...prev, custom_content: processed }));
-            }
+            // Clean up any empty nodes
+            processedContent = cleanTiptapContent(processedContent);
+            editor.commands.setContent(processedContent);
+            editor.setEditable(editing);
           }
         }
+
+        // Set the custom pricing if available
+        if (contractData.custom_pricing) {
+          console.log('ContractPage: Setting custom pricing:', contractData.custom_pricing);
+          // Force VAT calculation by temporarily setting payment_plan to null
+          const pricingWithVat = {
+            ...contractData.custom_pricing,
+            payment_plan: null // This will trigger the useEffect to recalculate with VAT
+          };
+          setCustomPricing(pricingWithVat);
+        } else {
+          console.log('ContractPage: No custom pricing found in contract data, initializing with defaults');
+          // Initialize with default pricing structure
+          const defaultPricing = {
+            applicant_count: contractData.applicant_count || 1,
+            pricing_tiers: {},
+            total_amount: 0,
+            discount_percentage: 0,
+            discount_amount: 0,
+            final_amount: 0,
+            payment_plan: [],
+            currency: contractData.client_country || '₪',
+            archival_research_fee: 0,
+          };
+          console.log('ContractPage: Setting default pricing:', defaultPricing);
+          setCustomPricing(defaultPricing);
+        }
+
+        // Load client inputs if available (for signed contracts)
+        if (contractData.client_inputs) {
+          console.log('ContractPage: Loading client inputs:', contractData.client_inputs);
+          setClientInputs(contractData.client_inputs);
+        }
+
+        // If contract is signed, display filled-in content
+        if (contractData.signed_at) {
+          // Contract is signed, displaying filled-in content
+        }
+
       } catch (error) {
-        console.error('Error in ContractPage useEffect:', error);
-        if (mounted) {
-          setLoading(false);
-        }
+        console.error('Error in fetchContract:', error);
+      } finally {
+        setLoading(false);
       }
-    })();
-    return () => { mounted = false; };
+    };
+
+    if (leadNumber) {
+      fetchContract();
+    }
   }, [leadNumber]);
 
   // Auto-refresh signed contracts to ensure we have the latest filled-in content
@@ -387,7 +767,7 @@ const ContractPage: React.FC = () => {
       const timer = setTimeout(() => {
         handleRefreshContract();
       }, 1000);
-      
+
       return () => clearTimeout(timer);
     }
   }, [contract?.id]); // Only depend on contract ID, not status or loading
@@ -395,17 +775,50 @@ const ContractPage: React.FC = () => {
   // Update editor content when switching between edit/view modes
   useEffect(() => {
     if (editor && contract && template) {
-      if (editing) {
-        // In edit mode, use custom_content if available, otherwise use template
-        const content = contract.custom_content || template.content?.content;
-        editor.commands.setContent(content);
-        editor.setEditable(true);
-      } else {
-        // In view mode, make it non-editable
-        editor.setEditable(false);
+      console.log('🎯 Editor content effect triggered:', { editing, hasContract: !!contract, hasTemplate: !!template, hasCustomPricing: !!customPricing, hasClient: !!client });
+
+      // Always load the content (custom_content if available, otherwise template)
+      const content = contract.custom_content || template.content;
+      console.log('🎯 Content to load:', content);
+
+      if (content) {
+        // ALWAYS process the content the same way for both edit and view modes
+        // This ensures consistent paragraph structure and spacing
+        let processedContent = JSON.parse(JSON.stringify(content)); // Deep clone
+
+        if (customPricing && client) {
+          // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
+          processedContent = fillPlaceholdersInTiptapContent(processedContent, customPricing, client, contract, editing, { current: 0 });
+        }
+
+        // Clean up any empty nodes
+        processedContent = cleanTiptapContent(processedContent);
+        console.log('🎯 Setting processed content for both modes:', processedContent);
+        editor.commands.setContent(processedContent);
       }
+
+      // Set editability
+      editor.setEditable(editing);
     }
-  }, [editing, editor, contract, template]);
+  }, [editing, editor, contract, template, customPricing, client, renderKey]);
+
+  // Ensure editor content is loaded when template is first set
+  useEffect(() => {
+    if (editor && template && template.content && !contract?.custom_content) {
+      console.log('🎯 Initial template load - setting editor content:', template.content);
+      let processedContent = JSON.parse(JSON.stringify(template.content)); // Deep clone
+
+      if (customPricing && client) {
+        // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
+        processedContent = fillPlaceholdersInTiptapContent(processedContent, customPricing, client, contract, editing, { current: 0 });
+      }
+
+      // Clean up any empty nodes
+      processedContent = cleanTiptapContent(processedContent);
+      editor.commands.setContent(processedContent);
+      editor.setEditable(editing);
+    }
+  }, [editor, template, contract?.custom_content, editing, customPricing, client, contract]);
 
   // Save handler for edited contract
   const handleSaveEdit = async () => {
@@ -421,7 +834,6 @@ const ContractPage: React.FC = () => {
   const updateCustomPricing = useCallback(async (updates: any) => {
     if (!contract) return;
     const newPricing = { ...customPricing, ...updates };
-    console.log('Updating custom pricing:', newPricing); // Debug log
     setCustomPricing(newPricing);
     setRenderKey(prev => prev + 1); // Force re-render
     await supabase.from('contracts').update({ custom_pricing: newPricing }).eq('id', contract.id);
@@ -466,40 +878,66 @@ const ContractPage: React.FC = () => {
   // When initializing or updating customPricing, use buildPaymentPlan with VAT calculations
   useEffect(() => {
     if (!customPricing) return;
+    
     const archivalFee = customPricing.archival_research_fee || 0;
-    const finalAmount = customPricing.final_amount || 0;
+    const totalAmount = customPricing.total_amount || 0;
+    const discountAmount = customPricing?.discount_amount || 0;
+    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+
+    // Check if payment plan needs VAT calculation
+    const currentPaymentPlan = customPricing.payment_plan || [];
+    const needsVatCalculation = !currentPaymentPlan.length || 
+      currentPaymentPlan.some((row: any) => typeof row.value === 'number' || !row.value.includes('+'));
+
+    if (!needsVatCalculation) return;
+
+    // Calculate the discounted base total
+    const discountedBaseTotal = totalAmount - discountAmount;
+
+    // Build the basic payment plan structure
+    const basicPaymentPlan = buildPaymentPlan(totalAmount, archivalFee);
+
+    // Update each payment to show value + VAT only if there's VAT
+    const paymentPlan = basicPaymentPlan.map((payment: any) => {
+      if (payment.label === 'Archival Research') {
+        return payment;
+      } else {
+        // Calculate the base value for this percentage
+        const baseValueForThisPercent = Math.round((discountedBaseTotal * payment.percent) / 100);
+        const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+        
+        return {
+          ...payment,
+          value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+        };
+      }
+    });
+
+    // Always update the payment plan to ensure VAT is applied
+    setCustomPricing((prev: typeof customPricing) => ({ ...prev, payment_plan: paymentPlan }));
+  }, [customPricing?.total_amount, customPricing?.discount_amount, customPricing?.archival_research_fee, contract?.client_country, customPricing?.currency, customPricing?._forceVatCalculation]);
+
+  // Force VAT calculation on initial load
+  useEffect(() => {
+    if (!customPricing || !customPricing.payment_plan) return;
     
-         // Calculate base total and VAT for payment plan
-     const baseTotal = (customPricing.total_amount || 0) + archivalFee;
-     const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-     const discountAmount = customPricing?.discount_amount || 0;
-     
-     // Calculate VAT on the discounted amount (baseTotal - discountAmount)
-     const discountedBaseTotal = baseTotal - discountAmount;
-     
-     // Build the basic payment plan structure
-     const basicPaymentPlan = buildPaymentPlan(finalAmount, archivalFee);
-     
-     // Update each payment to show value + VAT only if there's VAT
-     const paymentPlan = basicPaymentPlan.map((payment: any) => {
-       if (payment.label === 'Archival Research') {
-         // Archival research fee is already the full amount
-         return payment;
-       } else {
-         // For regular payments, calculate base value and add VAT (based on discounted amount)
-         const baseValueForThisPercent = Math.round((discountedBaseTotal * payment.percent) / 100);
-         const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-         return {
-           ...payment,
-           value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
-         };
-       }
-     });
+    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+    const currentPaymentPlan = customPricing.payment_plan;
     
-    if (JSON.stringify(customPricing.payment_plan) !== JSON.stringify(paymentPlan)) {
-      setCustomPricing((prev: typeof customPricing) => ({ ...prev, payment_plan: paymentPlan }));
+    // Check if payment plan needs VAT calculation (has numeric values instead of "value + VAT" strings)
+    const needsVatCalculation = currentPaymentPlan.some((row: any) => 
+      typeof row.value === 'number' || (typeof row.value === 'string' && !row.value.includes('+'))
+    );
+
+    if (needsVatCalculation && isIsraeli) {
+      console.log('🔧 Forcing VAT calculation on initial load');
+      // Trigger the main VAT calculation by updating a dependency
+      setCustomPricing((prev: typeof customPricing) => ({ 
+        ...prev, 
+        _forceVatCalculation: Date.now() 
+      }));
     }
-  }, [customPricing?.final_amount, customPricing?.archival_research_fee, customPricing?.total_amount, contract?.client_country, customPricing?.currency]);
+  }, [customPricing?.payment_plan, contract?.client_country, customPricing?.currency]);
 
   // Discount options
   const discountOptions = [0, 5, 10, 15, 20];
@@ -518,7 +956,7 @@ const ContractPage: React.FC = () => {
   // Update applicant count and recalculate pricing
   const handleApplicantCountChange = (newCount: number) => {
     if (!customPricing || !customPricing.pricing_tiers) return;
-    
+
     // Get the correct tier for this applicant count
     const tierKey = getCurrentTierKey(newCount);
     const pricePerApplicant = customPricing.pricing_tiers[tierKey] || 0;
@@ -526,17 +964,17 @@ const ContractPage: React.FC = () => {
     const discount = Number(customPricing.discount_percentage) || 0;
     const discountAmount = Math.round(total * (discount / 100));
     const finalAmount = total - discountAmount;
-    
+
     // Calculate final amount with VAT for payment plan calculations
     const archivalFee = customPricing?.archival_research_fee || 0;
     const baseTotal = total + archivalFee;
     const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-    
+
     // Calculate VAT on the discounted amount (baseTotal - discountAmount)
     const discountedBaseTotal = baseTotal - discountAmount;
     const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
     const finalAmountWithVat = discountedBaseTotal + vatAmount;
-    
+
     // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
     let paymentPlan = customPricing.payment_plan || [];
     if (paymentPlan.length > 0) {
@@ -553,7 +991,7 @@ const ContractPage: React.FC = () => {
         };
       });
     }
-    
+
     updateCustomPricing({
       applicant_count: newCount,
       total_amount: total,
@@ -566,55 +1004,55 @@ const ContractPage: React.FC = () => {
   // Update price for a specific tier
   const handleTierPriceChange = (tierKey: string, newPrice: number) => {
     if (!customPricing || !customPricing.pricing_tiers) return;
-    
+
     const newPricingTiers: { [key: string]: number } = {
       ...customPricing.pricing_tiers,
       [tierKey]: newPrice
     };
-    
+
     // Check if this tier affects the current applicant count
     const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
     if (tierKey === currentTierKey) {
       const total = newPrice * customPricing.applicant_count;
-    const discount = Number(customPricing.discount_percentage) || 0;
-    const discountAmount = Math.round(total * (discount / 100));
-    const finalAmount = total - discountAmount;
-      
-    // Calculate final amount with VAT for payment plan calculations
-    const archivalFee = customPricing?.archival_research_fee || 0;
-    const baseTotal = total + archivalFee;
-    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-    
-    // Calculate VAT on the discounted amount (baseTotal - discountAmount)
-    const discountedBaseTotal = baseTotal - discountAmount;
-    const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
-    const finalAmountWithVat = discountedBaseTotal + vatAmount;
-      
-    // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
-    let paymentPlan = customPricing.payment_plan || [];
-    if (paymentPlan.length > 0) {
-      const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-      paymentPlan = paymentPlan.map((row: any) => {
-        // Calculate the base value for this percentage (based on discounted amount)
-        const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
-        // Calculate the VAT for this percentage
-        const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-        // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
-        return {
-          ...row,
-          value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
-        };
-      });
-    }
-      
+      const discount = Number(customPricing.discount_percentage) || 0;
+      const discountAmount = Math.round(total * (discount / 100));
+      const finalAmount = total - discountAmount;
+
+      // Calculate final amount with VAT for payment plan calculations
+      const archivalFee = customPricing?.archival_research_fee || 0;
+      const baseTotal = total + archivalFee;
+      const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+
+      // Calculate VAT on the discounted amount (baseTotal - discountAmount)
+      const discountedBaseTotal = baseTotal - discountAmount;
+      const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
+      const finalAmountWithVat = discountedBaseTotal + vatAmount;
+
+      // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
+      let paymentPlan = customPricing.payment_plan || [];
+      if (paymentPlan.length > 0) {
+        const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+        paymentPlan = paymentPlan.map((row: any) => {
+          // Calculate the base value for this percentage (based on discounted amount)
+          const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+          // Calculate the VAT for this percentage
+          const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+          // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+          return {
+            ...row,
+            value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+          };
+        });
+      }
+
       updateCustomPricing({
         pricing_tiers: newPricingTiers,
-      total_amount: total,
-      discount_amount: discountAmount,
-      final_amount: finalAmount,
-      payment_plan: paymentPlan,
+        total_amount: total,
+        discount_amount: discountAmount,
+        final_amount: finalAmount,
+        payment_plan: paymentPlan,
       });
-      } else {
+    } else {
       updateCustomPricing({
         pricing_tiers: newPricingTiers,
       });
@@ -625,18 +1063,18 @@ const ContractPage: React.FC = () => {
   const handlePaymentPlanChange = (idx: number, field: string, value: any) => {
     const newPlan = [...(customPricing.payment_plan || [])];
     newPlan[idx] = { ...newPlan[idx], [field]: value };
-    
+
     // Calculate the correct final amount including VAT
     const archivalFee = customPricing?.archival_research_fee || 0;
     const baseTotal = (customPricing?.total_amount || 0) + archivalFee;
     const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
     const discountAmount = customPricing?.discount_amount || 0;
-    
+
     // Calculate VAT on the discounted amount (baseTotal - discountAmount)
     const discountedBaseTotal = baseTotal - discountAmount;
     const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
     const finalAmountWithVat = discountedBaseTotal + vatAmount;
-    
+
     // If changing value (amount), recalculate percentage
     if (field === 'value') {
       // Parse the value string to extract the total amount
@@ -659,7 +1097,7 @@ const ContractPage: React.FC = () => {
       // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
       newPlan[idx].value = isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString();
     }
-    
+
     updateCustomPricing({ payment_plan: newPlan });
   };
 
@@ -707,7 +1145,7 @@ const ContractPage: React.FC = () => {
       const discountAmount = Math.round(total * (discount / 100));
       const finalAmount = total - discountAmount;
       // Debug logging
-      console.log('Signing contract with applicantCount:', applicantCount, 'total:', total, 'finalAmount:', finalAmount);
+
       if (!applicantCount || applicantCount < 1) {
         alert('Please set the number of applicants before signing.');
         return;
@@ -720,18 +1158,18 @@ const ContractPage: React.FC = () => {
           // Parse the "value + VAT" format to extract separate values
           let value = 0;
           let value_vat = 0;
-          
-                     if (typeof row.value === 'string' && row.value.includes('+')) {
-             // Extract numbers from "value + vat" format
-             const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
-             value = parts[0] || 0;
-             value_vat = parts[1] || 0;
-           } else {
+
+          if (typeof row.value === 'string' && row.value.includes('+')) {
+            // Extract numbers from "value + vat" format
+            const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+            value = parts[0] || 0;
+            value_vat = parts[1] || 0;
+          } else {
             // If it's already a number or doesn't have the format, use as is
             value = parseFloat(row.value) || 0;
             value_vat = 0;
           }
-          
+
           return {
             ...row,
             value: value,
@@ -767,7 +1205,7 @@ const ContractPage: React.FC = () => {
 
       const { data: updatedContract, error } = await supabase
         .from('contracts')
-        .update({ 
+        .update({
           status: 'signed',
           signed_at: new Date().toISOString()
         })
@@ -899,26 +1337,27 @@ const ContractPage: React.FC = () => {
     }
     if (content.type === 'text') {
       let text = content.text;
-      
-      // Always replace placeholders for both admin and client view
-      text = fillAllPlaceholders(text, customPricing, client, contract);
 
-      // In client view, render {{text:ID}} as input and {{signature:ID}} as signature pad
-      if (asClient && text && /\{\{(text|signature):[^}]+\}\}/.test(text)) {
+      // Always render {{text}} and {{signature}} as input fields and signature pads
+      console.log('🎨 Checking for placeholders in text:', text);
+      console.log('🎨 Has placeholders:', /\{\{(text|signature)\}\}/.test(text));
+      if (text && /\{\{(text|signature)\}\}/.test(text)) {
         const parts = [];
         let lastIndex = 0;
-        const regex = /({{text:[^}]+}}|{{signature:[^}]+}}|\n)/g;
+        const regex = /({{text}}|{{signature}}|\n)/g;
         let match;
+        let textCounter = 1;
+        let signatureCounter = 1;
+
         while ((match = regex.exec(text)) !== null) {
           if (match.index > lastIndex) {
             const normalText = text.slice(lastIndex, match.index);
             parts.push(normalText);
           }
           const placeholder = match[1];
-          const textMatch = placeholder.match(/^{{text:([^}]+)}}$/);
-          const sigMatch = placeholder.match(/^{{signature:([^}]+)}}$/);
-          if (textMatch) {
-            const id = textMatch[1];
+
+          if (placeholder === '{{text}}') {
+            const id = `text-${textCounter++}`;
             parts.push(
               <input
                 key={id}
@@ -929,8 +1368,8 @@ const ContractPage: React.FC = () => {
                 onChange={e => setClientInputs(inputs => ({ ...inputs, [id]: e.target.value }))}
               />
             );
-          } else if (sigMatch) {
-            const id = sigMatch[1];
+          } else if (placeholder === '{{signature}}') {
+            const id = `signature-${signatureCounter++}`;
             parts.push(
               <div
                 key={id}
@@ -973,7 +1412,11 @@ const ContractPage: React.FC = () => {
           parts.push(text.slice(lastIndex));
         }
         return parts;
+
       }
+
+      // Replace other placeholders (but preserve text/signature placeholders in client view)
+      text = fillAllPlaceholders(text, customPricing, client, contract);
 
       // Robustly replace price_per_applicant for each tier row
       if (text && customPricing && customPricing.pricing_tiers) {
@@ -1009,9 +1452,24 @@ const ContractPage: React.FC = () => {
           const row = customPricing.payment_plan[rowIndex];
           paymentPlanIndex.current++;
           if (row) {
+            // Handle the new value format "value + VAT" or just "value"
+            let displayValue = '0';
+            if (row.value) {
+              if (typeof row.value === 'string' && row.value.includes('+')) {
+                // Parse "value + VAT" format
+                const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+                const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
+                displayValue = totalValue.toLocaleString();
+              } else {
+                // Handle numeric value or simple string
+                const numValue = parseFloat(row.value) || 0;
+                displayValue = numValue.toLocaleString();
+              }
+            }
+
             result.push(
               <span className="inline-block text-black font-medium border-b-2 border-black" key={keyPrefix + '-pprow-' + rowIndex}>
-                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {row.value?.toLocaleString()}
+                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {displayValue}
               </span>
             );
           } else {
@@ -1028,27 +1486,27 @@ const ContractPage: React.FC = () => {
       // Handle individual pricing tier placeholders
       if (text && customPricing && customPricing.pricing_tiers) {
         const currency = customPricing.currency || 'USD';
-        
+
         // Replace specific tier placeholders
-        text = text.replace(/For one applicant-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+        text = text.replace(/For one applicant-\s*[A-Z]{2,3}\s*[\d,]+/g,
           `For one applicant- ${currency} ${(customPricing.pricing_tiers['1'] || 0).toLocaleString()}`);
-        
-        text = text.replace(/For 2 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+
+        text = text.replace(/For 2 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g,
           `For 2 applicants- ${currency} ${(customPricing.pricing_tiers['2'] || 0).toLocaleString()}`);
-        
-        text = text.replace(/For 3 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+
+        text = text.replace(/For 3 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g,
           `For 3 applicants- ${currency} ${(customPricing.pricing_tiers['3'] || 0).toLocaleString()}`);
-        
-        text = text.replace(/For 4-7 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+
+        text = text.replace(/For 4-7 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g,
           `For 4-7 applicants- ${currency} ${(customPricing.pricing_tiers['4-7'] || 0).toLocaleString()}`);
-        
-        text = text.replace(/For 8-9 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+
+        text = text.replace(/For 8-9 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g,
           `For 8-9 applicants- ${currency} ${(customPricing.pricing_tiers['8-9'] || 0).toLocaleString()}`);
-        
-        text = text.replace(/For 10-15 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+
+        text = text.replace(/For 10-15 applicants-\s*[A-Z]{2,3}\s*[\d,]+/g,
           `For 10-15 applicants- ${currency} ${(customPricing.pricing_tiers['10-15'] || 0).toLocaleString()}`);
-        
-        text = text.replace(/For 16 applicants or more-\s*[A-Z]{2,3}\s*[\d,]+/g, 
+
+        text = text.replace(/For 16 applicants or more-\s*[A-Z]{2,3}\s*[\d,]+/g,
           `For 16 applicants or more- ${currency} ${(customPricing.pricing_tiers['16+'] || 0).toLocaleString()}`);
       }
 
@@ -1058,7 +1516,7 @@ const ContractPage: React.FC = () => {
         const rowIndex = paymentPlanIndex.current;
         const row = customPricing.payment_plan[rowIndex];
         paymentPlanIndex.current++;
-        
+
         if (row) {
           if (asClient) {
             // In client view, show the payment plan data as text
@@ -1066,17 +1524,17 @@ const ContractPage: React.FC = () => {
               <span className="inline-block text-black font-medium border-b-2 border-black">
                 {row.percent}% {row.due} = {customPricing.currency} {row.amount?.toLocaleString()}
               </span>
-          );
-        } else {
+            );
+          } else {
             // In admin view, show editable fields
             return (
               <span className="inline-flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg p-2 my-1">
-              <input
-                type="number"
-                min={0}
-                max={100}
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
                   className="input input-bordered input-sm w-16 text-center bg-white"
-                value={row.percent}
+                  value={row.percent}
                   onChange={e => handlePaymentPlanChange(rowIndex, 'percent', Number(e.target.value))}
                   placeholder="%"
                 />
@@ -1127,7 +1585,7 @@ const ContractPage: React.FC = () => {
           if (mark.type === 'strike') return <s key={keyPrefix}>{acc}</s>;
           return acc;
         }, text);
-        
+
         // Handle line breaks after formatting
         if (typeof formattedText === 'string' && formattedText.includes('\n')) {
           const lines = formattedText.split('\n');
@@ -1140,7 +1598,7 @@ const ContractPage: React.FC = () => {
         }
         return formattedText;
       }
-      
+
       // Handle line breaks in plain text
       if (text && text.includes('\n')) {
         const lines = text.split('\n');
@@ -1153,19 +1611,19 @@ const ContractPage: React.FC = () => {
       }
       return text;
     }
-    
+
     switch (content.type) {
       case 'paragraph':
         const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex);
         // Only render paragraph if it has content
         if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
-          return <p key={keyPrefix} className="mb-2">{paragraphContent}</p>;
+          return <p key={keyPrefix} className="mb-3">{paragraphContent}</p>;
         }
         return null;
       case 'heading':
         const level = content.attrs?.level || 1;
-        const headingTags = ['h1','h2','h3','h4','h5','h6'];
-        const HeadingTag = headingTags[Math.max(0, Math.min(5, level-1))] || 'h1';
+        const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
+        const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
         return React.createElement(
           HeadingTag,
           { key: keyPrefix },
@@ -1206,7 +1664,7 @@ const ContractPage: React.FC = () => {
     if (content.type === 'text' && content.text) {
       // Replace all {{text:ID}} and {{signature:ID}} with the value from clientInputs[ID]
       let newText = content.text.replace(/\{\{text:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '')
-                               .replace(/\{\{signature:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '');
+        .replace(/\{\{signature:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '');
       return { ...content, text: newText };
     }
     if (content.content) {
@@ -1266,12 +1724,13 @@ const ContractPage: React.FC = () => {
     }
     if (content.type === 'text') {
       let text = content.text;
-      
-      // Handle {{text:ID}} and {{signature:ID}} placeholders that might still be in signed contracts
-      if (text && /\{\{(text|signature):[^}]+\}\}/.test(text)) {
+      text = fillAllPlaceholders(text, customPricing, client, contract);
+
+      // Handle both {{text}} and {{text:ID}} placeholders that might still be in signed contracts
+      if (text && /\{\{(text|signature)(:[^}]+)?\}\}/.test(text)) {
         const parts = [];
         let lastIndex = 0;
-        const regex = /({{text:[^}]+}}|{{signature:[^}]+}}|\n)/g;
+        const regex = /({{text(:[^}]+)?}}|{{signature(:[^}]+)?}}|\n)/g;
         let match;
         while ((match = regex.exec(text)) !== null) {
           if (match.index > lastIndex) {
@@ -1279,24 +1738,38 @@ const ContractPage: React.FC = () => {
             parts.push(normalText);
           }
           const placeholder = match[1];
-          const textMatch = placeholder.match(/^{{text:([^}]+)}}$/);
-          const sigMatch = placeholder.match(/^{{signature:([^}]+)}}$/);
+          const textMatch = placeholder.match(/^{{text(:[^}]+)?}}$/);
+          const sigMatch = placeholder.match(/^{{signature(:[^}]+)?}}$/);
           if (textMatch) {
-            const id = textMatch[1];
-            // For signed contracts, show placeholder since we don't have the actual data
+            const id = textMatch[1] ? textMatch[1].substring(1) : 'text-input';
+            const clientValue = clientInputs[id] || '[No input provided]';
+            // For signed contracts, show the actual client input value
             parts.push(
-              <span key={id} className="inline-block bg-yellow-50 border border-yellow-200 rounded px-2 py-1 mx-1 text-sm font-medium">
-                [Filled: {id}]
+              <span key={id} className="inline-block bg-green-50 border-2 border-green-300 rounded-lg px-3 py-2 mx-1 text-sm font-medium text-green-800 min-w-[150px]">
+                {clientValue}
               </span>
             );
           } else if (sigMatch) {
-            const id = sigMatch[1];
-            // For signed contracts, show placeholder since we don't have the actual signature
-            parts.push(
-              <span key={id} className="inline-block bg-yellow-50 border border-yellow-200 rounded px-2 py-1 mx-1 text-sm font-medium">
-                [Signed]
-              </span>
-            );
+            const id = sigMatch[1] ? sigMatch[1].substring(1) : 'signature';
+            const signatureData = clientInputs[id];
+            // For signed contracts, show the actual signature if available
+            if (signatureData && signatureData.startsWith('data:image/')) {
+              parts.push(
+                <span key={id} className="inline-block mx-1">
+                  <img
+                    src={signatureData}
+                    alt="Client Signature"
+                    style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }}
+                  />
+                </span>
+              );
+            } else {
+              parts.push(
+                <span key={id} className="inline-block bg-blue-50 border-2 border-blue-300 rounded-lg px-3 py-2 mx-1 text-sm font-medium text-blue-800">
+                  ✓ [Client Signature]
+                </span>
+              );
+            }
           } else if (placeholder === '\n') {
             parts.push(<br key={keyPrefix + '-br-' + match.index} />);
           }
@@ -1307,7 +1780,7 @@ const ContractPage: React.FC = () => {
         }
         return parts;
       }
-      
+
       // Handle base64 image data that might be directly in the text (for signatures)
       if (text && text.includes('data:image/png;base64,')) {
         const parts = [];
@@ -1322,10 +1795,10 @@ const ContractPage: React.FC = () => {
           const imageData = match[1];
           parts.push(
             <span key={keyPrefix + '-img-' + match.index} className="inline-block mx-1">
-              <img 
-                src={imageData} 
-                alt="Signature" 
-                style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }} 
+              <img
+                src={imageData}
+                alt="Signature"
+                style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }}
               />
             </span>
           );
@@ -1336,7 +1809,7 @@ const ContractPage: React.FC = () => {
         }
         return parts.length > 0 ? parts : text;
       }
-      
+
       // Handle payment plan placeholders
       if (text && text.includes('{{payment_plan_row}}') && customPricing && customPricing.payment_plan) {
         const parts = [];
@@ -1350,9 +1823,24 @@ const ContractPage: React.FC = () => {
           }
           const row = customPricing.payment_plan[rowIndex];
           if (row) {
+            // Handle the new value format "value + VAT" or just "value"
+            let displayValue = '0';
+            if (row.value) {
+              if (typeof row.value === 'string' && row.value.includes('+')) {
+                // Parse "value + VAT" format
+                const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+                const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
+                displayValue = totalValue.toLocaleString();
+              } else {
+                // Handle numeric value or simple string
+                const numValue = parseFloat(row.value) || 0;
+                displayValue = numValue.toLocaleString();
+              }
+            }
+
             parts.push(
               <span key={keyPrefix + '-pprow-' + rowIndex} className="inline-block text-black font-medium border-b-2 border-black">
-                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {row.value?.toLocaleString()}
+                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {displayValue}
               </span>
             );
           }
@@ -1364,7 +1852,7 @@ const ContractPage: React.FC = () => {
         }
         return parts.length > 0 ? parts : text;
       }
-      
+
       // Replace pricing placeholders with actual values
       if (text && customPricing && customPricing.pricing_tiers) {
         const currency = customPricing.currency || 'USD';
@@ -1377,16 +1865,16 @@ const ContractPage: React.FC = () => {
           { key: '10-15', label: 'For 10-15 applicants' },
           { key: '16+', label: 'For 16 applicants or more' }
         ];
-        
+
         tierStructure.forEach(tier => {
           const lineRegex = new RegExp(`(${tier.label}[^\\n]*?):?\\s*\\{\\{price_per_applicant\\}\\}`, 'g');
           text = text.replace(lineRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
         });
       }
-      
+
       // Replace other placeholders
       text = fillAllPlaceholders(text, customPricing, client, contract);
-      
+
       // Apply text formatting
       if (content.marks && content.marks.length > 0) {
         const formattedText = content.marks.reduce((acc: any, mark: any) => {
@@ -1396,7 +1884,7 @@ const ContractPage: React.FC = () => {
           if (mark.type === 'strike') return <s key={keyPrefix}>{acc}</s>;
           return acc;
         }, text);
-        
+
         // Handle line breaks after formatting
         if (typeof formattedText === 'string' && formattedText.includes('\n')) {
           const lines = formattedText.split('\n');
@@ -1409,7 +1897,7 @@ const ContractPage: React.FC = () => {
         }
         return formattedText;
       }
-      
+
       // Handle line breaks in plain text
       if (text && text.includes('\n')) {
         const lines = text.split('\n');
@@ -1422,18 +1910,27 @@ const ContractPage: React.FC = () => {
       }
       return text;
     }
-    
+
     switch (content.type) {
       case 'paragraph':
         const paragraphContent = renderSignedContractContent(content.content, keyPrefix + '-p');
         if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
-          return <p key={keyPrefix} className="mb-2">{paragraphContent}</p>;
+          // Check if paragraph contains input fields (React elements)
+          const hasInputFields = React.isValidElement(paragraphContent) ||
+            (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
+
+          if (hasInputFields) {
+            // Use div instead of p to avoid DOM nesting issues with input fields
+            return <div key={keyPrefix} className="mb-3">{paragraphContent}</div>;
+          } else {
+            return <p key={keyPrefix} className="mb-3">{paragraphContent}</p>;
+          }
         }
         return null;
       case 'heading':
         const level = content.attrs?.level || 1;
-        const headingTags = ['h1','h2','h3','h4','h5','h6'];
-        const HeadingTag = headingTags[Math.max(0, Math.min(5, level-1))] || 'h1';
+        const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
+        const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
         return React.createElement(
           HeadingTag,
           { key: keyPrefix },
@@ -1473,17 +1970,22 @@ const ContractPage: React.FC = () => {
         `)
         .eq('id', contract.id)
         .single();
-      
+
       if (error) throw error;
-      
+
       setContract(refreshedContract);
       setTemplate(refreshedContract.contract_templates);
+
+      // Load client inputs if available
+      if (refreshedContract.client_inputs) {
+        console.log('ContractPage: Refreshing client inputs:', refreshedContract.client_inputs);
+        setClientInputs(refreshedContract.client_inputs);
+      }
+
       setRenderKey(prev => prev + 1); // Force re-render
-      
+
       if (refreshedContract.status === 'signed') {
-        console.log('Refreshed signed contract with filled-in content:', refreshedContract.custom_content);
-        console.log('Contract data:', refreshedContract);
-        console.log('Custom content details:', JSON.stringify(refreshedContract.custom_content, null, 2));
+
       }
     } catch (error) {
       console.error('Error refreshing contract:', error);
@@ -1505,7 +2007,7 @@ const ContractPage: React.FC = () => {
     <div className="min-h-screen bg-white flex items-center justify-center">
       <div className="text-center">
         <p className="text-red-500 text-lg">Client not found.</p>
-        <button 
+        <button
           onClick={() => navigate('/clients')}
           className="mt-4 btn btn-primary"
         >
@@ -1524,13 +2026,13 @@ const ContractPage: React.FC = () => {
             No contract has been created for client <strong>{client.name}</strong> yet.
           </p>
           <div className="flex gap-3 justify-center">
-            <button 
+            <button
               onClick={() => navigate(`/clients/${leadNumber}`)}
               className="btn btn-outline"
             >
               Back to Client
             </button>
-            <button 
+            <button
               onClick={() => navigate(`/clients/${leadNumber}?tab=contact`)}
               className="btn btn-primary"
             >
@@ -1546,7 +2048,7 @@ const ContractPage: React.FC = () => {
     <div className="min-h-screen bg-white flex items-center justify-center">
       <div className="text-center">
         <p className="text-red-500 text-lg">Template not found.</p>
-        <button 
+        <button
           onClick={() => navigate(`/clients/${leadNumber}`)}
           className="mt-4 btn btn-primary"
         >
@@ -1561,7 +2063,7 @@ const ContractPage: React.FC = () => {
   // Before the return statement in ContractPage, define VAT logic
   const archivalFee = customPricing?.archival_research_fee || 0;
   const baseTotal = (customPricing?.total_amount || 0) + archivalFee;
-        const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+  const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
   const vatAmount = isIsraeli ? Math.round(baseTotal * 0.18 * 100) / 100 : 0;
   const discountAmount = customPricing?.discount_amount || 0;
   const finalAmountWithVat = baseTotal + vatAmount - discountAmount;
@@ -1618,14 +2120,7 @@ const ContractPage: React.FC = () => {
                   <span className="sm:hidden">S</span>
                 </button>
               )}
-              <button
-                className={`btn btn-xs sm:btn-sm ${viewAsClient ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setViewAsClient(v => !v)}
-              >
-                <span className="hidden md:inline">{viewAsClient ? 'View as Admin' : 'View as Client'}</span>
-                <span className="hidden sm:inline md:hidden">{viewAsClient ? 'Admin' : 'Client'}</span>
-                <span className="sm:hidden">{viewAsClient ? 'A' : 'C'}</span>
-              </button>
+
               <button
                 className="btn btn-info btn-xs sm:btn-sm"
                 onClick={handleShareContractLink}
@@ -1656,29 +2151,32 @@ const ContractPage: React.FC = () => {
           <div className="w-full xl:pr-0">
             <div className="bg-white rounded-lg shadow-lg border border-gray-200">
               <div className="p-8 xl:p-10 2xl:p-12">
-                {editing && editor ? (
-                  <div className="prose max-w-none">
+                <div className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
+                  {editing ? (
                     <EditorContent editor={editor} />
-                  </div>
-                ) : contract.custom_content ? (
-                  <div key={`contract-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`} className="prose max-w-none">
-                    {status === 'signed'
-                      ? renderSignedContractContent(contract.custom_content)
-                      : viewAsClient
-                        ? renderTiptapContent(contract.custom_content, '', true, signaturePads, undefined, undefined, false, { text: 0, signature: 0 })
-                        : renderTiptapContent(contract.custom_content, '', false, undefined, undefined, undefined, false, { text: 0, signature: 0 })
-                    }
-                  </div>
-                ) : (
-                  <div key={`template-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`} className="prose max-w-none">
-                    {status === 'signed'
-                      ? renderTiptapContent(template.content?.content, '', false, undefined, undefined, undefined, true, { text: 0, signature: 0 })
-                      : viewAsClient
-                        ? renderTiptapContent(template.content?.content, '', true, signaturePads, undefined, undefined, false, { text: 0, signature: 0 })
-                        : renderTiptapContent(template.content?.content, '', false, undefined, undefined, undefined, false, { text: 0, signature: 0 })
-                    }
-                  </div>
-                )}
+                  ) : status === 'signed' ? (
+                    // For signed contracts, show the filled-in content using custom rendering
+                    <div key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}>
+                      {contract.custom_content ? (
+                        (() => {
+                          console.log('🔍 Signed contract.custom_content:', contract.custom_content);
+                          return renderSignedContractContent(contract.custom_content);
+                        })()
+                      ) : (
+                        (() => {
+                          console.log('🎯 Rendering signed template.content:', template.content);
+                          return renderTiptapContent(template.content, '', false, undefined, undefined, undefined, true, { text: 0, signature: 0 });
+                        })()
+                      )}
+                    </div>
+                  ) : (
+                    // For non-signed contracts, use the SAME EditorContent component with identical styling
+                    <EditorContent
+                      editor={editor}
+                      key={`readonly-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}
+                    />
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -1693,24 +2191,24 @@ const ContractPage: React.FC = () => {
                     <h3 className="text-lg font-semibold mb-4 text-gray-900">Contact Information</h3>
                     <div className="space-y-3 text-sm">
                       <div className="text-gray-700">
-                        <span className="font-medium">Name:</span> 
+                        <span className="font-medium">Name:</span>
                         <span className="ml-2 font-semibold text-purple-600">{contract.contact_name}</span>
                       </div>
                       {contract.contact_email && (
                         <div className="text-gray-700">
-                          <span className="font-medium">Email:</span> 
+                          <span className="font-medium">Email:</span>
                           <span className="ml-2">{contract.contact_email}</span>
                         </div>
                       )}
                       {contract.contact_phone && (
                         <div className="text-gray-700">
-                          <span className="font-medium">Phone:</span> 
+                          <span className="font-medium">Phone:</span>
                           <span className="ml-2">{contract.contact_phone}</span>
                         </div>
                       )}
                       {contract.contact_mobile && (
                         <div className="text-gray-700">
-                          <span className="font-medium">Mobile:</span> 
+                          <span className="font-medium">Mobile:</span>
                           <span className="ml-2">{contract.contact_mobile}</span>
                         </div>
                       )}
@@ -1808,7 +2306,7 @@ const ContractPage: React.FC = () => {
                               { key: '10-15', label: 'For 10-15 applicants' },
                               { key: '16+', label: 'For 16 applicants or more' }
                             ];
-                            
+
                             const getCurrentTierKey = (count: number) => {
                               if (count === 1) return '1';
                               if (count === 2) return '2';
@@ -1818,18 +2316,17 @@ const ContractPage: React.FC = () => {
                               if (count >= 10 && count <= 15) return '10-15';
                               return '16+';
                             };
-                            
+
                             const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
-                            
+
                             return tierStructure.map(tier => {
                               const price = customPricing.pricing_tiers[tier.key] || 0;
                               const isActive = tier.key === currentTierKey;
                               return (
-                                <div key={tier.key} className={`flex items-center justify-between p-2 rounded-lg ${
-                                  isActive
-                                    ? 'bg-blue-50 border-2 border-blue-200' 
+                                <div key={tier.key} className={`flex items-center justify-between p-2 rounded-lg ${isActive
+                                    ? 'bg-blue-50 border-2 border-blue-200'
                                     : 'bg-gray-50 border border-gray-200'
-                                }`}>
+                                  }`}>
                                   <span className="text-base font-semibold text-gray-700">
                                     {tier.label}:
                                   </span>
@@ -1898,17 +2395,17 @@ const ContractPage: React.FC = () => {
                             const total = currentTierPrice * (customPricing.applicant_count || 1);
                             const discountAmount = Math.round(total * (discount / 100));
                             const finalAmount = total - discountAmount;
-                            
+
                             // Calculate final amount with VAT for payment plan calculations
                             const archivalFee = customPricing?.archival_research_fee || 0;
                             const baseTotal = total + archivalFee;
                             const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
-                            
+
                             // Calculate VAT on the discounted amount (baseTotal - discountAmount)
                             const discountedBaseTotal = baseTotal - discountAmount;
                             const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
                             const finalAmountWithVat = discountedBaseTotal + vatAmount;
-                            
+
                             // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
                             let paymentPlan = customPricing.payment_plan || [];
                             if (paymentPlan.length > 0) {
@@ -1925,7 +2422,7 @@ const ContractPage: React.FC = () => {
                                 };
                               });
                             }
-                            
+
                             updateCustomPricing({
                               discount_percentage: discount,
                               discount_amount: discountAmount,
@@ -2015,8 +2512,8 @@ const ContractPage: React.FC = () => {
                                 disabled={status === 'signed'}
                               />
                               <span className="text-lg font-semibold text-gray-700">{customPricing.currency}</span>
-                              <button 
-                                className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-xl font-bold w-10 h-10" 
+                              <button
+                                className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-xl font-bold w-10 h-10"
                                 onClick={() => handleDeletePaymentRow(idx)}
                                 disabled={status === 'signed'}
                               >
@@ -2060,36 +2557,24 @@ const ContractPage: React.FC = () => {
                 <div className="bg-white rounded-lg shadow-lg border border-gray-200">
                   <div className="p-6">
                     <h3 className="text-lg font-semibold mb-4 text-gray-900">Actions</h3>
-                    {viewAsClient ? (
-                      <div className="space-y-3">
-                        <div className="alert alert-info bg-blue-50 border-blue-200">
-                          <div className="text-sm text-blue-800">
-                            <strong>Ready to sign?</strong><br/>
-                            Please review the contract carefully and fill in all required fields before signing.
+                    <div className="space-y-3">
+                      <div className="alert alert-info bg-blue-50 border-blue-200">
+                        <div className="text-sm text-blue-800">
+                          <strong>Ready to sign?</strong><br />
+                          Please review the contract carefully and fill in all required fields before signing.
                         </div>
-                  </div>
-                        <button 
-                          className="btn btn-success btn-lg w-full" 
-                          onClick={handleSignContract}
-                        >
-                          <CheckIcon className="w-5 h-5 mr-2" />
-                          Sign Contract
-                        </button>
-                </div>
-                    ) : (
-                      <div className="space-y-3">
-                    <button 
-                          className="btn btn-success btn-lg w-full" 
-                      onClick={handleSignContract}
-                    >
-                          <CheckIcon className="w-5 h-5 mr-2" />
-                      Sign Contract
-                    </button>
-                        <p className="text-xs text-gray-500">
-                      Signing will generate payment plans and proforma invoices automatically.
-                    </p>
                       </div>
-                    )}
+                      <button
+                        className="btn btn-success btn-lg w-full"
+                        onClick={handleSignContract}
+                      >
+                        <CheckIcon className="w-5 h-5 mr-2" />
+                        Sign Contract
+                      </button>
+                      <p className="text-xs text-gray-500">
+                        Signing will generate payment plans and proforma invoices automatically.
+                      </p>
+                    </div>
                   </div>
                 </div>
               )}
@@ -2111,6 +2596,59 @@ const ContractPage: React.FC = () => {
   }
   input[type=number].no-arrows {
     -moz-appearance: textfield;
+  }
+  
+  /* Ensure read-only mode has identical styling to edit mode */
+  .ProseMirror[contenteditable="false"] {
+    padding: 0 !important;
+    margin: 0 !important;
+    min-height: 0 !important;
+  }
+  
+  .ProseMirror[contenteditable="false"] p {
+    margin-bottom: 0.75rem !important;
+    margin-top: 0 !important;
+  }
+  
+  .ProseMirror[contenteditable="false"] p:last-child {
+    margin-bottom: 0 !important;
+  }
+  
+  /* Style {{text}} and {{signature}} placeholders to look like input fields in view mode */
+  .ProseMirror[contenteditable="false"] .text-field-placeholder {
+    display: inline-block;
+    min-width: 150px;
+    height: 40px;
+    border: 2px solid #d1d5db;
+    border-radius: 8px;
+    background-color: #f9fafb;
+    padding: 8px 12px;
+    margin: 0 4px;
+    font-size: 14px;
+    color: #6b7280;
+    font-style: italic;
+  }
+  
+  .ProseMirror[contenteditable="false"] .signature-placeholder {
+    display: inline-block;
+    min-width: 200px;
+    height: 80px;
+    border: 2px solid #d1d5db;
+    border-radius: 8px;
+    background-color: #f9fafb;
+    margin: 0 4px;
+    position: relative;
+  }
+  
+  .ProseMirror[contenteditable="false"] .signature-placeholder::after {
+    content: "Sign here";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #9ca3af;
+    font-size: 12px;
+    font-style: italic;
   }
 `}</style>
 

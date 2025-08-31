@@ -2,12 +2,15 @@ import React, { useEffect, useState } from 'react';
 import { CalendarIcon, ClockIcon, MapPinIcon, UserIcon, LinkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { Link } from 'react-router-dom';
+import { getStageName } from '../lib/stageUtils';
 
 interface Meeting {
   id: number;
   lead: string;
-  info: string;
+  info: string | number;
   expert: string;
+  helper: string;
+  scheduler: string;
   date: string;
   time: string;
   value: string;
@@ -18,7 +21,7 @@ interface Meeting {
   link: string;
   manager?: string;
   brief: string;
-  stage?: string;
+  stage?: string | number;
   leadManager?: string;
 }
 
@@ -34,13 +37,27 @@ interface MeetingRecord {
   helper: string;
   teams_meeting_url: string;
   meeting_brief: string;
-  leads: {
+  lead?: {
+    id: number;
     lead_number: string;
     name: string;
     status: string;
     topic: string;
-    stage?: string;
     manager?: string;
+    stage?: string;
+  };
+  legacy_lead?: {
+    id: number;
+    name: string;
+    stage?: string | number;
+    expert_id?: string;
+    meeting_manager_id?: string;
+    meeting_lawyer_id?: string;
+    meeting_scheduler_id?: string;
+    category?: string;
+    category_id?: number;
+    total?: number;
+    currency_id?: number;
   };
 }
 
@@ -118,7 +135,7 @@ const Meetings: React.FC = () => {
         const tomorrow = new Date(today.getTime() + 86400000);
         const tomorrowStr = tomorrow.toISOString().split('T')[0];
 
-        // Fetch meetings from Supabase - join with leads table to get lead information
+        // Fetch meetings from Supabase - join with both leads and leads_lead tables to get lead information
         const { data: meetings, error: fetchError } = await supabase
           .from('meetings')
           .select(`
@@ -133,13 +150,27 @@ const Meetings: React.FC = () => {
             helper,
             teams_meeting_url,
             meeting_brief,
-            leads:client_id (
+            lead:leads!client_id (
+              id,
               lead_number,
               name,
               status,
               topic,
+              manager,
+              stage
+            ),
+            legacy_lead:leads_lead!legacy_lead_id (
+              id,
+              name,
               stage,
-              manager
+              expert_id,
+              meeting_manager_id,
+              meeting_lawyer_id,
+              meeting_scheduler_id,
+              category,
+              category_id,
+              total,
+              currency_id
             )
           `)
           .or(`meeting_date.eq.${todayStr},meeting_date.eq.${tomorrowStr}`)
@@ -154,29 +185,177 @@ const Meetings: React.FC = () => {
           throw new Error('No meetings data received');
         }
 
+        // Fetch employee names for ID mapping
+        const employeeIds = new Set<string>();
+        meetings.forEach(meeting => {
+          // Helper function to add valid IDs only
+          const addValidId = (id: any) => {
+            if (id && id !== '---' && id !== '' && id !== null && id !== undefined) {
+              employeeIds.add(id.toString());
+            }
+          };
+          
+          addValidId(meeting.legacy_lead?.meeting_manager_id);
+          addValidId(meeting.legacy_lead?.meeting_lawyer_id);
+          addValidId(meeting.legacy_lead?.meeting_scheduler_id);
+          addValidId(meeting.legacy_lead?.expert_id);
+          addValidId(meeting.expert);
+          addValidId(meeting.meeting_manager);
+          addValidId(meeting.helper);
+        });
+
+        let employeeNameMap: Record<string, string> = {};
+        if (employeeIds.size > 0) {
+          const { data: employees, error: employeeError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .in('id', Array.from(employeeIds));
+          
+          if (!employeeError && employees) {
+            employeeNameMap = employees.reduce((acc, emp) => {
+              acc[emp.id.toString()] = emp.display_name;
+              return acc;
+            }, {} as Record<string, string>);
+          }
+        }
+
+        // Fetch category names for legacy leads
+        const categoryIds = meetings
+          .filter(m => m.legacy_lead?.category_id)
+          .map(m => m.legacy_lead!.category_id!)
+          .filter(Boolean);
+
+        let categoryNameMap: Record<number, string> = {};
+        if (categoryIds.length > 0) {
+          const { data: categories, error: categoryError } = await supabase
+            .from('misc_category')
+            .select('id, name')
+            .in('id', categoryIds);
+          
+          if (!categoryError && categories) {
+            categoryNameMap = categories.reduce((acc, cat) => {
+              acc[cat.id] = cat.name;
+              return acc;
+            }, {} as Record<number, string>);
+          }
+        }
+
+        // Fetch currency information for legacy leads
+        const currencyIds = meetings
+          .filter(m => m.legacy_lead?.currency_id)
+          .map(m => m.legacy_lead!.currency_id!)
+          .filter(Boolean);
+
+        let currencyMap: Record<number, string> = {};
+        if (currencyIds.length > 0) {
+          const { data: currencies, error: currencyError } = await supabase
+            .from('accounting_currencies')
+            .select('id, iso_code')
+            .in('id', currencyIds);
+          
+          if (!currencyError && currencies) {
+            currencyMap = currencies.reduce((acc, curr) => {
+              acc[curr.id] = curr.iso_code;
+              return acc;
+            }, {} as Record<number, string>);
+          }
+        }
+
         // Transform and filter meetings
-        const transformedMeetings = meetings.map(meeting => ({
-          id: meeting.id,
-          lead: meeting.leads?.lead_number || 'N/A',
-          info: meeting.leads?.stage || '',
-          expert: meeting.expert || 'Unassigned',
-          date: meeting.meeting_date,
-          time: meeting.meeting_time,
-          value: meeting.meeting_amount ? `${meeting.meeting_currency} ${meeting.meeting_amount}` : '0',
-          location: meeting.meeting_location || 'Teams',
-          staff: [
-            meeting.meeting_manager,
-            meeting.helper,
-            meeting.expert
-          ].filter(Boolean), // Remove any null/undefined/empty values
-          name: meeting.leads?.name || 'Unknown',
-          topic: meeting.leads?.topic || 'Consultation',
-          link: meeting.teams_meeting_url,
-          manager: meeting.meeting_manager,
-          brief: meeting.meeting_brief || '',
-          stage: meeting.leads?.stage,
-          leadManager: meeting.leads?.manager || ''
-        }));
+        const transformedMeetings = meetings.map(meeting => {
+          // Determine which lead data to use
+          let leadData = null;
+          
+          if (meeting.legacy_lead) {
+            // Use legacy lead data and map column names to match new leads structure
+            leadData = {
+              ...meeting.legacy_lead,
+              lead_type: 'legacy',
+              // Map legacy column names to new structure
+              manager: meeting.legacy_lead.meeting_manager_id,
+              helper: meeting.legacy_lead.meeting_lawyer_id,
+              // For legacy leads, use the ID as lead_number
+              lead_number: meeting.legacy_lead.id?.toString(),
+              // Use category name if available, otherwise category_id as string
+              topic: meeting.legacy_lead.category || 
+                     (meeting.legacy_lead.category_id ? categoryNameMap[meeting.legacy_lead.category_id] || meeting.legacy_lead.category_id.toString() : 'Consultation')
+            };
+          } else if (meeting.lead) {
+            // Use new lead data
+            leadData = {
+              ...meeting.lead,
+              lead_type: 'new'
+            };
+          }
+          
+          return {
+            id: meeting.id,
+            lead: leadData?.lead_number || 'N/A',
+            info: leadData?.stage ? getStageName(leadData.stage.toString()) : '', // Transform stage ID to name
+            expert: (() => {
+              // For legacy leads, use expert_id from the lead data
+              if (meeting.legacy_lead?.expert_id) {
+                return employeeNameMap[meeting.legacy_lead.expert_id] || meeting.legacy_lead.expert_id;
+              }
+              // For new leads or meetings table expert
+              return meeting.expert ? employeeNameMap[meeting.expert] || meeting.expert : 'Unassigned';
+            })(),
+            helper: (() => {
+              // For legacy leads, use meeting_lawyer_id from the lead data
+              if (meeting.legacy_lead?.meeting_lawyer_id) {
+                return employeeNameMap[meeting.legacy_lead.meeting_lawyer_id] || meeting.legacy_lead.meeting_lawyer_id;
+              }
+              // For new leads or meetings table helper
+              return meeting.helper ? employeeNameMap[meeting.helper] || meeting.helper : '';
+            })(),
+            scheduler: (() => {
+              // For legacy leads, use meeting_scheduler_id from the lead data
+              if (meeting.legacy_lead?.meeting_scheduler_id) {
+                return employeeNameMap[meeting.legacy_lead.meeting_scheduler_id] || meeting.legacy_lead.meeting_scheduler_id;
+              }
+              // For new leads, use meeting_manager from the meetings table
+              return meeting.meeting_manager ? employeeNameMap[meeting.meeting_manager] || meeting.meeting_manager : '';
+            })(),
+            date: meeting.meeting_date,
+            time: meeting.meeting_time,
+            value: (() => {
+              // For legacy leads, use total and currency_id from the lead data
+              if (meeting.legacy_lead?.total && meeting.legacy_lead?.currency_id) {
+                const currencyCode = currencyMap[meeting.legacy_lead.currency_id] || 'USD';
+                return `${currencyCode} ${meeting.legacy_lead.total}`;
+              }
+              // For new leads, use meeting_amount and meeting_currency from the meetings table
+              return meeting.meeting_amount ? `${meeting.meeting_currency} ${meeting.meeting_amount}` : '0';
+            })(),
+            location: meeting.meeting_location || 'Teams',
+            staff: [
+              meeting.meeting_manager ? employeeNameMap[meeting.meeting_manager] || meeting.meeting_manager : '',
+              (() => {
+                // For legacy leads, use meeting_lawyer_id from the lead data
+                if (meeting.legacy_lead?.meeting_lawyer_id) {
+                  return employeeNameMap[meeting.legacy_lead.meeting_lawyer_id] || meeting.legacy_lead.meeting_lawyer_id;
+                }
+                // For new leads or meetings table helper
+                return meeting.helper ? employeeNameMap[meeting.helper] || meeting.helper : '';
+              })(),
+              (() => {
+                // For legacy leads, use expert_id from the lead data
+                if (meeting.legacy_lead?.expert_id) {
+                  return employeeNameMap[meeting.legacy_lead.expert_id] || meeting.legacy_lead.expert_id;
+                }
+                // For new leads or meetings table expert
+                return meeting.expert ? employeeNameMap[meeting.expert] || meeting.expert : '';
+              })()
+            ].filter(Boolean), // Remove any null/undefined/empty values
+            name: leadData?.name || 'Unknown',
+            topic: leadData?.topic || 'Consultation',
+            link: meeting.teams_meeting_url,
+            manager: meeting.meeting_manager ? employeeNameMap[meeting.meeting_manager] || meeting.meeting_manager : '',
+            brief: meeting.meeting_brief || '',
+            stage: leadData?.stage || '', // Keep original stage for reference
+            leadManager: leadData?.manager ? employeeNameMap[leadData.manager] || leadData.manager : ''
+          };
+        });
 
         setTodayMeetings(transformedMeetings.filter(m => m.date === todayStr));
         setTomorrowMeetings(transformedMeetings.filter(m => m.date === tomorrowStr));
@@ -215,9 +394,12 @@ const Meetings: React.FC = () => {
     }
   };
 
-  const getStageBadge = (stage: string) => {
+  const getStageBadge = (stage: string | number) => {
     if (!stage) return null;
-    const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+    
+    // Convert stage to string and handle both string and number types
+    const stageStr = stage.toString();
+    const stageText = stageStr.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     const style = {
       backgroundColor: '#3b28c7',
       color: '#fff',
@@ -263,16 +445,16 @@ const Meetings: React.FC = () => {
               <td className="font-medium">{meeting.name}</td>
               <td>{meeting.topic}</td>
               <td>{meeting.expert}</td>
-              <td>{meeting.staff[1] || '---'}</td>
+              <td>{meeting.helper || '---'}</td>
               <td>{meeting.leadManager || '---'}</td>
-              <td>{meeting.manager || '---'}</td>
+              <td>{meeting.scheduler || '---'}</td>
               <td>
                 <div className="flex items-center gap-1">
                   <ClockIcon className="w-4 h-4" />
                   {meeting.time}
                 </div>
               </td>
-              <td className="font-semibold text-success">{meeting.value}</td>
+              <td className="font-semibold text-primary">{meeting.value}</td>
               <td>
                 <div className="flex items-center gap-1">
                   <MapPinIcon className="w-4 h-4" />
@@ -322,6 +504,10 @@ const Meetings: React.FC = () => {
             <span>{meeting.expert}</span>
           </div>
           <div className="flex items-center gap-2 text-base-content/70 text-sm">
+            <span className="font-semibold">Helper:</span>
+            <span>{meeting.helper || '---'}</span>
+          </div>
+          <div className="flex items-center gap-2 text-base-content/70 text-sm">
             <MapPinIcon className="w-5 h-5" />
             <span>{meeting.location}</span>
           </div>
@@ -331,11 +517,11 @@ const Meetings: React.FC = () => {
           </div>
           <div className="flex items-center gap-2 text-base-content/70 text-sm">
             <span className="font-semibold">Value:</span>
-            <span className="text-success font-bold">{meeting.value}</span>
+            <span className="text-primary font-bold">{meeting.value}</span>
           </div>
           <div className="flex items-center gap-2 text-base-content/70 text-sm">
             <span className="font-semibold">Scheduler:</span>
-            <span>{meeting.manager || '---'}</span>
+            <span>{meeting.scheduler || '---'}</span>
           </div>
           {getValidTeamsLink(meeting.link) && (
             <a

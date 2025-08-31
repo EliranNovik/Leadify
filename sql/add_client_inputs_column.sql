@@ -1,9 +1,9 @@
--- Add client_inputs column to contracts table to store filled-in client data
+-- Add client_inputs column to contracts table to store actual values entered by clients
 ALTER TABLE contracts 
-ADD COLUMN client_inputs JSONB DEFAULT NULL;
+ADD COLUMN IF NOT EXISTS client_inputs JSONB DEFAULT '{}';
 
--- Add comment
-COMMENT ON COLUMN contracts.client_inputs IS 'Stores the filled-in client inputs (text fields and signatures) when contract is signed';
+-- Add comment for documentation
+COMMENT ON COLUMN contracts.client_inputs IS 'JSON object storing client input values for text fields and signatures (e.g., {"text-1": "John Doe", "signature-1": "data:image/png;base64,..."})';
 
 -- Add index for better query performance
 CREATE INDEX idx_contracts_client_inputs ON contracts USING GIN (client_inputs); 

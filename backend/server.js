@@ -97,8 +97,8 @@ app.use('*', (req, res) => {
   });
 });
 
+// Start server
 app.listen(PORT, () => {
-  console.log(`🔗 Health check: http://localhost:${PORT}/health`);
   console.log(`🚀 Server running on port ${PORT}`);
 });
 

@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
+import { getStageName, fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import {
   PencilIcon,
   TrashIcon,
@@ -45,6 +47,7 @@ import {
   PlusIcon,
   TagIcon,
   ChartBarIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline';
 import InfoTab from './client-tabs/InfoTab';
 import RolesTab from './client-tabs/RolesTab';
@@ -68,6 +71,8 @@ import {
 import toast from 'react-hot-toast';
 import LeadSummaryDrawer from './LeadSummaryDrawer';
 import { generateProformaName } from '../lib/proforma';
+import ClientInformationBox from './ClientInformationBox';
+import ProgressFollowupBox from './ProgressFollowupBox';
 
 interface TabItem {
   id: string;
@@ -77,17 +82,18 @@ interface TabItem {
   component: React.ComponentType<ClientTabProps>;
 }
 
-const tabs: TabItem[] = [
-  { id: 'info', label: 'Info', icon: InformationCircleIcon, component: InfoTab },
-  { id: 'roles', label: 'Roles', icon: UserGroupIcon, component: RolesTab },
-  { id: 'contact', label: 'Contact info', icon: UserIcon, component: ContactInfoTab },
-  { id: 'marketing', label: 'Marketing', icon: MegaphoneIcon, component: MarketingTab },
-  { id: 'expert', label: 'Expert', icon: UserIcon, component: ExpertTab },
-  { id: 'meeting', label: 'Meeting', icon: CalendarIcon, component: MeetingTab },
-  { id: 'price', label: 'Price Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
-  { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: 31, component: InteractionsTab },
-  { id: 'finances', label: 'Finances', icon: CurrencyDollarIcon, component: FinancesTab },
-];
+// Note: This tabs array is now replaced by the dynamic one below
+// const tabs: TabItem[] = [
+//   { id: 'info', label: 'Info', icon: InformationCircleIcon, component: InfoTab },
+//   { id: 'roles', label: 'Roles', icon: UserGroupIcon, component: RolesTab },
+//   { id: 'contact', label: 'Contact info', icon: UserIcon, component: ContactInfoTab },
+//   { id: 'marketing', label: 'Marketing', icon: MegaphoneIcon, component: MarketingTab },
+//   { id: 'expert', label: 'Expert', icon: UserIcon, component: ExpertTab },
+//   { id: 'meeting', label: 'Meeting', icon: CalendarIcon, component: MeetingTab },
+//   { id: 'price', label: 'Price Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
+//   { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: 31, component: InteractionsTab },
+//   { id: 'finances', label: 'Finances', icon: CurrencyDollarIcon, component: FinancesTab },
+// ];
 
 const tabColors = [
   'bg-primary',
@@ -104,7 +110,7 @@ const tabColors = [
 interface ClientsProps {
   selectedClient: any;
   setSelectedClient: React.Dispatch<any>;
-  refreshClientData: (clientId: number) => Promise<void>;
+  refreshClientData: (clientId: number | string) => Promise<void>;
 }
 
 const getCurrencySymbol = (currencyCode?: string) => {
@@ -219,6 +225,38 @@ const Clients: React.FC<ClientsProps> = ({
   setSelectedClient,
   refreshClientData,
 }) => {
+  console.log('🔍 Clients component rendering with selectedClient:', selectedClient);
+  if (selectedClient) {
+    console.log('🔍 selectedClient.stage:', selectedClient.stage);
+    console.log('🔍 selectedClient.deactivate_note:', selectedClient.deactivate_note);
+    console.log('🔍 selectedClient.lead_type:', selectedClient.lead_type);
+    console.log('🔍 selectedClient keys:', Object.keys(selectedClient));
+  }
+  // State to store all employees for name lookup
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  // State to store all categories for name lookup
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+
+  // Helper function to get employee display name from ID
+  const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
+    if (!employeeId || employeeId === '---') return 'Not assigned';
+    // Find employee in the loaded employees array
+    const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+    return employee ? employee.display_name : employeeId; // Fallback to ID if not found
+  };
+
+  // Helper function to get category name from ID
+  const getCategoryName = (categoryId: string | number | null | undefined) => {
+    if (!categoryId || categoryId === '---') return '';
+    
+    // Find category in loaded categories
+    const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (category) {
+      return category.name;
+    }
+    
+    return String(categoryId); // Fallback to ID if not found
+  };
   const { lead_number = "" } = useParams();
   const location = useLocation();
   const fullLeadNumber = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, ''));
@@ -234,10 +272,12 @@ const Clients: React.FC<ClientsProps> = ({
   const [meetingFormData, setMeetingFormData] = useState({
     date: '',
     time: '09:00',
-    location: 'Teams',
+    location: '',
     manager: '',
     helper: '',
+    brief: '',
   });
+  const [meetingLocations, setMeetingLocations] = useState<Array<{id: string, name: string}>>([]);
   const navigate = useNavigate();
   const [showUpdateDrawer, setShowUpdateDrawer] = useState(false);
   const [meetingNotes, setMeetingNotes] = useState('');
@@ -294,6 +334,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [mainCategories, setMainCategories] = useState<string[]>([]);
   const [sources, setSources] = useState<string[]>([]);
   const [languagesList, setLanguagesList] = useState<string[]>([]);
+  const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
@@ -302,6 +343,150 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Local loading state for client data
   const [localLoading, setLocalLoading] = useState(true);
+
+  // Fetch all employees and categories for name lookup
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      const { data, error } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, bonuses_role')
+        .order('display_name', { ascending: true });
+      
+      if (!error && data) {
+  
+        setAllEmployees(data);
+      }
+    };
+
+    const fetchCategories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_category')
+          .select('id, name')
+          .order('name', { ascending: true });
+        
+        if (error) {
+          console.error('Clients: Error fetching categories:', error);
+        } else if (data) {
+          setAllCategories(data);
+        }
+      } catch (err) {
+        console.error('Clients: Exception while fetching categories:', err);
+      }
+    };
+
+    const fetchAvailableStages = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('lead_stages')
+          .select('id, name')
+          .order('name', { ascending: true });
+        
+        if (error) {
+          console.error('Clients: Error fetching stages:', error);
+        } else if (data) {
+          setAvailableStages(data);
+        }
+      } catch (err) {
+        console.error('Clients: Exception while fetching stages:', err);
+      }
+    };
+
+    fetchEmployees();
+    fetchCategories();
+    fetchAvailableStages();
+    // Initialize stage names cache
+    console.log('🔍 Initializing stage names cache...');
+    fetchStageNames().then(stageNames => {
+      console.log('✅ Stage names initialized:', stageNames);
+    }).catch(error => {
+      console.error('❌ Error initializing stage names:', error);
+    });
+  }, []);
+  
+  // State for unactivated lead view
+  const [isUnactivatedView, setIsUnactivatedView] = useState(false);
+  const [userManuallyExpanded, setUserManuallyExpanded] = useState(false);
+
+  // Debug isUnactivatedView changes
+  useEffect(() => {
+    console.log('🔍 isUnactivatedView changed to:', isUnactivatedView);
+    console.log('🔍 useEffect triggered - isUnactivatedView updated');
+  }, [isUnactivatedView]);
+
+  // Check selectedClient prop and set isUnactivatedView accordingly
+  useEffect(() => {
+    console.log('🔍 useEffect triggered - selectedClient:', selectedClient);
+    console.log('🔍 useEffect triggered - selectedClient ID:', selectedClient?.id);
+    if (selectedClient) {
+      console.log('🔍 Clients component - selectedClient prop changed:', selectedClient);
+      
+      // Reset userManuallyExpanded when a new client is selected
+      setUserManuallyExpanded(false);
+      
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+      const isUnactivated = isLegacy ? 
+        (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
+        ((unactivationReason && unactivationReason.trim() !== '') || false);
+      
+      console.log('🔍 Unactivation logic check:', {
+        isLegacy,
+        stage: selectedClient.stage,
+        stageString: String(selectedClient.stage),
+        stageCheck: String(selectedClient.stage) === '91',
+        deactivate_note: selectedClient.deactivate_note,
+        unactivationReason,
+        isUnactivated
+      });
+      
+      console.log('🔍 Clients component - Unactivation check:', {
+        isLegacy,
+        stage: selectedClient.stage,
+        deactivate_note: selectedClient.deactivate_note,
+        unactivation_reason: selectedClient.unactivation_reason,
+        isUnactivated
+      });
+      
+      setIsUnactivatedView(isUnactivated);
+    }
+  }, [selectedClient]);
+  
+  // Manual check for unactivation (in case useEffect doesn't trigger)
+  if (selectedClient) {
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+    const isUnactivated = isLegacy ? 
+      (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
+      ((unactivationReason && unactivationReason.trim() !== '') || false);
+    
+    console.log('🔍 Manual unactivation check:', {
+      isLegacy,
+      stage: selectedClient.stage,
+      stageCheck: String(selectedClient.stage) === '91',
+      deactivate_note: selectedClient.deactivate_note,
+      unactivationReason,
+      isUnactivated,
+      currentIsUnactivatedView: isUnactivatedView
+    });
+    
+    // Only set to true if it's currently false and should be true
+    // Don't override if user has manually set it to false
+    if (isUnactivated && isUnactivatedView === false) {
+      console.log('🔍 FORCING isUnactivatedView to true');
+      setIsUnactivatedView(true);
+    }
+  }
+  
+  // State for unactivation modal
+  const [showUnactivationModal, setShowUnactivationModal] = useState(false);
+  const [unactivationReason, setUnactivationReason] = useState('');
+  
+  // State for activation modal
+  const [showActivationModal, setShowActivationModal] = useState(false);
+
+  // State for available stages
+  const [availableStages, setAvailableStages] = useState<Array<{id: string, name: string}>>([]);
 
   // 1. Add state for the rescheduling drawer and meetings list
   const [showRescheduleDrawer, setShowRescheduleDrawer] = useState(false);
@@ -339,6 +524,7 @@ const Clients: React.FC<ClientsProps> = ({
     date: '',
     currency: '₪',
     value: 0.0,
+    duePercent: '',
     applicants: '',
     notes: '',
   });
@@ -353,6 +539,24 @@ const Clients: React.FC<ClientsProps> = ({
     potentialValue: '',
   });
   const [schedulerOptions, setSchedulerOptions] = useState<string[]>([]);
+
+  // Update newPayment currency when selected client changes
+  useEffect(() => {
+    if (selectedClient) {
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      let currency = '₪'; // Default
+      
+      if (isLegacyLead) {
+        // For legacy leads, use balance_currency
+        currency = selectedClient.balance_currency || '₪';
+      } else {
+        // For new leads, use proposal_currency or default
+        currency = selectedClient.proposal_currency || '₪';
+      }
+      
+      setNewPayment(prev => ({ ...prev, currency }));
+    }
+  }, [selectedClient]);
 
   // Fetch scheduler options from database
   useEffect(() => {
@@ -460,51 +664,315 @@ const Clients: React.FC<ClientsProps> = ({
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
 
-    // Manually refetch the client data to ensure it's up-to-date
-    const { data, error } = await supabase
-      .from('leads')
-      .select('*, emails (*), closer')
-      .eq('id', selectedClient.id)
-      .single();
+    // Check if this is a legacy lead
+    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
 
-    if (error) {
+    try {
+      let data;
+      let error;
+
+      if (isLegacyLead) {
+        // For legacy leads, fetch from leads_lead table with currency information
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        const { data: legacyData, error: legacyError } = await supabase
+          .from('leads_lead')
+          .select(`
+            *,
+            accounting_currencies!leads_lead_currency_id_fkey (
+              name,
+              iso_code
+            ),
+            misc_language!leads_lead_language_id_fkey (
+              name
+            )
+          `)
+          .eq('id', legacyId)
+          .single();
+
+        data = legacyData;
+        error = legacyError;
+
+        if (data) {
+          // Fetch emails for legacy lead
+          const { data: legacyEmails, error: emailsError } = await supabase
+            .from('emails')
+            .select('*')
+            .eq('legacy_id', data.id)
+            .order('sent_at', { ascending: false });
+            
+          if (emailsError) {
+            console.error('Error fetching legacy emails:', emailsError);
+          }
+          
+          console.log('📧 Legacy emails fetched in onClientUpdate:', legacyEmails?.length || 0, 'emails');
+          
+          // Transform legacy lead to match new lead structure
+          const transformedData = {
+            ...data,
+            id: `legacy_${data.id}`,
+            lead_number: String(data.id), // Always use id as lead_number for legacy leads
+            stage: data.stage !== null && data.stage !== undefined ? String(data.stage) : '',
+            source: String(data.source_id || ''),
+            created_at: data.cdate,
+            updated_at: data.udate,
+            notes: data.notes || '',
+            special_notes: data.special_notes || '',
+            next_followup: data.next_followup || '',
+            probability: String(data.probability || ''),
+            category: getCategoryName(data.category_id),
+            language: data.misc_language?.name || String(data.language_id || ''), // Get language name from joined table
+            balance: String(data.total || ''), // Map total to balance
+            balance_currency: (() => {
+              // Use accounting_currencies name if available, otherwise fallback
+              if (data.accounting_currencies?.name) {
+                return data.accounting_currencies.name;
+              } else {
+                // Fallback currency mapping based on currency_id
+                switch (data.currency_id) {
+                  case 1: return '₪';
+                  case 2: return '€';
+                  case 3: return '$';
+                  case 4: return '£';
+                  default: return '₪';
+                }
+              }
+            })(),
+            lead_type: 'legacy',
+            // Add missing fields with defaults
+            client_country: null,
+            emails: legacyEmails || [],
+            closer: null,
+            handler: null,
+            unactivation_reason: null,
+          };
+          console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
+          console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
+          setSelectedClient(transformedData);
+        }
+      } else {
+        // For new leads, fetch from leads table
+        const { data: newData, error: newError } = await supabase
+          .from('leads')
+          .select('*, emails (*), closer')
+          .eq('id', selectedClient.id)
+          .single();
+
+        data = newData;
+        error = newError;
+
+        if (data) {
+          // Transform new lead to include category name
+          const transformedData = {
+            ...data,
+            category: getCategoryName(data.category_id),
+          };
+          console.log('onClientUpdate: Setting new lead data:', transformedData);
+          setSelectedClient(transformedData);
+        }
+      }
+
+      if (error) {
+        console.error('Error refreshing client data:', error);
+      }
+    } catch (error) {
       console.error('Error refreshing client data:', error);
-    } else if (data) {
-      setSelectedClient(data);
     }
   }, [selectedClient?.id, setSelectedClient]);
 
   useEffect(() => {
     let isMounted = true;
     const fetchClient = async () => {
+      console.log('🚀 fetchClient STARTED');
       setLocalLoading(true);
+      console.log('🔍 fetchClient called with lead_number:', lead_number);
+      console.log('🔍 fullLeadNumber:', fullLeadNumber);
       if (lead_number) {
         console.log('Fetching client with lead_number:', fullLeadNumber);
-        const { data, error } = await supabase
-          .from('leads')
-          .select('*, client_country, emails (*), closer, handler')
-          .eq('lead_number', fullLeadNumber)
-          .single();
+        
+        // Try to find the lead in both tables
+        let clientData = null;
+        
+        // Check if this looks like a legacy lead ID (numeric)
+        const isLegacyLeadId = /^\d+$/.test(fullLeadNumber);
+        console.log('🔍 isLegacyLeadId:', isLegacyLeadId);
+        
+        if (isLegacyLeadId) {
+          // For numeric IDs, try legacy table first
+          console.log('🔍 Querying legacy table for ID:', parseInt(fullLeadNumber));
+          const { data: legacyLead, error: legacyError } = await supabase
+            .from('leads_lead')
+            .select(`
+              *,
+              accounting_currencies!leads_lead_currency_id_fkey (
+                name,
+                iso_code
+              ),
+              misc_language!leads_lead_language_id_fkey (
+                name
+              )
+            `)
+            .eq('id', parseInt(fullLeadNumber))
+            .single();
+          
+                    console.log('🔍 Legacy query result:', { legacyLead, legacyError });
+          console.log('🔍 Legacy lead data:', legacyLead);
+          console.log('🔍 Legacy lead stage:', legacyLead?.stage);
+          console.log('🔍 Legacy lead deactivate_note:', legacyLead?.deactivate_note);
+          
+          if (!legacyError && legacyLead) {
+              console.log('🔍 Legacy lead found:', legacyLead);
+              console.log('🔍 Legacy lead stage:', legacyLead.stage);
+              console.log('🔍 Legacy lead deactivate_note:', legacyLead.deactivate_note);
+              // Fetch emails for legacy lead
+              console.log('🔍 Fetching emails for legacy lead ID:', legacyLead.id);
+            const { data: legacyEmails, error: emailsError } = await supabase
+              .from('emails')
+              .select('*')
+              .eq('legacy_id', legacyLead.id)
+              .order('sent_at', { ascending: false });
+            
+            console.log('🔍 Email query result:', { 
+              legacyId: legacyLead.id, 
+              emailsFound: legacyEmails?.length || 0,
+              error: emailsError,
+              sampleEmails: legacyEmails?.slice(0, 2)
+            });
+            
+            if (emailsError) {
+              console.error('❌ Error fetching legacy emails:', emailsError);
+            } else {
+              console.log('✅ Legacy emails fetched:', legacyEmails?.length || 0, 'emails');
+              if (legacyEmails && legacyEmails.length > 0) {
+                console.log('📧 Sample legacy email:', legacyEmails[0]);
+              }
+            }
+            
+            // Transform legacy lead to match new lead structure
+            
+            // Get scheduler name if meeting_scheduler_id exists
+            let schedulerName = null;
+            if (legacyLead.meeting_scheduler_id) {
+              try {
+                const { data: schedulerData, error: schedulerError } = await supabase
+                  .from('tenants_employee')
+                  .select('name')
+                  .eq('id', legacyLead.meeting_scheduler_id)
+                  .single();
+                
+                if (!schedulerError && schedulerData?.name) {
+                  schedulerName = schedulerData.name;
+                }
+              } catch (error) {
+                console.log('Could not fetch scheduler name:', error);
+              }
+            }
+            
+            clientData = {
+              ...legacyLead,
+              id: `legacy_${legacyLead.id}`,
+              lead_number: String(legacyLead.id), // Always use id as lead_number for legacy leads
+              stage: legacyLead.stage !== null && legacyLead.stage !== undefined ? String(legacyLead.stage) : '',
+              source: String(legacyLead.source_id || ''),
+              created_at: legacyLead.cdate,
+              updated_at: legacyLead.udate,
+              notes: legacyLead.notes || '',
+              special_notes: legacyLead.special_notes || '',
+              next_followup: legacyLead.next_followup || '',
+              probability: String(legacyLead.probability || ''),
+                    category: getCategoryName(legacyLead.category_id),
+              language: legacyLead.misc_language?.name || String(legacyLead.language_id || ''), // Get language name from joined table
+              balance: String(legacyLead.total || ''), // Map total to balance
+              balance_currency: (() => {
+                // Use accounting_currencies name if available, otherwise fallback
+                if (legacyLead.accounting_currencies?.name) {
+                  return legacyLead.accounting_currencies.name;
+                } else {
+                  // Fallback currency mapping based on currency_id
+                  switch (legacyLead.currency_id) {
+                    case 1: return '₪';
+                    case 2: return '€';
+                    case 3: return '$';
+                    case 4: return '£';
+                    default: return '₪';
+                  }
+                }
+              })(),
+              lead_type: 'legacy',
+              // Add missing fields with defaults
+              client_country: null,
+              emails: legacyEmails || [],
+              closer: legacyLead.closer_id, // Use closer_id from legacy table
+              handler: legacyLead.case_handler_id, // Use case_handler_id from legacy table
+              scheduler: schedulerName, // Use resolved scheduler name
+              unactivation_reason: null,
+              deactivate_note: legacyLead.deactivate_note || null,
+            };
+            console.log('🔍 Transformed clientData:', clientData);
+            console.log('🔍 clientData.stage:', clientData.stage);
+            console.log('🔍 clientData.deactivate_note:', clientData.deactivate_note);
+            console.log('🔍 Legacy lead stage after transformation:', clientData.stage);
+            console.log('🔍 Legacy lead stage type after transformation:', typeof clientData.stage);
+          }
+        } else {
+          // For non-numeric IDs, try new leads table first
+          const { data: newLead, error: newError } = await supabase
+            .from('leads')
+            .select('*, client_country, emails (*), closer, handler')
+            .eq('lead_number', fullLeadNumber)
+            .single();
 
-        console.log('Database query result:', { data, error });
-        if (error) {
-          console.error('Error fetching client', error);
+          if (!newError && newLead) {
+            // Transform new lead to include category name
+            clientData = {
+              ...newLead,
+                    category: getCategoryName(newLead.category_id),
+            };
+          }
+        }
+
+        console.log('Database query result:', { clientData });
+        if (!clientData) {
+          console.error('Client not found in either table');
           navigate('/clients');
         } else if (isMounted) {
-          setSelectedClient(data);
+          setSelectedClient(clientData);
+          // Set unactivated view immediately if lead is unactivated
+          const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
+          const unactivationReason = isLegacy ? clientData.deactivate_note : clientData.unactivation_reason;
+          const stageName = getStageName(clientData.stage);
+          const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
+          // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
+          const isUnactivated = isLegacy ? 
+            (String(clientData.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
+            ((unactivationReason && unactivationReason.trim() !== '') || stageUnactivated);
+          console.log('🔍 setIsUnactivatedView check:');
+          console.log('🔍 Client ID:', clientData.id);
+          console.log('🔍 Is legacy:', isLegacy);
+          console.log('🔍 Stage name:', stageName);
+          console.log('🔍 Deactivate note:', clientData.deactivate_note);
+          console.log('🔍 Unactivation reason:', clientData.unactivation_reason);
+          console.log('🔍 Unactivation reason (mapped):', unactivationReason);
+          console.log('🔍 Stage unactivated:', stageUnactivated);
+          console.log('🔍 Is unactivated:', isUnactivated);
+          console.log('🔍 Setting isUnactivatedView to:', clientData && isUnactivated && !userManuallyExpanded);
+          setIsUnactivatedView(!!(clientData && isUnactivated && !userManuallyExpanded));
         }
       } else {
-        const { data, error } = await supabase
-          .from('leads')
-          .select('*, client_country, emails (*)')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single();
-        if (error) {
-          console.error('Error fetching latest client', error);
-        } else if (isMounted) {
-          navigate(`/clients/${data.lead_number}`);
-          setSelectedClient(data);
+        // Get the most recent lead from either table
+        const allLeads = await fetchAllLeads();
+        if (allLeads.length > 0 && isMounted) {
+          const latestLead = allLeads[0];
+          navigate(`/clients/${latestLead.lead_number}`);
+          setSelectedClient(latestLead);
+          const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
+          const unactivationReason = isLegacy ? latestLead.deactivate_note : latestLead.unactivation_reason;
+          const stageName = getStageName(latestLead.stage);
+          const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
+          // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
+          const isUnactivated = isLegacy ? 
+            (String(latestLead.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
+            ((unactivationReason && unactivationReason.trim() !== '') || stageUnactivated);
+          setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
         }
       }
       if (isMounted) setLocalLoading(false);
@@ -540,7 +1008,7 @@ const Clients: React.FC<ClientsProps> = ({
     // Fetch languages for Edit Lead drawer
     const fetchLanguages = async () => {
       try {
-        const { data, error } = await supabase.from('languages').select('name');
+        const { data, error } = await supabase.from('misc_language').select('name');
         if (!error && data) {
           const names = data.map((row: any) => row.name).filter(Boolean);
           setLanguagesList(names);
@@ -550,6 +1018,95 @@ const Clients: React.FC<ClientsProps> = ({
       }
     };
     fetchLanguages();
+    
+    // Fetch currencies for Edit Lead drawer
+    const fetchCurrencies = async () => {
+      try {
+        // Check if this is a legacy lead to determine which currency table to use
+        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+        
+        if (isLegacyLead) {
+          // For legacy leads, fetch from accounting_currencies table
+          console.log('Fetching currencies for legacy lead from accounting_currencies table');
+          const { data, error } = await supabase
+            .from('accounting_currencies')
+            .select('id, name, iso_code')
+            .order('id');
+          
+          console.log('accounting_currencies query result:', { data, error });
+          
+          if (error) {
+            console.error('Error fetching accounting currencies:', error);
+            // Fallback to hardcoded currencies for legacy leads
+            const fallbackCurrencies = [
+              { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
+              { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
+              { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
+              { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
+            ];
+            setCurrencies(fallbackCurrencies);
+          } else if (data && data.length > 0) {
+            // Transform accounting_currencies to match the expected format
+            const transformedCurrencies = data.map(currency => ({
+              id: currency.id.toString(),
+              front_name: currency.name,
+              iso_code: currency.iso_code,
+              name: currency.name
+            }));
+            console.log('Transformed currencies for legacy lead:', transformedCurrencies);
+            setCurrencies(transformedCurrencies);
+          } else {
+            console.log('No data found in accounting_currencies, using fallback');
+            // Fallback to hardcoded currencies for legacy leads
+            const fallbackCurrencies = [
+              { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
+              { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
+              { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
+              { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
+            ];
+            setCurrencies(fallbackCurrencies);
+          }
+        } else {
+          // For new leads, fetch from currencies table
+          console.log('Fetching currencies for new lead from currencies table');
+          const { data, error } = await supabase
+            .from('currencies')
+            .select('id, front_name, iso_code, name')
+            .eq('is_active', true)
+            .order('order_value');
+          
+          console.log('currencies query result:', { data, error });
+          
+          if (error) {
+            console.error('Error fetching currencies:', error);
+          } else if (data) {
+            console.log('Currencies for new lead:', data);
+            setCurrencies(data);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching currencies:', error);
+      }
+    };
+    fetchCurrencies();
+    
+    // Fetch meeting locations for the dropdown
+    const fetchMeetingLocations = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('meeting_locations')
+          .select('id, name')
+          .eq('is_active', true)
+          .order('order_value', { ascending: true });
+        if (!error && data) {
+          setMeetingLocations(data);
+        }
+      } catch (error) {
+        console.error('Error fetching meeting locations:', error);
+      }
+    };
+    fetchMeetingLocations();
+    
     // Also fetch latest meeting date for case summary
     const fetchLatestMeeting = async () => {
       try {
@@ -570,7 +1127,17 @@ const Clients: React.FC<ClientsProps> = ({
     };
     fetchLatestMeeting();
     return () => { isMounted = false; };
-  }, [lead_number, navigate, setSelectedClient, fullLeadNumber, selectedClient?.id]);
+  }, [lead_number, navigate, setSelectedClient, fullLeadNumber, selectedClient?.id, selectedClient?.lead_type]);
+
+  // Set default location when meeting locations are loaded
+  useEffect(() => {
+    if (meetingLocations.length > 0 && !meetingFormData.location) {
+      setMeetingFormData(prev => ({
+        ...prev,
+        location: meetingLocations[0].name
+      }));
+    }
+  }, [meetingLocations, meetingFormData.location]);
 
   // Handle tab switching from URL
   useEffect(() => {
@@ -590,13 +1157,18 @@ const Clients: React.FC<ClientsProps> = ({
       setSelectedStage(null); // Close the dropdown immediately
       (document.activeElement as HTMLElement)?.blur();
     } else if (newStage === 'Unactivate/Spam') {
-      if (window.confirm('Are you sure you want to unactivate this lead?')) {
-        await updateLeadStage('unactivated');
-      }
+      setShowUnactivationModal(true);
+      setSelectedStage(null); // Close the dropdown immediately
+      (document.activeElement as HTMLElement)?.blur();
+    } else if (newStage === 'Activate') {
+      setShowActivationModal(true);
+      setSelectedStage(null); // Close the dropdown immediately
+      (document.activeElement as HTMLElement)?.blur();
     } else if (newStage === 'Paid Meeting') {
       await updateLeadStage('meeting_paid');
     } else if (newStage === 'Communication Started') {
-      if (selectedClient.stage === 'scheduler_assigned') {
+      const currentStageName = getStageName(selectedClient.stage);
+      if (areStagesEquivalent(currentStageName, 'scheduler_assigned')) {
         setShowUpdateDrawer(true);
         (document.activeElement as HTMLElement)?.blur();
       } else {
@@ -608,6 +1180,139 @@ const Clients: React.FC<ClientsProps> = ({
       (document.activeElement as HTMLElement)?.blur();
     } else {
       setSelectedStage(newStage);
+    }
+  };
+
+  const handleUnactivation = async () => {
+    if (!unactivationReason.trim()) {
+      toast.error('Please select a reason for unactivation');
+      return;
+    }
+    
+    try {
+      // Get current Supabase auth user
+      const { data: { user } } = await supabase.auth.getUser();
+      let currentUserFullName = 'Unknown User';
+      
+      if (user) {
+        // Get user's full name from users table
+        const { data: userData, error: userError } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('auth_id', user.id)
+          .single();
+        
+        if (!userError && userData?.full_name) {
+          currentUserFullName = userData.full_name;
+        } else {
+          console.log('Could not fetch user full_name, using email as fallback');
+          currentUserFullName = user.email || 'Unknown User';
+        }
+      }
+
+      // Determine which table to update based on lead type
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const idField = isLegacy ? 'id' : 'id';
+      const clientId = isLegacy ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
+
+      const updateData: any = {
+        unactivated_by: currentUserFullName,
+        unactivated_at: new Date().toISOString(),
+        unactivation_reason: unactivationReason
+      };
+
+      // For legacy leads, also update the stage to the numeric ID for 'unactivated'
+      if (isLegacy) {
+        // Use the known numeric ID for 'unactivated' stage in legacy system
+        updateData.stage = 91;
+      }
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq(idField, clientId);
+      
+      if (error) throw error;
+      
+      // Refresh client data
+      await onClientUpdate();
+      setShowUnactivationModal(false);
+      setUnactivationReason('');
+      toast.success('Lead unactivated successfully');
+    } catch (error) {
+      console.error('Error unactivating lead:', error);
+      toast.error('Failed to unactivate lead');
+    }
+  };
+
+  const handleActivation = async () => {
+    try {
+      // Get current Supabase auth user
+      const { data: { user } } = await supabase.auth.getUser();
+      let currentUserFullName = 'Unknown User';
+      
+      if (user) {
+        // Get user's full name from users table
+        const { data: userData, error: userError } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('auth_id', user.id)
+          .single();
+        
+        if (!userError && userData?.full_name) {
+          currentUserFullName = userData.full_name;
+        } else {
+          console.log('Could not fetch user full_name, using email as fallback');
+          currentUserFullName = user.email || 'Unknown User';
+        }
+      }
+
+      const updateData = {
+        unactivated_by: null,
+        unactivated_at: null,
+        unactivation_reason: null
+      };
+
+      // Determine which table to update based on lead type
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const idField = isLegacy ? 'id' : 'id';
+      const clientId = isLegacy ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq(idField, clientId);
+      
+      if (error) throw error;
+
+      // Record activation event in lead_changes table (only for new leads)
+      if (!isLegacy) {
+        const { error: changeError } = await supabase
+          .from('lead_changes')
+          .insert({
+            lead_id: selectedClient.id,
+            field_name: 'lead_activated',
+            old_value: 'unactivated',
+            new_value: 'activated',
+            changed_by: currentUserFullName,
+            changed_at: new Date().toISOString()
+          });
+
+        if (changeError) {
+          console.error('Error recording activation event:', changeError);
+          // Don't throw error here as the main activation was successful
+        }
+      }
+      
+      // Refresh client data
+      await onClientUpdate();
+      setShowActivationModal(false);
+      toast.success('Lead activated successfully');
+    } catch (error) {
+      console.error('Error activating lead:', error);
+      toast.error('Failed to activate lead');
     }
   };
 
@@ -647,19 +1352,31 @@ const Clients: React.FC<ClientsProps> = ({
       if (stage === 'communication_started') {
         updateData.communication_started_by = currentUserFullName;
         updateData.communication_started_at = new Date().toISOString();
-      } else if (stage === 'unactivated' || stage === 'client_declined') {
-        updateData.unactivated_by = currentUserFullName;
-        updateData.unactivated_at = new Date().toISOString();
       }
 
       console.log('Updating lead stage with tracking:', updateData);
 
-      const { error } = await supabase
-        .from('leads')
-        .update(updateData)
-        .eq('id', selectedClient.id);
+      // Check if this is a legacy lead
+      const isLegacyLead = selectedClient.id.startsWith('legacy_');
       
-      if (error) throw error;
+      if (isLegacyLead) {
+        // For legacy leads, update the leads_lead table
+        const legacyId = selectedClient.id.replace('legacy_', '');
+        const { error } = await supabase
+          .from('leads_lead')
+          .update(updateData)
+          .eq('id', legacyId);
+        
+        if (error) throw error;
+      } else {
+        // For new leads, update the leads table
+        const { error } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', selectedClient.id);
+        
+        if (error) throw error;
+      }
       
       // Refresh client data
       await onClientUpdate();
@@ -668,6 +1385,11 @@ const Clients: React.FC<ClientsProps> = ({
       console.error('Error updating lead stage:', error);
       alert('Failed to update lead stage. Please try again.');
     }
+  };
+
+  // Function to handle stage change from dropdown
+  const handleStageChange = async (newStageId: string) => {
+    await updateLeadStage(newStageId);
   };
 
   const updateScheduler = async (scheduler: string) => {
@@ -695,17 +1417,68 @@ const Clients: React.FC<ClientsProps> = ({
         }
       }
 
-      const { error } = await supabase
-        .from('leads')
-        .update({ 
-          scheduler: scheduler, 
-          stage: 'scheduler_assigned',
-          stage_changed_by: currentUserFullName,
-          stage_changed_at: new Date().toISOString()
-        })
-        .eq('id', selectedClient.id);
+      // Check if this is a legacy lead
+      const isLegacyLead = selectedClient.id.startsWith('legacy_');
       
-      if (error) throw error;
+      if (isLegacyLead) {
+        // For legacy leads, the current logged-in user should become the scheduler
+        // Get current user's full_name from users table
+        const { data: currentUserData, error: userError } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('auth_id', (await supabase.auth.getUser()).data.user?.id)
+          .single();
+        
+        if (userError || !currentUserData?.full_name) {
+          console.error('Error getting current user:', userError);
+          throw new Error('Could not get current user information');
+        }
+        
+        console.log('Current user full_name:', currentUserData.full_name);
+        
+        // Find the corresponding employee record in tenants_employee table
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select('id')
+          .eq('name', currentUserData.full_name)
+          .single();
+        
+        if (employeeError) {
+          console.error('Error finding employee in tenants_employee:', employeeError);
+          throw new Error('Could not find employee record for current user');
+        }
+        
+        if (!employeeData?.id) {
+          throw new Error('No employee found in tenants_employee for current user');
+        }
+        
+        console.log('Found employee ID:', employeeData.id);
+        
+        // For legacy leads, update the leads_lead table with meeting_scheduler_id
+        const legacyId = selectedClient.id.replace('legacy_', '');
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ 
+            meeting_scheduler_id: employeeData.id, // Save the employee ID from tenants_employee
+            stage: 10 // 'scheduler_assigned' stage ID
+          })
+          .eq('id', legacyId);
+        
+        if (error) throw error;
+      } else {
+        // For new leads, update the leads table
+        const { error } = await supabase
+          .from('leads')
+          .update({ 
+            scheduler: scheduler, 
+            stage: 'scheduler_assigned',
+            stage_changed_by: currentUserFullName,
+            stage_changed_at: new Date().toISOString()
+          })
+          .eq('id', selectedClient.id);
+        
+        if (error) throw error;
+      }
       
       // Refresh client data
       await onClientUpdate();
@@ -716,17 +1489,45 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   const getStageBadge = (stage: string) => {
-    // Format stage: remove underscores, capitalize each word
-    const formatted = (stage || 'No Stage')
-      .replace(/_/g, ' ')
-      .replace(/\b\w/g, l => l.toUpperCase());
+    console.log('🔍 getStageBadge called with stage:', stage);
+    console.log('🔍 Stage type:', typeof stage);
+    const stageName = getStageName(stage);
+    console.log('🔍 Stage name resolved:', stageName);
     return (
-      <span
-        className="badge badge-sm ml-2 px-3 py-1 min-w-max whitespace-nowrap"
-        style={{ background: '#ffffff', color: '#7c3aed', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem', border: '2px solid #7c3aed' }}
-      >
-        {formatted}
-      </span>
+      <div className="dropdown dropdown-end">
+        <label 
+          tabIndex={0} 
+          className="badge badge-sm ml-2 px-3 py-1 min-w-max whitespace-nowrap cursor-pointer hover:bg-purple-50 transition-colors"
+          style={{ background: '#ffffff', color: '#7c3aed', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem', border: '2px solid #7c3aed' }}
+        >
+          {stageName}
+          <ChevronDownIcon className="w-3 h-3 ml-1" />
+        </label>
+        <ul 
+          tabIndex={0} 
+          className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
+        >
+          {availableStages.map((stageOption) => (
+            <li key={stageOption.id}>
+              <a 
+                className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
+                  stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
+                }`}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleStageChange(stageOption.id);
+                }}
+              >
+                <span className="font-medium">{stageOption.name}</span>
+                {stage === stageOption.id && (
+                  <CheckIcon className="w-4 h-4 text-purple-600" />
+                )}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
     );
   };
 
@@ -735,10 +1536,80 @@ const Clients: React.FC<ClientsProps> = ({
     setMeetingFormData({
       date: '',
       time: '09:00',
-      location: 'Teams',
+      location: '',
       manager: '',
       helper: '',
+      brief: '',
     });
+  };
+
+  // Function to create calendar event in potential clients calendar
+  const createCalendarEvent = async (accessToken: string, meetingDetails: {
+    subject: string;
+    startDateTime: string;
+    endDateTime: string;
+    location: string;
+    attendees?: { email: string }[];
+  }) => {
+    const potentialClientsCalendarEmail = 'shared-potentialclients@lawoffice.org.il';
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(potentialClientsCalendarEmail)}/calendar/events`;
+    
+    const body: any = {
+      subject: meetingDetails.subject,
+      start: {
+        dateTime: meetingDetails.startDateTime,
+        timeZone: 'UTC'
+      },
+      end: {
+        dateTime: meetingDetails.endDateTime,
+        timeZone: 'UTC'
+      },
+      location: {
+        displayName: meetingDetails.location
+      },
+      attendees: (meetingDetails.attendees || []).map(a => ({
+        emailAddress: {
+          address: a.email
+        },
+        type: 'required'
+      }))
+    };
+
+    // Add Teams meeting properties only if location is Teams
+    if (meetingDetails.location === 'Teams') {
+      body.isOnlineMeeting = true;
+      body.onlineMeetingProvider = 'teamsForBusiness';
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      console.error('Calendar event creation error:', error);
+      throw new Error(error.error?.message || 'Failed to create calendar event');
+    }
+
+    const data = await response.json();
+    console.log('Calendar event creation response:', data);
+    console.log('Online meeting data:', data.onlineMeeting);
+    console.log('Join URL:', data.onlineMeeting?.joinUrl);
+    console.log('Web link:', data.webLink);
+    
+    const joinUrl = data.onlineMeeting?.joinUrl || data.webLink;
+    console.log('Final join URL:', joinUrl);
+    
+    return {
+      joinUrl: joinUrl,
+      id: data.id,
+      onlineMeeting: data.onlineMeeting
+    };
   };
 
   const handleScheduleMeeting = async () => {
@@ -780,43 +1651,51 @@ const Clients: React.FC<ClientsProps> = ({
 
       let teamsMeetingUrl = '';
       
-      // Only create Teams meeting if location is Teams
-      if (meetingFormData.location === 'Teams') {
-        let accessToken;
-        try {
-          const response = await instance.acquireTokenSilent({
-            ...loginRequest,
-            account,
-          });
-          accessToken = response.accessToken;
-        } catch (error) {
-          if (error instanceof InteractionRequiredAuthError) {
-            // If silent acquisition fails, prompt the user to log in
-            const response = await instance.loginPopup(loginRequest);
-            accessToken = response.accessToken;
-          } else {
-            throw error; // Rethrow other errors
-          }
-        }
-
-        // Convert date and time to start/end times
-        const [year, month, day] = meetingFormData.date.split('-').map(Number);
-        const [hours, minutes] = meetingFormData.time.split(':').map(Number);
-        const start = new Date(year, month - 1, day, hours, minutes);
-        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
-
-        // Create Teams meeting
-        teamsMeetingUrl = await createTeamsMeeting(accessToken, {
-          subject: `Meeting with ${selectedClient.name}`,
-          startDateTime: start.toISOString(),
-          endDateTime: end.toISOString(),
-          attendees: selectedClient.email ? [{ email: selectedClient.email }] : [],
+      // Create calendar event for all locations in potential clients calendar
+      let accessToken;
+      try {
+        const response = await instance.acquireTokenSilent({
+          ...loginRequest,
+          account,
         });
+        accessToken = response.accessToken;
+      } catch (error) {
+        if (error instanceof InteractionRequiredAuthError) {
+          // If silent acquisition fails, prompt the user to log in
+          const response = await instance.loginPopup(loginRequest);
+          accessToken = response.accessToken;
+        } else {
+          throw error; // Rethrow other errors
+        }
       }
 
-      // Create meeting record in database
+      // Convert date and time to start/end times
+      const [year, month, day] = meetingFormData.date.split('-').map(Number);
+      const [hours, minutes] = meetingFormData.time.split(':').map(Number);
+      const start = new Date(year, month - 1, day, hours, minutes);
+      const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+
+      // Create calendar event with client name and lead number in subject
+      const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${meetingFormData.brief || 'Meeting'}`;
+      const calendarEventData = await createCalendarEvent(accessToken, {
+        subject: meetingSubject,
+        startDateTime: start.toISOString(),
+        endDateTime: end.toISOString(),
+        location: meetingFormData.location,
+        attendees: selectedClient.email ? [{ email: selectedClient.email }] : [],
+      });
+      teamsMeetingUrl = calendarEventData.joinUrl;
+      console.log('Teams meeting URL set to:', teamsMeetingUrl);
+
+      // Check if this is a legacy lead
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      
+      // For both new and legacy leads, create meeting record in meetings table
+      const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
+      
       const meetingData = {
-        client_id: selectedClient.id,
+        client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
+        legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads
         meeting_date: meetingFormData.date,
         meeting_time: meetingFormData.time,
         meeting_location: meetingFormData.location,
@@ -826,7 +1705,7 @@ const Clients: React.FC<ClientsProps> = ({
         expert: selectedClient.expert || '---',
         helper: meetingFormData.helper || '---',
         teams_meeting_url: teamsMeetingUrl,
-        meeting_brief: '',
+        meeting_brief: meetingFormData.brief || '',
         scheduler: currentUserFullName, // Always use Supabase user's full_name
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
@@ -849,14 +1728,28 @@ const Clients: React.FC<ClientsProps> = ({
       console.log('Meeting created successfully with scheduler:', currentUserFullName);
       console.log('Inserted meeting record:', insertedData);
 
+
       // Update lead stage to 'meeting_scheduled' and set scheduler
-      await supabase
-        .from('leads')
-        .update({ 
-          stage: 'meeting_scheduled',
-          scheduler: currentUserFullName // Also update scheduler in leads table
-        })
-        .eq('id', selectedClient.id);
+      if (isLegacyLead) {
+        // For legacy leads, update the leads_lead table
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        await supabase
+          .from('leads_lead')
+          .update({ 
+            stage: 'meeting_scheduled',
+            meeting_scheduler_id: currentUserFullName
+          })
+          .eq('id', legacyId);
+      } else {
+        // For new leads, update the leads table
+        await supabase
+          .from('leads')
+          .update({ 
+            stage: 'meeting_scheduled',
+            scheduler: currentUserFullName
+          })
+          .eq('id', selectedClient.id);
+      }
 
       // Update UI
       setShowScheduleMeetingPanel(false);
@@ -868,16 +1761,19 @@ const Clients: React.FC<ClientsProps> = ({
       setMeetingFormData({
         date: '',
         time: '09:00',
-        location: 'Teams',
+        location: '',
         manager: '',
         helper: '',
+        brief: '',
       });
       
       // Show success message
       alert('Meeting scheduled successfully!');
 
       // Refresh client data
-      onClientUpdate();
+      console.log('Calling onClientUpdate after meeting creation');
+      await onClientUpdate();
+      console.log('onClientUpdate completed');
     } catch (error) {
       console.error('Error scheduling meeting:', error);
       alert('Failed to schedule meeting. Please try again.');
@@ -963,17 +1859,53 @@ const Clients: React.FC<ClientsProps> = ({
     if (!selectedClient) return;
     setIsSavingUpdate(true);
     try {
-      const { error } = await supabase
-        .from('leads')
-        .update({
+      // Check if this is a legacy lead
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      
+      console.log('handleSaveUpdateDrawer - Is legacy lead:', isLegacyLead);
+      
+      let updateData;
+      
+      if (isLegacyLead) {
+        // For legacy leads, map fields to leads_lead table columns
+        updateData = {
+          meeting_scheduling_notes: meetingNotes,
+          next_followup: nextFollowup,
+          followup_log: followup, // Map to followup_log column
+          potential_applicants: potentialApplicants,
+          stage: 15, // 'communication_started' stage ID for legacy leads
+        };
+        
+        // For legacy leads, update the leads_lead table
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        console.log('Updating legacy lead with ID:', legacyId);
+        
+        const { error } = await supabase
+          .from('leads_lead')
+          .update(updateData)
+          .eq('id', legacyId);
+        
+        if (error) throw error;
+      } else {
+        // For new leads, update the leads table
+        updateData = {
           meeting_scheduling_notes: meetingNotes,
           next_followup: nextFollowup,
           followup: followup,
           potential_applicants: potentialApplicants,
           stage: 'communication_started',
-        })
-        .eq('id', selectedClient.id);
-      if (error) throw error;
+        };
+        
+        console.log('Updating new lead with ID:', selectedClient.id);
+        
+        const { error } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', selectedClient.id);
+        
+        if (error) throw error;
+      }
+      
       setShowUpdateDrawer(false);
       setMeetingNotes('');
       setNextFollowup('');
@@ -981,6 +1913,7 @@ const Clients: React.FC<ClientsProps> = ({
       setPotentialApplicants('');
       if (onClientUpdate) await onClientUpdate();
     } catch (err) {
+      console.error('Error in handleSaveUpdateDrawer:', err);
       alert('Failed to update lead.');
     } finally {
       setIsSavingUpdate(false);
@@ -1189,68 +2122,235 @@ const Clients: React.FC<ClientsProps> = ({
     setEditLeadData(prev => ({ ...prev, [field]: value }));
   };
 
+  const openEditLeadDrawer = () => {
+    // Reset the edit form data with current client data
+    setEditLeadData({
+      tags: selectedClient?.tags || '',
+      source: selectedClient?.source || '',
+      name: selectedClient?.name || '',
+      language: selectedClient?.language || '',
+      category: selectedClient?.category || '',
+      topic: selectedClient?.topic || '',
+      special_notes: selectedClient?.special_notes || '',
+      probability: selectedClient?.probability || 0,
+      number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
+      potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
+      balance: selectedClient?.balance || '',
+      next_followup: selectedClient?.next_followup || '',
+      balance_currency: selectedClient?.balance_currency || '₪',
+    });
+    setShowEditLeadDrawer(true);
+  };
+
   const handleSaveEditLead = async () => {
     if (!selectedClient) return;
+    
+    // Check if this is a legacy lead
+    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
     
     try {
       // Get current user name from Supabase users table
       const currentUserName = await fetchCurrentUserFullName();
       
       console.log('Current user for lead edit:', currentUserName);
+      console.log('Is legacy lead:', isLegacyLead);
       
-      const updateData = {
-        tags: editLeadData.tags,
-        source: editLeadData.source,
-        name: editLeadData.name,
-        language: editLeadData.language,
-        category: editLeadData.category,
-        topic: editLeadData.topic,
-        special_notes: editLeadData.special_notes,
-        probability: Number(editLeadData.probability),
-        number_of_applicants_meeting: editLeadData.number_of_applicants_meeting,
-        potential_applicants_meeting: editLeadData.potential_applicants_meeting,
-        balance: editLeadData.balance,
-        next_followup: editLeadData.next_followup,
-        balance_currency: editLeadData.balance_currency,
-      };
+      // Create update data based on whether it's a legacy lead or not
+      // Only include fields that have actually changed
+      let updateData: any = {};
+      
+      if (isLegacyLead) {
+        // For legacy leads, only include fields that exist in leads_lead table
+        // Map balance to total and balance_currency to currency_id
+        const currencyNameToId = (currencyName: string): number | null => {
+          switch (currencyName) {
+            case '₪': return 1; // NIS
+            case '€': return 2; // EUR  
+            case '$': return 3; // USD
+            case '£': return 4; // GBP
+            default: return 1; // Default to NIS
+          }
+        };
+        
+        // Check each field and only include if it has changed
+        if (editLeadData.name !== selectedClient.name) {
+          updateData.name = editLeadData.name;
+        }
+        if (editLeadData.topic !== selectedClient.topic) {
+          updateData.topic = editLeadData.topic;
+        }
+        if (editLeadData.special_notes !== selectedClient.special_notes) {
+          updateData.special_notes = editLeadData.special_notes;
+          updateData.notes = editLeadData.special_notes; // Map special_notes to notes for legacy
+        }
+        if (editLeadData.probability !== selectedClient.probability) {
+          // Handle empty string for numeric field
+          let probabilityValue = null;
+          if (editLeadData.probability !== '' && editLeadData.probability !== null && editLeadData.probability !== undefined) {
+            const parsed = Number(editLeadData.probability);
+            probabilityValue = isNaN(parsed) ? null : parsed;
+          }
+          updateData.probability = probabilityValue;
+        }
+        if (editLeadData.next_followup !== selectedClient.next_followup) {
+          updateData.next_followup = editLeadData.next_followup;
+        }
+        if (editLeadData.balance !== selectedClient.balance) {
+          // Handle empty string for balance field
+          const balanceValue = editLeadData.balance === '' || editLeadData.balance === null ? null : String(editLeadData.balance);
+          updateData.total = balanceValue; // Convert to string for text column
+        }
+        if (editLeadData.balance_currency !== selectedClient.balance_currency) {
+          updateData.currency_id = currencyNameToId(editLeadData.balance_currency); // Map currency name to ID
+        }
+      } else {
+        // For regular leads, check each field and only include if it has changed
+        if (editLeadData.tags !== selectedClient.tags) {
+          updateData.tags = editLeadData.tags;
+        }
+        if (editLeadData.source !== selectedClient.source) {
+          updateData.source = editLeadData.source;
+        }
+        if (editLeadData.name !== selectedClient.name) {
+          updateData.name = editLeadData.name;
+        }
+        if (editLeadData.language !== selectedClient.language) {
+          updateData.language = editLeadData.language;
+        }
+        if (editLeadData.category !== selectedClient.category) {
+          updateData.category = editLeadData.category;
+        }
+        if (editLeadData.topic !== selectedClient.topic) {
+          updateData.topic = editLeadData.topic;
+        }
+        if (editLeadData.special_notes !== selectedClient.special_notes) {
+          updateData.special_notes = editLeadData.special_notes;
+        }
+        if (editLeadData.probability !== selectedClient.probability) {
+          // Handle empty string for numeric field
+          let probabilityValue = null;
+          if (editLeadData.probability !== '' && editLeadData.probability !== null && editLeadData.probability !== undefined) {
+            const parsed = Number(editLeadData.probability);
+            probabilityValue = isNaN(parsed) ? null : parsed;
+          }
+          updateData.probability = probabilityValue;
+        }
+        if (editLeadData.number_of_applicants_meeting !== selectedClient.number_of_applicants_meeting) {
+          // Handle empty string for numeric field
+          let applicantsValue = null;
+          if (editLeadData.number_of_applicants_meeting !== '' && editLeadData.number_of_applicants_meeting !== null && editLeadData.number_of_applicants_meeting !== undefined) {
+            const parsed = Number(editLeadData.number_of_applicants_meeting);
+            applicantsValue = isNaN(parsed) ? null : parsed;
+          }
+          updateData.number_of_applicants_meeting = applicantsValue;
+        }
+        if (editLeadData.potential_applicants_meeting !== selectedClient.potential_applicants_meeting) {
+          // Handle empty string for numeric field
+          let potentialValue = null;
+          if (editLeadData.potential_applicants_meeting !== '' && editLeadData.potential_applicants_meeting !== null && editLeadData.potential_applicants_meeting !== undefined) {
+            const parsed = Number(editLeadData.potential_applicants_meeting);
+            potentialValue = isNaN(parsed) ? null : parsed;
+          }
+          updateData.potential_applicants_meeting = potentialValue;
+        }
+        if (editLeadData.balance !== selectedClient.balance) {
+          // Handle empty string for numeric field
+          let balanceValue = null;
+          if (editLeadData.balance !== '' && editLeadData.balance !== null && editLeadData.balance !== undefined) {
+            const parsed = Number(editLeadData.balance);
+            balanceValue = isNaN(parsed) ? null : parsed;
+          }
+          updateData.balance = balanceValue;
+        }
+        if (editLeadData.next_followup !== selectedClient.next_followup) {
+          updateData.next_followup = editLeadData.next_followup;
+        }
+        if (editLeadData.balance_currency !== selectedClient.balance_currency) {
+          updateData.balance_currency = editLeadData.balance_currency;
+        }
+      }
       
       // Track changes by comparing old and new values
       const changesToInsert = [];
-      const fieldsToTrack = [
-        'tags', 'source', 'name', 'language', 'category', 'topic', 
-        'special_notes', 'probability', 'number_of_applicants_meeting', 
-        'potential_applicants_meeting', 'balance', 'next_followup', 'balance_currency'
-      ];
+      
+      // Since we only include changed fields in updateData, we can directly track them
+      const fieldsToTrack = Object.keys(updateData);
+      const fieldMapping: { [key: string]: string } = isLegacyLead ? {
+        'total': 'balance',
+        'currency_id': 'balance_currency',
+        'notes': 'special_notes'
+      } : {};
       
       for (const field of fieldsToTrack) {
-        const oldValue = selectedClient[field as keyof typeof selectedClient] || '';
+        // For legacy leads, map the field names to match the client data structure
+        const clientField = fieldMapping[field] || field;
+        const oldValue = selectedClient[clientField as keyof typeof selectedClient] || '';
         const newValue = updateData[field as keyof typeof updateData] || '';
         
         // Convert to strings for comparison
-        const oldValueStr = String(oldValue);
-        const newValueStr = String(newValue);
+        let oldValueStr = String(oldValue);
+        let newValueStr = String(newValue);
         
-        if (oldValueStr !== newValueStr) {
-          console.log(`${field} changed: ${oldValueStr} -> ${newValueStr}`);
-          changesToInsert.push({
-            lead_id: selectedClient.id,
-            field_name: field,
-            old_value: oldValueStr,
-            new_value: newValueStr,
-            changed_by: currentUserName,
-            changed_at: new Date().toISOString()
-          });
+        // Special handling for currency_id comparison
+        if (field === 'currency_id' && isLegacyLead) {
+          // Convert the current currency name to ID for comparison
+          const currencyNameToId = (currencyName: string): string => {
+            switch (currencyName) {
+              case '₪': return '1';
+              case '€': return '2';
+              case '$': return '3';
+              case '£': return '4';
+              default: return '1';
+            }
+          };
+          oldValueStr = currencyNameToId(String(oldValue));
         }
+        
+        console.log(`${field} changed: ${oldValueStr} -> ${newValueStr}`);
+        changesToInsert.push({
+          lead_id: selectedClient.id,
+          field_name: clientField, // Use the mapped field name for tracking
+          old_value: oldValueStr,
+          new_value: newValueStr,
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        });
       }
       
       console.log('Total changes detected:', changesToInsert.length);
       console.log('Changes to insert:', changesToInsert);
       
-      // Update the lead first
-      const { error: updateError } = await supabase
-        .from('leads')
-        .update(updateData)
-        .eq('id', selectedClient.id);
+      // If no changes were detected, don't proceed with the update
+      if (Object.keys(updateData).length === 0) {
+        console.log('No changes detected, skipping update');
+        setShowEditLeadDrawer(false);
+        return;
+      }
+      
+      let updateError;
+      
+      if (isLegacyLead) {
+        // For legacy leads, update the leads_lead table
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        console.log('Updating legacy lead with ID:', legacyId);
+        
+        const { error } = await supabase
+          .from('leads_lead')
+          .update(updateData)
+          .eq('id', legacyId);
+        
+        updateError = error;
+      } else {
+        // For regular leads, update the leads table
+        console.log('Updating regular lead with ID:', selectedClient.id);
+        
+        const { error } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', selectedClient.id);
+        
+        updateError = error;
+      }
         
       if (updateError) {
         console.error('Error updating lead:', updateError);
@@ -1258,8 +2358,8 @@ const Clients: React.FC<ClientsProps> = ({
         return;
       }
       
-      // Log the changes to lead_changes table
-      if (changesToInsert.length > 0) {
+      // Log the changes to lead_changes table (only for regular leads, as legacy leads don't have this table)
+      if (!isLegacyLead && changesToInsert.length > 0) {
         const { error: historyError } = await supabase
           .from('lead_changes')
           .insert(changesToInsert);
@@ -1308,12 +2408,13 @@ const Clients: React.FC<ClientsProps> = ({
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
         const start = new Date(year, month - 1, day, hours, minutes);
         const end = new Date(start.getTime() + 30 * 60000);
-        teamsMeetingUrl = await createTeamsMeeting(accessToken, {
+        const teamsMeetingData = await createTeamsMeeting(accessToken, {
           subject: `Meeting with ${selectedClient.name}`,
           startDateTime: start.toISOString(),
           endDateTime: end.toISOString(),
           attendees: selectedClient.email ? [{ email: selectedClient.email }] : [],
         });
+        teamsMeetingUrl = teamsMeetingData.joinUrl;
       }
       const { error: meetingError } = await supabase
         .from('meetings')
@@ -1407,18 +2508,51 @@ const Clients: React.FC<ClientsProps> = ({
 
 
 
-  // Tabs array with Finances tab
-  const tabs = [
-    { id: 'info', label: 'Info', icon: InformationCircleIcon, component: InfoTab },
-    { id: 'roles', label: 'Roles', icon: UserGroupIcon, component: RolesTab },
-    { id: 'contact', label: 'Contact info', icon: UserIcon, component: ContactInfoTab },
-    { id: 'marketing', label: 'Marketing', icon: MegaphoneIcon, component: MarketingTab },
-    { id: 'expert', label: 'Expert', icon: UserIcon, component: ExpertTab },
-    { id: 'meeting', label: 'Meeting', icon: CalendarIcon, component: MeetingTab },
-    { id: 'price', label: 'Price Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
-    { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: 31, component: InteractionsTab },
-    { id: 'finances', label: 'Finances', icon: BanknotesIcon, component: FinancesTab },
-  ];
+  // Calculate interaction count (synchronous part)
+  const calculateInteractionCountSync = () => {
+    if (!selectedClient) return 0;
+    
+    let count = 0;
+    
+    // Count manual interactions
+    if (selectedClient.manual_interactions && Array.isArray(selectedClient.manual_interactions)) {
+      count += selectedClient.manual_interactions.length;
+    }
+    
+    // Count emails
+    if (selectedClient.emails && Array.isArray(selectedClient.emails)) {
+      count += selectedClient.emails.length;
+    }
+    
+    // Count WhatsApp messages (if available)
+    if (selectedClient.whatsapp_messages && Array.isArray(selectedClient.whatsapp_messages)) {
+      count += selectedClient.whatsapp_messages.length;
+    }
+    
+    return count;
+  };
+
+  // Calculate full interaction count including legacy interactions
+  const calculateFullInteractionCount = async () => {
+    if (!selectedClient) return 0;
+    
+    let count = calculateInteractionCountSync();
+    
+    // For legacy leads, fetch and count legacy interactions
+    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+    if (isLegacyLead && selectedClient?.id) {
+      try {
+        const { fetchLegacyInteractions } = await import('../lib/legacyInteractionsApi');
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        const legacyInteractions = await fetchLegacyInteractions(legacyId, selectedClient.name);
+        count += legacyInteractions.length;
+      } catch (error) {
+        console.error('Error counting legacy interactions:', error);
+      }
+    }
+    
+    return count;
+  };
 
   // Handle save payments plan
   const handleSavePaymentsPlan = async () => {
@@ -1437,61 +2571,151 @@ const Clients: React.FC<ClientsProps> = ({
       
       console.log('Current user for payment plan creation:', currentUserName);
 
-      // Delete and insert in the background
-      const { error: deleteError } = await supabase
-        .from('payment_plans')
-        .delete()
-        .eq('lead_id', selectedClient.id);
-      if (deleteError) throw deleteError;
+      // Check if this is a legacy lead
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
 
-      const paymentPlansToInsert = payments.map(payment => ({
-        lead_id: selectedClient.id,
-        due_percent: payment.duePercent ? parseFloat(payment.duePercent.replace('%', '')) : 0,
-        due_date: payment.dueDate || payment.date || null,
-        value: typeof payment.value === 'number' ? payment.value : parseFloat(payment.value),
-        value_vat: typeof payment.valueVat === 'number' ? payment.valueVat : parseFloat(payment.valueVat),
-        client_name: payment.client,
-        payment_order: payment.order,
-        notes: payment.notes,
-        created_by: currentUserName,
-      }));
-      
-      // Log the payment plan creation in payment_plan_changes table
-      const changesToInsert = paymentPlansToInsert.map(payment => ({
-        lead_id: selectedClient.id,
-        payment_plan_id: null, // Will be set after insertion
-        field_name: 'payment_plan_created',
-        old_value: null,
-        new_value: JSON.stringify({
-          payment_order: payment.payment_order,
-          value: payment.value,
-          due_date: payment.due_date,
-          client_name: payment.client_name
-        }),
-        changed_by: currentUserName,
-        changed_at: new Date().toISOString()
-      }));
+      if (isLegacyLead) {
+        // For legacy leads, use finances_paymentplanrow table
+        console.log('Saving payment plan for legacy lead:', legacyId);
+        
+        // Delete existing payment plans for this legacy lead
+        const { error: deleteError } = await supabase
+          .from('finances_paymentplanrow')
+          .delete()
+          .eq('lead_id', legacyId);
+        if (deleteError) throw deleteError;
 
-      // Insert the payment plans first
-      const { data: insertedPayments, error: paymentInsertError } = await supabase
-        .from('payment_plans')
-        .insert(paymentPlansToInsert)
-        .select('id');
+        // Map payment order strings to numeric values for legacy payments
+        const getOrderNumber = (orderString: string): number => {
+          switch (orderString) {
+            case 'First Payment': return 1;
+            case 'Intermediate Payment': return 5;
+            case 'Final Payment': return 9;
+            case 'Single Payment': return 90;
+            case 'Expense (no VAT)': return 99;
+            default: return 1; // Default to first payment
+          }
+        };
 
-      if (paymentInsertError) throw paymentInsertError;
+        // Insert new payment plans into finances_paymentplanrow table
+        const paymentPlansToInsert = payments.map((payment, index) => {
+          // Determine currency_id based on the payment currency
+          let currencyId = 1; // Default to NIS
+          if (payment.currency) {
+            switch (payment.currency) {
+              case '₪': currencyId = 1; break;
+              case '€': currencyId = 2; break;
+              case '$': currencyId = 3; break;
+              case '£': currencyId = 4; break;
+              default: currencyId = 1; break;
+            }
+          }
+          
+          return {
+            cdate: new Date().toISOString().split('T')[0], // Current date
+            udate: new Date().toISOString().split('T')[0], // Current date
+            date: payment.dueDate || payment.date || null,
+            value: (() => {
+              const val = typeof payment.value === 'number' ? payment.value : parseFloat(payment.value);
+              return isNaN(val) ? 0 : val;
+            })(),
+            vat_value: (() => {
+              const vat = typeof payment.valueVat === 'number' ? payment.valueVat : parseFloat(payment.valueVat);
+              return isNaN(vat) ? 0 : vat;
+            })(),
+            lead_id: legacyId.toString(), // Ensure it's a string
+            notes: payment.notes || '',
+            due_date: payment.dueDate || payment.date || null,
+            due_percent: (() => {
+              const percent = payment.duePercent || '0';
+              return percent.includes('%') ? percent : percent + '%';
+            })(), // Store the due percentage as text with % sign
+            order: (() => {
+              const orderNum = getOrderNumber(payment.order);
+              return isNaN(orderNum) ? 1 : orderNum;
+            })(), // Convert string to numeric order with validation
+            currency_id: (() => {
+              const cid = currencyId;
+              return isNaN(cid) ? 1 : cid;
+            })(), // Ensure currency_id is valid
+            client_id: null, // Will be null for legacy leads
+          };
+        });
 
-      // Now update the payment_plan_id in the changes records
-      if (insertedPayments && insertedPayments.length > 0) {
-        const updatedChanges = changesToInsert.map((change, index) => ({
-          ...change,
-          payment_plan_id: insertedPayments[index]?.id || null
+        console.log('Payment plans to insert:', paymentPlansToInsert);
+        
+        const { data: insertedPayments, error: paymentInsertError } = await supabase
+          .from('finances_paymentplanrow')
+          .insert(paymentPlansToInsert)
+          .select('id');
+
+        if (paymentInsertError) {
+          console.error('Payment insert error details:', paymentInsertError);
+          throw paymentInsertError;
+        }
+        console.log('Legacy payment plans inserted:', insertedPayments);
+
+      } else {
+        // For new leads, use payment_plans table
+        console.log('Saving payment plan for new lead:', selectedClient.id);
+        
+        // Delete existing payment plans
+        const { error: deleteError } = await supabase
+          .from('payment_plans')
+          .delete()
+          .eq('lead_id', selectedClient.id);
+        if (deleteError) throw deleteError;
+
+        const paymentPlansToInsert = payments.map(payment => ({
+          lead_id: selectedClient.id,
+          due_percent: payment.duePercent ? parseFloat(payment.duePercent.replace('%', '')) : 0,
+          due_date: payment.dueDate || payment.date || null,
+          value: typeof payment.value === 'number' ? payment.value : parseFloat(payment.value),
+          value_vat: typeof payment.valueVat === 'number' ? payment.valueVat : parseFloat(payment.valueVat),
+          client_name: payment.client,
+          payment_order: payment.order,
+          notes: payment.notes,
+          created_by: currentUserName,
+        }));
+        
+        // Log the payment plan creation in payment_plan_changes table
+        const changesToInsert = paymentPlansToInsert.map(payment => ({
+          lead_id: selectedClient.id,
+          payment_plan_id: null, // Will be set after insertion
+          field_name: 'payment_plan_created',
+          old_value: null,
+          new_value: JSON.stringify({
+            payment_order: payment.payment_order,
+            value: payment.value,
+            due_date: payment.due_date,
+            client_name: payment.client_name
+          }),
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
         }));
 
-        const { error: historyError } = await supabase
-          .from('payment_plan_changes')
-          .insert(updatedChanges);
-        
-        if (historyError) console.error('Error logging payment plan creation:', historyError);
+        // Insert the payment plans first
+        const { data: insertedPayments, error: paymentInsertError } = await supabase
+          .from('payment_plans')
+          .insert(paymentPlansToInsert)
+          .select('id');
+
+        if (paymentInsertError) throw paymentInsertError;
+
+        // Now update the payment_plan_id in the changes records
+        if (insertedPayments && insertedPayments.length > 0) {
+          const updatedChanges = changesToInsert.map((change, index) => ({
+            ...change,
+            payment_plan_id: insertedPayments[index]?.id || null
+          }));
+
+          const { error: historyError } = await supabase
+            .from('payment_plan_changes')
+            .insert(updatedChanges);
+          
+          if (historyError) console.error('Error logging payment plan creation:', historyError);
+        }
       }
       
       // Optionally, refresh just the payment plans here if needed
@@ -1509,6 +2733,41 @@ const Clients: React.FC<ClientsProps> = ({
   const [proformaData, setProformaData] = useState<any>(null);
   const [isSavingPaymentPlan, setIsSavingPaymentPlan] = useState(false);
   const [generatedProformaName, setGeneratedProformaName] = useState<string>('');
+  const [interactionCount, setInteractionCount] = useState<number>(0);
+  
+  // Note: Interaction count is now calculated upfront when entering the client page
+
+  // Tabs array with dynamic interaction count - memoized to ensure updates
+  const tabs = useMemo(() => {
+    const finalCount = interactionCount || calculateInteractionCountSync();
+    
+    return [
+      { id: 'info', label: 'Info', icon: InformationCircleIcon, component: InfoTab },
+      { id: 'roles', label: 'Roles', icon: UserGroupIcon, component: RolesTab },
+      { id: 'contact', label: 'Contact info', icon: UserIcon, component: ContactInfoTab },
+      { id: 'marketing', label: 'Marketing', icon: MegaphoneIcon, component: MarketingTab },
+      { id: 'expert', label: 'Expert', icon: UserIcon, component: ExpertTab },
+      { id: 'meeting', label: 'Meeting', icon: CalendarIcon, component: MeetingTab },
+      { id: 'price', label: 'Price Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
+      { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: finalCount, component: InteractionsTab },
+      { id: 'finances', label: 'Finances', icon: BanknotesIcon, component: FinancesTab },
+    ];
+  }, [interactionCount, selectedClient]);
+  
+  // Force re-render when interaction count changes
+  const tabsKey = `tabs-${interactionCount}-${selectedClient?.id}`;
+
+  // Calculate full interaction count when client changes
+  useEffect(() => {
+    const updateInteractionCount = async () => {
+      if (selectedClient) {
+        const count = await calculateFullInteractionCount();
+        setInteractionCount(count);
+      }
+    };
+    
+    updateInteractionCount();
+  }, [selectedClient?.id]);
 
   // Handler to open proforma drawer
   const handleOpenProforma = async (payment: any) => {
@@ -1734,6 +2993,8 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
+
+
   // Lead is cold logic (must be after null check)
   let isLeadCold = false;
   let coldLeadText = '';
@@ -1753,7 +3014,14 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Before the return statement, add:
   let dropdownItems = null;
-  if (selectedClient && selectedClient.stage === 'Client signed agreement')
+  console.log('🔍 Dropdown logic - selectedClient stage:', selectedClient?.stage);
+  console.log('🔍 Dropdown logic - selectedClient ID:', selectedClient?.id);
+  
+  // Get the stage name for comparison
+  const currentStageName = selectedClient ? getStageName(selectedClient.stage) : '';
+  console.log('🔍 Dropdown logic - resolved stage name:', currentStageName);
+  
+  if (selectedClient && areStagesEquivalent(currentStageName, 'Client signed agreement'))
     dropdownItems = (
       <>
         <li>
@@ -1780,15 +3048,28 @@ const Clients: React.FC<ClientsProps> = ({
             Payment request sent
           </a>
         </li>
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Unactivate/Spam')}>
-            <NoSymbolIcon className="w-5 h-5 text-red-500" />
-            <span className="text-red-500 saira-regular">Unactivate/Spam</span>
-          </a>
-        </li>
+        {(() => {
+          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+          const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+          return unactivationReason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant');
+        })() ? (
+          <li>
+            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleActivation()}>
+              <CheckCircleIcon className="w-5 h-5 text-green-500" />
+              <span className="text-green-500 saira-regular">Activate</span>
+            </a>
+          </li>
+        ) : (
+          <li>
+            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowUnactivationModal(true)}>
+              <NoSymbolIcon className="w-5 h-5 text-red-500" />
+              <span className="text-red-500 saira-regular">Unactivate/Spam</span>
+            </a>
+          </li>
+        )}
       </>
     );
-  else if (selectedClient && selectedClient.stage === 'payment_request_sent') {
+  else if (selectedClient && areStagesEquivalent(currentStageName, 'payment_request_sent')) {
     dropdownItems = (
       <>
         <li>
@@ -1817,10 +3098,46 @@ const Clients: React.FC<ClientsProps> = ({
         </li>
       </>
     );
-  } else if (selectedClient && !['unactivated', 'client_signed', 'client_declined', 'Mtng sum+Agreement sent'].includes(selectedClient.stage)) {
+  } else if (selectedClient && (() => {
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+    return unactivationReason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant');
+  })()) {
     dropdownItems = (
       <>
-        {selectedClient.stage === 'meeting_scheduled' ? (
+        <li>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleActivation()}>
+            <CheckCircleIcon className="w-5 h-5 text-green-500" />
+            <span className="text-green-500 saira-regular">Activate</span>
+          </a>
+        </li>
+        <li>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
+            <DocumentTextIcon className="w-5 h-5 text-black" />
+            Lead summary
+          </a>
+        </li>
+        <li>
+                          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}>
+                  <PencilSquareIcon className="w-5 h-5 text-black" />
+                  Edit lead
+                </a>
+        </li>
+      </>
+    );
+  } else if (selectedClient && (() => {
+    const excludedStages = ['client_signed', 'client_declined', 'Mtng sum+Agreement sent'];
+    const isExcluded = excludedStages.some(stage => areStagesEquivalent(currentStageName, stage));
+    console.log('🔍 General dropdown condition check:');
+    console.log('🔍 Current stage name:', currentStageName);
+    console.log('🔍 Excluded stages:', excludedStages);
+    console.log('🔍 Is excluded:', isExcluded);
+    console.log('🔍 Should show dropdown:', !isExcluded);
+    return !isExcluded;
+  })()) {
+    dropdownItems = (
+      <>
+        {areStagesEquivalent(currentStageName, 'meeting_scheduled') ? (
           <>
             <li>
               <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
@@ -1842,7 +3159,7 @@ const Clients: React.FC<ClientsProps> = ({
             </li>
           </>
         ) : (
-          !['Success', 'handler_assigned'].includes(selectedClient.stage) && (
+          !['Success', 'handler_assigned'].some(stage => areStagesEquivalent(currentStageName, stage)) && (
             <li>
               <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
                 <CalendarDaysIcon className="w-5 h-5 text-black" />
@@ -1851,7 +3168,7 @@ const Clients: React.FC<ClientsProps> = ({
             </li>
           )
         )}
-        {selectedClient.stage === 'waiting_for_mtng_sum' && (
+        {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && (
           <li>
             <a className="flex items-center gap-3 py-3 saira-regular" onClick={openSendOfferDrawer}>
               <DocumentCheckIcon className="w-5 h-5 text-black" />
@@ -1859,7 +3176,16 @@ const Clients: React.FC<ClientsProps> = ({
             </a>
           </li>
         )}
-        {!['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned'].includes(selectedClient.stage) && (
+        {(() => {
+          const communicationExcludedStages = ['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned'];
+          const isCommunicationExcluded = communicationExcludedStages.some(stage => areStagesEquivalent(currentStageName, stage));
+          console.log('🔍 Communication Started condition check:');
+          console.log('🔍 Current stage name:', currentStageName);
+          console.log('🔍 Communication excluded stages:', communicationExcludedStages);
+          console.log('🔍 Is communication excluded:', isCommunicationExcluded);
+          console.log('🔍 Should show Communication Started:', !isCommunicationExcluded);
+          return !isCommunicationExcluded;
+        })() && (
           <li>
             <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Communication Started')}>
               <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
@@ -1867,15 +3193,24 @@ const Clients: React.FC<ClientsProps> = ({
             </a>
           </li>
         )}
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Unactivate/Spam')}>
-            <NoSymbolIcon className="w-5 h-5 text-red-500" />
-            <span className="text-red-500 saira-regular">Unactivate/Spam</span>
-          </a>
-        </li>
+        {(selectedClient.unactivation_reason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant')) ? (
+          <li>
+            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleActivation()}>
+              <CheckCircleIcon className="w-5 h-5 text-green-500" />
+              <span className="text-green-500 saira-regular">Activate</span>
+            </a>
+          </li>
+        ) : (
+          <li>
+            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowUnactivationModal(true)}>
+              <NoSymbolIcon className="w-5 h-5 text-red-500" />
+              <span className="text-red-500 saira-regular">Unactivate/Spam</span>
+            </a>
+          </li>
+        )}
       </>
     );
-  } else if (selectedClient && selectedClient.stage === 'Mtng sum+Agreement sent') {
+  } else if (selectedClient && areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent')) {
     dropdownItems = (
       <>
         <li>
@@ -1903,7 +3238,7 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
+                <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
         <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('revised_offer'); (document.activeElement as HTMLElement)?.blur(); }}>
             <PencilSquareIcon className="w-5 h-5 text-black" />
@@ -2009,6 +3344,220 @@ const Clients: React.FC<ClientsProps> = ({
     'Other',
   ];
 
+  // Check if lead is unactivated and show compact view
+  const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+  const unactivationReasonForView = isLegacyForView ? selectedClient?.deactivate_note : selectedClient?.unactivation_reason;
+  const isUnactivated = isLegacyForView ? 
+    (String(selectedClient?.stage) === '91' || (unactivationReasonForView && unactivationReasonForView.trim() !== '')) :
+    ((unactivationReasonForView && unactivationReasonForView.trim() !== '') || false);
+  
+  console.log('🔍 View logic check:', {
+    isLegacyForView,
+    stage: selectedClient?.stage,
+    stageCheck: String(selectedClient?.stage) === '91',
+    deactivate_note: selectedClient?.deactivate_note,
+    unactivationReasonForView,
+    isUnactivated,
+    isUnactivatedView
+  });
+  
+  // Show loading state while determining view
+  if (localLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="loading loading-spinner loading-lg"></div>
+      </div>
+    );
+  }
+  
+  // Show unactivated view if lead is unactivated and user hasn't clicked to expand
+  if (isUnactivated && isUnactivatedView && !userManuallyExpanded) {
+    console.log('🔍 RENDERING UNACTIVATED VIEW for client:', selectedClient.id);
+    return (
+      <div className="min-h-screen p-4">
+        <div className="max-w-2xl mx-auto">
+          {/* Unactivated Lead Compact Card */}
+          <div 
+            className="bg-white rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 cursor-pointer transform hover:scale-105 border border-gray-200 overflow-hidden"
+            onClick={() => {
+              console.log('🔍 Clicking unactivated view to expand');
+              console.log('🔍 Current isUnactivatedView before setting:', isUnactivatedView);
+              setUserManuallyExpanded(true);
+              setIsUnactivatedView(false);
+              console.log('🔍 Set isUnactivatedView to false and userManuallyExpanded to true');
+            }}
+          >
+            {/* Header with Unactivated Badge */}
+            <div className="bg-gradient-to-r from-red-500 to-red-600 p-4 relative">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center">
+                    <UserIcon className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-white">{selectedClient.name}</h2>
+                    <p className="text-red-100 text-sm">Lead #{selectedClient.lead_number}</p>
+                  </div>
+                </div>
+                <div className="bg-red-700 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide shadow-lg">
+                  Unactivated
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-4">
+              {/* Stage Badge */}
+              {(() => {
+                console.log('🔍 Stage badge condition check - selectedClient.stage:', selectedClient.stage);
+                console.log('🔍 Stage badge condition check - selectedClient.stage type:', typeof selectedClient.stage);
+                console.log('🔍 Stage badge condition check - selectedClient.stage truthy:', !!selectedClient.stage);
+                return selectedClient.stage !== null && selectedClient.stage !== undefined && selectedClient.stage !== '';
+              })() && (
+                <div className="flex items-center gap-2">
+                  <div className="px-3 py-1 rounded-full text-xs font-bold bg-[#3b28c7] text-white">
+                    {(() => {
+                      console.log('🔍 Stage badge rendering for client:', selectedClient.id);
+                      console.log('🔍 Client stage value:', selectedClient.stage);
+                      return getStageName(selectedClient.stage);
+                    })()}
+                  </div>
+                </div>
+              )}
+
+              {/* Two Row Grid Layout */}
+              <div className="grid grid-cols-2 gap-4">
+                {/* Row 1 */}
+                <div className="space-y-3">
+                  {/* Topic */}
+                  {selectedClient.topic && (
+                    <div className="flex items-center gap-2">
+                      <DocumentTextIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-600 font-medium">{selectedClient.topic}</span>
+                    </div>
+                  )}
+
+                  {/* Email */}
+                  <div className="flex items-center gap-2">
+                    <EnvelopeIcon className="w-4 h-4 text-gray-400" />
+                    <span className="text-sm text-gray-600">{selectedClient.email || 'No email'}</span>
+                  </div>
+
+                  {/* Category */}
+                  {selectedClient.category && (
+                    <div className="flex items-center gap-2">
+                      <TagIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-600">{selectedClient.category}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Row 2 */}
+                <div className="space-y-3">
+                  {/* Scheduler */}
+                  {selectedClient.scheduler && (
+                    <div className="flex items-center gap-2">
+                      <UserIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-600">Scheduler: {selectedClient.scheduler}</span>
+                    </div>
+                  )}
+
+                  {/* Phone */}
+                  <div className="flex items-center gap-2">
+                    <PhoneIcon className="w-4 h-4 text-gray-400" />
+                    <span className="text-sm text-gray-600">{selectedClient.phone || 'No phone'}</span>
+                  </div>
+
+                  {/* Created Date */}
+                  <div className="flex items-center gap-2">
+                    <CalendarIcon className="w-4 h-4 text-gray-400" />
+                    <span className="text-sm text-gray-500">
+                      Created: {selectedClient.created_at ? new Date(selectedClient.created_at).toLocaleDateString() : 'Unknown'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Unactivation Details */}
+              {(() => {
+                const stageName = getStageName(selectedClient.stage);
+                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+                const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
+                const isUnactivated = (unactivationReason && unactivationReason.trim() !== '') || stageUnactivated;
+                console.log('🔍 Unactivation box check:');
+                console.log('🔍 Stage name:', stageName);
+                console.log('🔍 Is legacy:', isLegacy);
+                console.log('🔍 Unactivation reason:', unactivationReason);
+                console.log('🔍 Stage unactivated:', stageUnactivated);
+                console.log('🔍 Is unactivated:', isUnactivated);
+                console.log('🔍 SelectedClient deactivate_note:', selectedClient.deactivate_note);
+                console.log('🔍 SelectedClient unactivation_reason:', selectedClient.unactivation_reason);
+                console.log('🔍 Full selectedClient object:', selectedClient);
+                return isUnactivated;
+              })() && (
+                <div className="pt-3 border-t border-gray-100 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <NoSymbolIcon className="w-4 h-4 text-red-400" />
+                    <span className="text-sm text-red-600 font-medium">
+                      {(() => {
+                        const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                        const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+                        const stageName = getStageName(selectedClient.stage);
+                        
+                        // For legacy leads with stage 91 but no deactivate_note, show default reason
+                        if (isLegacy && String(selectedClient.stage) === '91' && !unactivationReason) {
+                          return 'Reason: Dropped (Spam/Irrelevant)';
+                        }
+                        
+                        return unactivationReason ? (
+                          `Reason: ${unactivationReason.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}`
+                        ) : (
+                          'Status: Unactivated (Dropped/Spam/Irrelevant)'
+                        );
+                      })()}
+                    </span>
+                  </div>
+                  {selectedClient.unactivated_by && (
+                    <div className="flex items-center gap-2">
+                      <UserIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-600">
+                        Unactivated by: {selectedClient.unactivated_by}
+                      </span>
+                    </div>
+                  )}
+                  {selectedClient.unactivated_at && (
+                    <div className="flex items-center gap-2">
+                      <CalendarIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-600">
+                        Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        })}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Click to Expand Hint */}
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <div className="flex items-center gap-2">
+                  <InformationCircleIcon className="w-4 h-4 text-blue-500" />
+                  <span className="text-sm text-blue-700 font-medium">Click to view full details</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  console.log('🔍 RENDERING MAIN VIEW for client:', selectedClient?.id);
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900">
       {/* Mobile-Only Stylish Client Card (Pipeline Style) */}
@@ -2017,13 +3566,43 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Remove Dropdown menu for secondary actions (top right) */}
           {/* Top Row: Lead Number, Name, Stage */}
           <div className="flex items-center gap-2 mb-2 w-full">
-            <span className="text-xs font-semibold text-gray-400 tracking-widest saira-regular">{selectedClient?.lead_number}</span>
-            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-            <span className="text-lg font-extrabold text-gray-900 truncate flex-1 saira-regular">{selectedClient?.name || 'Loading...'}</span>
-            {selectedClient?.stage && (
-              <span className="ml-2 px-2 py-1 rounded-full text-xs font-bold bg-[#3b28c7] text-white whitespace-nowrap">
-                {selectedClient.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
-              </span>
+            <span className="text-xs font-semibold text-[#411CCF] tracking-widest saira-regular">{selectedClient?.lead_number}</span>
+            <span className="text-[#411CCF] font-bold text-xs">/</span>
+            <span className="text-lg font-extrabold text-[#411CCF] truncate flex-1 saira-regular">{selectedClient?.name || 'Loading...'}</span>
+            {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
+              <div className="dropdown dropdown-end">
+                <label 
+                  tabIndex={0} 
+                  className="ml-2 px-2 py-1 rounded-full text-xs font-bold bg-[#3b28c7] text-white whitespace-nowrap cursor-pointer hover:bg-purple-600 transition-colors flex items-center gap-1"
+                >
+                  {getStageName(selectedClient.stage)}
+                  <ChevronDownIcon className="w-3 h-3" />
+                </label>
+                <ul 
+                  tabIndex={0} 
+                  className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
+                >
+                  {availableStages.map((stageOption) => (
+                    <li key={stageOption.id}>
+                      <a 
+                        className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
+                          selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
+                        }`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleStageChange(stageOption.id);
+                        }}
+                      >
+                        <span className="font-medium">{stageOption.name}</span>
+                        {selectedClient.stage === stageOption.id && (
+                          <CheckIcon className="w-4 h-4 text-purple-600" />
+                        )}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
           {isSubLead && masterLeadNumber && (
@@ -2051,7 +3630,7 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Info Grid: Amount, Probability, Next Follow-up, Category, Topic */}
           <div className="grid grid-cols-2 gap-y-2 gap-x-4 items-center mb-6 mt-2">
             <span className="text-base text-gray-500 text-left font-semibold">Amount</span>
-            <span className="text-xl font-bold text-black text-right saira-regular">{getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}{(selectedClient?.balance || 0).toLocaleString()}</span>
+            <span className="text-xl font-bold text-[#411CCF] text-right saira-regular">{getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}{(selectedClient?.balance || 0).toLocaleString()}</span>
             <span className="text-base text-gray-500 text-left font-semibold">Probability</span>
             <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.probability || 0}%</span>
             <span className="text-base text-gray-500 text-left font-semibold">Next Follow-up</span>
@@ -2091,7 +3670,7 @@ const Clients: React.FC<ClientsProps> = ({
                 </ul>
               </div>
             </div>
-            {selectedClient && selectedClient.stage === 'created' && (
+            {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
               <div className="flex-1">
                 <div className="dropdown w-full">
                   <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
@@ -2128,7 +3707,7 @@ const Clients: React.FC<ClientsProps> = ({
                     </a>
                   </li>
                   <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
                   <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                 </ul>
               </div>
@@ -2167,257 +3746,143 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           )}
 
-
           {/* Client Details - Modern Box Design */}
-          <div className="pt-0 -mt-6">
-                          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Left Box - Client Information */}
-                <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-gray-50 border border-gray-200 text-black relative overflow-hidden p-4">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
-                      <UserIcon className="w-5 h-5 text-white" />
+          <div className="pt-0">
+            <div className="flex flex-col lg:flex-row justify-between gap-8">
+              <div className="w-full lg:w-80">
+                <ClientInformationBox selectedClient={selectedClient} />
+              </div>
+              <div className="w-full lg:w-48 flex flex-col items-center">
+                <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg p-4 mb-3">
+                  <div className="text-center">
+                    <div className="text-white text-2xl font-bold">
+                      {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
+                      {(selectedClient?.balance || 0).toLocaleString()}
                     </div>
-                    <span className="text-base font-semibold text-gray-900">Client Information</span>
                   </div>
-                  {/* Removed top divider under title */}
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-gray-200">
-                    {/* Row 1: Email | Phone */}
-                    <div className="md:pr-4">
-                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">
-                        <EnvelopeIcon className="w-3.5 h-3.5 text-[#3b28c7]" />
-                      </div>
-                      <a href={selectedClient ? `mailto:${selectedClient.email}` : undefined} className="mt-1 block text-sm font-semibold text-gray-900 break-all">
-                        {selectedClient ? selectedClient.email : '---'}
-                      </a>
-                    </div>
-                    <div className="md:pl-4">
-                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">
-                        <PhoneIcon className="w-3.5 h-3.5 text-[#3b28c7]" />
-                      </div>
-                      <a href={selectedClient ? `tel:${selectedClient.phone}` : undefined} className="mt-1 block text-sm font-semibold text-gray-900">
-                        {selectedClient ? selectedClient.phone : '---'}
-                      </a>
-                    </div>
-                    {/* Horizontal divider between rows */}
-                    <div className="col-span-1 md:col-span-2 border-t border-gray-200 my-3"></div>
-                    {/* Row 2: Category | Topic */}
-                    <div className="md:pr-4">
-                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Category</div>
-                      <p className="mt-1 text-sm font-semibold text-gray-900">
-                        {selectedClient ? (selectedClient.category || 'Not specified') : 'Not specified'}
-                      </p>
-                    </div>
-                    <div className="md:pl-4">
-                      <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Topic</div>
-                      <p className="mt-1 text-sm font-semibold text-gray-900">
-                        {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
-                      </p>
-                    </div>
-
-                  </div>
-                              </div>
-
-                {/* Middle Box - Case Summary (match Dashboard Overdue Follow-ups) */}
-                <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-gray-50 border border-gray-200 text-black relative overflow-hidden p-4">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
-                      <ChartPieIcon className="w-5 h-5 text-white" />
-                    </div>
-                    <span className="text-base font-semibold text-gray-900">Case Summary</span>
-                  </div>
-                  {/* Removed top divider under title */}
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 md:divide-x md:divide-gray-200">
-                      {/* Row 1: Next Meeting | Eligibility */}
-                      <div className="md:pr-4">
-                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Next Meeting</div>
-                        <p className="mt-1 text-sm font-semibold text-gray-900">
-                          {latestMeetingDate ? (
-                            <>
-                              {new Date(latestMeetingDate).toLocaleDateString('en-US', {
-                                month: 'short',
-                                day: 'numeric',
-                                year: 'numeric'
-                              })}
-                              {selectedClient?.next_meeting_time && (
-                                <span className="block text-sm opacity-80">
-                                  {selectedClient.next_meeting_time}
-                                </span>
-                              )}
-                            </>
-                          ) : (
-                            'Not scheduled'
-                          )}
-                        </p>
-                      </div>
-                      <div className="md:pl-4">
-                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Eligibility</div>
-                        <p className="mt-1 text-sm font-semibold text-gray-900">
-                          {selectedClient?.eligibility_status || 'Not assessed'}
-                          {selectedClient?.section_eligibility ? (
-                            <span className="block text-sm opacity-90 mt-0.5">
-                              {(() => {
-                                const map: Record<string, string> = { '116': '§ 116', '15': '§ 15', '5': '§ 5', '58c': '§ 58c' };
-                                const sec = String(selectedClient.section_eligibility);
-                                return map[sec] || sec;
-                              })()}
-                            </span>
-                          ) : null}
-                        </p>
-                      </div>
-                      {/* Horizontal divider between rows */}
-                      <div className="col-span-1 md:col-span-2 border-t border-gray-200 my-3"></div>
-                      {/* Row 2: Citizenship | Total Applicants */}
-                      <div className="md:pr-4">
-                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Citizenship</div>
-                        <p className="mt-1 text-sm font-semibold text-gray-900">
-                          {selectedClient?.topic || 'Not specified'}
-                        </p>
-                      </div>
-                      <div className="md:pl-4">
-                        <div className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 uppercase tracking-wide w-max">Total Applicants</div>
-                        <p className="mt-1 text-sm font-semibold text-gray-900">
-                          {selectedClient?.potential_applicants || selectedClient?.total_applicants || 0}
-                        </p>
-                      </div>
-                    </div>
                 </div>
-
-                {/* Right Box - Progress & Follow-up */}
-                <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-gray-50 border border-gray-200 text-black relative overflow-hidden p-4">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
-                      <ChartBarIcon className="w-5 h-5 text-white" />
+                <div className="text-center">
+                  <div className="flex items-center justify-center gap-2">
+                    <span className="text-2xl font-bold text-[#411CCF]">{selectedClient?.lead_number || '---'}</span>
+                    <span className="text-[#411CCF] font-bold text-xl">/</span>
+                    <span className="text-2xl font-bold text-[#411CCF] truncate max-w-[300px] whitespace-nowrap">{selectedClient?.name || '---'}</span>
+                    {selectedClient?.language && (
+                      <label className="btn btn-md text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm truncate whitespace-nowrap ml-2">
+                        {selectedClient.language}
+                      </label>
+                    )}
+                  </div>
+                  
+                  {/* Stages and Actions dropdowns - positioned under the lead number and name */}
+                  <div className="flex items-center justify-center gap-3 mt-3">
+                    <div className="dropdown">
+                      <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
+                        <span>Stages</span>
+                        <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                      </label>
+                      <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                        {dropdownItems}
+                      </ul>
                     </div>
-                    <span className="text-base font-semibold text-gray-900">Progress & Follow-up</span>
-                  </div>
-                {/* Removed top divider under title */}
-
-                <div className="space-y-3">
-                  {/* Probability */}
-                  <div className="pb-2 border-b border-gray-200 last:border-b-0">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Probability</p>
-                      <span className="text-sm font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
+                    {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
+                      <div className="dropdown dropdown-end">
+                        <label 
+                          tabIndex={0} 
+                          className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm truncate cursor-pointer"
+                        >
+                          {getStageName(selectedClient.stage)}
+                          <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                        </label>
+                        <ul 
+                          tabIndex={0} 
+                          className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
+                        >
+                          {availableStages.map((stageOption) => (
+                            <li key={stageOption.id}>
+                              <a 
+                                className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
+                                  selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
+                                }`}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleStageChange(stageOption.id);
+                                }}
+                              >
+                                <span className="font-medium">{stageOption.name}</span>
+                                {selectedClient.stage === stageOption.id && (
+                                  <CheckIcon className="w-4 h-4 text-purple-600" />
+                                )}
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                      <div className="dropdown">
+                        <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
+                          <span>Assign to</span>
+                          <ChevronDownIcon className="w-4 h-4" />
+                        </label>
+                        <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                          {schedulerOptions.map((scheduler) => (
+                            <li key={scheduler}>
+                              <a 
+                                className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  updateScheduler(scheduler);
+                                }}
+                              >
+                                <UserIcon className="w-5 h-5 text-primary" />
+                                <span className="font-medium">{scheduler}</span>
+                              </a>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div className="dropdown dropdown-end">
+                      <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
+                        <span>Actions</span>
+                        <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                      </label>
+                      <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                      </ul>
                     </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div 
-                        className="bg-[#3b28c7] h-2 rounded-full transition-all duration-300" 
-                        style={{ width: `${selectedClient?.probability || 0}%` }}
-                      ></div>
-                    </div>
                   </div>
-
-                  {/* Next Follow-up */}
-                  <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-                    <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Next Follow-up</p>
-                    <p className="text-sm text-gray-900 text-right">
-                      {selectedClient?.next_followup ? (
-                        new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric'
-                        })
-                      ) : (
-                        'Not scheduled'
-                      )}
-                    </p>
-                  </div>
-
-
-
-                  {/* Closer */}
-                  <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-                    <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Closer</p>
-                    <p className="text-sm text-gray-900 text-right">
-                      {selectedClient?.closer || 'Not assigned'}
-                    </p>
-                  </div>
-
-                  {/* Handler (if applicable) */}
-                  {selectedClient?.stage === 'handler_assigned' && (
-                    <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-                      <p className="text-sm font-medium text-gray-800 uppercase tracking-wide">Handler</p>
-                      <p className="text-sm text-gray-900 text-right">
-                        {selectedClient?.handler || 'Not assigned'}
-                      </p>
+                  
+                  {/* Show "Case is not active" message for unactivated leads */}
+                  {isUnactivated && (
+                    <div className="mt-3">
+                      <div className="inline-flex items-center gap-2 px-4 py-2 bg-red-100 border border-red-300 rounded-lg">
+                        <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                        <span className="text-red-700 font-medium text-sm">Case is not active</span>
+                      </div>
                     </div>
                   )}
                 </div>
+              </div>
+              <div className="w-full lg:w-80">
+                <ProgressFollowupBox 
+                  selectedClient={selectedClient} 
+                  getEmployeeDisplayName={getEmployeeDisplayName}
+                />
               </div>
             </div>
           </div>
         </div>
         
-        {/* Header Row below boxes: Left (lead/name/stage), Right (actions) */}
-        <div className="flex items-center justify-between mt-8 mb-6 px-8">
-          {/* Left: Lead number, Client name, Stage (black text) */}
-          <div className="flex items-center gap-2 sm:gap-3 text-black min-w-0 pl-2">
-            <span className="text-2xl font-bold">{selectedClient?.lead_number || '---'}</span>
-            <span className="hidden sm:inline w-2 h-2 bg-[#3b28c7] rounded-full" />
-            <span className="text-2xl font-bold truncate max-w-[40vw]">{selectedClient?.name || '---'}</span>
-            {selectedClient?.language && (
-              <label className="ml-2 btn btn-md text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm truncate whitespace-nowrap">
-                {selectedClient.language}
-              </label>
-            )}
-            {selectedClient?.stage && (
-              <label className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm truncate">
-                {selectedClient.stage.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}
-              </label>
-            )}
-          </div>
 
-          <div className="flex items-center gap-3 pr-2">
-            <span className="text-2xl font-bold text-black mr-3">
-              {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
-              {(selectedClient?.balance || 0).toLocaleString()}
-            </span>
-            <div className="dropdown">
-              <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
-                <span>Stages</span>
-                <ChevronDownIcon className="w-4 h-4 text-purple-600" />
-              </label>
-              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                {dropdownItems}
-              </ul>
-            </div>
-            {selectedClient && selectedClient.stage === 'created' && (
-              <div className="dropdown">
-                <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
-                  <span>Assign to</span>
-                  <ChevronDownIcon className="w-4 h-4" />
-                </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                  {schedulerOptions.map((scheduler) => (
-                    <li key={scheduler}>
-                      <a 
-                        className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                        onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
-                      >
-                        <UserIcon className="w-5 h-5 text-primary" />
-                        <span className="font-medium">{scheduler}</span>
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <div className="dropdown">
-              <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
-                <span>Actions</span>
-                <ChevronDownIcon className="w-4 h-4 text-purple-600" />
-              </label>
-              <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
-                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowEditLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-              </ul>
-            </div>
-          </div>
         </div>
+        
+        {/* Tabs Navigation */}
         
         {/* Tabs Navigation */}
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
@@ -2437,13 +3902,13 @@ const Clients: React.FC<ClientsProps> = ({
                     >
                     <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
                     <span className={`whitespace-nowrap saira-light font-bold ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
-                    {tab.id === 'interactions' && (
+                    {tab.id === 'interactions' && tab.badge && (
                       <div className={`badge badge-sm font-bold ${
                         activeTab === tab.id 
                           ? 'bg-white/20 text-white border-white/30' 
                           : 'bg-purple-100 text-purple-700 border-purple-200'
                       }`}>
-                        31
+                        {tab.badge}
                       </div>
                     )}
                     {activeTab === tab.id && (
@@ -2475,13 +3940,13 @@ const Clients: React.FC<ClientsProps> = ({
                       >
                         <div className="relative">
                           <tab.icon className={`w-6 h-6 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
-                          {tab.id === 'interactions' && (
+                          {tab.id === 'interactions' && tab.badge && (
                             <div className={`absolute -top-2 -right-2 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${
                               isActive 
                                 ? 'bg-white/20 text-white' 
                                 : 'bg-purple-100 text-purple-700'
                             }`}>
-                              31
+                              {tab.badge}
                             </div>
                           )}
                         </div>
@@ -2505,13 +3970,12 @@ const Clients: React.FC<ClientsProps> = ({
         {/* Tab Content - full width, white background */}
         <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
           <div
-            key={activeTab}
+            key={`${activeTab}-${interactionCount}`}
             className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
           >
-            {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} />}
+                          {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} onCreateFinancePlan={activeTab === 'finances' ? () => setShowPaymentsPlanDrawer(true) : undefined} />}
           </div>
         </div>
-      </div>
       {/* Restore main client content for mobile below the new card */}
       <div className="block md:hidden w-full">
         {selectedClient && (
@@ -2538,13 +4002,13 @@ const Clients: React.FC<ClientsProps> = ({
                       >
                         <div className="relative">
                           <tab.icon className={`w-6 h-6 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
-                          {tab.id === 'interactions' && (
+                          {tab.id === 'interactions' && tab.badge && (
                             <div className={`absolute -top-2 -right-2 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${
                               isActive 
                                 ? 'bg-white/20 text-white' 
                                 : 'bg-purple-100 text-purple-700'
                             }`}>
-                              31
+                              {tab.badge}
                             </div>
                           )}
                         </div>
@@ -2564,12 +4028,12 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
             {/* Tab Content - full width, white background */}
             <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
-              <div
-                key={activeTab}
-                className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
-              >
-                {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} />}
-              </div>
+                        <div
+            key={activeTab}
+            className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
+          >
+                          {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} onCreateFinancePlan={activeTab === 'finances' ? () => setShowPaymentsPlanDrawer(true) : undefined} />}
+          </div>
             </div>
           </div>
         )}
@@ -2600,11 +4064,11 @@ const Clients: React.FC<ClientsProps> = ({
                   value={meetingFormData.location}
                   onChange={(e) => setMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
                 >
-                  <option value="Teams">Teams</option>
-                  <option value="Jerusalem Office">Jerusalem Office</option>
-                  <option value="Tel Aviv Office">Tel Aviv Office</option>
-                  <option value="Phone Call">Phone Call</option>
-                  <option value="WhatsApp">WhatsApp</option>
+                  {meetingLocations.map((location) => (
+                    <option key={location.id} value={location.name}>
+                      {location.name}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -2676,6 +4140,19 @@ const Clients: React.FC<ClientsProps> = ({
                   ))}
                 </select>
               </div>
+
+              {/* Meeting Brief (Optional) */}
+              <div>
+                <label htmlFor="meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
+                <textarea
+                  id="meeting-brief"
+                  name="meeting-brief"
+                  className="textarea textarea-bordered w-full min-h-[80px]"
+                  value={meetingFormData.brief}
+                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, brief: e.target.value }))}
+                  placeholder="Brief description of the meeting topic..."
+                />
+              </div>
             </div>
             <div className="mt-6 flex justify-end">
               <button 
@@ -2715,8 +4192,10 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
             <div className="flex flex-col gap-4 flex-1">
               <div>
-                <label className="block font-semibold mb-1">Meeting scheduling notes:</label>
+                <label htmlFor="meeting-notes" className="block font-semibold mb-1">Meeting scheduling notes:</label>
                 <textarea
+                  id="meeting-notes"
+                  name="meeting-notes"
                   className="textarea textarea-bordered w-full min-h-[120px]"
                   value={meetingNotes}
                   onChange={e => setMeetingNotes(e.target.value)}
@@ -2732,8 +4211,10 @@ const Clients: React.FC<ClientsProps> = ({
                 />
               </div>
               <div>
-                <label className="block font-semibold mb-1">Followup:</label>
+                <label htmlFor="followup-notes" className="block font-semibold mb-1">Followup:</label>
                 <textarea
+                  id="followup-notes"
+                  name="followup-notes"
                   className="textarea textarea-bordered w-full min-h-[120px]"
                   value={followup}
                   onChange={e => setFollowup(e.target.value)}
@@ -3084,8 +4565,8 @@ const Clients: React.FC<ClientsProps> = ({
                   list="source-options"
                 />
                 <datalist id="source-options">
-                  {sources.map((name) => (
-                    <option key={name} value={name} />
+                  {sources.map((name, index) => (
+                    <option key={`${name}-${index}`} value={name} />
                   ))}
                 </datalist>
               </div>
@@ -3104,8 +4585,8 @@ const Clients: React.FC<ClientsProps> = ({
                   list="language-options"
                 />
                 <datalist id="language-options">
-                  {languagesList.map((name) => (
-                    <option key={name} value={name} />
+                  {languagesList.map((name, index) => (
+                    <option key={`${name}-${index}`} value={name} />
                   ))}
                 </datalist>
               </div>
@@ -3120,8 +4601,8 @@ const Clients: React.FC<ClientsProps> = ({
                   list="category-options"
                 />
                 <datalist id="category-options">
-                  {mainCategories.map((name) => (
-                    <option key={name} value={name} />
+                  {mainCategories.map((name, index) => (
+                    <option key={`${name}-${index}`} value={name} />
                   ))}
                 </datalist>
               </div>
@@ -3156,11 +4637,20 @@ const Clients: React.FC<ClientsProps> = ({
               <div>
                 <label className="block font-semibold mb-1">Balance Currency</label>
                 <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
-                  <option value="₪">₪ (ILS)</option>
-                  <option value="$">$ (USD)</option>
-                  <option value="€">€ (EUR)</option>
-                  <option value="£">£ (GBP)</option>
+                  {currencies.length > 0 ? (
+                    currencies.map((currency) => (
+                      <option key={currency.id} value={currency.name}>
+                        {currency.name} ({currency.iso_code})
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">Loading currencies...</option>
+                  )}
                 </select>
+                {/* Debug info */}
+                <div className="text-xs text-gray-500 mt-1">
+                  Debug: {currencies.length} currencies loaded
+                </div>
               </div>
             </div>
             <div className="mt-6 flex justify-end">
@@ -3353,17 +4843,43 @@ const Clients: React.FC<ClientsProps> = ({
                       autoFocus
                     />
                   ) : (
-                    <span className="text-xl font-bold text-gray-900">₪{(selectedClient?.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                    <span className="text-xl font-bold text-gray-900">
+                      {(() => {
+                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const currency = isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
+                        return `${currency}${(selectedClient?.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
+                      })()}
+                    </span>
                   )}
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-base text-gray-600">VAT (18%)</span>
-                  <span className="text-base font-semibold text-gray-900">₪{((selectedClient?.balance || 0) * 0.18).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-base text-gray-600">Total incl. VAT</span>
-                  <span className="text-lg font-bold text-primary">₪{((selectedClient?.balance || 0) * 1.18).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
-                </div>
+                {(() => {
+                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                  const currency = isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
+                  const balance = selectedClient?.balance || 0;
+                  const vatAmount = currency === '₪' ? balance * 0.18 : 0;
+                  const totalWithVat = currency === '₪' ? balance * 1.18 : balance;
+                  
+                  return (
+                    <>
+                      {currency === '₪' && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-base text-gray-600">VAT (18%)</span>
+                          <span className="text-base font-semibold text-gray-900">
+                            {`${currency}${vatAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between">
+                        <span className="text-base text-gray-600">
+                          {currency === '₪' ? 'Total incl. VAT' : 'Total'}
+                        </span>
+                        <span className="text-lg font-bold text-primary">
+                          {`${currency}${totalWithVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
+                        </span>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
             {/* Auto plan dropdown */}
@@ -3383,11 +4899,22 @@ const Clients: React.FC<ClientsProps> = ({
                     // Generate payment rows for the selected plan
                     const planParts = selectedPlan.split('/').map(Number);
                     const balance = selectedClient?.balance || 0;
+                    
+                    // Determine currency for legacy leads
+                    const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                    let currency = '₪'; // Default
+                    if (isLegacyLead) {
+                      currency = selectedClient?.balance_currency || '₪';
+                    } else {
+                      currency = selectedClient?.proposal_currency || '₪';
+                    }
+                    
                     const newPayments = [];
                     for (let i = 0; i < planParts.length; i++) {
                       const percentage = planParts[i];
                       const value = Math.round(balance * (percentage / 100) * 100) / 100;
-                      const valueVat = Math.round(value * 0.18 * 100) / 100;
+                      // Only apply VAT if currency is NIS (₪)
+                      const valueVat = currency === '₪' ? Math.round(value * 0.18 * 100) / 100 : 0;
                       const dateObj = new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000);
                       const dueDate = dateObj.toISOString().split('T')[0];
                       newPayments.push({
@@ -3395,6 +4922,7 @@ const Clients: React.FC<ClientsProps> = ({
                         dueDate: dueDate,
                         value: value,
                         valueVat: valueVat,
+                        currency: currency,
                         client: selectedClient?.name || '',
                         order: i === 0 ? 'First Payment' : i === planParts.length - 1 ? 'Final Payment' : 'Intermediate Payment',
                         notes: '',
@@ -3413,7 +4941,23 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
             {/* Add new payment button */}
             <div className="px-8 pb-2">
-              <button className="btn btn-outline w-full" onClick={() => setShowAddPayment(true)}>
+              <button className="btn btn-outline w-full" onClick={() => {
+                setShowAddPayment(true);
+                // Initialize form with correct defaults
+                setNewPayment({
+                  client: selectedClient?.name || '',
+                  order: 'Intermediate Payment',
+                  date: '',
+                  currency: (() => {
+                    const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                    return isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
+                  })(),
+                  value: 0.0,
+                  duePercent: '',
+                  applicants: '',
+                  notes: '',
+                });
+              }}>
                 Add new payment
               </button>
             </div>
@@ -3431,10 +4975,11 @@ const Clients: React.FC<ClientsProps> = ({
                   <div>
                     <label className="block font-semibold mb-1">Order:</label>
                     <select className="select select-bordered w-full" value={newPayment.order} onChange={e => setNewPayment({ ...newPayment, order: e.target.value })}>
-                      <option>Intermediate Payment</option>
                       <option>First Payment</option>
+                      <option>Intermediate Payment</option>
                       <option>Final Payment</option>
-                      <option>One time payment</option>
+                      <option>Single Payment</option>
+                      <option>Expense (no VAT)</option>
                     </select>
                   </div>
                   <div>
@@ -3444,14 +4989,32 @@ const Clients: React.FC<ClientsProps> = ({
                   <div>
                     <label className="block font-semibold mb-1">Currency:</label>
                     <select className="select select-bordered w-full" value={newPayment.currency} onChange={e => setNewPayment({ ...newPayment, currency: e.target.value })}>
-                      <option>₪</option>
-                      <option>$</option>
-                      <option>€</option>
+                      {(() => {
+                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const defaultCurrency = isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
+                        
+                        // Show the default currency first, then other options
+                        const currencies = [defaultCurrency, '₪', '$', '€', '£'].filter((currency, index, arr) => arr.indexOf(currency) === index);
+                        
+                        return currencies.map(currency => (
+                          <option key={currency} value={currency}>{currency}</option>
+                        ));
+                      })()}
                     </select>
                   </div>
                   <div>
                     <label className="block font-semibold mb-1">Value:</label>
                     <input type="number" className="input input-bordered w-full text-right" value={newPayment.value} onChange={e => setNewPayment({ ...newPayment, value: parseFloat(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Due Percentage:</label>
+                    <input 
+                      type="number" 
+                      className="input input-bordered w-full text-right" 
+                      value={newPayment.duePercent} 
+                      onChange={e => setNewPayment({ ...newPayment, duePercent: e.target.value })} 
+                      placeholder="e.g., 25"
+                    />
                   </div>
                   <div>
                     <label className="block font-semibold mb-1">Applicants:</label>
@@ -3462,16 +5025,57 @@ const Clients: React.FC<ClientsProps> = ({
                     <textarea className="textarea textarea-bordered w-full min-h-[100px]" value={newPayment.notes} onChange={e => setNewPayment({ ...newPayment, notes: e.target.value })} />
                   </div>
                 </div>
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-3">
+                  <button className="btn btn-ghost px-6" onClick={() => {
+                    setShowAddPayment(false);
+                    // Reset form to defaults
+                    setNewPayment({
+                      client: selectedClient?.name || '',
+                      order: 'Intermediate Payment',
+                      date: '',
+                      currency: (() => {
+                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        return isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
+                      })(),
+                      value: 0.0,
+                      duePercent: '',
+                      applicants: '',
+                      notes: '',
+                    });
+                  }}>
+                    Cancel
+                  </button>
                   <button className="btn btn-primary px-8" onClick={() => {
                     let valueNum = typeof newPayment.value === 'number' ? newPayment.value : parseFloat(newPayment.value);
                     if (isNaN(valueNum)) valueNum = 0;
-                    const valueVatNum = Math.round(valueNum * 0.18 * 100) / 100;
+                    // Only apply VAT if currency is NIS (₪)
+                    const valueVatNum = newPayment.currency === '₪' ? Math.round(valueNum * 0.18 * 100) / 100 : 0;
                     setPayments([
                       ...payments,
-                      { ...newPayment, value: valueNum, valueVat: valueVatNum, duePercent: '', dueDate: newPayment.date }
+                      { 
+                        ...newPayment, 
+                        value: valueNum, 
+                        valueVat: valueVatNum, 
+                        duePercent: newPayment.duePercent ? `${newPayment.duePercent}%` : '', 
+                        dueDate: newPayment.date, 
+                        currency: newPayment.currency 
+                      }
                     ]);
                     setShowAddPayment(false);
+                    // Reset form to defaults
+                    setNewPayment({
+                      client: selectedClient?.name || '',
+                      order: 'Intermediate Payment',
+                      date: '',
+                      currency: (() => {
+                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        return isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
+                      })(),
+                      value: 0.0,
+                      duePercent: '',
+                      applicants: '',
+                      notes: '',
+                    });
                   }}>
                     Save
                   </button>
@@ -3894,6 +5498,111 @@ const Clients: React.FC<ClientsProps> = ({
                   <button className="btn btn-primary mt-4" onClick={handleSaveSubLead}>Save Sub-Lead</button>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Activation Modal */}
+      {showActivationModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setShowActivationModal(false)} />
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold text-gray-900">Activate Lead</h3>
+              <button 
+                className="btn btn-ghost btn-sm" 
+                onClick={() => setShowActivationModal(false)}
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-6">
+              <div>
+                <p className="text-gray-600 mb-4">
+                  Are you sure you want to activate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
+                </p>
+                
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                  <div className="flex items-center gap-2">
+                    <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                    <span className="text-green-700 font-medium">
+                      This will restore the lead to its previous stage: <strong>{selectedClient?.previous_stage ? getStageName(selectedClient.previous_stage) : 'Created'}</strong>
+                    </span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex gap-3 justify-end">
+                <button 
+                  className="btn btn-outline" 
+                  onClick={() => setShowActivationModal(false)}
+                >
+                  Cancel
+                </button>
+                <button 
+                  className="btn btn-success" 
+                  onClick={handleActivation}
+                >
+                  Activate Lead
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Unactivation Modal */}
+      {showUnactivationModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setShowUnactivationModal(false)} />
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold text-gray-900">Unactivate Lead</h3>
+              <button 
+                className="btn btn-ghost btn-sm" 
+                onClick={() => setShowUnactivationModal(false)}
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-6">
+              <div>
+                <p className="text-gray-600 mb-4">
+                  Are you sure you want to unactivate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
+                </p>
+                
+                <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
+                <select 
+                  className="select select-bordered w-full" 
+                  value={unactivationReason}
+                  onChange={(e) => setUnactivationReason(e.target.value)}
+                >
+                  <option value="">Select a reason...</option>
+                  <option value="spam">Spam</option>
+                  <option value="test">Test</option>
+                  <option value="not_relevant">Not Relevant</option>
+                  <option value="not_eligible">Not Eligible</option>
+                </select>
+              </div>
+              
+              <div className="flex gap-3 justify-end">
+                <button 
+                  className="btn btn-outline" 
+                  onClick={() => setShowUnactivationModal(false)}
+                >
+                  Cancel
+                </button>
+                <button 
+                  className="btn btn-error" 
+                  onClick={handleUnactivation}
+                  disabled={!unactivationReason.trim()}
+                >
+                  Unactivate Lead
+                </button>
+              </div>
             </div>
           </div>
         </div>

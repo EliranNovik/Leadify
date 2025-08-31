@@ -7,7 +7,125 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Configure Supabase client with proper session management
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    // Enable auto refresh tokens for better UX
+    autoRefreshToken: true,
+    // Persist session in localStorage
+    persistSession: true,
+    // Detect session in URL (for magic links, etc.)
+    detectSessionInUrl: true,
+    // Flow type for authentication
+    flowType: 'pkce',
+    // Disable debug mode to reduce console noise
+    debug: false,
+  },
+  // Global headers
+  global: {
+    headers: {
+      'X-Client-Info': 'leadify-crm',
+    },
+  },
+});
+
+// Expose supabase client globally for debugging (remove in production)
+if (typeof window !== 'undefined') {
+  (window as any).supabase = supabase;
+}
+
+// Session manager for handling session expiration and refresh
+export const sessionManager = {
+  async getSession() {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (error) throw error;
+      return session;
+    } catch (error) {
+      return null;
+    }
+  },
+
+  isSessionExpired(session: any): boolean {
+    if (!session?.expires_at) return true;
+    
+    try {
+      const expiresAt = typeof session.expires_at === 'number' 
+        ? session.expires_at * 1000 
+        : new Date(session.expires_at).getTime();
+      return Date.now() >= expiresAt;
+    } catch (e) {
+      // Could not parse JWT token for expiration check
+      return true;
+    }
+  },
+
+  hasRefreshToken(session: any): boolean {
+    return !!(session?.refresh_token);
+  },
+
+  getTimeUntilExpiry(session: any): number | null {
+    if (!session?.expires_at) return null;
+    
+    try {
+      const expiresAt = typeof session.expires_at === 'number' 
+        ? session.expires_at * 1000 
+        : new Date(session.expires_at).getTime();
+      return Math.max(0, expiresAt - Date.now());
+    } catch (e) {
+      // Could not determine session expiration, treating as expired
+      return 0;
+    }
+  },
+
+  async refreshSession() {
+    try {
+      const { data: { session }, error } = await supabase.auth.refreshSession();
+      if (error) throw error;
+      return session;
+    } catch (error) {
+      return null;
+    }
+  }
+};
+
+// Auto-refresh session when it's about to expire
+let refreshTimeout: NodeJS.Timeout | null = null;
+
+const scheduleRefresh = async () => {
+  const session = await sessionManager.getSession();
+  if (!session) return;
+
+  const timeUntilExpiry = sessionManager.getTimeUntilExpiry(session);
+  if (!timeUntilExpiry || timeUntilExpiry <= 0) return;
+
+  // Refresh 5 minutes before expiry
+  const refreshDelay = Math.max(0, timeUntilExpiry - 5 * 60 * 1000);
+  
+  if (refreshTimeout) clearTimeout(refreshTimeout);
+  
+  refreshTimeout = setTimeout(async () => {
+    const refreshedSession = await sessionManager.refreshSession();
+    if (refreshedSession) {
+      // Session refreshed successfully
+      scheduleRefresh(); // Schedule next refresh
+    } else {
+      // Session expired and refresh failed, redirecting to login
+    }
+  }, refreshDelay);
+};
+
+// Set up session monitoring
+supabase.auth.onAuthStateChange((event, session) => {
+  if (event === 'SIGNED_IN' && session) {
+    scheduleRefresh();
+  } else if (event === 'SIGNED_OUT') {
+    if (refreshTimeout) {
+      clearTimeout(refreshTimeout);
+      refreshTimeout = null;
+    }
+  }
+});
 
 // Types for our database tables
 export interface Lead {
@@ -107,7 +225,25 @@ export async function searchLeads(query: string) {
   return data || [];
 }
 
-export async function createPaymentLink({ paymentPlanId, clientId, value, valueVat, currency, order, clientName, leadNumber }) {
+export async function createPaymentLink({ 
+  paymentPlanId, 
+  clientId, 
+  value, 
+  valueVat, 
+  currency, 
+  order, 
+  clientName, 
+  leadNumber 
+}: {
+  paymentPlanId: string;
+  clientId: string;
+  value: number;
+  valueVat: number;
+  currency: string;
+  order: string;
+  clientName: string;
+  leadNumber: string;
+}) {
   // Generate secure token
   const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
   // Set expiration date (30 days from now)

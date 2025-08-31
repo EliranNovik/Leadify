@@ -78,7 +78,7 @@ class TeamsBotFrameworkService {
         '@odata.context': 'https://graph.microsoft.com/v1.0/$metadata#communications/calls/$entity'
       };
 
-      console.log('[Teams Bot Framework] Initiating call via Bot Framework:', JSON.stringify(botCallData, null, 2));
+
 
       const response = await axios.post(
         'https://graph.microsoft.com/v1.0/communications/calls',

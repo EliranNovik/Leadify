@@ -14,6 +14,7 @@ import 'react-quill/dist/quill.snow.css';
 import { useRef } from 'react';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../lib/api';
+import { fetchStageNames, getStageName } from '../lib/stageUtils';
 
 // Email templates
 const emailTemplates = [
@@ -394,6 +395,39 @@ const CalendarPage: React.FC = () => {
   const [whatsAppChatMessages, setWhatsAppChatMessages] = useState<any[]>([]);
   const [isWhatsAppLoading, setIsWhatsAppLoading] = useState(false);
 
+  // State to store all employees and categories for name lookup
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+
+  // Helper function to get employee display name from ID
+  const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
+    if (!employeeId || employeeId === '---') return 'Not assigned';
+    // Find employee in the loaded employees array
+    const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+    return employee ? employee.display_name : employeeId; // Fallback to ID if not found
+  };
+
+  // Helper function to get category name from ID
+  const getCategoryName = (categoryId: string | number | null | undefined) => {
+    console.log('🔍 getCategoryName called with:', categoryId, 'type:', typeof categoryId);
+    console.log('🔍 allCategories length:', allCategories.length);
+    
+    if (!categoryId || categoryId === '---') {
+      console.log('🔍 Category is null/empty, returning empty string');
+      return '';
+    }
+    
+    // Find category in loaded categories
+    const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (category) {
+      console.log('🔍 Found category:', category.name);
+      return category.name;
+    }
+    
+    console.log('🔍 Category not found, returning ID as string:', String(categoryId));
+    return String(categoryId); // Fallback to ID if not found
+  };
+
   // Navigation functions for date switching
   const goToPreviousDay = () => {
     const currentDate = new Date(selectedDate);
@@ -414,33 +448,172 @@ const CalendarPage: React.FC = () => {
   useEffect(() => {
     const fetchMeetingsAndStaff = async () => {
       setIsLoading(true);
-      // Fetch all meetings, including correct join to leads table
-      const { data: meetingsData, error: meetingsError } = await supabase
-        .from('meetings')
-        .select('*, lead:leads!client_id(id, name, lead_number, onedrive_folder_link, stage, manager, category, balance, balance_currency, expert_notes, expert, probability, phone, email, manual_interactions)')
-        .or('status.is.null,status.neq.canceled')
-        .order('meeting_date', { ascending: false });
       
-      if (meetingsError) {
-        console.error('Error fetching meetings:', meetingsError);
-      } else {
-        // Debug: Log the first few meetings to check data structure
-        console.log('Fetched meetings data:', meetingsData?.slice(0, 3));
-        setMeetings(meetingsData || []);
-      }
+      try {
+        // Fetch all employees for name lookup
+        const { data: employeesData, error: employeesError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, bonuses_role')
+          .order('display_name', { ascending: true });
+        
+        if (!employeesError && employeesData) {
+          setAllEmployees(employeesData);
+        }
 
-      // Fetch distinct staff members (assuming from 'meetings' table)
-      const { data: staffData, error: staffError } = await supabase
-        .from('meetings')
-        .select('meeting_manager');
+        // Fetch all categories for name lookup
+        const { data: categoriesData, error: categoriesError } = await supabase
+          .from('misc_category')
+          .select('id, name')
+          .order('name', { ascending: true });
+        
+        if (!categoriesError && categoriesData) {
+          setAllCategories(categoriesData);
+        }
 
-      if (staffError) {
-        console.error('Error fetching staff:', staffError);
-      } else {
-        const uniqueStaff = [...new Set(staffData.map(item => item.meeting_manager).filter(Boolean))];
-        setStaff(uniqueStaff);
+        // Initialize stage names cache
+        console.log('🔍 Initializing stage names cache...');
+        await fetchStageNames().then(stageNames => {
+          console.log('✅ Stage names initialized:', stageNames);
+        }).catch(error => {
+          console.error('❌ Error initializing stage names:', error);
+        });
+
+        // Fetch all meetings with proper joins to both leads and leads_lead tables
+        const { data: meetingsData, error: meetingsError } = await supabase
+          .from('meetings')
+          .select(`
+            *,
+            lead:leads!client_id(
+              id, name, lead_number, onedrive_folder_link, stage, manager, category, 
+              balance, balance_currency, expert_notes, expert, probability, phone, email, 
+              manual_interactions
+            ),
+            legacy_lead:leads_lead!legacy_lead_id(
+              id, name, lead_number, onedrive_folder_link, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+              total, meeting_total_currency_id, expert_notes, expert_id, probability, phone, email, language_id
+            )
+          `)
+          .or('status.is.null,status.neq.canceled')
+          .order('meeting_date', { ascending: false });
+        
+        if (meetingsError) {
+          console.error('Error fetching meetings:', meetingsError);
+          setMeetings([]);
+        } else {
+          // Process the meetings to combine lead data from both tables
+          const processedMeetings = (meetingsData || []).map(meeting => {
+            // Determine which lead data to use
+            let leadData = null;
+            
+            if (meeting.legacy_lead) {
+              // Use legacy lead data and map column names to match new leads structure
+              leadData = {
+                ...meeting.legacy_lead,
+                lead_type: 'legacy',
+                // Map legacy column names to new structure
+                manager: meeting.legacy_lead.meeting_manager_id,
+                helper: meeting.legacy_lead.meeting_lawyer_id,
+                balance: meeting.legacy_lead.total,
+                balance_currency: meeting.legacy_lead.meeting_total_currency_id,
+                expert: meeting.legacy_lead.expert_id,
+                // Use category_id if category is null
+                category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
+                // Map language_id to language for consistency
+                language: meeting.legacy_lead.language_id,
+                // For legacy leads, use the ID as lead_number (as done in the integration view)
+                lead_number: meeting.legacy_lead.id?.toString(),
+                // Set default values for missing fields
+                manual_interactions: []
+              };
+              console.log('🔍 Calendar: Found legacy lead:', {
+                id: meeting.legacy_lead.id,
+                name: meeting.legacy_lead.name,
+                original_lead_number: meeting.legacy_lead.lead_number,
+                mapped_lead_number: meeting.legacy_lead.id?.toString(),
+                stage: meeting.legacy_lead.stage,
+                manager: meeting.legacy_lead.meeting_manager_id,
+                category: meeting.legacy_lead.category,
+                category_id: meeting.legacy_lead.category_id,
+                probability: meeting.legacy_lead.probability,
+                probabilityType: typeof meeting.legacy_lead.probability
+              });
+            } else if (meeting.lead) {
+              // Use new lead data (leads table doesn't have lead_type, so we set it to 'new')
+              leadData = {
+                ...meeting.lead,
+                lead_type: 'new'
+              };
+              console.log('🔍 Calendar: Found new lead:', {
+                id: meeting.lead.id,
+                name: meeting.lead.name,
+                lead_number: meeting.lead.lead_number,
+                stage: meeting.lead.stage,
+                category: meeting.lead.category,
+                probability: meeting.lead.probability,
+                probabilityType: typeof meeting.lead.probability
+              });
+            }
+            
+            return {
+              ...meeting,
+              lead: leadData
+            };
+          });
+          
+          // Count legacy vs new leads
+          const legacyCount = processedMeetings.filter(m => m.lead?.lead_type === 'legacy').length;
+          const newCount = processedMeetings.filter(m => m.lead?.lead_type === 'new').length;
+          
+          console.log('🔍 Calendar: Processed meetings summary:', {
+            total: processedMeetings.length,
+            legacy: legacyCount,
+            new: newCount
+          });
+          
+          // Log some sample data to verify structure
+          if (processedMeetings.length > 0) {
+            console.log('🔍 Calendar: Sample meeting data:', {
+              meetingId: processedMeetings[0].id,
+              clientId: processedMeetings[0].client_id,
+              legacyLeadId: processedMeetings[0].legacy_lead_id,
+              leadType: processedMeetings[0].lead?.lead_type,
+              leadName: processedMeetings[0].lead?.name,
+              leadNumber: processedMeetings[0].lead?.lead_number,
+              stage: processedMeetings[0].lead?.stage,
+              stageName: getStageName(processedMeetings[0].lead?.stage),
+              category: processedMeetings[0].lead?.category,
+              categoryName: getCategoryName(processedMeetings[0].lead?.category),
+              manager: processedMeetings[0].lead?.manager,
+              managerName: getEmployeeDisplayName(processedMeetings[0].lead?.manager),
+              balance: processedMeetings[0].lead?.balance,
+              probability: processedMeetings[0].lead?.probability,
+              probabilityType: typeof processedMeetings[0].lead?.probability
+            });
+          }
+          
+          console.log('Processed meetings data:', processedMeetings.slice(0, 3));
+          setMeetings(processedMeetings);
+        }
+
+        // Fetch distinct staff members from meetings table
+        const { data: staffData, error: staffError } = await supabase
+          .from('meetings')
+          .select('meeting_manager');
+
+        if (staffError) {
+          console.error('Error fetching staff:', staffError);
+          setStaff([]);
+        } else {
+          const uniqueStaff = [...new Set(staffData.map(item => item.meeting_manager).filter(Boolean))];
+          setStaff(uniqueStaff);
+        }
+      } catch (error) {
+        console.error('Error in fetchMeetingsAndStaff:', error);
+        setMeetings([]);
+        setStaff([]);
+      } finally {
+        setIsLoading(false);
       }
-      setIsLoading(false);
     };
 
     fetchMeetingsAndStaff();
@@ -454,10 +627,14 @@ const CalendarPage: React.FC = () => {
         [meeting.id]: { ...prev[meeting.id], loading: true }
       }));
       try {
+        // Determine which table to query based on lead type
+        const tableName = meeting.lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+        const leadId = meeting.lead.lead_type === 'legacy' ? meeting.legacy_lead_id : meeting.client_id;
+        
         const { data, error } = await supabase
-          .from('leads')
+          .from(tableName)
           .select('expert_notes,handler_notes')
-          .eq('id', meeting.lead.id)
+          .eq('id', leadId)
           .single();
         if (error) throw error;
         setExpandedMeetingData(prev => ({
@@ -584,8 +761,8 @@ const CalendarPage: React.FC = () => {
     }
   }, [isEmailModalOpen, selectedLeadForEmail]);
 
-  const getStageBadge = (stage: string) => {
-    if (!stage || typeof stage !== 'string' || !stage.trim()) {
+  const getStageBadge = (stage: string | number) => {
+    if (!stage || (typeof stage === 'string' && !stage.trim())) {
       return (
         <span
           className="btn btn-primary btn-sm pointer-events-none font-semibold whitespace-nowrap"
@@ -600,7 +777,7 @@ const CalendarPage: React.FC = () => {
         className="btn btn-primary btn-sm pointer-events-none font-semibold whitespace-nowrap"
         style={{ background: '#3b28c7' }}
       >
-        {stage.replace(/_/g, ' ')}
+        {getStageName(String(stage))}
       </span>
     );
   };
@@ -1003,7 +1180,17 @@ const CalendarPage: React.FC = () => {
       // Fetch meetings for today and next 7 days
       const { data: meetingsData, error: meetingsError } = await supabase
         .from('meetings')
-        .select('*, lead:leads!client_id(id, name, lead_number, stage, manager, category, balance, balance_currency, expert_notes, expert, probability, phone, email, language)')
+        .select(`
+          *, 
+          lead:leads!client_id(
+            id, name, lead_number, stage, manager, category, balance, balance_currency, 
+            expert_notes, expert, probability, phone, email, language
+          ),
+          legacy_lead:leads_lead!legacy_lead_id(
+            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id, total, meeting_total_currency_id, 
+            expert_notes, expert_id, probability, phone, email, language_id
+          )
+        `)
         .gte('meeting_date', today)
         .lte('meeting_date', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
         .or('status.is.null,status.neq.canceled')
@@ -1012,18 +1199,56 @@ const CalendarPage: React.FC = () => {
 
       if (meetingsError) throw meetingsError;
 
-      // Fetch available staff
+      // Process the meetings to combine lead data from both tables
+      const processedMeetings = (meetingsData || []).map(meeting => {
+        // Determine which lead data to use
+        let leadData = null;
+        
+        if (meeting.legacy_lead) {
+          // Use legacy lead data and map column names to match new leads structure
+          leadData = {
+            ...meeting.legacy_lead,
+            lead_type: 'legacy',
+            // Map legacy column names to new structure
+            manager: meeting.legacy_lead.meeting_manager_id,
+            helper: meeting.legacy_lead.lawyer_id,
+            balance: meeting.legacy_lead.total,
+            balance_currency: meeting.legacy_lead.meeting_total_currency_id,
+            expert: meeting.legacy_lead.expert_id,
+            // Use category_id if category is null
+            category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
+            // Map language_id to language for consistency
+            language: meeting.legacy_lead.language_id,
+            // For legacy leads, use the ID as lead_number (as done in the integration view)
+            lead_number: meeting.legacy_lead.id?.toString(),
+            // Set default values for missing fields
+            manual_interactions: []
+          };
+        } else if (meeting.lead) {
+          // Use new lead data (leads table doesn't have lead_type, so we set it to 'new')
+          leadData = {
+            ...meeting.lead,
+            lead_type: 'new'
+          };
+        }
+        
+        return {
+          ...meeting,
+          lead: leadData
+        };
+      });
+
+      // Fetch available staff from tenants_employee table
       const { data: staffData, error: staffError } = await supabase
-        .from('users')
-        .select('full_name, email')
-        .eq('is_active', true)
-        .order('full_name');
+        .from('tenants_employee')
+        .select('id, display_name')
+        .order('display_name');
 
       if (staffError) throw staffError;
 
-      const staffNames = staffData?.map(user => user.full_name || user.email).filter(Boolean) || [];
+      const staffNames = staffData?.map(employee => employee.display_name).filter(Boolean) || [];
 
-      setAssignStaffMeetings(meetingsData || []);
+      setAssignStaffMeetings(processedMeetings);
       setAvailableStaff(staffNames);
     } catch (error) {
       console.error('Error fetching assign staff data:', error);
@@ -1037,9 +1262,19 @@ const CalendarPage: React.FC = () => {
     try {
       // Find the meeting to get the client_id
       const meeting = assignStaffMeetings.find(m => m.id === meetingId);
-      if (!meeting || !meeting.client_id) {
-        throw new Error('Meeting or client_id not found');
+      if (!meeting) {
+        throw new Error('Meeting not found');
       }
+
+      console.log('🔍 Assign Staff Debug:', {
+        meetingId,
+        field,
+        value,
+        leadType: meeting.lead?.lead_type,
+        clientId: meeting.client_id,
+        legacyLeadId: meeting.legacy_lead_id,
+        leadId: meeting.lead?.id
+      });
 
       // Update meetings table
       const { error: meetingError } = await supabase
@@ -1049,28 +1284,58 @@ const CalendarPage: React.FC = () => {
 
       if (meetingError) throw meetingError;
 
-      // Update leads table - map meeting_manager to manager, helper to helper
-      const leadField = field === 'meeting_manager' ? 'manager' : 'helper';
-      const { error: leadError } = await supabase
-        .from('leads')
-        .update({ [leadField]: value })
-        .eq('id', meeting.client_id);
+      // Update the appropriate lead table based on lead type
+      if (meeting.lead?.lead_type === 'legacy') {
+        // For legacy leads, update leads_lead table
+        const leadId = meeting.legacy_lead_id;
+        const updateField = field === 'meeting_manager' ? 'meeting_manager_id' : 'meeting_lawyer_id';
+        
+        console.log('🔍 Updating legacy lead:', {
+          table: 'leads_lead',
+          leadId,
+          updateField,
+          value
+        });
+        
+        const { error: leadError } = await supabase
+          .from('leads_lead')
+          .update({ [updateField]: value })
+          .eq('id', leadId);
 
-      if (leadError) throw leadError;
+        if (leadError) throw leadError;
+      } else if (meeting.lead?.lead_type === 'new') {
+        // For new leads, update leads table
+        const leadId = meeting.client_id;
+        const updateField = field === 'meeting_manager' ? 'manager' : 'helper';
+        
+        console.log('🔍 Updating new lead:', {
+          table: 'leads',
+          leadId,
+          updateField,
+          value
+        });
+        
+        const { error: leadError } = await supabase
+          .from('leads')
+          .update({ [updateField]: value })
+          .eq('id', leadId);
+
+        if (leadError) throw leadError;
+      }
 
       // Update local state
       setAssignStaffMeetings(prev => 
-        prev.map(meeting => 
-          meeting.id === meetingId 
+        prev.map(m => 
+          m.id === meetingId 
             ? { 
-                ...meeting, 
+                ...m, 
                 [field]: value,
                 lead: {
-                  ...meeting.lead,
-                  [leadField]: value
+                  ...m.lead,
+                  [field === 'meeting_manager' ? 'manager' : 'helper']: value
                 }
               }
-            : meeting
+            : m
         )
       );
 
@@ -1155,10 +1420,12 @@ const CalendarPage: React.FC = () => {
     const expandedData = expandedMeetingData[meeting.id] || {};
     const hasExpertNotes = Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false;
     const probability = lead.probability ?? meeting.probability;
+    // Convert probability to number if it's a string
+    const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
     let probabilityColor = 'text-red-600';
-    if (probability >= 80) probabilityColor = 'text-green-600';
-    else if (probability >= 60) probabilityColor = 'text-yellow-600';
-    else if (probability >= 40) probabilityColor = 'text-orange-600';
+    if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
+    else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
+    else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
 
     return (
       <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed">
@@ -1197,7 +1464,7 @@ const CalendarPage: React.FC = () => {
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {lead.manager || meeting.meeting_manager || '---'}
+                {getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'}
               </span>
             </div>
 
@@ -1205,14 +1472,14 @@ const CalendarPage: React.FC = () => {
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {lead.helper || meeting.helper || '---'}
+                {getEmployeeDisplayName(lead.helper || meeting.helper) || '---'}
               </span>
             </div>
 
             {/* Category */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">{lead.category || meeting.category || 'N/A'}</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">{getCategoryName(lead.category || meeting.category) || 'N/A'}</span>
             </div>
 
             {/* Amount */}
@@ -1229,7 +1496,7 @@ const CalendarPage: React.FC = () => {
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Expert</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {lead.expert || meeting.expert || 'N/A'}
+                {getEmployeeDisplayName(lead.expert || meeting.expert) || 'N/A'}
               </span>
             </div>
 
@@ -1245,7 +1512,7 @@ const CalendarPage: React.FC = () => {
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Probability</span>
               <span className={`text-sm md:text-lg font-bold ml-2 ${probabilityColor}`}>
-                {typeof probability === 'number' ? `${probability}%` : 'N/A'}
+                {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? `${probabilityNumber}%` : 'N/A'}
               </span>
             </div>
           </div>
@@ -1402,10 +1669,12 @@ const CalendarPage: React.FC = () => {
     const expandedData = expandedMeetingData[meeting.id] || {};
     const hasExpertNotes = Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false;
     const probability = lead.probability ?? meeting.probability;
+    // Convert probability to number if it's a string
+    const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
     let probabilityColor = 'text-red-600';
-    if (probability >= 80) probabilityColor = 'text-green-600';
-    else if (probability >= 60) probabilityColor = 'text-yellow-600';
-    else if (probability >= 40) probabilityColor = 'text-orange-600';
+    if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
+    else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
+    else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
     
     return (
       <React.Fragment key={meeting.id}>
@@ -1416,9 +1685,9 @@ const CalendarPage: React.FC = () => {
             </Link>
           </td>
           <td>{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
-          <td>{lead.manager || meeting.meeting_manager || '---'}</td>
-          <td>{lead.helper || meeting.helper || '---'}</td>
-          <td>{lead.category || meeting.category || 'N/A'}</td>
+          <td>{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</td>
+          <td>{getEmployeeDisplayName(lead.helper || meeting.helper)}</td>
+          <td>{getCategoryName(lead.category || meeting.category) || 'N/A'}</td>
           <td>
             {typeof lead.balance === 'number'
               ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
@@ -1431,13 +1700,13 @@ const CalendarPage: React.FC = () => {
               ) : (
                 <QuestionMarkCircleIcon className="w-5 h-5 text-yellow-400 mr-1" title="No expert opinion" />
               )}
-              {lead.expert || meeting.expert || <span className="text-gray-400">N/A</span>}
+              {getEmployeeDisplayName(lead.expert || meeting.expert) || <span className="text-gray-400">N/A</span>}
             </span>
           </td>
           <td>{meeting.location || meeting.meeting_location || 'N/A'}</td>
           <td>
             <span className={`font-bold ${probabilityColor}`}>
-              {typeof probability === 'number' ? `${probability}%` : 'N/A'}
+              {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? `${probabilityNumber}%` : 'N/A'}
             </span>
           </td>
           <td>{getStageBadge(lead.stage || meeting.stage)}</td>
@@ -2397,7 +2666,7 @@ const CalendarPage: React.FC = () => {
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <span className="text-sm font-semibold text-gray-600">Category:</span>
-                                    <span className="text-sm font-bold text-gray-900 truncate">{meeting.lead?.category || 'N/A'}</span>
+                                    <span className="text-sm font-bold text-gray-900 truncate">{getCategoryName(meeting.lead?.category) || 'N/A'}</span>
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <span className="text-sm font-semibold text-gray-600">Expert:</span>

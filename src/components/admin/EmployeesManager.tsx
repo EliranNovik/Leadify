@@ -1,7 +1,36 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
+import { supabase } from '../../lib/supabase';
 
 const EmployeesManager: React.FC = () => {
+  const [departments, setDepartments] = useState<Array<{ value: string; label: string }>>([]);
+
+  // Fetch departments from the database
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('departments')
+          .select('name')
+          .order('name');
+
+        if (error) {
+          console.error('Error fetching departments:', error);
+        } else {
+          const departmentOptions = data?.map(dept => ({
+            value: dept.name,
+            label: dept.name
+          })) || [];
+          setDepartments(departmentOptions);
+        }
+      } catch (error) {
+        console.error('Error fetching departments:', error);
+      }
+    };
+
+    fetchDepartments();
+  }, []);
+
   const fields = [
     {
       name: 'display_name',
@@ -16,6 +45,14 @@ const EmployeesManager: React.FC = () => {
       type: 'text' as const,
       required: true,
       placeholder: 'e.g., John Michael Doe'
+    },
+    {
+      name: 'department',
+      label: 'Department',
+      type: 'select' as const,
+      required: false,
+      options: departments,
+      placeholder: 'Select a department'
     },
     {
       name: 'mobile',

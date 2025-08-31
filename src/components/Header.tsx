@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
-import { searchLeads } from '../lib/supabase';
+import { searchLeads } from '../lib/legacyLeadsApi';
 import { supabase } from '../lib/supabase';
 import type { Lead } from '../lib/supabase';
+import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { toast } from 'react-hot-toast';
 import {
   Bars3Icon,
@@ -83,7 +84,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const navigate = useNavigate();
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [searchValue, setSearchValue] = useState('');
-  const [searchResults, setSearchResults] = useState<Lead[]>([]);
+  const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>(mockNotifications);
@@ -222,10 +223,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           setSearchResults(results);
         } catch (error) {
           console.error('Search error:', error);
+          setSearchResults([]);
         } finally {
           setIsSearching(false);
         }
-      }, 300);
+      }, 200); // Reduced from 300ms to 200ms for faster response
     } else {
       setSearchResults([]);
     }
@@ -236,6 +238,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
   }, [searchValue]);
+
+
 
   useEffect(() => {
     const initializeMsal = async () => {
@@ -330,7 +334,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setSearchValue(e.target.value);
   };
 
-  const handleSearchResultClick = (lead: Lead) => {
+  const handleSearchResultClick = (lead: CombinedLead) => {
     navigate(`/clients/${lead.lead_number}`);
     setSearchValue('');
     setSearchResults([]);
@@ -690,6 +694,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   letterSpacing: '-0.01em', 
                   boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined 
                 }}
+                title="Search supports fuzzy matching - finds results even with typos (e.g., 'Boris Macer' will find 'Boris Maker')"
               />
               {/* Clear search button - visible on mobile when search is active */}
               {(searchValue.trim() || searchResults.length > 0) && (
@@ -879,9 +884,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-gray-900">{result.name}</span>
                         <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
+                        {result.isFuzzyMatch && (
+                          <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">
+                            Similar match
+                          </span>
+                        )}
                       </div>
                       {result.topic && (
                         <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
+                      )}
+                      {/* Unactivation Status */}
+                      {(() => {
+                        const isLegacy = result.id?.toString().startsWith('legacy_');
+                        const unactivationReason = isLegacy ? result.deactivate_note : result.unactivation_reason;
+                        return unactivationReason || (result.stage && (result.stage === '91' || result.stage === 'unactivated'));
+                      })() && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                          <span className="text-xs text-red-600 font-medium">
+                            {result.unactivation_reason ? 'Unactivated' : 'Dropped (Spam/Irrelevant)'}
+                          </span>
+                        </div>
                       )}
                     </div>
                   </button>

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
+import { fetchWhatsAppTemplates, filterTemplates, testDatabaseAccess, type WhatsAppTemplate } from '../lib/whatsappTemplates';
 import {
   MagnifyingGlassIcon,
   PaperAirplaneIcon,
@@ -221,6 +222,26 @@ const WhatsAppPage: React.FC = () => {
     fetchCurrentUser();
   }, []);
 
+  // Fetch WhatsApp templates
+  useEffect(() => {
+    const loadTemplates = async () => {
+      try {
+        console.log('🔄 Starting to load WhatsApp templates...');
+        setIsLoadingTemplates(true);
+        const fetchedTemplates = await fetchWhatsAppTemplates();
+        console.log('📦 Templates loaded:', fetchedTemplates.length, 'templates');
+        setTemplates(fetchedTemplates);
+      } catch (error) {
+        console.error('❌ Error loading templates:', error);
+        toast.error('Failed to load templates');
+      } finally {
+        setIsLoadingTemplates(false);
+      }
+    };
+    
+    loadTemplates();
+  }, []);
+
   // Fetch all clients with WhatsApp messages
   useEffect(() => {
     const fetchAllClients = async () => {
@@ -301,6 +322,11 @@ const WhatsAppPage: React.FC = () => {
   // Auto-scroll to bottom only when chat is first selected or new message is sent
   const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
   const [isFirstLoad, setIsFirstLoad] = useState(false);
+  const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate | null>(null);
+  const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
+  const [templateSearchTerm, setTemplateSearchTerm] = useState('');
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   
   useEffect(() => {
     if (shouldAutoScroll && messages.length > 0) {
@@ -337,23 +363,47 @@ const WhatsAppPage: React.FC = () => {
 
       const senderName = currentUser.full_name || currentUser.email;
 
+      // Prepare message payload
+      const messagePayload: any = {
+        leadId: selectedClient.id,
+        phoneNumber: phoneNumber,
+        sender_name: senderName
+      };
+
+      // Check if we should send as template message
+      if (selectedTemplate) {
+        messagePayload.isTemplate = true;
+        messagePayload.templateName = selectedTemplate.name360;
+        messagePayload.templateLanguage = 'en_US';
+        messagePayload.templateParameters = [
+          {
+            type: 'text',
+            text: newMessage.trim()
+          }
+        ];
+        messagePayload.message = newMessage.trim(); // Always include message for validation
+      } else {
+        messagePayload.message = newMessage.trim();
+      }
+
+      // Debug: Log the payload being sent
+      console.log('📤 Sending message payload:', messagePayload);
+      
       // Send message via WhatsApp API
       const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          leadId: selectedClient.id,
-          message: newMessage.trim(),
-          phoneNumber: phoneNumber,
-          sender_name: senderName
-        }),
+        body: JSON.stringify(messagePayload),
       });
 
       const result = await response.json();
 
       if (!response.ok) {
+        if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
+          throw new Error('⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity. The customer needs to reply first to reset the timer.');
+        }
         throw new Error(result.error || 'Failed to send message');
       }
 
@@ -1043,6 +1093,95 @@ const WhatsAppPage: React.FC = () => {
 
             {/* Message Input - Fixed */}
             <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
+              
+              {/* Template Message Selector */}
+              <div className="mb-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                  className={`btn btn-sm ${selectedTemplate ? 'btn-primary' : 'btn-outline'}`}
+                >
+                  {selectedTemplate ? `Template: ${selectedTemplate.title}` : 'Use Template'}
+                </button>
+                
+                {selectedTemplate && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTemplate(null)}
+                    className="btn btn-ghost btn-sm text-red-500"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              
+              {/* Template Dropdown */}
+              {showTemplateSelector && (
+                <div className="mb-3 p-3 bg-gray-50 rounded-lg border">
+                  <div className="text-sm font-medium mb-2">Select Template:</div>
+                  
+                  {/* Search Input */}
+                  <div className="mb-3">
+                    <input
+                      type="text"
+                      placeholder="Search templates..."
+                      value={templateSearchTerm}
+                      onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                  </div>
+                  
+                  {/* Templates List */}
+                  <div className="max-h-64 overflow-y-auto space-y-2">
+                    {isLoadingTemplates ? (
+                      <div className="text-center text-gray-500 py-4">
+                        <div className="loading loading-spinner loading-sm"></div>
+                        <span className="ml-2">Loading templates...</span>
+                      </div>
+                    ) : (
+                      <>
+                        {filterTemplates(templates, templateSearchTerm).map((template) => (
+                          <button
+                            key={template.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedTemplate(template);
+                              setShowTemplateSelector(false);
+                              setTemplateSearchTerm('');
+                            }}
+                            className={`block w-full text-left p-3 rounded border ${
+                              selectedTemplate?.id === template.id 
+                                ? 'bg-blue-50 border-blue-300' 
+                                : 'bg-white border-gray-200 hover:bg-gray-50'
+                            }`}
+                          >
+                            <div className="font-medium text-gray-900">{template.title}</div>
+                            <div className="text-sm text-gray-500 mt-1">
+                              {template.params === '1' && (
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 mb-2">
+                                  Requires Parameter
+                                </span>
+                              )}
+                              {template.content && template.content !== 'EMPTY' && (
+                                <div className="text-xs text-gray-600 mt-1 bg-gray-50 p-2 rounded">
+                                  <strong>Template:</strong> {template.content}
+                                </div>
+                              )}
+                            </div>
+                          </button>
+                        ))}
+                        
+                        {filterTemplates(templates, templateSearchTerm).length === 0 && (
+                          <div className="text-center text-gray-500 py-4">
+                            {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              
               <form onSubmit={handleSendMessage} className="flex items-center gap-2">
                 <button type="button" className="btn btn-ghost btn-circle">
                   <FaceSmileIcon className="w-6 h-6 text-gray-500" />
@@ -1078,7 +1217,15 @@ const WhatsAppPage: React.FC = () => {
                   type="text"
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
-                  placeholder={selectedFile ? "Add a caption..." : "Type a message..."}
+                  placeholder={
+                    selectedFile 
+                      ? "Add a caption..." 
+                      : selectedTemplate 
+                        ? selectedTemplate.params === '1' 
+                          ? `Enter parameter for: ${selectedTemplate.title}` 
+                          : `Template: ${selectedTemplate.title} (no parameters needed)`
+                        : "Type a message..."
+                  }
                   className="flex-1 input input-bordered rounded-full"
                   disabled={sending || uploadingMedia}
                 />

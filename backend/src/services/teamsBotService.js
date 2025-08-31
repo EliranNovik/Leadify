@@ -76,28 +76,11 @@ class TeamsBotService {
         }
       };
 
-      console.log('[Teams Bot] Initiating call via bot:', JSON.stringify(botCallData, null, 2));
-
-      const response = await axios.post(
-        'https://graph.microsoft.com/v1.0/communications/calls',
-        botCallData,
-        {
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      return response.data;
+      const result = await this.botFrameworkService.initiateCall(botCallData);
+      return result;
     } catch (error) {
-      console.error('[Teams Bot] Error initiating call:', error.response?.data || error.message);
-      
-      if (error.response?.data?.error?.code === '7503') {
-        throw new Error('Teams bot not properly registered. Please register the bot with Microsoft Teams.');
-      }
-      
-      throw new Error(error.response?.data?.error?.message || 'Failed to initiate Teams call via bot');
+      console.error('[Teams Bot Service] Error initiating call:', error);
+      throw error;
     }
   }
 
