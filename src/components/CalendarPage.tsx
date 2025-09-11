@@ -61,8 +61,26 @@ const acquireToken = async (instance: any, account: any) => {
 
 // Microsoft Graph API: Send email
 async function sendClientEmail(token: string, subject: string, body: string, client: any, senderName: string, attachments: { name: string; contentType: string; contentBytes: string }[]) {
-  const signature = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
-  const fullBody = body + signature;
+  // Get the user's email signature from the database
+  const { getCurrentUserEmailSignature } = await import('../lib/emailSignature');
+  const userSignature = await getCurrentUserEmailSignature();
+  
+  // Handle signature (HTML or plain text)
+  let signatureHtml = '';
+  if (userSignature) {
+    // Check if signature is already HTML
+    if (userSignature.includes('<') && userSignature.includes('>')) {
+      signatureHtml = `<br><br>${userSignature}`;
+    } else {
+      // Convert plain text to HTML
+      signatureHtml = `<br><br>${userSignature.replace(/\n/g, '<br>')}`;
+    }
+  } else {
+    // Fallback to default signature
+    signatureHtml = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
+  }
+  
+  const fullBody = body + signatureHtml;
 
   const messageAttachments = attachments.map(att => ({
     '@odata.type': '#microsoft.graph.fileAttachment',
@@ -382,6 +400,13 @@ const CalendarPage: React.FC = () => {
   const [availableStaff, setAvailableStaff] = useState<string[]>([]);
   const [modalSelectedDate, setModalSelectedDate] = useState<string>('');
   const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('');
+  
+  // Employee Availability State
+  const [employeeAvailability, setEmployeeAvailability] = useState<{[key: string]: any[]}>({});
+  const [unavailableEmployees, setUnavailableEmployees] = useState<{[key: string]: any[]}>({});
+  const [showMoreUnavailableDropdown, setShowMoreUnavailableDropdown] = useState(false);
+  const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number } | null>(null);
+  const [activeDropdown, setActiveDropdown] = useState<{ meetingId: number; type: 'manager' | 'helper' } | null>(null);
   const [dropdownStates, setDropdownStates] = useState<{
     [meetingId: number]: {
       managerSearch: string;
@@ -407,7 +432,7 @@ const CalendarPage: React.FC = () => {
     return employee ? employee.display_name : employeeId; // Fallback to ID if not found
   };
 
-  // Helper function to get category name from ID
+  // Helper function to get category name from ID or name
   const getCategoryName = (categoryId: string | number | null | undefined) => {
     console.log('🔍 getCategoryName called with:', categoryId, 'type:', typeof categoryId);
     console.log('🔍 allCategories length:', allCategories.length);
@@ -417,15 +442,22 @@ const CalendarPage: React.FC = () => {
       return '';
     }
     
-    // Find category in loaded categories
-    const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
-    if (category) {
-      console.log('🔍 Found category:', category.name);
-      return category.name;
+    // First try to find by ID
+    const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (categoryById) {
+      console.log('🔍 Found category by ID:', categoryById.name);
+      return categoryById.name;
     }
     
-    console.log('🔍 Category not found, returning ID as string:', String(categoryId));
-    return String(categoryId); // Fallback to ID if not found
+    // If not found by ID, try to find by name (in case it's already a name)
+    const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
+    if (categoryByName) {
+      console.log('🔍 Found category by name:', categoryByName.name);
+      return categoryByName.name;
+    }
+    
+    console.log('🔍 Category not found, returning as string:', String(categoryId));
+    return String(categoryId); // Fallback to original value if not found
   };
 
   // Navigation functions for date switching
@@ -1166,18 +1198,17 @@ const CalendarPage: React.FC = () => {
   const fetchAssignStaffData = async () => {
     setAssignStaffLoading(true);
     try {
-      // Get today and next 7 days
+      // Get date range: 7 days ago to 30 days in the future
       const today = new Date().toISOString().split('T')[0];
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       
       // Initialize modal date to today if not set
       if (!modalSelectedDate) {
         setModalSelectedDate(today);
       }
 
-      // Fetch meetings for today and next 7 days
+      // Fetch meetings for the extended date range
       const { data: meetingsData, error: meetingsError } = await supabase
         .from('meetings')
         .select(`
@@ -1191,13 +1222,24 @@ const CalendarPage: React.FC = () => {
             expert_notes, expert_id, probability, phone, email, language_id
           )
         `)
-        .gte('meeting_date', today)
-        .lte('meeting_date', new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0])
+        .gte('meeting_date', sevenDaysAgo)
+        .lte('meeting_date', thirtyDaysFromNow)
         .or('status.is.null,status.neq.canceled')
         .order('meeting_date', { ascending: true })
         .order('meeting_time', { ascending: true });
 
       if (meetingsError) throw meetingsError;
+
+      console.log('📅 Assign Staff Modal - Fetched meetings:', {
+        dateRange: `${sevenDaysAgo} to ${thirtyDaysFromNow}`,
+        totalMeetings: meetingsData?.length || 0,
+        meetings: meetingsData?.map(m => ({
+          id: m.id,
+          date: m.meeting_date,
+          time: m.meeting_time,
+          lead_number: m.lead?.lead_number || m.legacy_lead?.lead_number
+        }))
+      });
 
       // Process the meetings to combine lead data from both tables
       const processedMeetings = (meetingsData || []).map(meeting => {
@@ -1258,6 +1300,119 @@ const CalendarPage: React.FC = () => {
     }
   };
 
+  // Fetch employee availability data
+  const fetchEmployeeAvailability = async () => {
+    try {
+      const { data: employeesData, error } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, unavailable_times')
+        .not('unavailable_times', 'is', null);
+
+      if (error) throw error;
+
+      const availabilityMap: {[key: string]: any[]} = {};
+      const unavailableMap: {[key: string]: any[]} = {};
+
+      employeesData?.forEach(employee => {
+        if (employee.unavailable_times && Array.isArray(employee.unavailable_times)) {
+          employee.unavailable_times.forEach((unavailableTime: any) => {
+            const date = unavailableTime.date;
+            if (!availabilityMap[date]) {
+              availabilityMap[date] = [];
+            }
+            if (!unavailableMap[date]) {
+              unavailableMap[date] = [];
+            }
+            
+            availabilityMap[date].push({
+              employeeId: employee.id,
+              employeeName: employee.display_name,
+              ...unavailableTime
+            });
+            
+            unavailableMap[date].push({
+              employeeId: employee.id,
+              employeeName: employee.display_name,
+              ...unavailableTime
+            });
+          });
+        }
+      });
+
+      setEmployeeAvailability(availabilityMap);
+      setUnavailableEmployees(unavailableMap);
+    } catch (error) {
+      console.error('Error fetching employee availability:', error);
+    }
+  };
+
+  // Get available staff for a specific date and time
+  const getAvailableStaffForDateTime = (date: string, time: string) => {
+    const unavailableForDate = unavailableEmployees[date] || [];
+    const meetingTime = time;
+    
+    return availableStaff.filter(staff => {
+      // Check if staff is unavailable at this time
+      const isUnavailable = unavailableForDate.some(unavailable => {
+        if (unavailable.employeeName === staff) {
+          const unavailableStart = unavailable.startTime;
+          const unavailableEnd = unavailable.endTime;
+          return meetingTime >= unavailableStart && meetingTime <= unavailableEnd;
+        }
+        return false;
+      });
+      
+      return !isUnavailable;
+    });
+  };
+
+  // Check if a staff member is unavailable at a specific date and time
+  const isStaffUnavailable = (staffName: string, date: string, time: string) => {
+    const unavailableForDate = unavailableEmployees[date] || [];
+    return unavailableForDate.some(unavailable => {
+      if (unavailable.employeeName === staffName) {
+        const unavailableStart = unavailable.startTime;
+        const unavailableEnd = unavailable.endTime;
+        return time >= unavailableStart && time <= unavailableEnd;
+      }
+      return false;
+    });
+  };
+
+  // Format time without seconds
+  const formatTime = (timeString: string) => {
+    if (!timeString) return 'No time';
+    return timeString.slice(0, 5); // Remove seconds (HH:MM:SS -> HH:MM)
+  };
+
+  // Get currency symbol helper
+  const getCurrencySymbol = (currencyCode?: string) => {
+    if (!currencyCode) return '₪';
+    const symbols: { [key: string]: string } = {
+      'ILS': '₪',
+      'USD': '$',
+      'EUR': '€',
+      'GBP': '£'
+    };
+    return symbols[currencyCode] || currencyCode;
+  };
+
+  // Handle dropdown positioning
+  const handleDropdownOpen = (meetingId: number, type: 'manager' | 'helper', inputRef: HTMLInputElement) => {
+    const rect = inputRef.getBoundingClientRect();
+    setDropdownPosition({
+      x: rect.left,
+      y: rect.bottom + window.scrollY,
+      width: rect.width
+    });
+    setActiveDropdown({ meetingId, type });
+  };
+
+  const handleDropdownClose = () => {
+    setActiveDropdown(null);
+    setDropdownPosition(null);
+  };
+
   const handleAssignStaff = async (meetingId: number, field: 'meeting_manager' | 'helper', value: string) => {
     try {
       // Find the meeting to get the client_id
@@ -1266,15 +1421,12 @@ const CalendarPage: React.FC = () => {
         throw new Error('Meeting not found');
       }
 
-      console.log('🔍 Assign Staff Debug:', {
-        meetingId,
-        field,
-        value,
-        leadType: meeting.lead?.lead_type,
-        clientId: meeting.client_id,
-        legacyLeadId: meeting.legacy_lead_id,
-        leadId: meeting.lead?.id
-      });
+      // Check if the staff member is unavailable at this meeting time
+      if (value && isStaffUnavailable(value, meeting.meeting_date, meeting.meeting_time)) {
+        toast.error(`${value} is unavailable at ${meeting.meeting_time} on ${new Date(meeting.meeting_date).toLocaleDateString('en-GB')}`);
+        return;
+      }
+
 
       // Update meetings table
       const { error: meetingError } = await supabase
@@ -1290,12 +1442,6 @@ const CalendarPage: React.FC = () => {
         const leadId = meeting.legacy_lead_id;
         const updateField = field === 'meeting_manager' ? 'meeting_manager_id' : 'meeting_lawyer_id';
         
-        console.log('🔍 Updating legacy lead:', {
-          table: 'leads_lead',
-          leadId,
-          updateField,
-          value
-        });
         
         const { error: leadError } = await supabase
           .from('leads_lead')
@@ -1308,12 +1454,6 @@ const CalendarPage: React.FC = () => {
         const leadId = meeting.client_id;
         const updateField = field === 'meeting_manager' ? 'manager' : 'helper';
         
-        console.log('🔍 Updating new lead:', {
-          table: 'leads',
-          leadId,
-          updateField,
-          value
-        });
         
         const { error: leadError } = await supabase
           .from('leads')
@@ -1349,6 +1489,7 @@ const CalendarPage: React.FC = () => {
   const openAssignStaffModal = () => {
     setIsAssignStaffModalOpen(true);
     fetchAssignStaffData();
+    fetchEmployeeAvailability();
   };
 
   // Helper function to get available dates from meetings
@@ -1359,7 +1500,24 @@ const CalendarPage: React.FC = () => {
 
   // Helper function to filter meetings by date and staff
   const getFilteredMeetings = () => {
+    console.log('🔍 Filtering meetings:', {
+      modalSelectedDate,
+      totalMeetings: assignStaffMeetings.length,
+      allMeetingDates: [...new Set(assignStaffMeetings.map(m => m.meeting_date))].sort()
+    });
+    
     let filtered = assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate);
+    
+    console.log('📅 Meetings for selected date:', {
+      selectedDate: modalSelectedDate,
+      filteredCount: filtered.length,
+      meetings: filtered.map(m => ({
+        id: m.id,
+        date: m.meeting_date,
+        time: m.meeting_time,
+        lead_number: m.lead?.lead_number || m.legacy_lead?.lead_number
+      }))
+    });
     
     if (selectedStaffFilter) {
       filtered = filtered.filter(m => {
@@ -1387,6 +1545,36 @@ const CalendarPage: React.FC = () => {
       setDropdownStates({});
     }
   }, [isAssignStaffModalOpen]);
+
+  // Refresh employee availability when modal date changes
+  useEffect(() => {
+    if (isAssignStaffModalOpen && modalSelectedDate) {
+      fetchEmployeeAvailability();
+    }
+  }, [modalSelectedDate, isAssignStaffModalOpen]);
+
+  // Close "More" dropdown and staff assignment dropdowns when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      
+      if (showMoreUnavailableDropdown && !target.closest('.more-unavailable-dropdown')) {
+        setShowMoreUnavailableDropdown(false);
+      }
+      
+      // Only close dropdown if clicking outside both the input and the portal dropdown
+      if (activeDropdown && !target.closest('.staff-dropdown-input') && !target.closest('[data-portal-dropdown]')) {
+        handleDropdownClose();
+      }
+    };
+
+    if (showMoreUnavailableDropdown || activeDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [showMoreUnavailableDropdown, activeDropdown]);
 
   // Helper functions to manage dropdown states
   const getMeetingDropdownState = (meetingId: number) => {
@@ -1924,7 +2112,7 @@ const CalendarPage: React.FC = () => {
               onChange={(e) => setSelectedStaff(e.target.value)}
             >
               <option value="">All Staff</option>
-              {staff.map(s => <option key={s} value={s}>{s}</option>)}
+              {staff.map((s, index) => <option key={`${s}-${index}`} value={s}>{s}</option>)}
             </select>
           </div>
         </div>
@@ -2558,6 +2746,64 @@ const CalendarPage: React.FC = () => {
               </div>
               <p className="text-purple-100 mt-2">Assign managers and helpers to meetings</p>
               
+              {/* Unavailable Employees for Selected Date */}
+              {unavailableEmployees[modalSelectedDate] && unavailableEmployees[modalSelectedDate].length > 0 && (
+                <div className="mt-4 p-3 bg-red-500/20 border border-red-400/30 rounded-lg">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <ClockIcon className="w-5 h-5 text-red-300" />
+                      <span className="text-red-200 font-semibold text-sm">Unavailable Staff for {new Date(modalSelectedDate).toLocaleDateString('en-GB')}</span>
+                    </div>
+                    {unavailableEmployees[modalSelectedDate].length > 3 && (
+                      <div className="relative more-unavailable-dropdown">
+                        <button
+                          onClick={() => setShowMoreUnavailableDropdown(!showMoreUnavailableDropdown)}
+                          className="btn btn-sm bg-red-600/30 border border-red-400/50 text-red-100 hover:bg-red-600/50"
+                        >
+                          More ({unavailableEmployees[modalSelectedDate].length - 3})
+                          <ChevronDownIcon className="w-4 h-4 ml-1" />
+                        </button>
+                        {showMoreUnavailableDropdown && (
+                          <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
+                            <div className="p-3">
+                              <div className="text-sm font-semibold text-gray-700 mb-2">All Unavailable Staff</div>
+                              <div className="space-y-2">
+                                {unavailableEmployees[modalSelectedDate].map((unavailable, index) => (
+                                  <div key={index} className="bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                                    <div className="flex items-center justify-between">
+                                      <span className="text-red-800 text-sm font-medium">{unavailable.employeeName}</span>
+                                      <span className="text-red-600 text-xs">
+                                        {unavailable.startTime} - {unavailable.endTime}
+                                      </span>
+                                    </div>
+                                    {unavailable.reason && (
+                                      <div className="text-red-600 text-xs mt-1">({unavailable.reason})</div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {unavailableEmployees[modalSelectedDate].slice(0, 3).map((unavailable, index) => (
+                      <div key={index} className="bg-red-600/30 border border-red-400/50 rounded-lg px-3 py-1">
+                        <span className="text-red-100 text-sm font-medium">{unavailable.employeeName}</span>
+                        <span className="text-red-200 text-xs ml-2">
+                          {unavailable.startTime} - {unavailable.endTime}
+                        </span>
+                        {unavailable.reason && (
+                          <span className="text-red-200 text-xs ml-2">({unavailable.reason})</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
               {/* Filters */}
               <div className="mt-4 flex flex-col md:flex-row gap-4">
                 {/* Date Selector */}
@@ -2604,8 +2850,8 @@ const CalendarPage: React.FC = () => {
                     className="select bg-white text-gray-800 border-0 focus:outline-none w-48"
                   >
                     <option value="">All Staff</option>
-                    {availableStaff.map(staff => (
-                      <option key={staff} value={staff}>{staff}</option>
+                    {availableStaff.map((staff, index) => (
+                      <option key={`${staff}-${index}`} value={staff}>{staff}</option>
                     ))}
                   </select>
                 </div>
@@ -2641,164 +2887,148 @@ const CalendarPage: React.FC = () => {
                             day: 'numeric' 
                           })} ({filteredMeetings.length} meetings)
                         </h3>
-                        <div className="grid gap-4">
-                          {filteredMeetings.map((meeting) => (
-                            <div key={meeting.id} className="bg-white rounded-xl p-4 border border-gray-200 shadow-lg hover:shadow-xl transition-shadow duration-200">
-                              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                {/* Meeting Info */}
-                                <div className="grid grid-cols-2 gap-2">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-semibold text-gray-600">Lead:</span>
+                        {/* Table View */}
+                        <div className="overflow-x-auto overflow-y-visible">
+                          <table className="table table-zebra w-full overflow-visible">
+                            <thead>
+                              <tr>
+                                <th className="text-left">Lead</th>
+                                <th className="text-left">Time</th>
+                                <th className="text-left">Location</th>
+                                <th className="text-left">Category</th>
+                                <th className="text-left">Expert</th>
+                                <th className="text-left">Language</th>
+                                <th className="text-left">Balance</th>
+                                <th className="text-left">Manager</th>
+                                <th className="text-left">Helper</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {filteredMeetings.map((meeting) => (
+                                <tr key={meeting.id} className="hover:bg-gray-50">
+                                  {/* Lead */}
+                                  <td>
                                     <Link 
                                       to={`/clients/${meeting.lead?.lead_number || meeting.lead_number}`}
-                                      className="text-sm font-bold text-blue-600 hover:text-blue-800 hover:underline truncate"
+                                      className="text-blue-600 hover:text-blue-800 hover:underline font-medium"
                                     >
                                       {meeting.lead?.lead_number || meeting.lead_number} - {meeting.lead?.name || 'N/A'}
                                     </Link>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-semibold text-gray-600">Time:</span>
-                                    <span className="text-sm font-bold text-gray-900">{meeting.meeting_time || 'No time'}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-semibold text-gray-600">Location:</span>
-                                    <span className="text-sm font-bold text-gray-900 truncate">{meeting.meeting_location || 'N/A'}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-semibold text-gray-600">Category:</span>
-                                    <span className="text-sm font-bold text-gray-900 truncate">{getCategoryName(meeting.lead?.category) || 'N/A'}</span>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-semibold text-gray-600">Expert:</span>
+                                  </td>
+                                  
+                                  {/* Time */}
+                                  <td className="font-medium">{formatTime(meeting.meeting_time)}</td>
+                                  
+                                  {/* Location */}
+                                  <td>{meeting.meeting_location || 'N/A'}</td>
+                                  
+                                  {/* Category */}
+                                  <td>{getCategoryName(meeting.lead?.category) || 'N/A'}</td>
+                                  
+                                  {/* Expert */}
+                                  <td>
                                     <div className="flex items-center gap-1">
-                                      <span className="text-sm font-bold text-gray-900 truncate">{meeting.lead?.expert || 'N/A'}</span>
+                                      <span>{meeting.lead?.expert || 'N/A'}</span>
                                       {meeting.lead?.expert_notes ? (
                                         <AcademicCapIcon className="w-4 h-4 text-green-600 flex-shrink-0" title="Expert search completed" />
                                       ) : (
                                         <QuestionMarkCircleIcon className="w-4 h-4 text-yellow-600 flex-shrink-0" title="Expert search pending" />
                                       )}
                                     </div>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-sm font-semibold text-gray-600">Language:</span>
-                                    <span className="text-sm font-bold text-gray-900 truncate">{meeting.lead?.language || 'N/A'}</span>
-                                  </div>
-                                </div>
-
-                                {/* Manager Assignment */}
-                                <div className="space-y-2">
-                                  <label className="text-sm font-semibold text-gray-600">Manager</label>
-                                  <div className="relative">
-                                    {(() => {
-                                      const state = getMeetingDropdownState(meeting.id);
-                                      return (
-                                        <>
-                                          <input
-                                            type="text"
-                                            placeholder={meeting.meeting_manager || "Select manager..."}
-                                            className="input input-bordered w-full pr-10 cursor-pointer"
-                                            value={state.managerSearch}
-                                            onChange={(e) => updateMeetingDropdownState(meeting.id, { managerSearch: e.target.value })}
-                                            onFocus={() => {
-                                              updateMeetingDropdownState(meeting.id, { showManagerDropdown: true, managerSearch: '' });
-                                            }}
-                                            onBlur={() => setTimeout(() => updateMeetingDropdownState(meeting.id, { showManagerDropdown: false }), 200)}
-                                            readOnly={!state.showManagerDropdown}
-                                          />
-                                          <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
-                                            <ChevronDownIcon className="w-4 h-4 text-gray-400" />
-                                          </div>
-                                          {state.showManagerDropdown && (
-                                            <div className="absolute z-10 w-full max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-lg">
-                                              <div
-                                                className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
-                                                onClick={() => {
-                                                  handleAssignStaff(meeting.id, 'meeting_manager', '');
-                                                  updateMeetingDropdownState(meeting.id, { managerSearch: '', showManagerDropdown: false });
+                                  </td>
+                                  
+                                  {/* Language */}
+                                  <td>{meeting.lead?.language || 'N/A'}</td>
+                                  
+                                  {/* Balance */}
+                                  <td className="font-medium">
+                                    {meeting.lead?.balance ? 
+                                      `${getCurrencySymbol(meeting.lead?.balance_currency)}${meeting.lead.balance.toLocaleString()}` : 
+                                      'N/A'
+                                    }
+                                  </td>
+                                  
+                                  {/* Manager Assignment */}
+                                  <td className="overflow-visible">
+                                    <div className="relative">
+                                      {(() => {
+                                        const state = getMeetingDropdownState(meeting.id);
+                                        return (
+                                          <>
+                                            <div className="flex items-center gap-2">
+                                              <input
+                                                type="text"
+                                                placeholder={meeting.meeting_manager || "Select manager..."}
+                                                className="input input-sm input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
+                                                value={state.managerSearch}
+                                                onChange={(e) => updateMeetingDropdownState(meeting.id, { managerSearch: e.target.value })}
+                                                onFocus={(e) => {
+                                                  updateMeetingDropdownState(meeting.id, { showManagerDropdown: true, managerSearch: '' });
+                                                  handleDropdownOpen(meeting.id, 'manager', e.target);
                                                 }}
-                                              >
-                                                <span className="text-sm text-gray-600">Clear assignment</span>
+                                                onBlur={() => setTimeout(() => {
+                                                  updateMeetingDropdownState(meeting.id, { showManagerDropdown: false });
+                                                  handleDropdownClose();
+                                                }, 500)}
+                                              />
+                                              <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                                                <ChevronDownIcon className="w-3 h-3 text-gray-400" />
                                               </div>
-                                              {availableStaff
-                                                .filter(staff => staff.toLowerCase().includes(state.managerSearch.toLowerCase()))
-                                                .map((staff) => (
-                                                  <div
-                                                    key={staff}
-                                                    className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
-                                                    onClick={() => {
-                                                      handleAssignStaff(meeting.id, 'meeting_manager', staff);
-                                                      updateMeetingDropdownState(meeting.id, { managerSearch: '', showManagerDropdown: false });
-                                                    }}
-                                                  >
-                                                    <span className="text-sm">{staff}</span>
-                                                  </div>
-                                                ))}
                                             </div>
-                                          )}
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                </div>
-
-                                {/* Helper Assignment */}
-                                <div className="space-y-2">
-                                  <label className="text-sm font-semibold text-gray-600">Helper</label>
-                                  <div className="relative">
-                                    {(() => {
-                                      const state = getMeetingDropdownState(meeting.id);
-                                      return (
-                                        <>
-                                          <input
-                                            type="text"
-                                            placeholder={meeting.helper || "Select helper..."}
-                                            className="input input-bordered w-full pr-10 cursor-pointer"
-                                            value={state.helperSearch}
-                                            onChange={(e) => updateMeetingDropdownState(meeting.id, { helperSearch: e.target.value })}
-                                            onFocus={() => {
-                                              updateMeetingDropdownState(meeting.id, { showHelperDropdown: true, helperSearch: '' });
-                                            }}
-                                            onBlur={() => setTimeout(() => updateMeetingDropdownState(meeting.id, { showHelperDropdown: false }), 200)}
-                                            readOnly={!state.showHelperDropdown}
-                                          />
-                                          <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
-                                            <ChevronDownIcon className="w-4 h-4 text-gray-400" />
-                                          </div>
-                                          {state.showHelperDropdown && (
-                                            <div className="absolute z-10 w-full max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-lg">
-                                              <div
-                                                className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
-                                                onClick={() => {
-                                                  handleAssignStaff(meeting.id, 'helper', '');
-                                                  updateMeetingDropdownState(meeting.id, { helperSearch: '', showHelperDropdown: false });
+                                            {meeting.meeting_manager && isStaffUnavailable(meeting.meeting_manager, meeting.meeting_date, meeting.meeting_time) && (
+                                              <div className="flex items-center gap-1 bg-red-100 text-red-700 px-2 py-1 rounded-full text-xs mt-1">
+                                                <ClockIcon className="w-3 h-3" />
+                                                <span>Unavailable</span>
+                                              </div>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
+                                    </div>
+                                  </td>
+                                  
+                                  {/* Helper Assignment */}
+                                  <td className="overflow-visible">
+                                    <div className="relative">
+                                      {(() => {
+                                        const state = getMeetingDropdownState(meeting.id);
+                                        return (
+                                          <>
+                                            <div className="flex items-center gap-2">
+                                              <input
+                                                type="text"
+                                                placeholder={meeting.helper || "Select helper..."}
+                                                className="input input-sm input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
+                                                value={state.helperSearch}
+                                                onChange={(e) => updateMeetingDropdownState(meeting.id, { helperSearch: e.target.value })}
+                                                onFocus={(e) => {
+                                                  updateMeetingDropdownState(meeting.id, { showHelperDropdown: true, helperSearch: '' });
+                                                  handleDropdownOpen(meeting.id, 'helper', e.target);
                                                 }}
-                                              >
-                                                <span className="text-sm text-gray-600">Clear assignment</span>
+                                                onBlur={() => setTimeout(() => {
+                                                  updateMeetingDropdownState(meeting.id, { showHelperDropdown: false });
+                                                  handleDropdownClose();
+                                                }, 500)}
+                                              />
+                                              <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
+                                                <ChevronDownIcon className="w-3 h-3 text-gray-400" />
                                               </div>
-                                              {availableStaff
-                                                .filter(staff => staff.toLowerCase().includes(state.helperSearch.toLowerCase()))
-                                                .map((staff) => (
-                                                  <div
-                                                    key={staff}
-                                                    className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
-                                                    onClick={() => {
-                                                      handleAssignStaff(meeting.id, 'helper', staff);
-                                                      updateMeetingDropdownState(meeting.id, { helperSearch: '', showHelperDropdown: false });
-                                                    }}
-                                                  >
-                                                    <span className="text-sm">{staff}</span>
-                                                  </div>
-                                                ))}
                                             </div>
-                                          )}
-                                        </>
-                                      );
-                                    })()}
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
+                                            {meeting.helper && isStaffUnavailable(meeting.helper, meeting.meeting_date, meeting.meeting_time) && (
+                                              <div className="flex items-center gap-1 bg-red-100 text-red-700 px-2 py-1 rounded-full text-xs mt-1">
+                                                <ClockIcon className="w-3 h-3" />
+                                                <span>Unavailable</span>
+                                              </div>
+                                            )}
+                                          </>
+                                        );
+                                      })()}
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
                       </div>
                     ) : (
@@ -2876,6 +3106,80 @@ const CalendarPage: React.FC = () => {
         clientName={selectedMeeting?.lead?.name || selectedMeeting?.name || ''}
         onDocumentCountChange={() => {}}
       />
+
+
+      {/* Portal-based Dropdown */}
+      {activeDropdown && createPortal(
+        <div
+          data-portal-dropdown
+          className="fixed z-[9999] max-h-32 overflow-y-auto border border-gray-200 rounded-lg bg-white shadow-lg"
+          style={{
+            left: dropdownPosition?.x || 0,
+            top: dropdownPosition?.y || 0,
+            width: dropdownPosition?.width || 200,
+            minWidth: '200px'
+          }}
+        >
+          <div
+            className="px-3 py-2 hover:bg-gray-100 cursor-pointer border-b border-gray-100"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleAssignStaff(activeDropdown.meetingId, activeDropdown.type === 'manager' ? 'meeting_manager' : 'helper', '');
+              updateMeetingDropdownState(activeDropdown.meetingId, { 
+                [activeDropdown.type === 'manager' ? 'managerSearch' : 'helperSearch']: '', 
+                [activeDropdown.type === 'manager' ? 'showManagerDropdown' : 'showHelperDropdown']: false 
+              });
+              handleDropdownClose();
+            }}
+          >
+            <span className="text-sm text-gray-600">Clear assignment</span>
+          </div>
+          {availableStaff
+            .filter(staff => {
+              const state = getMeetingDropdownState(activeDropdown.meetingId);
+              const searchTerm = activeDropdown.type === 'manager' ? state.managerSearch : state.helperSearch;
+              return staff.toLowerCase().includes(searchTerm.toLowerCase());
+            })
+            .map((staff, index) => {
+              const meeting = assignStaffMeetings.find(m => m.id === activeDropdown.meetingId);
+              const isUnavailable = meeting ? isStaffUnavailable(staff, meeting.meeting_date, meeting.meeting_time) : false;
+              return (
+                <div
+                  key={`${staff}-${index}-${activeDropdown.meetingId}-${activeDropdown.type}`}
+                  className={`px-3 py-2 border-b border-gray-100 ${
+                    isUnavailable 
+                      ? 'bg-red-50 text-red-600 cursor-not-allowed opacity-60' 
+                      : 'hover:bg-gray-100 cursor-pointer'
+                  }`}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (!isUnavailable) {
+                      handleAssignStaff(activeDropdown.meetingId, activeDropdown.type === 'manager' ? 'meeting_manager' : 'helper', staff);
+                      updateMeetingDropdownState(activeDropdown.meetingId, { 
+                        [activeDropdown.type === 'manager' ? 'managerSearch' : 'helperSearch']: '', 
+                        [activeDropdown.type === 'manager' ? 'showManagerDropdown' : 'showHelperDropdown']: false 
+                      });
+                      handleDropdownClose();
+                    }
+                  }}
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm">{staff}</span>
+                    {isUnavailable && (
+                      <div className="flex items-center gap-1">
+                        <ClockIcon className="w-3 h-3" />
+                        <span className="text-xs">Unavailable</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+        </div>,
+        document.body
+      )}
     </div>
   );
 };

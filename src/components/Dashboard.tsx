@@ -19,6 +19,9 @@ import { getStageName } from '../lib/stageUtils';
 
 
 const Dashboard: React.FC = () => {
+  // Get the current month name
+  const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
+  
   // State for summary numbers
   const [meetingsToday, setMeetingsToday] = useState(0);
   const [overdueFollowups, setOverdueFollowups] = useState(0);
@@ -524,7 +527,7 @@ const Dashboard: React.FC = () => {
   const meetingsPerMonth = [
     { month: 'June 2025', count: 64 },
     { month: 'July 2025', count: 74 },
-    { month: 'August 2025', count: 41 },
+    { month: `${currentMonthName} 2025`, count: 41 },
   ];
   // Mock data for contracts signed by category
   const contractsByCategory = [
@@ -562,8 +565,8 @@ const Dashboard: React.FC = () => {
     isThisMonth: date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear(),
   }));
   const contractsToday = performanceData.find(d => d.isToday)?.count || 0;
-  const contractsThisMonth = performanceData.filter(d => d.isThisMonth).reduce((sum, d) => sum + d.count, 0);
-  const contractsLast30 = performanceData.reduce((sum, d) => sum + d.count, 0);
+  const contractsThisMonth = performanceData.filter(d => d.isThisMonth).reduce((sum: number, d: { count: number; isThisMonth: boolean }) => sum + d.count, 0);
+  const contractsLast30 = performanceData.reduce((sum: number, d: { count: number }) => sum + d.count, 0);
 
   // Mock data for signed leads (last 30 days)
   const signedLeads = performanceData.map((d, i) => ({
@@ -617,6 +620,10 @@ const Dashboard: React.FC = () => {
   const [contractsSignedLastMonth, setContractsSignedLastMonth] = useState<number>(0);
   const [contractsLoading, setContractsLoading] = useState<boolean>(true);
 
+  // Department Performance data
+  const [departmentPerformanceLoading, setDepartmentPerformanceLoading] = useState<boolean>(true);
+  const [invoicedDataLoading, setInvoicedDataLoading] = useState<boolean>(true);
+
   // Fetch real revenue this month
   useEffect(() => {
     const fetchRevenueThisMonth = async () => {
@@ -636,7 +643,7 @@ const Dashboard: React.FC = () => {
           .lte('paid_at', endOfMonth.toISOString());
 
         if (!error && data) {
-          const total = data.reduce((sum, row) => {
+          const total = data.reduce((sum: number, row: { value: string | number; value_vat: string | number }) => {
             return sum + (Number(row.value) + Number(row.value_vat));
           }, 0);
           setRealRevenueThisMonth(total);
@@ -824,6 +831,687 @@ const Dashboard: React.FC = () => {
     fetchContractsSigned();
   }, []);
 
+  // Fetch department performance data
+  const fetchDepartmentPerformance = async () => {
+      setDepartmentPerformanceLoading(true);
+      try {
+        console.log('🔍 Starting department performance fetch...');
+        
+        const now = new Date();
+        const today = new Date();
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(now.getDate() - 30);
+        
+        // Use selected month and year instead of current month
+        const selectedMonthIndex = months.indexOf(selectedMonth);
+        const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
+        const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
+        
+        console.log('📅 Selected month/year:', selectedMonth, selectedYear);
+        console.log('📅 Selected month index:', selectedMonthIndex);
+        console.log('📅 Selected month name for display:', selectedMonthName);
+        
+        // Define department IDs for fetching agreement data (counts and amounts)
+        const departmentIds = [6, 7, 15, 14, 12];
+        console.log('📊 Department IDs to fetch agreement data:', departmentIds);
+        
+        // Define old department IDs for fetching targets (min_income) only
+        const targetDepartmentIds = [20, 7, 5, 4, 2];
+        console.log('🎯 Old department IDs for fetching targets:', targetDepartmentIds);
+        
+        // Fetch department targets (min_income) from tenant_departement using old IDs
+        console.log('🎯 Fetching department targets from tenant_departement...');
+        const { data: departmentTargets, error: targetsError } = await supabase
+          .from('tenant_departement')
+          .select('id, min_income')
+          .in('id', targetDepartmentIds);
+        
+        if (targetsError) {
+          console.error('❌ Error fetching department targets:', targetsError);
+          throw targetsError;
+        }
+        
+        console.log('✅ Department targets fetched:', departmentTargets);
+        
+        // Create a map of old department ID to target
+        const targetMap = new Map();
+        departmentTargets?.forEach(dept => {
+          targetMap.set(dept.id, parseInt(dept.min_income) || 0);
+        });
+        
+        console.log('🎯 Target map created (old IDs):', Object.fromEntries(targetMap));
+        
+        // Create a mapping from new department IDs to their corresponding old department targets
+        // This maps the agreement data departments to their target departments
+        const newToOldTargetMap = new Map();
+        newToOldTargetMap.set(6, targetMap.get(20) || 0);   // Commercial & Civil: new ID 6 -> old ID 20
+        newToOldTargetMap.set(7, targetMap.get(7) || 0);    // Small cases: new ID 7 -> old ID 7 (same)
+        newToOldTargetMap.set(15, targetMap.get(5) || 0);   // USA - Immigration: new ID 15 -> old ID 5
+        newToOldTargetMap.set(14, targetMap.get(4) || 0);   // Immigration to Israel: new ID 14 -> old ID 4
+        newToOldTargetMap.set(12, targetMap.get(2) || 0);   // Austria and Germany: new ID 12 -> old ID 2
+        
+        console.log('🎯 New to old target mapping:');
+        newToOldTargetMap.forEach((target, newDeptId) => {
+          console.log(`  New Dept ${newDeptId} -> Old Dept Target: ₪${target.toLocaleString()}`);
+        });
+        
+        // Initialize data structure with correct array lengths for the 5 specified departments
+        const newAgreementData = {
+          Today: [
+            { count: 0, amount: 0, expected: 0 }, // General (index 0)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
+            { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+          ],
+          "Last 30d": [
+            { count: 0, amount: 0, expected: 0 }, // General (index 0)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
+            { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+          ],
+          [selectedMonthName]: [
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 0)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 1)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 2)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 3)
+            { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 4)
+            { count: 0, amount: 0, expected: 0 }, // Total (index 5)
+          ],
+        };
+        
+        // Calculate date ranges
+        const todayStr = today.toISOString().split('T')[0];
+        const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+        
+        // Fix timezone issue: Use UTC to avoid timezone conversion problems
+        const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
+        const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
+        
+        // Check if we're at the end of the month (last 3 days)
+        const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
+        const isEndOfMonth = now.getDate() >= (daysInMonth - 2);
+        
+        // If we're at the end of the month, Last 30d should cover the entire month
+        const effectiveThirtyDaysAgo = isEndOfMonth ? startOfMonthStr : thirtyDaysAgoStr;
+        
+        console.log('📅 Date calculation details:');
+        console.log('  - Current date:', now.toDateString());
+        console.log('  - Current month:', now.getMonth() + 1);
+        console.log('  - Days in month:', daysInMonth);
+        console.log('  - Current day:', now.getDate());
+        console.log('  - Is end of month:', isEndOfMonth);
+        console.log('  - Start of month (UTC):', startOfMonthStr);
+        console.log('  - Thirty days ago:', thirtyDaysAgoStr);
+        console.log('  - Effective 30 days ago:', effectiveThirtyDaysAgo);
+        
+        // For date comparison, we need to extract just the date part from the record date
+        const extractDateFromRecord = (recordDate: string) => {
+          // Handle both ISO string format and date-only format
+          if (recordDate.includes('T')) {
+            return recordDate.split('T')[0];
+          }
+          return recordDate;
+        };
+        
+        console.log('📅 Date ranges calculated:');
+        console.log('  - Today:', todayStr);
+        console.log('  - 30 days ago:', thirtyDaysAgoStr);
+        console.log('  - Start of month:', startOfMonthStr);
+        console.log('  - Current date:', now.toDateString());
+        console.log('  - Current month:', now.getMonth() + 1);
+        console.log('  - Days in current month:', new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
+        
+        // NEW APPROACH: Fetch stage 60 records separately, then fetch leads_lead data
+        console.log('📋 Fetching stage 60 records...');
+        const { data: stageRecords, error: stageError } = await supabase
+          .from('leads_leadstage')
+          .select('id, date, lead_id')
+          .eq('stage', 60)
+          .gte('date', thirtyDaysAgoStr)
+          .lte('date', todayStr);
+        
+        if (stageError) {
+          console.error('❌ Error fetching stage records:', stageError);
+          throw stageError;
+        }
+        
+        console.log('✅ Stage records fetched:', stageRecords?.length || 0, 'records');
+        if (stageRecords && stageRecords.length > 0) {
+          console.log('📝 Sample stage record:', stageRecords[0]);
+        }
+        
+        if (stageRecords && stageRecords.length > 0) {
+          // Collect unique lead IDs for batch fetching
+          const leadIds = [...new Set(stageRecords.map(r => r.lead_id).filter(Boolean))];
+          
+          console.log('📄 Unique lead IDs:', leadIds.length);
+          console.log('📄 Sample lead IDs:', leadIds.slice(0, 5));
+          
+          // Fetch leads_lead data to get closer_id and total
+          console.log('🔄 Fetching leads_lead data for closer information...');
+          const { data: leadsData, error: leadsError } = await supabase
+            .from('leads_lead')
+            .select('id, total, closer_id')
+            .in('id', leadIds);
+          
+          if (leadsError) {
+            console.error('❌ Error fetching leads data:', leadsError);
+            throw leadsError;
+          }
+          
+          console.log('✅ Leads data fetched:', leadsData?.length || 0, 'records');
+          
+          // Create lookup map for lead_id to closer_id and total
+          const leadToCloserMap = new Map();
+          if (leadsData) {
+            leadsData.forEach(lead => {
+              leadToCloserMap.set(lead.id, {
+                closer_id: lead.closer_id,
+                total: lead.total
+              });
+            });
+          }
+          
+          console.log('🗺️ Lead to closer map size:', leadToCloserMap.size);
+          console.log('🔍 Sample lead mappings:', Array.from(leadToCloserMap.entries()).slice(0, 5));
+          
+          // Collect unique closer IDs for batch fetching
+          const closerIds = [...new Set(leadsData?.map(lead => lead.closer_id).filter(Boolean) || [])];
+          
+          console.log('👥 Unique closer IDs:', closerIds.length);
+          console.log('👥 Sample closer IDs:', closerIds.slice(0, 5));
+          
+          // Fetch employee data for the closers
+          console.log('🔄 Fetching employee data for closers...');
+          const { data: employeeData, error: employeeError } = await supabase
+            .from('tenants_employee')
+            .select('id, department_id')
+            .in('id', closerIds);
+          
+          if (employeeError) {
+            console.error('❌ Error fetching employees:', employeeError);
+            throw employeeError;
+          }
+          
+          console.log('✅ Employee data fetched:', employeeData?.length || 0, 'records');
+          
+          // Debug: Check the actual employee data structure
+          console.log('🔍 Raw employee data sample:', employeeData?.slice(0, 3));
+          console.log('🔍 Employee data types - first employee:', employeeData?.[0] ? {
+            id: employeeData[0].id,
+            idType: typeof employeeData[0].id,
+            department_id: employeeData[0].department_id,
+            deptType: typeof employeeData[0].department_id
+          } : 'No employees');
+          
+          // Create lookup map for closer_id to department_id
+          const closerToDeptMap = new Map();
+          if (employeeData) {
+            employeeData.forEach(emp => {
+              // Convert both to strings to ensure consistent matching
+              const empIdStr = String(emp.id);
+              const deptId = emp.department_id;
+              closerToDeptMap.set(empIdStr, deptId);
+              // Also store the original ID type as a backup
+              closerToDeptMap.set(emp.id, deptId);
+            });
+          }
+          
+          console.log('🗺️ Closer to department map size:', closerToDeptMap.size);
+          console.log('🔍 Sample closer mappings:', Array.from(closerToDeptMap.entries()).slice(0, 5));
+          
+          // Debug: Check if the closer IDs we're looking for exist in the map
+          console.log('🔍 Checking closer ID mapping...');
+          const sampleCloserIds = closerIds.slice(0, 5);
+          sampleCloserIds.forEach(closerId => {
+            const deptId = closerToDeptMap.get(closerId);
+            const deptIdStr = closerToDeptMap.get(String(closerId));
+            const deptIdNum = closerToDeptMap.get(Number(closerId));
+            console.log(`  Closer ID ${closerId} (type: ${typeof closerId}) -> Department ID: ${deptId} (string: ${deptIdStr}, number: ${deptIdNum})`);
+          });
+          
+          // Debug: Show what's actually in the employee data
+          console.log('🔍 Employee data structure:');
+          if (employeeData && employeeData.length > 0) {
+            const firstEmp = employeeData[0];
+            console.log('  First employee:', firstEmp);
+            console.log('  Employee ID type:', typeof firstEmp.id);
+            console.log('  Department ID type:', typeof firstEmp.department_id);
+            console.log('  Sample employee IDs:', employeeData.slice(0, 5).map(emp => ({ id: emp.id, dept: emp.department_id })));
+          }
+          
+          // Process all records efficiently
+          let processedCount = 0;
+          let skippedCount = 0;
+          
+          // Track processed records to prevent duplicates
+          const processedRecordIds = new Set();
+          
+          stageRecords.forEach(record => {
+            // Skip if already processed
+            if (processedRecordIds.has(record.lead_id)) {
+              console.log(`⚠️ Skipping duplicate record: leadId=${record.lead_id}`);
+              return;
+            }
+            processedRecordIds.add(record.lead_id);
+            
+            const leadData = leadToCloserMap.get(record.lead_id);
+            const closerId = leadData?.closer_id;
+            const departmentId = closerToDeptMap.get(closerId);
+            const amount = parseFloat(leadData?.total) || 0;
+            const recordDate = record.date;
+            
+            console.log(`📊 Processing record: leadId=${record.lead_id}, closerId=${closerId}, departmentId=${departmentId}, amount=${amount}, date=${recordDate}`);
+            
+            if (closerId && departmentId && departmentIds.includes(departmentId)) {
+              processedCount++;
+              
+              // For Today and Last 30d, use the department index + 1 (to skip General)
+              const deptIndex = departmentIds.indexOf(departmentId) + 1;
+              
+              // For current month, use the department index directly (no General column)
+              const monthDeptIndex = departmentIds.indexOf(departmentId);
+              
+              console.log(`📍 Department mapping: deptId=${departmentId}, deptIndex=${deptIndex}, monthDeptIndex=${monthDeptIndex}`);
+              console.log(`📍 Department names: deptId=${departmentId} -> ${scoreboardCategories[deptIndex]} (Last 30d), ${scoreboardCategories[monthDeptIndex + 1]} (August)`);
+              
+              // Extract date part for comparison
+              const recordDateOnly = extractDateFromRecord(recordDate);
+              
+              // Check if it's today
+              if (recordDateOnly === todayStr) {
+                console.log(`✅ Today match: ${recordDateOnly} === ${todayStr}`);
+                newAgreementData.Today[deptIndex].count++;
+                newAgreementData.Today[deptIndex].amount += amount;
+                newAgreementData.Today[0].count++; // General
+                newAgreementData.Today[0].amount += amount;
+              }
+              
+              // Check if it's in last 30 days (or entire month if at end of month)
+              if (recordDateOnly >= effectiveThirtyDaysAgo) {
+                console.log(`✅ Last 30d match: ${recordDateOnly} >= ${effectiveThirtyDaysAgo}`);
+                console.log(`  📊 Before: Last 30d[${deptIndex}] = count:${newAgreementData["Last 30d"][deptIndex].count}, amount:${newAgreementData["Last 30d"][deptIndex].amount}`);
+                newAgreementData["Last 30d"][deptIndex].count++;
+                newAgreementData["Last 30d"][deptIndex].amount += amount;
+                console.log(`  📊 After: Last 30d[${deptIndex}] = count:${newAgreementData["Last 30d"][deptIndex].count}, amount:${newAgreementData["Last 30d"][deptIndex].amount}`);
+                newAgreementData["Last 30d"][0].count++; // General
+                newAgreementData["Last 30d"][0].amount += amount;
+              }
+              
+              // Check if it's in current month
+              if (recordDateOnly >= startOfMonthStr) {
+                console.log(`✅ Current month match: ${recordDateOnly} >= ${startOfMonthStr}`);
+                console.log(`  📊 Before: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
+                newAgreementData[selectedMonthName][monthDeptIndex].count++;
+                newAgreementData[selectedMonthName][monthDeptIndex].amount += amount;
+                console.log(`  📊 After: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
+              }
+              
+              // Debug: Show why dates might be different
+              console.log(`🔍 Date comparison debug: recordDate=${recordDateOnly}, effectiveThirtyDaysAgo=${effectiveThirtyDaysAgo}, startOfMonth=${startOfMonthStr}`);
+              console.log(`🔍 Last 30d condition: ${recordDateOnly} >= ${effectiveThirtyDaysAgo} = ${recordDateOnly >= effectiveThirtyDaysAgo}`);
+              console.log(`🔍 Current month condition: ${recordDateOnly} >= ${startOfMonthStr} = ${recordDateOnly >= startOfMonthStr}`);
+            } else {
+              skippedCount++;
+              console.log(`⏭️ Skipped record: leadId=${record.lead_id}, closerId=${closerId}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
+            }
+          });
+          
+          console.log(`📈 Processing summary: ${processedCount} processed, ${skippedCount} skipped`);
+        }
+        
+        // Calculate totals for each time period
+        console.log('🧮 Calculating totals...');
+        
+        // Debug: Show the raw data before calculating totals
+        console.log('🔍 Raw data before totals:');
+        console.log('  Today:', newAgreementData.Today.map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
+        console.log('  Last 30d:', newAgreementData["Last 30d"].map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
+        console.log(`  ${selectedMonthName}:`, newAgreementData[selectedMonthName].map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
+        
+        // Today totals (sum of departments 1-5, excluding General and Total)
+        const todayTotalCount = newAgreementData.Today.slice(1, 6).reduce((sum, item) => sum + item.count, 0);
+        const todayTotalAmount = newAgreementData.Today.slice(1, 6).reduce((sum, item) => sum + item.amount, 0);
+        newAgreementData.Today[6] = {
+          count: todayTotalCount,
+          amount: todayTotalAmount,
+          expected: 0
+        };
+        
+        // Last 30d totals - use the General row [0] which already contains the total
+        const last30TotalCount = newAgreementData["Last 30d"][0].count;
+        const last30TotalAmount = newAgreementData["Last 30d"][0].amount;
+        newAgreementData["Last 30d"][6] = {
+          count: last30TotalCount,
+          amount: last30TotalAmount,
+          expected: 0
+        };
+        
+        // Current month totals - calculate by summing the individual department values
+        // This ensures the total matches the sum of the displayed department values
+        const monthTotalCount = newAgreementData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.count, 0);
+        const monthTotalAmount = newAgreementData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.amount, 0);
+        newAgreementData[selectedMonthName][5] = {
+          count: monthTotalCount,
+          amount: monthTotalAmount,
+          expected: 0
+        };
+        
+        // Debug: Show the calculated totals
+        console.log('🔍 Calculated totals:');
+        console.log('  Today Total:', { count: todayTotalCount, amount: todayTotalAmount });
+        console.log('  Last 30d Total:', { count: last30TotalCount, amount: last30TotalAmount });
+        console.log(`  ${selectedMonthName} Total:`, { count: monthTotalCount, amount: monthTotalAmount });
+        
+        console.log('📊 Final agreement data:', newAgreementData);
+        setAgreementData(newAgreementData);
+        
+      } catch (error) {
+        console.error('❌ Error fetching department performance:', error);
+      } finally {
+        setDepartmentPerformanceLoading(false);
+      }
+  };
+
+  // Fetch invoiced data using the same logic as agreement data
+  const fetchInvoicedData = async () => {
+    console.log('🚀 fetchInvoicedData function called!');
+    setInvoicedDataLoading(true);
+    try {
+      console.log('🔍 Starting invoiced data fetch...');
+      
+      const now = new Date();
+      const today = new Date();
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(now.getDate() - 30);
+      
+      // Use selected month and year
+      const selectedMonthIndex = months.indexOf(selectedMonth);
+      const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
+      const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
+      
+      console.log('📅 Fetching invoiced data for:', selectedMonth, selectedYear);
+      
+      // Define department IDs for fetching invoiced data (same as agreement data)
+      const departmentIds = [6, 7, 15, 14, 12];
+      
+      // Define old department IDs for fetching targets (same as agreement data)
+      const targetDepartmentIds = [20, 7, 5, 4, 2];
+      
+      // Use the same target mapping logic as agreement data for consistency
+      console.log('🎯 Using same target mapping as agreement data for consistency...');
+      
+      // Fetch department targets (min_income) from tenant_departement using old IDs
+      const { data: departmentTargets, error: targetsError } = await supabase
+        .from('tenant_departement')
+        .select('id, min_income')
+        .in('id', targetDepartmentIds);
+      
+      if (targetsError) {
+        console.error('❌ Error fetching department targets for invoiced data:', targetsError);
+        throw targetsError;
+      }
+      
+      // Create a map of old department ID to target (same as agreement data)
+      const targetMap = new Map();
+      if (departmentTargets) {
+        departmentTargets.forEach((dept: any) => {
+          targetMap.set(dept.id, parseInt(dept.min_income) || 0);
+        });
+      }
+      
+      // Create mapping from new department IDs to their corresponding old department targets (same as agreement data)
+      const newToOldTargetMap = new Map();
+      newToOldTargetMap.set(6, targetMap.get(20) || 0);   // Commercial & Civil: new ID 6 -> old ID 20
+      newToOldTargetMap.set(7, targetMap.get(7) || 0);    // Small cases: new ID 7 -> old ID 7 (same)
+      newToOldTargetMap.set(15, targetMap.get(5) || 0);   // USA - Immigration: new ID 15 -> old ID 5
+      newToOldTargetMap.set(14, targetMap.get(4) || 0);   // Immigration to Israel: new ID 14 -> old ID 4
+      newToOldTargetMap.set(12, targetMap.get(2) || 0);   // Austria and Germany: new ID 12 -> old ID 2
+      
+      console.log('🎯 Target map created (invoiced):', Object.fromEntries(targetMap));
+      console.log('🎯 New to old target mapping (invoiced):');
+      newToOldTargetMap.forEach((target, newDeptId) => {
+        console.log(`  New Dept ${newDeptId} -> Old Dept Target: ₪${target.toLocaleString()}`);
+      });
+      
+      // Calculate date ranges
+      const todayStr = today.toISOString().split('T')[0];
+      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+      const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
+      const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
+      
+      // Check if we're at the end of the month
+      const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
+      const isEndOfMonth = now.getDate() >= (daysInMonth - 2);
+      const effectiveThirtyDaysAgo = isEndOfMonth ? startOfMonthStr : thirtyDaysAgoStr;
+      
+      console.log('📅 Invoiced data date ranges:');
+      console.log('  - Today:', todayStr);
+      console.log('  - 30 days ago:', thirtyDaysAgoStr);
+      console.log('  - Start of month:', startOfMonthStr);
+      
+      // Initialize invoiced data structure
+      const newInvoicedData = {
+        Today: [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
+          { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+        ],
+        "Last 30d": [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
+          { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+        ],
+        [selectedMonthName]: [
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 0)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 1)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 2)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 3)
+          { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 4)
+          { count: 0, amount: 0, expected: 0 }, // Total (index 5)
+        ],
+      };
+      
+      // Fetch proformainvoice records
+      console.log('📋 Fetching proformainvoice records...');
+      console.log('🔍 Query parameters: cdate >=', thirtyDaysAgoStr, ', cdate <=', todayStr);
+      
+      const { data: invoiceRecords, error: invoiceError } = await supabase
+        .from('proformainvoice')
+        .select('id, lead_id, total, cdate')
+        .gte('cdate', thirtyDaysAgoStr)
+        .lte('cdate', todayStr);
+      
+      if (invoiceError) {
+        console.error('❌ Error fetching invoice records:', invoiceError);
+        throw invoiceError;
+      }
+      
+      console.log('✅ Invoice records fetched:', invoiceRecords?.length || 0, 'records');
+      if (invoiceRecords && invoiceRecords.length > 0) {
+        console.log('📝 Sample invoice record:', invoiceRecords[0]);
+        console.log('🔍 Sample invoice data structure:', {
+          id: invoiceRecords[0].id,
+          lead_id: invoiceRecords[0].lead_id,
+          total: invoiceRecords[0].total,
+          cdate: invoiceRecords[0].cdate,
+          cdateType: typeof invoiceRecords[0].cdate
+        });
+      }
+      
+      if (invoiceRecords && invoiceRecords.length > 0) {
+        // Collect unique lead IDs for batch fetching
+        const leadIds = [...new Set(invoiceRecords.map(r => r.lead_id).filter(Boolean))];
+        
+        // Fetch leads_lead data to get closer_id
+        console.log('🔄 Fetching leads_lead data for closer information...');
+        const { data: leadsData, error: leadsError } = await supabase
+          .from('leads_lead')
+          .select('id, closer_id')
+          .in('id', leadIds);
+        
+        if (leadsError) {
+          console.error('❌ Error fetching leads data for invoiced:', leadsError);
+          throw leadsError;
+        }
+        
+        // Create lookup map for lead_id to closer_id
+        const leadToCloserMap = new Map();
+        if (leadsData) {
+          leadsData.forEach(lead => {
+            leadToCloserMap.set(lead.id, lead.closer_id);
+          });
+        }
+        
+        // Collect unique closer IDs for batch fetching
+        const closerIds = [...new Set(leadsData?.map(lead => lead.closer_id).filter(Boolean) || [])];
+        
+        // Fetch employee data for the closers
+        console.log('🔄 Fetching employee data for closers...');
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select('id, department_id')
+          .in('id', closerIds);
+        
+        if (employeeError) {
+          console.error('❌ Error fetching employees for invoiced:', employeeError);
+          throw employeeError;
+        }
+        
+        // Create lookup map for closer_id to department_id
+        const closerToDeptMap = new Map();
+        if (employeeData) {
+          employeeData.forEach(emp => {
+            closerToDeptMap.set(String(emp.id), emp.department_id);
+            closerToDeptMap.set(emp.id, emp.department_id);
+          });
+        }
+        
+        // Process all invoice records
+        let processedCount = 0;
+        let skippedCount = 0;
+        
+        console.log('🔄 Processing invoice records...');
+        console.log('🔍 Department IDs to check:', departmentIds);
+        console.log('🔍 Closer to department map size:', closerToDeptMap.size);
+        console.log('🔍 Sample closer mappings:', Array.from(closerToDeptMap.entries()).slice(0, 5));
+        
+        invoiceRecords.forEach((record, index) => {
+          if (index < 5) { // Only log first 5 records to avoid spam
+            console.log(`📊 Processing invoice record ${index + 1}:`, {
+              id: record.id,
+              lead_id: record.lead_id,
+              total: record.total,
+              cdate: record.cdate
+            });
+          }
+          
+          const leadData = leadToCloserMap.get(record.lead_id);
+          const closerId = leadData;
+          const departmentId = closerToDeptMap.get(closerId);
+          const amount = Math.ceil(parseFloat(record.total) || 0); // Round up to nearest whole number
+          const recordDate = record.cdate;
+          
+          if (index < 5) { // Only log first 5 records
+            console.log(`  🔍 Lead ${record.lead_id} -> Closer ${closerId} -> Department ${departmentId}`);
+            console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
+          }
+          
+          if (closerId && departmentId && departmentIds.includes(departmentId)) {
+            processedCount++;
+            
+            if (index < 5) {
+              console.log(`  ✅ Valid record - processing...`);
+            }
+            
+            // For Today and Last 30d, use the department index + 1 (to skip General)
+            const deptIndex = departmentIds.indexOf(departmentId) + 1;
+            
+            // For current month, use the department index directly (no General column)
+            const monthDeptIndex = departmentIds.indexOf(departmentId);
+            
+            // Extract date part for comparison
+            const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
+            
+            if (index < 5) {
+              console.log(`  📅 Date comparison: ${recordDateOnly} vs Today: ${todayStr}, Last30: ${effectiveThirtyDaysAgo}, Month: ${startOfMonthStr}`);
+            }
+            
+            // Check if it's today
+            if (recordDateOnly === todayStr) {
+              newInvoicedData.Today[deptIndex].count++;
+              newInvoicedData.Today[deptIndex].amount += amount;
+              newInvoicedData.Today[0].count++; // General
+              newInvoicedData.Today[0].amount += amount;
+            }
+            
+            // Check if it's in last 30 days (or entire month if at month end)
+            if (recordDateOnly >= effectiveThirtyDaysAgo) {
+              newInvoicedData["Last 30d"][deptIndex].count++;
+              newInvoicedData["Last 30d"][deptIndex].amount += amount;
+              newInvoicedData["Last 30d"][0].count++; // General
+              newInvoicedData["Last 30d"][0].amount += amount;
+            }
+            
+            // Check if it's in current month
+            if (recordDateOnly >= startOfMonthStr) {
+              newInvoicedData[selectedMonthName][monthDeptIndex].count++;
+              newInvoicedData[selectedMonthName][monthDeptIndex].amount += amount;
+            }
+          } else {
+            skippedCount++;
+            if (index < 5) {
+              console.log(`  ⏭️ Skipped: closerId=${closerId}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
+            }
+          }
+        });
+        
+        console.log(`📈 Invoiced processing summary: ${processedCount} processed, ${skippedCount} skipped`);
+        
+        // Calculate totals and round amounts up
+        const todayTotalCount = newInvoicedData.Today.slice(1, 6).reduce((sum, item) => sum + item.count, 0);
+        const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, 6).reduce((sum, item) => sum + item.amount, 0));
+        newInvoicedData.Today[6] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
+        
+        const last30TotalCount = newInvoicedData["Last 30d"][0].count;
+        const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"][0].amount);
+        newInvoicedData["Last 30d"][6] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
+        
+        const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.count, 0);
+        const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.amount, 0));
+        newInvoicedData[selectedMonthName][5] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
+        
+        console.log('📊 Final invoiced data:', newInvoicedData);
+        setInvoicedData(newInvoicedData);
+      }
+      
+    } catch (error: any) {
+      console.error('❌ Error fetching invoiced data:', error);
+      console.error('❌ Error details:', {
+        message: error?.message || 'Unknown error',
+        stack: error?.stack || 'No stack trace',
+        name: error?.name || 'Unknown error type'
+      });
+    } finally {
+      console.log('🏁 fetchInvoicedData function completed');
+      setInvoicedDataLoading(false);
+    }
+  };
+
   // Calculate percentage from target
   const revenuePercentage = REVENUE_TARGET > 0 ? (realRevenueThisMonth / REVENUE_TARGET) * 100 : 0;
   const isAboveTarget = realRevenueThisMonth >= REVENUE_TARGET;
@@ -855,69 +1543,95 @@ const Dashboard: React.FC = () => {
     "Austria and Germany",
     "Total"
   ];
-  // Agreement signed data (first table)
-  const agreementData = {
+  // Agreement signed data (first table) - will be populated with real data
+  const [agreementData, setAgreementData] = useState<{
+    Today: { count: number; amount: number; expected: number }[];
+    "Last 30d": { count: number; amount: number; expected: number }[];
+    [key: string]: { count: number; amount: number; expected: number }[];
+  }>({
     Today: [
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
-      { count: 1, amount: 2500, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
-      { count: 1, amount: 2500, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
     ],
     "Last 30d": [
       { count: 0, amount: 0, expected: 0 },
-      { count: 10, amount: 76652, expected: 0 },
-      { count: 39, amount: 67443, expected: 0 },
-      { count: 15, amount: 130084, expected: 0 },
-      { count: 43, amount: 389933, expected: 0 },
-      { count: 84, amount: 1730117, expected: 0 },
-      { count: 191, amount: 2394231, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
     ],
-    "August": [
-      { count: 51, amount: 994981, expected: 1600000 },
-      { count: 0, amount: 0, expected: 100000 },
-      { count: 5, amount: 54672, expected: 70000 },
-      { count: 25, amount: 40500, expected: 150000 },
-      { count: 8, amount: 64500, expected: 250000 },
-      { count: 27, amount: 194638, expected: 1700000 },
-      { count: 116, amount: 1349291, expected: 3870000 },
-    ],
-  };
+  });
 
-  // Invoiced data (second table)
-  const invoicedData = {
+  // Score Board state
+  const [scoreTab, setScoreTab] = React.useState("Tables");
+  const [flippedCards, setFlippedCards] = React.useState<Set<string>>(new Set());
+  // Column visibility for Department Performance table (desktop) - simplified to rows only
+  const [showTodayCols, setShowTodayCols] = React.useState(true);
+  const [showLast30Cols, setShowLast30Cols] = React.useState(true);
+  const [showLastMonthCols, setShowLastMonthCols] = React.useState(true);
+  
+  // Month and year filter states - default to current month and year
+  const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthName);
+  const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
+  
+  // Available months and years for filtering
+  const months = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  
+  const years = [2023, 2024, 2025, 2026, 2027];
+
+  // Add useEffect to refetch data when month/year changes
+  useEffect(() => {
+    console.log('🔄 useEffect triggered - fetching data for:', selectedMonth, selectedYear);
+    fetchDepartmentPerformance();
+    fetchInvoicedData();
+  }, [selectedMonth, selectedYear]);
+
+  // Invoiced data (second table) - will be populated with real data
+  const [invoicedData, setInvoicedData] = useState<{
+    Today: { count: number; amount: number; expected: number }[];
+    "Last 30d": { count: number; amount: number; expected: number }[];
+    [key: string]: { count: number; amount: number; expected: number }[];
+  }>({
     Today: [
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
-      { count: 1, amount: 2500, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
       { count: 0, amount: 0, expected: 0 },
-      { count: 1, amount: 2500, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
     ],
     "Last 30d": [
       { count: 0, amount: 0, expected: 0 },
-      { count: 6, amount: 71204, expected: 0 },
-      { count: 35, amount: 63709, expected: 0 },
-      { count: 35, amount: 147667, expected: 0 },
-      { count: 53, amount: 236008, expected: 0 },
-      { count: 175, amount: 1149596, expected: 0 },
-      { count: 305, amount: 1671621, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
     ],
-    "August": [
-      { count: 0, amount: 0, expected: 100000 },
-      { count: 3, amount: 48311, expected: 70000 },
-      { count: 21, amount: 36716, expected: 150000 },
-      { count: 14, amount: 63636, expected: 250000 },
-      { count: 30, amount: 110782, expected: 1700000 },
-      { count: 102, amount: 676346, expected: 0 },
-      { count: 170, amount: 935792, expected: 2350000 },
+    [selectedMonth]: [
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
+      { count: 0, amount: 0, expected: 0 },
     ],
-  };
+  });
+
   const scoreboardHighlights = {
-    August: [
+    [selectedMonth]: [
       null,
       null,
       { amount: 100000 },
@@ -928,14 +1642,6 @@ const Dashboard: React.FC = () => {
       { amount: 2350000 },
     ],
   };
-  // Score Board state
-  const [scoreTab, setScoreTab] = React.useState("Tables");
-  const [flippedCards, setFlippedCards] = React.useState<Set<string>>(new Set());
-  // Column-group visibility for Department Performance table (desktop)
-  const [showTodayCols, setShowTodayCols] = React.useState(true);
-  const [showLast30Cols, setShowLast30Cols] = React.useState(true);
-  const [showLastMonthCols, setShowLastMonthCols] = React.useState(true);
-  const [showRowsAsColumns, setShowRowsAsColumns] = React.useState(true);
 
   // Derived totals for Department Performance table (exclude 'General' and 'Total')
   const includedDeptIndexes = scoreboardCategories
@@ -954,21 +1660,18 @@ const Dashboard: React.FC = () => {
     }
   }, []);
 
-  const sumTodayCount = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Today'][i]?.count || 0), 0);
-  const sumTodayAmount = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Today'][i]?.amount || 0), 0);
-  const sumTodayExpected = includedDeptIndexes.reduce((sum, i) => sum + ((agreementData['Today'][i]?.expected || randomTodayTargetsRef.current[i] || 0)), 0);
+  const sumTodayCount = includedDeptIndexes.reduce((sum: number, i: number) => sum + (agreementData['Today'][i]?.count || 0), 0);
+  const sumTodayAmount = includedDeptIndexes.reduce((sum: number, i: number) => sum + (agreementData['Today'][i]?.amount || 0), 0);
+  const sumTodayExpected = includedDeptIndexes.reduce((sum: number, i: number) => sum + ((agreementData['Today'][i]?.expected || randomTodayTargetsRef.current[i] || 0)), 0);
 
-  const sum30Count = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Last 30d'][i]?.count || 0), 0);
-  const sum30Amount = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Last 30d'][i]?.amount || 0), 0);
-  const sum30Expected = includedDeptIndexes.reduce((sum, i) => sum + (agreementData['Last 30d'][i]?.expected || 0), 0);
+  const sum30Count = includedDeptIndexes.reduce((sum: number, i: number) => sum + (agreementData['Last 30d'][i]?.count || 0), 0);
+  const sum30Amount = includedDeptIndexes.reduce((sum: number, i: number) => sum + (agreementData['Last 30d'][i]?.amount || 0), 0);
+  const sum30Expected = includedDeptIndexes.reduce((sum: number, i: number) => sum + (agreementData['Last 30d'][i]?.expected || 0), 0);
 
   const sumMonthCount = sum30Count; // using 30d as proxy for this month (demo)
   const sumMonthAmount = sum30Amount;
   const sumMonthTarget = sum30Expected;
   const totalPerformancePct = sum30Expected > 0 ? Math.round((sum30Amount / sum30Expected) * 100) : 0;
-
-  // Get the current month name
-  const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
 
   // Mock data for department line graphs (last 30 days)
   const generateDepartmentData = (category: string) => {
@@ -1033,7 +1736,7 @@ const Dashboard: React.FC = () => {
     { category: 'Immigration to Israel', signed: 2500, due: 0 },
     { category: 'Austria and Germany', signed: 0, due: 0 },
   ];
-  const scoreboardBarDataAugust = [
+  const scoreboardBarDataMonth = [
     { category: 'General', signed: 0, due: 0 },
     { category: 'Commercial & Civil', signed: 54672, due: 100000 },
     { category: 'Small cases', signed: 40500, due: 70000 },
@@ -1192,13 +1895,13 @@ const Dashboard: React.FC = () => {
   // Helper function to render table in columns view (departments as columns)
   const renderColumnsView = (tableType: 'agreement' | 'invoiced') => {
     const categories = scoreboardCategories.filter(cat => cat !== 'General' && cat !== 'Total');
-    const visibleColumns = [];
+    const visibleColumns: string[] = [];
     if (showTodayCols) visibleColumns.push('Today');
     if (showLast30Cols) visibleColumns.push('Last 30d');
-    if (showLastMonthCols) visibleColumns.push(new Date().toLocaleDateString('en-US', { month: 'long' }));
+    if (showLastMonthCols) visibleColumns.push(selectedMonth);
 
     // Use the correct data based on table type
-    const dataSource = tableType === 'agreement' ? agreementData : invoicedData;
+    const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } = tableType === 'agreement' ? agreementData : invoicedData;
 
     return (
       <table className="min-w-full text-sm">
@@ -1215,7 +1918,7 @@ const Dashboard: React.FC = () => {
           {visibleColumns.map(columnType => {
             const isToday = columnType === 'Today';
             const isLast30 = columnType === 'Last 30d';
-            const isThisMonth = columnType === new Date().toLocaleDateString('en-US', { month: 'long' });
+            const isThisMonth = columnType === selectedMonth;
             
             return (
               <React.Fragment key={columnType}>
@@ -1223,9 +1926,9 @@ const Dashboard: React.FC = () => {
                 <tr className="hover:bg-slate-50">
                   <td className="px-5 py-3 font-semibold text-slate-700">{columnType}</td>
                   {categories.map((category, index) => {
-                    const data = isToday ? dataSource["Today"][index] : 
-                                isLast30 ? dataSource["Last 30d"][index] : 
-                                dataSource["August"][index]; // This month uses August data
+                    const data = isToday ? dataSource["Today"][index + 1] : // Skip General row
+                                isLast30 ? dataSource["Last 30d"][index + 1] : // Skip General row
+                                dataSource[selectedMonth]?.[index]; // This month uses selected month data (no General row)
                     const amount = data?.amount || 0;
                     const target = data?.expected || 0;
                     const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
@@ -1247,11 +1950,12 @@ const Dashboard: React.FC = () => {
                         <div className="badge badge-white font-semibold px-2 py-1" style={{color: '#411cce'}}>
                           {(() => {
                             if (isToday) {
-                              return dataSource["Today"].slice(1, -1).reduce((sum, item) => sum + (item.count || 0), 0);
+                              return dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.count || 0), 0);
                             } else if (isLast30) {
-                              return dataSource["Last 30d"].slice(1, -1).reduce((sum, item) => sum + (item.count || 0), 0);
+                              return dataSource["Last 30d"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.count || 0), 0);
                             } else {
-                              return dataSource["August"].slice(1, -1).reduce((sum, item) => sum + (item.count || 0), 0);
+                              // Use the pre-calculated total from the data instead of recalculating
+                              return dataSource[selectedMonth]?.[5]?.count || 0;
                             }
                           })()}
                         </div>
@@ -1260,12 +1964,13 @@ const Dashboard: React.FC = () => {
                       <div className="font-semibold text-white">
                         ₪{(() => {
                           if (isToday) {
-                            return dataSource["Today"].slice(1, -1).reduce((sum, item) => sum + (item.amount || 0), 0);
+                            return dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0);
                           } else if (isLast30) {
-                            return dataSource["Last 30d"].slice(1, -1).reduce((sum, item) => sum + (item.amount || 0), 0);
-                          } else {
-                            return dataSource["August"].slice(1, -1).reduce((sum, item) => sum + (item.amount || 0), 0);
-                          }
+                            return dataSource["Last 30d"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0);
+                                                      } else {
+                              // Use the pre-calculated total from the data instead of recalculating
+                              return dataSource[selectedMonth]?.[5]?.amount || 0;
+                            }
                         })().toLocaleString()}
                       </div>
                     </div>
@@ -1276,7 +1981,7 @@ const Dashboard: React.FC = () => {
                   <tr className="bg-white border-2 border-purple-600">
                     <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
                     {categories.map((category, index) => {
-                      const data = dataSource["August"][index];
+                      const data = dataSource[selectedMonth]?.[index];
                       const amount = data?.amount || 0;
                       const target = data?.expected || 0;
                       const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
@@ -1290,7 +1995,9 @@ const Dashboard: React.FC = () => {
                     {/* Total target column */}
                     <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
                       {(() => {
-                        const totalTarget = dataSource["August"].slice(1, -1).reduce((sum, item) => sum + (item.expected || 0), 0);
+                        // For invoiced data, sum all 5 department targets (indices 0-4)
+                        // For agreement data, sum departments 1-5 (indices 0-4, excluding General)
+                        const totalTarget = dataSource[selectedMonth]?.slice(0, 5).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
                         return (
                           <span className="font-semibold text-white">
                             {totalTarget ? `₪${totalTarget.toLocaleString()}` : '—'}
@@ -2293,242 +3000,40 @@ const Dashboard: React.FC = () => {
                           <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
                           <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                           <div className="border-l border-slate-300 h-6 mx-2"></div>
-                          <button 
-                            className={`btn btn-xs ${showRowsAsColumns ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
-                            onClick={() => setShowRowsAsColumns(v => !v)}
-                            title="Toggle between rows and columns view"
-                          >
-                            {showRowsAsColumns ? 'Rows' : 'Columns'}
-                          </button>
+                          <div className="dropdown dropdown-end">
+                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                              {selectedMonth} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                            </div>
+                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto">
+                              {months.map(month => (
+                                <li key={month}>
+                                  <a 
+                                    onClick={() => setSelectedMonth(month)}
+                                    className={`${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                  >
+                                    {month}
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div className="dropdown dropdown-end">
+                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                              {selectedYear} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                            </div>
+                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto">
+                              {years.map(year => (
+                                <li key={year}><a onClick={() => setSelectedYear(year)}>{year}</a></li>
+                              ))}
+                            </ul>
+                          </div>
                         </div>
                       </div>
-                      {showRowsAsColumns ? renderColumnsView('agreement') : (
-                        <table className="min-w-full text-sm">
-                          <thead className="bg-slate-50 border-b border-slate-200">
-                          <tr>
-                            <th className="text-left px-5 py-3 font-semibold text-slate-700">Department</th>
-                            {showTodayCols && (
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Today</th>
-                            )}
-                            {showLast30Cols && (
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Last 30d</th>
-                            )}
-                            {showLastMonthCols && (
-                              <>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700">{new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target {new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
-                              </>
-                            )}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {/* Commercial & Civil */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Commercial & Civil</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[1].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[1].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][1].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][1].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[1].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.August[1].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{agreementData.August[1].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Small cases */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Small cases</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[2].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[2].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][2].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][2].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[2].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.August[2].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{agreementData.August[2].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* USA - Immigration */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">USA - Immigration</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[3].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[3].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][3].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][3].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[3].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.August[3].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{agreementData.August[3].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Immigration to Israel */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Immigration to Israel</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[4].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[4].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][4].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][4].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[4].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.August[4].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{agreementData.August[4].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Austria and Germany */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Austria and Germany</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[5].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.Today[5].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][5].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData["Last 30d"][5].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[5].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{agreementData.August[5].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{agreementData.August[5].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Total */}
-                          <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
-                            <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.Today[6].count}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{agreementData.Today[6].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData["Last 30d"][6].count}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{agreementData["Last 30d"][6].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{agreementData.August[6].count}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{agreementData.August[6].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right text-white font-semibold">
-                                <div className="text-right">₪{agreementData.August[6].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                        </tbody>
-                      </table>
-                      )}
+                      {departmentPerformanceLoading ? (
+                        <div className="flex justify-center items-center py-12">
+                          <span className="loading loading-spinner loading-lg text-primary"></span>
+                        </div>
+                      ) : renderColumnsView('agreement')}
                     </div>
                               </div>
                               
@@ -2543,248 +3048,51 @@ const Dashboard: React.FC = () => {
                           <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
                           <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                           <div className="border-l border-slate-300 h-6 mx-2"></div>
-                          <button 
-                            className={`btn btn-xs ${showRowsAsColumns ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
-                            onClick={() => setShowRowsAsColumns(v => !v)}
-                            title="Toggle between rows and columns view"
-                          >
-                            {showRowsAsColumns ? 'Rows' : 'Columns'}
-                          </button>
+                          <div className="dropdown dropdown-end">
+                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                              {selectedMonth} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                            </div>
+                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto">
+                              {months.map(month => (
+                                <li key={month}>
+                                  <a 
+                                    onClick={() => setSelectedMonth(month)}
+                                    className={`${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                  >
+                                    {month}
+                                  </a>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div className="dropdown dropdown-end">
+                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                              {selectedYear} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                            </div>
+                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto">
+                              {years.map(year => (
+                                <li key={year}><a onClick={() => setSelectedYear(year)}>{year}</a></li>
+                              ))}
+                            </ul>
+                          </div>
                         </div>
                       </div>
-                      {showRowsAsColumns ? renderColumnsView('invoiced') : (
-                        <table className="min-w-full text-sm">
-                          <thead className="bg-slate-50 border-b border-slate-200">
-                          <tr>
-                            <th className="text-left px-5 py-3 font-semibold text-slate-700">Department</th>
-                            {showTodayCols && (
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Today</th>
-                            )}
-                            {showLast30Cols && (
-                              <th className="text-right px-5 py-3 font-semibold text-slate-700">Last 30d</th>
-                            )}
-                            {showLastMonthCols && (
-                              <>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700">{new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
-                                <th className="text-right px-5 py-3 font-semibold text-slate-700 bg-slate-100">Target {new Date().toLocaleDateString('en-US', { month: 'long' })}</th>
-                              </>
-                            )}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                          {/* Commercial & Civil */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Commercial & Civil</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[1].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[1].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][1].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][1].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[1].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[1].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{invoicedData.August[1].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Small cases */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Small cases</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[2].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[2].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][2].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][2].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[2].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[2].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{invoicedData.August[2].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* USA - Immigration */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">USA - Immigration</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[3].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[3].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][3].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][3].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[3].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[3].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{invoicedData.August[3].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Immigration to Israel */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Immigration to Israel</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[4].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[4].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][4].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][4].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[4].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[4].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{invoicedData.August[4].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Austria and Germany */}
-                          <tr className="hover:bg-slate-50">
-                            <td className="px-5 py-3 font-semibold text-slate-700">Austria and Germany</td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[5].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.Today[5].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][5].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData["Last 30d"][5].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[5].count}</div>
-                                  <div className="border-t border-slate-200 my-1"></div>
-                                  <div className="font-semibold text-slate-700">₪{invoicedData.August[5].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right font-semibold text-slate-700 bg-slate-100">
-                                <div className="text-right">₪{invoicedData.August[5].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                          {/* Total */}
-                          <tr className="bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7]">
-                            <td className="px-5 py-3"><span className="font-semibold text-white">Total</span></td>
-                            {showTodayCols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.Today[6].count}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{invoicedData.Today[6].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLast30Cols && (
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData["Last 30d"][6].count}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{invoicedData["Last 30d"][6].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                            )}
-                            {showLastMonthCols && (<>
-                              <td className="px-5 py-3 text-right">
-                                <div className="space-y-1">
-                                  <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{invoicedData.August[6].count}</div>
-                                  <div className="border-t border-white/20 my-1"></div>
-                                  <div className="font-semibold text-white">₪{invoicedData.August[6].amount.toLocaleString()}</div>
-                                </div>
-                              </td>
-                              <td className="px-5 py-3 text-right text-white font-semibold">
-                                <div className="text-right">₪{invoicedData.August[6].expected.toLocaleString()}</div>
-                              </td>
-                            </>)}
-                          </tr>
-                        </tbody>
-                        </table>
-                      )}
+                      {invoicedDataLoading ? (
+                        <div className="flex justify-center items-center py-12">
+                          <span className="loading loading-spinner loading-lg text-primary"></span>
+                        </div>
+                      ) : renderColumnsView('invoiced')}
                     </div>
                                   </div>
                                   
                   {/* Mobile: keep card grid */}
-                  <div className="grid grid-cols-1 gap-4 md:hidden">
-                    {scoreboardCategories.map((category, index) => {
+                  {departmentPerformanceLoading ? (
+                    <div className="flex justify-center items-center py-12 md:hidden">
+                      <span className="loading loading-spinner loading-lg text-primary"></span>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-4 md:hidden">
+                      {scoreboardCategories.map((category, index) => {
                       const todayData = agreementData["Today"][index];
                       const last30Data = agreementData["Last 30d"][index];
                       const isFlipped = flippedCards.has(category);
@@ -2844,11 +3152,12 @@ const Dashboard: React.FC = () => {
                       );
                     })}
                   </div>
+                  )}
                 </div>
               )}
 
               {/* Professional Chart Visualization */}
-              {(scoreTab === 'Today' || scoreTab === currentMonthName || scoreTab === 'Last 30d') && (
+              {(scoreTab === 'Today' || scoreTab === selectedMonth || scoreTab === 'Last 30d') && (
                 <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 p-8 shadow-lg">
                   <div className="flex items-center justify-between mb-8">
                     <div className="flex items-center gap-3">
@@ -2876,7 +3185,7 @@ const Dashboard: React.FC = () => {
                   <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
                     <div className="w-full h-[450px]">
                       {(() => {
-                        const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
+                        const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
                         return (
                           <ResponsiveContainer width="100%" height="100%">
                             <BarChart
@@ -2963,7 +3272,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="text-2xl font-bold text-gray-900">
                         {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
                           return data.reduce((sum: number, item: any) => sum + item.signed, 0);
                         })()}
                       </div>
@@ -2975,7 +3284,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="text-2xl font-bold text-gray-900">
                         {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
                           return data.reduce((sum: number, item: any) => sum + item.due, 0);
                         })()}
                       </div>
@@ -2987,7 +3296,7 @@ const Dashboard: React.FC = () => {
                       </div>
                       <div className="text-2xl font-bold text-gray-900">
                         {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === 'August' || scoreTab === currentMonthName ? scoreboardBarDataAugust : scoreboardBarData30d;
+                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
                           const signed = data.reduce((sum: number, item: any) => sum + item.signed, 0);
                           const due = data.reduce((sum: number, item: any) => sum + item.due, 0);
                           const total = signed + due;

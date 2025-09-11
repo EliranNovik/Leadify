@@ -46,7 +46,7 @@ const DropdownPortal: React.FC<{
       const target = e.target as Element;
       const isInsideDropdown = target.closest('.dropdown-content') || target.closest('.handler-dropdown') || target.closest('[data-dropdown]');
       
-      if (!isInsideDropdown && anchorRef.current && !anchorRef.current.contains(target)) {
+      if (!isInsideDropdown && anchorRef.current && !anchorRef.current?.contains(target)) {
         onClose();
       }
     };
@@ -74,6 +74,8 @@ const NewHandlerCasesPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
+  const [valueFilter, setValueFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all');
+  const [sortByApplicants, setSortByApplicants] = useState(false);
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const dropdownAnchors = useRef<{ [key: string]: HTMLButtonElement | null }>({});
   const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
@@ -102,12 +104,12 @@ const NewHandlerCasesPage: React.FC = () => {
         setLeads(leadsData || []);
       }
 
-      // Fetch users with role 'handler'
+      // Fetch employees with bonuses_role 'h' from tenants_employee table
       const { data: handlersData, error: handlersError } = await supabase
-        .from('users')
-        .select('id, email, first_name, last_name, full_name')
-        .eq('role', 'handler')
-        .order('first_name');
+        .from('tenants_employee')
+        .select('id, display_name, official_name')
+        .eq('bonuses_role', 'h')
+        .order('display_name');
       
       if (handlersError) {
         console.error('Error fetching handlers:', handlersError);
@@ -148,7 +150,7 @@ const NewHandlerCasesPage: React.FC = () => {
       
       // Get handler details
       const handler = handlers.find(h => h.id === handlerId);
-      const handlerName = handler ? (handler.full_name || `${handler.first_name} ${handler.last_name}`) : 'Unknown Handler';
+      const handlerName = handler ? (handler.display_name || handler.official_name || 'Unknown Handler') : 'Unknown Handler';
       
       // Update the lead with handler information
       const { error } = await supabase
@@ -182,7 +184,16 @@ const NewHandlerCasesPage: React.FC = () => {
     }
   };
 
-  // Filter leads based on search query and date range
+  // Get the most recent contract for a lead
+  const getLatestContract = (lead: any) => {
+    if (!lead.contracts || lead.contracts.length === 0) return null;
+    return lead.contracts.sort((a: any, b: any) => 
+      new Date(b.signed_at || b.created_at || 0).getTime() - 
+      new Date(a.signed_at || a.created_at || 0).getTime()
+    )[0];
+  };
+
+  // Filter leads based on search query, date range, and value
   const filteredLeads = leads.filter(lead => {
     const matchesSearch = !searchQuery || 
       lead.lead_number?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -191,8 +202,26 @@ const NewHandlerCasesPage: React.FC = () => {
     const matchesDateFrom = !dateFrom || lead.created_at >= dateFrom;
     const matchesDateTo = !dateTo || lead.created_at <= dateTo + 'T23:59:59';
     
-    return matchesSearch && matchesDateFrom && matchesDateTo;
+    // Value filter
+    const balance = lead.balance || lead.proposal_total || 0;
+    const matchesValue = valueFilter === 'all' || 
+      (valueFilter === 'high' && balance >= 50000) ||
+      (valueFilter === 'medium' && balance >= 20000 && balance < 50000) ||
+      (valueFilter === 'low' && balance < 20000);
+    
+    return matchesSearch && matchesDateFrom && matchesDateTo && matchesValue;
   });
+
+  // Sort leads by applicants if sortByApplicants is enabled
+  const sortedLeads = sortByApplicants 
+    ? [...filteredLeads].sort((a, b) => {
+        const aContract = getLatestContract(a);
+        const bContract = getLatestContract(b);
+        const aApplicants = aContract?.applicant_count || 0;
+        const bApplicants = bContract?.applicant_count || 0;
+        return bApplicants - aApplicants; // Most applicants first
+      })
+    : filteredLeads;
 
   const handleCardClick = (lead: any) => {
     navigate(`/clients/${lead.lead_number}`);
@@ -223,15 +252,6 @@ const NewHandlerCasesPage: React.FC = () => {
     document.addEventListener('click', handleClickOutside);
     return () => document.removeEventListener('click', handleClickOutside);
   }, []);
-
-  // Get the most recent contract for a lead
-  const getLatestContract = (lead: any) => {
-    if (!lead.contracts || lead.contracts.length === 0) return null;
-    return lead.contracts.sort((a: any, b: any) => 
-      new Date(b.signed_at || b.created_at || 0).getTime() - 
-      new Date(a.signed_at || a.created_at || 0).getTime()
-    )[0];
-  };
 
   return (
     <div className="p-8">
@@ -279,6 +299,51 @@ const NewHandlerCasesPage: React.FC = () => {
             </div>
           </div>
           
+          {/* Value and Applicants Filters */}
+          <div className="flex flex-col md:flex-row items-start md:items-center gap-4">
+            {/* Value Filter */}
+            <div className="flex flex-col gap-2">
+              <label className="font-semibold text-sm">Filter by Value:</label>
+              <div className="flex gap-2">
+                <button
+                  className={`btn btn-sm ${valueFilter === 'all' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setValueFilter('all')}
+                >
+                  All
+                </button>
+                <button
+                  className={`btn btn-sm ${valueFilter === 'high' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setValueFilter('high')}
+                >
+                  High (₪50k+)
+                </button>
+                <button
+                  className={`btn btn-sm ${valueFilter === 'medium' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setValueFilter('medium')}
+                >
+                  Medium (₪20k-50k)
+                </button>
+                <button
+                  className={`btn btn-sm ${valueFilter === 'low' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setValueFilter('low')}
+                >
+                  Low (&lt;₪20k)
+                </button>
+              </div>
+            </div>
+            
+            {/* Sort by Applicants */}
+            <div className="flex flex-col gap-2">
+              <label className="font-semibold text-sm">Sort by Applicants:</label>
+              <button
+                className={`btn btn-sm ${sortByApplicants ? 'btn-primary' : 'btn-outline'}`}
+                onClick={() => setSortByApplicants(!sortByApplicants)}
+              >
+                {sortByApplicants ? 'Most Applicants First' : 'Sort by Applicants'}
+              </button>
+            </div>
+          </div>
+          
           {/* View Toggle and Clear Filters */}
           <div className="flex justify-between items-center">
             <button
@@ -300,6 +365,8 @@ const NewHandlerCasesPage: React.FC = () => {
                 setSearchQuery('');
                 setDateFrom('');
                 setDateTo('');
+                setValueFilter('all');
+                setSortByApplicants(false);
               }}
             >
               Clear Filters
@@ -310,7 +377,7 @@ const NewHandlerCasesPage: React.FC = () => {
 
       {loading ? (
         <div className="text-center py-12">Loading...</div>
-      ) : filteredLeads.length === 0 ? (
+      ) : sortedLeads.length === 0 ? (
         <div className="text-center py-12 text-base-content/60">
           {leads.length === 0 ? 'No handler cases found.' : 'No cases match the selected filters.'}
         </div>
@@ -323,6 +390,7 @@ const NewHandlerCasesPage: React.FC = () => {
                 <th className="text-lg font-bold">&nbsp;</th>
                 <th className="text-lg font-bold">Lead</th>
                 <th className="text-lg font-bold">Client Name</th>
+                <th className="text-lg font-bold">Balance</th>
                 <th className="text-lg font-bold">Topic</th>
                 <th className="text-lg font-bold">Created</th>
                 <th className="text-lg font-bold">Signed Date</th>
@@ -335,17 +403,24 @@ const NewHandlerCasesPage: React.FC = () => {
               </tr>
             </thead>
             <tbody className="text-base">
-              {filteredLeads.map(lead => {
+              {sortedLeads.map(lead => {
                 const latestContract = getLatestContract(lead);
                 return (
                   <tr key={lead.id} className="hover:bg-base-100 cursor-pointer" onClick={() => handleCardClick(lead)}>
                     <td>
-                      <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">
+                      <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none font-semibold text-xs px-3 py-1 min-w-fit max-w-32 truncate" title={lead.stage || 'Success'}>
                         {lead.stage || 'Success'}
                       </span>
                     </td>
                     <td className="font-bold text-primary">#{lead.lead_number}</td>
                     <td>{lead.name}</td>
+                    <td>
+                      <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-lg px-3 py-1 inline-block">
+                        <span className="text-white font-bold text-sm">
+                          ₪{(lead.balance || lead.proposal_total || 0).toLocaleString()}
+                        </span>
+                      </div>
+                    </td>
                     <td>{lead.topic || 'No topic'}</td>
                     <td>{new Date(lead.created_at).toLocaleDateString()}</td>
                     <td>{latestContract?.signed_at ? new Date(latestContract.signed_at).toLocaleDateString() : 'Not signed'}</td>
@@ -382,7 +457,7 @@ const NewHandlerCasesPage: React.FC = () => {
                                   onClick={(e) => handleAssignClick(e, lead.id, handler.id)}
                                 >
                                   {assigningId === lead.id ? <span className="loading loading-spinner loading-xs"></span> : null}
-                                  <span className="inline-block w-full text-center">{handler.full_name || `${handler.first_name} ${handler.last_name}`}</span>
+                                  <span className="inline-block w-full text-center">{handler.display_name || handler.official_name || 'Unknown Handler'}</span>
                                 </button>
                               ))}
                             </div>
@@ -399,7 +474,7 @@ const NewHandlerCasesPage: React.FC = () => {
       ) : (
         // Card View
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredLeads.map(lead => {
+          {sortedLeads.map(lead => {
             const latestContract = getLatestContract(lead);
             return (
               <div 
@@ -408,7 +483,16 @@ const NewHandlerCasesPage: React.FC = () => {
                 onClick={() => handleCardClick(lead)}
               >
                 <div className="card-body p-5">
-                  <div className="flex justify-between items-start mb-2">
+                  {/* Balance Amount */}
+                  <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg p-3 mb-4">
+                    <div className="text-center">
+                      <div className="text-white text-lg font-bold">
+                        ₪{(lead.balance || lead.proposal_total || 0).toLocaleString()}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="flex justify-between items-center mb-2">
                     <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
                       {lead.name}
                     </h2>
@@ -481,7 +565,7 @@ const NewHandlerCasesPage: React.FC = () => {
                                 onClick={(e) => handleAssignClick(e, lead.id, handler.id)}
                               >
                                 {assigningId === lead.id ? <span className="loading loading-spinner loading-xs"></span> : null}
-                                <span className="inline-block w-full text-center">{handler.full_name || `${handler.first_name} ${handler.last_name}`}</span>
+                                <span className="inline-block w-full text-center">{handler.display_name || handler.official_name || 'Unknown Handler'}</span>
                               </button>
                             ))}
                           </div>
@@ -499,4 +583,4 @@ const NewHandlerCasesPage: React.FC = () => {
   );
 };
 
-export default NewHandlerCasesPage; 
+export default NewHandlerCasesPage;

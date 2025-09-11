@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, Fragment } from 'react';
+import React, { useState, useEffect, useCallback, Fragment, useMemo } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 import {
@@ -67,33 +67,30 @@ const contactMethods = [
   { value: 'office', label: 'In Office' },
 ];
 
-const stripSignatureAndQuotedText = (html: string): string => {
+// Function to strip signatures while preserving HTML formatting
+const stripSignatureAndQuotedTextPreserveHtml = (html: string): string => {
   if (!html) return '';
   
-  // Convert HTML to plain text first for better processing
-  const tempDiv = document.createElement('div');
-  tempDiv.innerHTML = html;
-  let text = tempDiv.textContent || tempDiv.innerText || '';
+  // Don't remove HTML tags, just work with the HTML content
+  let text = html;
+  
+  // Decode HTML entities that might be in signatures
+  text = text
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
   
   // Enhanced markers for Outlook signatures, timestamps, and quoted text
   const markers = [
-    // Outlook/Exchange specific
-    '<div id="divRplyFwdMsg"',
-    'class="gmail_quote"',
-    '<div class="WordSection1"',
-    '<div class="OutlookMessageHeader"',
-    'x-apple-data-detectors',
-    'class="Apple-interchange-newline"',
-    
     // Reply/Forward indicators
-    '<hr',
     '-------- Original Message --------',
     '________________________________',
     '-----Original Message-----',
     
     // Headers
-    '<strong>From:</strong>',
-    '<b>From:</b>',
     'From:',
     'Sent:',
     'Date:',
@@ -121,33 +118,37 @@ const stripSignatureAndQuotedText = (html: string): string => {
     'Sent from Outlook',
     'Get Outlook for',
     
+    // Signature patterns (more aggressive)
+    'Paralegal',
+    'WE Tower TLV',
+    '150 Begin Rd.',
+    'Tel Aviv',
+    'www.lawoffice.org.il',
+    '(+972)',
+    'lawoffice.org.il',
+    'Eliran Novik',
+    '73-3656037',
+    '8th floor',
+    'Begin Rd',
+    
     // Time-based patterns (regex-like matching for common timestamp formats)
   ];
 
-  // First pass: Find the earliest marker position in HTML
+  // Find the earliest marker position for quick truncation (case-insensitive)
   let earliestPos = -1;
   for (const marker of markers) {
-    const pos = html.toLowerCase().indexOf(marker.toLowerCase());
+    const pos = text.toLowerCase().indexOf(marker.toLowerCase());
     if (pos !== -1 && (earliestPos === -1 || pos < earliestPos)) {
       earliestPos = pos;
     }
   }
 
-  let cleanedHtml = earliestPos !== -1 ? html.substring(0, earliestPos).trim() : html;
+  let cleanedText = earliestPos !== -1 ? text.substring(0, earliestPos).trim() : text;
   
-  // Second pass: Remove common timestamp patterns from text
+  // Remove common timestamp patterns
   const timestampPatterns = [
-    // English patterns
     /On\s+\w{3},?\s+\w{3}\s+\d{1,2},?\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*(AM|PM)/gi,
-    /On\s+\w+\s+\d{1,2},?\s+\d{4},?\s+at\s+\d{1,2}:\d{2}\s*(AM|PM)/gi,
-    /Sent:\s*\w+,?\s+\w+\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}\s*(AM|PM)/gi,
-    
-    // German Outlook patterns - "Am Fr., 11. Juli 2025 um 18:24 Uhr schrieb"
-    /Am\s+\w{2,3}\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}\s+Uhr\s+schrieb/gi,
-    // "Am Freitag, 11. Juli 2025 um 18:24 schrieb"
-    /Am\s+\w+,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}\s*(Uhr\s+)?schrieb/gi,
-    // Generic German date patterns
-    /\d{1,2}\.\s*\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}/gi,
+    /Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}/gi,
     
     // French patterns - "Le ven. 11 juil. 2025 à 18:24"
     /Le\s+\w{3}\.?\s+\d{1,2}\s+\w{4}\.?\s+\d{4}\s+à\s+\d{1,2}:\d{2}/gi,
@@ -173,43 +174,44 @@ const stripSignatureAndQuotedText = (html: string): string => {
 
   // Apply timestamp pattern removal
   for (const pattern of timestampPatterns) {
-    cleanedHtml = cleanedHtml.replace(pattern, '');
+    cleanedText = cleanedText.replace(pattern, '');
   }
 
-  // Additional cleaning for specific cases like your example
-  cleanedHtml = cleanedHtml
-    // Remove quoted email content that starts with email addresses
-    .replace(/<[^@\s]+@[^@\s>]+\.[^@\s>]+>/g, '')
-    // Remove everything after email addresses in angle brackets followed by text
-    .replace(/<.*?@.*?>/g, '')
-    // Remove lines that start with common quote indicators
-    .replace(/^[\s]*[>|]+.*$/gm, '')
-    // Remove "Von:" (German) / "From:" patterns
-    .replace(/Von:\s*.*$/gmi, '')
-    // Remove "Gesendet:" (German) / "Sent:" patterns  
-    .replace(/Gesendet:\s*.*$/gmi, '')
-    // Remove "An:" (German) / "To:" patterns
-    .replace(/An:\s*.*$/gmi, '')
-    // Remove "Betreff:" (German) / "Subject:" patterns
-    .replace(/Betreff:\s*.*$/gmi, '')
-    // Remove anything that looks like quoted email headers
-    .replace(/^\s*(Von|From|Gesendet|Sent|An|To|Betreff|Subject):\s*.*$/gmi, '')
-    // Remove Unicode directional text markers more aggressively
+  // Additional cleaning for specific cases (HTML-aware)
+  cleanedText = cleanedText
+    // Remove HTML elements that contain signature patterns
+    .replace(/<[^>]*>.*?(Paralegal|WE Tower TLV|150 Begin Rd\.|Tel Aviv|www\.lawoffice\.org\.il|\(\+972\)|lawoffice\.org\.il|Eliran Novik|73-3656037|8th floor|Begin Rd).*?<\/[^>]*>/gi, '')
+    // Remove lines that start with common quote indicators (including HTML)
+    .replace(/<[^>]*>[\s]*[>|]+.*?<\/[^>]*>/gi, '')
+    // Remove "Von:" (German) / "From:" patterns in HTML
+    .replace(/<[^>]*>(Von|From|Gesendet|Sent|An|To|Betreff|Subject):\s*.*?<\/[^>]*>/gi, '')
+    // Remove signature patterns more aggressively (HTML-aware)
+    .replace(/<[^>]*>.*?Paralegal.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?WE Tower TLV.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?150 Begin Rd\..*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?Tel Aviv.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?www\.lawoffice\.org\.il.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?\(\+972\).*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?lawoffice\.org\.il.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?Eliran Novik.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?73-3656037.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?8th floor.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?Begin Rd.*?<\/[^>]*>/gi, '')
+    // Remove phone number patterns in HTML
+    .replace(/<[^>]*>.*?\(\+972\)\d{2}-\d{3}\d{4}.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?\(\+972\)\d{2}-\d{3}-\d{4}.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?\d{2}-\d{3}\d{4}.*?<\/[^>]*>/gi, '') // Catch 73-3656037 pattern
+    // Remove signature blocks that start with names (HTML-aware)
+    .replace(/<[^>]*>.*?[A-Za-z]+\s+[A-Za-z]+\s*-\s*Paralegal.*?<\/[^>]*>/gi, '')
+    .replace(/<[^>]*>.*?[A-Za-z]+\s+[A-Za-z]+\s*&nbsp;.*?<\/[^>]*>/gi, '')
+    // Remove Unicode directional text markers
     .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')
-    // Remove the specific pattern from your example more aggressively
-    .replace(/Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}.*?schrieb\s*‫.*?‬\s*<.*?>/gi, '')
-    // Remove everything after patterns that indicate quoted content
-    .split(/(?:Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}|On\s+\w+,?\s+\w+\s+\d{1,2})/i)[0]
-    // Remove empty paragraphs and divs
-    .replace(/<p[^>]*>\s*<\/p>/gi, '')
-    .replace(/<div[^>]*>\s*<\/div>/gi, '')
-    .replace(/<br\s*\/?>\s*<br\s*\/?>/gi, '<br>')
-    // Clean up multiple spaces and newlines
+    // Clean up multiple spaces and newlines (but preserve HTML structure)
     .replace(/\s+/g, ' ')
     .replace(/\n\s*\n/g, '\n')
     .trim();
 
-  return cleanedHtml;
+  return cleanedText;
 };
 
 // Helper to acquire token, falling back to popup if needed
@@ -293,7 +295,7 @@ async function syncClientEmails(token: string, client: ClientTabProps['client'])
   const emailsToUpsert = clientMessages.map((msg: any) => {
     const isOutgoing = msg.from?.emailAddress?.address.toLowerCase().includes('lawoffice.org.il');
     const originalBody = msg.body?.content || '';
-    const processedBody = !isOutgoing ? stripSignatureAndQuotedText(originalBody) : originalBody;
+    const processedBody = !isOutgoing ? stripSignatureAndQuotedTextPreserveHtml(originalBody) : originalBody;
 
     return {
       message_id: msg.id,
@@ -334,8 +336,26 @@ async function syncClientEmails(token: string, client: ClientTabProps['client'])
 
 // Microsoft Graph API: Send email (as a new message or reply)
 async function sendClientEmail(token: string, subject: string, body: string, client: ClientTabProps['client'], senderName: string, attachments: { name: string; contentType: string; contentBytes: string }[]) {
-  const signature = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
-  const fullBody = body + signature;
+  // Get the user's email signature from the database
+  const { getCurrentUserEmailSignature } = await import('../../lib/emailSignature');
+  const userSignature = await getCurrentUserEmailSignature();
+  
+  // Handle signature (HTML or plain text)
+  let signatureHtml = '';
+  if (userSignature) {
+    // Check if signature is already HTML
+    if (userSignature.includes('<') && userSignature.includes('>')) {
+      signatureHtml = `<br><br>${userSignature}`;
+    } else {
+      // Convert plain text to HTML
+      signatureHtml = `<br><br>${userSignature.replace(/\n/g, '<br>')}`;
+    }
+  } else {
+    // Fallback to default signature
+    signatureHtml = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
+  }
+  
+  const fullBody = body + signatureHtml;
 
   const messageAttachments = attachments.map(att => ({
     '@odata.type': '#microsoft.graph.fileAttachment',
@@ -451,6 +471,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const { instance, accounts } = useMsal();
   const [emails, setEmails] = useState<any[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
+  const [interactionsLoading, setInteractionsLoading] = useState(true);
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBody] = useState('');
@@ -464,6 +485,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [whatsAppInput, setWhatsAppInput] = useState("");
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
+  const userFullNameLoadedRef = useRef(false);
   const [bodyFocused, setBodyFocused] = useState(false);
   const [footerHeight, setFooterHeight] = useState(72);
   const [composeOverlayOpen, setComposeOverlayOpen] = useState(false);
@@ -487,9 +509,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     console.log('🔍 WhatsApp error state changed:', whatsAppError);
   }, [whatsAppError]);
 
-  // Find the index of the last email in the sorted interactions
-  const sortedInteractions = [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
-  const lastEmailIdx = sortedInteractions.map(row => row.kind).lastIndexOf('email');
+  // Find the index of the last email in the sorted interactions - memoized to prevent recalculation
+  const sortedInteractions = useMemo(() => 
+    [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()),
+    [interactions]
+  );
+  const lastEmailIdx = useMemo(() => 
+    sortedInteractions.map(row => row.kind).lastIndexOf('email'),
+    [sortedInteractions]
+  );
 
   // --- Add: handler for clicking an interaction to jump to message in modal ---
   const handleInteractionClick = (row: Interaction, idx: number) => {
@@ -523,7 +551,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         lastEmailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 100);
     }
-  }, [location.search, interactions.length]);
+  }, [location.search, lastEmailIdx, sortedInteractions]); // Now safe to include these memoized values
 
   // Handle email modal opening from localStorage flag
   useEffect(() => {
@@ -556,7 +584,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         return () => clearTimeout(timeoutId);
       }
     }
-  }, [interactions.length, emails.length, lastEmailIdx, sortedInteractions]);
+  }, [client.id, interactions.length, emails.length, lastEmailIdx, sortedInteractions]); // Include necessary dependencies
 
   // Handle WhatsApp modal opening from localStorage flag
   useEffect(() => {
@@ -579,7 +607,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         return () => clearTimeout(timeoutId);
       }
     }
-  }, [interactions.length, client.id]); // Add client.id dependency
+  }, [client.id, interactions.length]); // Include interactions.length since we need to check it
 
 
 
@@ -961,22 +989,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   useEffect(() => {
     let isMounted = true;
     async function fetchAndCombineInteractions() {
-      // Ensure currentUserFullName is set before mapping emails
-      let userFullName = currentUserFullName;
-      if (!userFullName) {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user && user.email) {
-          const { data, error } = await supabase
-            .from('users')
-            .select('full_name')
-            .eq('email', user.email)
-            .single();
-          if (!error && data?.full_name) {
-            userFullName = data.full_name;
-            if (isMounted) setCurrentUserFullName(data.full_name);
+      console.log('🔄 fetchAndCombineInteractions called with client:', client.id, 'emails:', client.emails?.length || 0);
+      setInteractionsLoading(true);
+      try {
+        // Ensure currentUserFullName is set before mapping emails
+        let userFullName = currentUserFullName;
+        if (!userFullName && !userFullNameLoadedRef.current) {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user && user.email) {
+            const { data, error } = await supabase
+              .from('users')
+              .select('full_name')
+              .eq('email', user.email)
+              .single();
+            if (!error && data?.full_name) {
+              userFullName = data.full_name;
+              if (isMounted) {
+                setCurrentUserFullName(data.full_name);
+                userFullNameLoadedRef.current = true;
+              }
+            }
           }
         }
-      }
       // 1. Manual interactions (excluding WhatsApp)
       const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp').map((i: any) => ({
         ...i,
@@ -984,95 +1018,56 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       }));
       // 2. Email interactions
       const clientEmails = (client as any).emails || [];
-      const emailInteractions = clientEmails.map((e: any) => {
-        const emailDate = new Date(e.sent_at);
-        
-        // Enhanced email body processing
-        function cleanEmailBody(htmlContent: string): string {
-          if (!htmlContent) return '';
-          // First apply the signature and quoted text removal
-          let cleanedHtml = stripSignatureAndQuotedText(htmlContent);
-          // Additional aggressive cleaning for timeline
-          cleanedHtml = cleanedHtml
-            // Split at common quoted content indicators and take only the first part
-            .split(/(?:Am\s+\w+\.?\,?\s+\d{1,2}\.\s+\w+\s+\d{4})/i)[0]
-            .split(/(?:On\s+\w+,?\s+\w+\s+\d{1,2})/i)[0]
-            .split(/(?:‪Am\s+)/i)[0]  // Handle Unicode marker
-            .split(/(?:Von:|From:|Gesendet:|Sent:)/i)[0]
-            // Remove any remaining quoted indicators
-            .replace(/‪.*?‬/g, '')  // Unicode directional markers
-            .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')  // All Unicode direction markers
-            .replace(/<.*?@.*?>/g, '')  // Email addresses in brackets
-            .trim();
-          // --- FINAL STRIP: Remove any remaining HTML tags using DOMParser ---
-          if (typeof window !== 'undefined' && cleanedHtml.match(/<[^>]+>/)) {
-            const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = cleanedHtml;
-            cleanedHtml = tempDiv.textContent || tempDiv.innerText || '';
-          } else {
-            // Fallback for SSR or if no tags
-            cleanedHtml = cleanedHtml.replace(/<[^>]+>/g, '');
-          }
-          // Remove all HTML comments
-          cleanedHtml = cleanedHtml.replace(/<!--([\s\S]*?)-->/g, '');
-          // Additional cleaning for timeline display
-          cleanedHtml = cleanedHtml
-            // Remove excessive whitespace
-            .replace(/\s+/g, ' ')
-            // Remove common Outlook artifacts
-            .replace(/\[cid:.*?\]/g, '')
-            // Remove email addresses that might still be there
-            .replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, '')
-            // Remove URLs for cleaner timeline view
-            .replace(/https?:\/\/[^\s]+/g, '[link]')
-            // Remove phone numbers in common formats
-            .replace(/\+?\d{1,3}[-.\s]?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g, '[phone]')
-            // Remove German/international artifacts
-            .replace(/Von:\s*/gi, '')
-            .replace(/Gesendet:\s*/gi, '')
-            .replace(/An:\s*/gi, '')
-            .replace(/Betreff:\s*/gi, '')
-            // Clean up punctuation
-            .replace(/[.]{3,}/g, '...')
-            // Remove standalone punctuation
-            .replace(/^\s*[.,;:]\s*/g, '')
-            .trim();
-          return cleanedHtml;
-        }
-        
-        let body = e.body_preview || e.bodyPreview || '';
-        
-        // If we have HTML content, clean it properly
-        if (body) {
-          body = cleanEmailBody(body);
-        }
-        
-        // Fallback to subject if no body content
-        if (!body || body.trim().length === 0) {
-          body = e.subject || 'Email received';
-        }
-        
-        // Truncate for timeline display
-        if (body.length > 150) {
-          body = body.slice(0, 150) + '...';
-        }
-        
-        return {
-          id: e.message_id,
-          date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-          time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-          raw_date: e.sent_at,
-          employee: e.direction === 'outgoing' ? (userFullName || 'You') : client.name,
-          direction: e.direction === 'outgoing' ? 'out' : 'in',
-          kind: 'email',
-          length: '',
-          content: body,
-          subject: e.subject || '', // <-- add subject here
-          observation: e.observation || '',
-          editable: true,
-          status: e.status,
-        };
+      console.log('📧 Processing emails for interactions:', {
+        totalEmails: clientEmails.length,
+        emailIds: clientEmails.map((e: any) => e.message_id || e.id),
+        clientId: client.id
       });
+      
+      // Improved deduplication: use message_id as primary key, fallback to id
+      const uniqueEmails = clientEmails.filter((email: any, index: number, self: any[]) => {
+        const emailKey = email.message_id || email.id;
+        return index === self.findIndex((e: any) => (e.message_id || e.id) === emailKey);
+      });
+      
+      console.log('📧 After deduplication:', {
+        uniqueEmails: uniqueEmails.length,
+        removedDuplicates: clientEmails.length - uniqueEmails.length
+      });
+      
+            const emailInteractions = uniqueEmails.map((e: any) => {
+              const emailDate = new Date(e.sent_at);
+              
+              let body = e.body_preview || e.bodyPreview || '';
+              
+              // Only process body if it exists and is not too long (performance optimization)
+              if (body && body.length > 0 && body.length < 1000) {
+                body = stripSignatureAndQuotedTextPreserveHtml(body);
+              }
+              
+              // Fallback to subject if no body content
+              if (!body || body.trim().length === 0) {
+                body = e.subject || 'Email received';
+              }
+              
+              // No truncation - let the content use full available space
+              
+              return {
+                id: e.message_id,
+                date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+                time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+                raw_date: e.sent_at,
+                employee: e.direction === 'outgoing' ? (userFullName || 'You') : client.name,
+                direction: e.direction === 'outgoing' ? 'out' : 'in',
+                kind: 'email',
+                length: '',
+                content: body,
+                subject: e.subject || '', // <-- add subject here
+                observation: e.observation || '',
+                editable: true,
+                status: e.status,
+              };
+            });
       // 3. WhatsApp messages from DB
       let whatsAppDbMessages: any[] = [];
       if (client?.id) {
@@ -1117,30 +1112,52 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         }
       }
       
-      // Combine all
-      const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...legacyInteractions];
-      const sorted = combined.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
-      if (isMounted) {
-        setInteractions(sorted as Interaction[]);
-        // Note: Interaction count is now calculated upfront when entering the client page
-        // No need to update it here anymore
+        // Combine all
+        const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...legacyInteractions];
+        
+        // Deduplicate interactions by id
+        const uniqueInteractions = combined.filter((interaction: any, index: number, self: any[]) => 
+          index === self.findIndex((i: any) => i.id === interaction.id)
+        );
+        
+        console.log('📧 Final interactions deduplication:', {
+          totalInteractions: combined.length,
+          uniqueInteractions: uniqueInteractions.length,
+          removedDuplicates: combined.length - uniqueInteractions.length
+        });
+        
+        const sorted = uniqueInteractions.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+        if (isMounted) {
+          setInteractions(sorted as Interaction[]);
+          // Note: Interaction count is now calculated upfront when entering the client page
+          // No need to update it here anymore
+        }
+        // Also update the local emails state for the modal - use the same deduplicated emails
+        const formattedEmailsForModal = uniqueEmails.map((e: any) => ({
+          id: e.message_id,
+          subject: e.subject,
+          from: e.sender_email,
+          to: e.recipient_list,
+          date: e.sent_at,
+          bodyPreview: e.body_preview || e.subject,
+          direction: e.direction,
+          attachments: e.attachments,
+        }));
+        if (isMounted) setEmails(formattedEmailsForModal);
+      } catch (error) {
+        console.error('Error in fetchAndCombineInteractions:', error);
+        if (isMounted) {
+          setInteractions([]);
+          setEmails([]);
+        }
+      } finally {
+        if (isMounted) setInteractionsLoading(false);
       }
-      // Also update the local emails state for the modal
-      const formattedEmailsForModal = clientEmails.map((e: any) => ({
-        id: e.message_id,
-        subject: e.subject,
-        from: e.sender_email,
-        to: e.recipient_list,
-        date: e.sent_at,
-        bodyPreview: e.body_preview || e.subject,
-        direction: e.direction,
-        attachments: e.attachments,
-      }));
-      if (isMounted) setEmails(formattedEmailsForModal);
     }
     fetchAndCombineInteractions();
     return () => { isMounted = false; };
-  }, [client, currentUserFullName, whatsAppMessages.length]);
+  }, [client.id]); // Only run when client changes
+
 
   // This function now ONLY syncs with Graph and then triggers a full refresh
   const runGraphSync = useCallback(async () => {
@@ -1151,8 +1168,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     try {
       const tokenResponse = await acquireToken(instance, accounts[0]);
       await syncClientEmails(tokenResponse.accessToken, client);
+      console.log('📧 Graph sync completed, triggering client update...');
       if (onClientUpdate) {
         await onClientUpdate(); // Refresh all client data from parent
+        console.log('📧 Client update completed');
       }
     } catch (e) {
       console.error("Graph sync failed:", e);
@@ -1186,92 +1205,47 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         senderName,
         composeAttachments
       );
-      toast.success('Email sent and saved!');
-
-      // --- Optimistic update: add sent email to local state ---
-      const now = new Date();
-      const optimisticEmail = {
-        id: sentEmail.id || `optimistic_${now.getTime()}`,
-        message_id: sentEmail.id || `optimistic_${now.getTime()}`,
-        subject: composeSubject,
-        from: account.username || account.name || 'Me',
-        to: client.email,
-        date: now.toISOString(),
-        bodyPreview: composeBody,
-        direction: 'outgoing',
-        attachments: composeAttachments,
-      };
-      setEmails(prev => [...prev, optimisticEmail]);
-      setInteractions(prev => [
-        {
-          id: optimisticEmail.message_id,
-          date: now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-          time: now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-          raw_date: now.toISOString(),
-          employee: senderName,
-          direction: 'out',
-          kind: 'email',
-          length: '',
-          content: composeBody,
-          subject: composeSubject,
-          observation: '',
-          editable: true,
-          status: undefined,
-        },
-        ...prev
-      ]);
-
-      // --- Upsert sent email directly to Supabase ---
+      
+      console.log('📧 Email sent via Graph API:', sentEmail.id);
+      
+      // 2. Immediately save the sent email to our database
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const emailData = {
-        message_id: optimisticEmail.message_id,
-        client_id: isLegacyLead ? null : client.id, // Set to null for legacy leads
-        legacy_id: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null, // Set legacy_id for legacy leads
-        thread_id: sentEmail.conversationId || null,
+      const emailToSave = {
+        message_id: sentEmail.id,
+        client_id: isLegacyLead ? null : client.id,
+        legacy_id: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null,
+        thread_id: sentEmail.conversationId,
         sender_name: senderName,
-        sender_email: account.username || account.name || 'Me',
+        sender_email: account?.username || 'unknown@lawoffice.org.il',
         recipient_list: client.email,
         subject: composeSubject,
         body_preview: composeBody,
-        sent_at: now.toISOString(),
+        sent_at: new Date().toISOString(),
         direction: 'outgoing',
-        attachments: composeAttachments,
+        attachments: composeAttachments.length > 0 ? composeAttachments.map(att => ({
+          id: `temp_${Date.now()}`,
+          name: att.name,
+          contentType: att.contentType,
+          sizeInBytes: 0,
+          isInline: false
+        })) : null,
       };
       
-      console.log('📧 Saving email to database:', {
-        isLegacyLead,
-        clientId: client.id,
-        legacyId: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null,
-        emailData
-      });
-      
-      const { data: upsertData, error: upsertError } = await supabase.from('emails').upsert([emailData], { onConflict: 'message_id' });
-      
-      if (upsertError) {
-        console.error('❌ Error saving email to database:', upsertError);
-        toast.error('Failed to save email to database: ' + upsertError.message);
+      const { error: saveError } = await supabase.from('emails').upsert(emailToSave, { onConflict: 'message_id' });
+      if (saveError) {
+        console.error('❌ Error saving sent email to database:', saveError);
       } else {
-        console.log('✅ Email saved to database successfully:', upsertData);
+        console.log('✅ Sent email saved to database');
       }
       
-      // Update latest_interaction timestamp for new leads
-      if (!isLegacyLead) {
-        const { error: timestampError } = await supabase
-          .from('leads')
-          .update({ latest_interaction: now.toISOString() })
-          .eq('id', client.id);
-        
-        if (timestampError) {
-          console.error('❌ Error updating latest_interaction timestamp:', timestampError);
-        } else {
-          console.log('✅ Latest interaction timestamp updated successfully');
-        }
-      }
+      toast.success('Email sent and saved!');
+
+      // 3. Trigger a sync to get any other new emails from Graph
+      setTimeout(async () => {
+        await runGraphSync();
+      }, 1000); // Reduced wait time since we already saved the email
       
-      // After sending, trigger a sync to get the new email
-      await runGraphSync();
-      
-      // Force refresh the client data to get updated emails
+      // 4. Force refresh the client data to get updated emails
       if (onClientUpdate) {
         console.log('🔄 Triggering client data refresh after email send');
         await onClientUpdate();
@@ -1612,7 +1586,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       console.log('WhatsApp client.id:', client.id);
       console.log('WhatsApp messages:', whatsAppMessages);
     }
-  }, [isWhatsAppOpen, whatsAppMessages, client.id]);
+  }, [isWhatsAppOpen, client.id]); // Removed whatsAppMessages dependency
 
   // Effect: when WhatsApp modal opens and activeWhatsAppId is set, scroll to and highlight the message
   React.useEffect(() => {
@@ -1629,10 +1603,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   }, [isWhatsAppOpen, activeWhatsAppId]);
 
   return (
-    <div className="p-3 md:p-8 flex flex-col lg:flex-row gap-4 md:gap-8 items-start min-h-screen">
+    <div className="p-3 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-4 md:gap-6 lg:gap-8 items-start min-h-screen">
       <div className="relative w-full flex-1 min-w-0">
-        {/* Header with Contact Client Dropdown and AI Smart Recap */}
-        <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-8">
+        {/* Loading indicator */}
+        {interactionsLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="loading loading-spinner loading-lg text-primary"></div>
+            <span className="ml-3 text-lg">Loading interactions...</span>
+          </div>
+        ) : (
+          <>
+            {/* Header with Contact Client Dropdown and AI Smart Recap */}
+        <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6 md:mb-8">
           <div className="dropdown">
             <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center">
               <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
@@ -1695,9 +1677,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         {/* Timeline container with proper mobile layout */}
         <div className="relative">
           {/* Timeline line */}
-          <div className="absolute left-6 md:left-8 top-0 bottom-0 w-0.5 md:w-1 bg-gradient-to-b from-primary via-accent to-secondary" style={{ zIndex: 0 }} />
+          <div className="absolute left-4 sm:left-6 md:left-8 top-0 bottom-0 w-0.5 md:w-1 bg-gradient-to-b from-primary via-accent to-secondary" style={{ zIndex: 0 }} />
           
-          <div className="space-y-8 md:space-y-12">
+          <div className="space-y-6 md:space-y-8 lg:space-y-12">
             {sortedInteractions.map((row, idx) => {
               // Date formatting
               const dateObj = new Date(row.raw_date);
@@ -1764,13 +1746,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 <div
                   key={row.id}
                   ref={idx === lastEmailIdx ? lastEmailRef : null}
-                  className="relative pl-16 md:pl-20 cursor-pointer group"
+                  className="relative pl-12 sm:pl-16 md:pl-20 cursor-pointer group"
                   onClick={() => handleInteractionClick(row, idx)}
                 >
                   {/* Timeline dot and icon, large, left-aligned */}
-                  <div className="absolute -left-6 md:-left-8 top-0" style={{ zIndex: 2 }}>
-                    <div className={`w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-lg ring-2 ring-white ${iconBg}`}>
-                      {React.cloneElement(icon, { className: 'w-6 h-6 md:w-8 md:h-8' })}
+                  <div className="absolute -left-4 sm:-left-6 md:-left-8 top-0" style={{ zIndex: 2 }}>
+                    <div className={`w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-lg ring-2 ring-white ${iconBg}`}>
+                      {React.cloneElement(icon, { className: 'w-4 h-4 sm:w-6 sm:h-6 md:w-8 md:h-8' })}
                     </div>
                   </div>
                   {/* Timestamp above the card */}
@@ -1778,14 +1760,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     <div className="text-xs md:text-sm font-semibold text-gray-600">{day} {month}, {time}</div>
                   </div>
                   {/* Card - Mobile optimized */}
-                  <div className="w-full pr-3 md:pr-6">
+                  <div className="w-full pr-2 sm:pr-3 md:pr-6">
                     <div className={`p-[1px] rounded-xl ${cardBg} shadow-xl hover:shadow-2xl transition-all duration-200`}>
-                      <div className="bg-white rounded-xl p-3 md:p-4">
-                        <div className="flex items-center gap-3 mb-2">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold ${avatarBg} text-sm`}>
+                      <div className="bg-white rounded-xl p-3 sm:p-4">
+                        <div className="flex items-center gap-2 sm:gap-3 mb-2">
+                          <div className={`w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold ${avatarBg} text-xs sm:text-sm`}>
                             {initials}
                           </div>
-                          <div className={`font-semibold text-sm md:text-base ${textGradient} truncate`}>
+                          <div className={`font-semibold text-xs sm:text-sm md:text-base ${textGradient} truncate`}>
                             {row.employee}
                           </div>
                         </div>
@@ -1816,27 +1798,40 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         </div>
                         
                         {row.content && (
-                          <div className={`text-xs md:text-sm text-gray-700 break-words ${row.id.toString().startsWith('legacy_') ? 'overflow-visible' : 'overflow-hidden'}`}>
+                          <div className="text-xs sm:text-sm text-gray-700 break-words overflow-visible">
                             {/* Subject in bold with colon, then body with spacing */}
                             {row.subject ? (
                               <>
                                 <span className="font-bold mr-1">{row.subject}:</span>
                                 <br />
-                                <span className="ml-1 whitespace-pre-wrap">
-                                  {typeof row.content === 'string'
-                                    ? row.content.replace(new RegExp(`^${row.subject}\s*:?[\s\-]*`, 'i'), '').trim()
-                                    : row.content}
-                                </span>
+                                <div 
+                                  className="ml-1"
+                                  dangerouslySetInnerHTML={{ 
+                                    __html: sanitizeEmailHtml(
+                                      stripSignatureAndQuotedTextPreserveHtml(
+                                        typeof row.content === 'string'
+                                          ? row.content.replace(new RegExp(`^${row.subject}\s*:?[\s\-]*`, 'i'), '').trim()
+                                          : row.content
+                                      )
+                                    )
+                                  }} 
+                                />
                               </>
                             ) : (
-                              <span className="whitespace-pre-wrap">{row.content}</span>
+                              <div 
+                                dangerouslySetInnerHTML={{ 
+                                  __html: sanitizeEmailHtml(
+                                    stripSignatureAndQuotedTextPreserveHtml(row.content)
+                                  ) 
+                                }} 
+                              />
                             )}
                           </div>
                         )}
                         
                         {row.observation && (
                           <div className="mt-2 text-xs text-gray-500 break-words overflow-hidden">
-                            <span className="font-medium">Note:</span> <span className="line-clamp-1">{row.observation}</span>
+                            <span className="font-medium">Note:</span> <span className="line-clamp-2 sm:line-clamp-1">{row.observation}</span>
                           </div>
                         )}
                       </div>
@@ -1848,14 +1843,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           </div>
         </div>
         
-        {/* Timeline and History Buttons at bottom */}
-        <div className="mt-8 pt-6 border-t border-base-200">
-          <TimelineHistoryButtons client={client} />
-        </div>
+            {/* Timeline and History Buttons at bottom */}
+            <div className="mt-6 md:mt-8 pt-4 md:pt-6 border-t border-base-200">
+              <TimelineHistoryButtons client={client} />
+            </div>
+          </>
+        )}
       </div>
       {/* Right-side AI summary panel (hidden on mobile, conditional on desktop) */}
       {showAiSummary && (
-        <div className="hidden lg:block w-full max-w-sm ai-summary-panel">
+        <div className="hidden xl:block w-full max-w-sm ai-summary-panel">
           <AISummaryPanel messages={aiSummaryMessages} />
         </div>
       )}
@@ -1865,11 +1862,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           <div className="h-full flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
-              <div className="flex items-center gap-2 md:gap-4">
+              <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
                 <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span className="text-gray-600">
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></div>
+                  <span className="text-gray-600 text-sm md:text-base truncate">
                     {client.name} ({client.lead_number})
                   </span>
                 </div>
@@ -1883,7 +1880,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             </div>
 
             {/* Email Thread */}
-            <div className="flex-1 overflow-y-auto p-4 md:p-6">
+            <div className="flex-1 overflow-y-auto p-3 md:p-6">
               {emailsLoading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="loading loading-spinner loading-lg text-blue-500"></div>
@@ -1901,7 +1898,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   </div>
                 </div>
               ) : (
-                <div className="space-y-6">
+                <div className="space-y-4 md:space-y-6">
                   {[...emails]
                     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
                     .map((message, index) => (
@@ -1921,14 +1918,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         
                         {/* Message Bubble */}
                         <div
-                          className={`max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl ${
+                          className={`max-w-[90%] sm:max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl ${
                             message.direction === 'outgoing'
                               ? 'bg-[#3E28CD] text-white'
                               : 'bg-gray-100 text-gray-900'
-                          } rounded-2xl px-4 py-3 shadow-sm`}
+                          } rounded-2xl px-3 md:px-4 py-2 md:py-3 shadow-sm`}
                         >
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="font-semibold text-sm">
+                          <div className="flex items-center gap-2 mb-2 flex-wrap">
+                            <span className="font-semibold text-xs sm:text-sm">
                               {message.direction === 'outgoing' ? (currentUserFullName || 'You') : client.name}
                             </span>
                             <span className="text-xs opacity-70">
@@ -1941,13 +1938,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                             </span>
                           </div>
                           {message.subject && (
-                            <div className="font-medium mb-2">
+                            <div className="font-medium mb-2 text-xs sm:text-sm">
                               {message.subject}
                             </div>
                           )}
-                          <div className="text-sm whitespace-pre-wrap">
+                          <div className="text-xs sm:text-sm whitespace-pre-wrap">
                             <div dangerouslySetInnerHTML={{ 
-                              __html: sanitizeEmailHtml(stripSignatureAndQuotedText(message.bodyPreview || '')) 
+                              __html: sanitizeEmailHtml(stripSignatureAndQuotedTextPreserveHtml(message.bodyPreview || '')) 
                             }} />
                           </div>
                           {/* Attachments */}
@@ -1981,7 +1978,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             </div>
 
             {/* Compose Area */}
-            <div className="border-t border-gray-200 p-4 md:p-6">
+            <div className="border-t border-gray-200 p-3 md:p-6">
               {showCompose ? (
                 <div className="space-y-4">
                   <input
@@ -2017,34 +2014,34 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     </div>
                   )}
                   
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => fileInputRef.current?.click()}
                         className="btn btn-ghost btn-sm"
                       >
                         <PaperClipIcon className="w-4 h-4" />
-                        Attach
+                        <span className="hidden sm:inline">Attach</span>
                       </button>
-                                             <input
-                         ref={fileInputRef}
-                         type="file"
-                         multiple
-                         onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
-                         className="hidden"
-                       />
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        multiple
+                        onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
+                        className="hidden"
+                      />
                     </div>
                     <div className="flex items-center gap-2">
                       <button
                         onClick={() => setShowCompose(false)}
-                        className="btn btn-outline btn-sm"
+                        className="btn btn-outline btn-sm flex-1 sm:flex-none"
                       >
                         Cancel
                       </button>
                       <button
                         onClick={handleSendEmail}
                         disabled={sending || !composeBody.trim()}
-                        className="btn btn-primary btn-sm"
+                        className="btn btn-primary btn-sm flex-1 sm:flex-none"
                       >
                         {sending ? (
                           <div className="loading loading-spinner loading-xs"></div>
@@ -2157,16 +2154,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           <div className="h-full flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
-              <div className="flex items-center gap-2 md:gap-4">
+              <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
                 <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
                 <h2 className="text-lg md:text-2xl font-bold text-gray-900">WhatsApp</h2>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-lg font-semibold text-gray-900 truncate">
+                    <span className="text-sm md:text-lg font-semibold text-gray-900 truncate">
                       {client.name}
                     </span>
-                    <span className="text-sm text-gray-500 font-mono flex-shrink-0">
+                    <span className="text-xs md:text-sm text-gray-500 font-mono flex-shrink-0">
                       ({client.lead_number})
                     </span>
                   </div>

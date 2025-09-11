@@ -38,6 +38,13 @@ const CollectionPage: React.FC = () => {
   // Add state for mock data arrays for all tabs
   const [awaitingPayments, setAwaitingPayments] = useState<any[]>([]);
 
+  // Legacy leads state for each category
+  const [legacyNoPaymentLeads, setLegacyNoPaymentLeads] = useState<any[]>([]);
+  const [legacyAwaitingPayments, setLegacyAwaitingPayments] = useState<any[]>([]);
+  const [legacyPaidMeetings, setLegacyPaidMeetings] = useState<any[]>([]);
+  const [legacyPaidCases, setLegacyPaidCases] = useState<any[]>([]);
+  const [legacyLeadsLoading, setLegacyLeadsLoading] = useState(false);
+
   const [paidMeetings, setPaidMeetings] = useState<any[]>([
     {
       id: 1,
@@ -87,6 +94,316 @@ const CollectionPage: React.FC = () => {
         return '₪';
       default:
         return '₪';
+    }
+  };
+
+  // Function to fetch legacy leads for each category
+  const fetchLegacyLeads = async () => {
+    setLegacyLeadsLoading(true);
+    try {
+      console.log('🔍 Fetching legacy leads for collection page...');
+      
+      // First, fetch leads that have stage 60 (contract signed) from leads_leadstage
+      console.log('📋 Fetching leads with stage 60 (contract signed)...');
+      const { data: stage60Leads, error: stageError } = await supabase
+        .from('leads_leadstage')
+        .select(`
+          id,
+          lead_id,
+          date,
+          stage
+        `)
+        .eq('stage', 60)
+        .order('date', { ascending: false });
+
+      if (stageError) {
+        console.error('❌ Error fetching stage 60 leads:', stageError);
+        return;
+      }
+
+      console.log('✅ Stage 60 leads fetched:', stage60Leads?.length || 0);
+
+      if (!stage60Leads || stage60Leads.length === 0) {
+        console.log('ℹ️ No stage 60 leads found');
+        setLegacyLeadsLoading(false);
+        return;
+      }
+
+      // Extract unique lead IDs from stage 60 records
+      const leadIds = [...new Set(stage60Leads.map(record => record.lead_id).filter(Boolean))];
+      console.log('📄 Unique lead IDs from stage 60:', leadIds.length);
+
+      // Fetch the actual lead details for these leads
+      const { data: legacyLeads, error } = await supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          name,
+          stage,
+          total,
+          currency_id,
+          cdate,
+          udate,
+          status,
+          expert_id,
+          meeting_manager_id,
+          category_id,
+          collection_label,
+          collection_comments,
+          meeting_paid
+        `)
+        .in('id', leadIds)
+        .eq('status', 0) // Only active leads
+        .order('cdate', { ascending: false });
+
+      if (error) {
+        console.error('❌ Error fetching legacy leads:', error);
+        return;
+      }
+
+      console.log('✅ Legacy leads fetched:', legacyLeads?.length || 0);
+
+      if (legacyLeads && legacyLeads.length > 0) {
+        // Create a map of lead_id to stage 60 date (contract signed date)
+        const leadToStage60DateMap = new Map();
+        stage60Leads.forEach(record => {
+          if (record.lead_id) {
+            leadToStage60DateMap.set(record.lead_id, record.date);
+          }
+        });
+
+        // Check for payment plans in finances_paymentplanrow
+        console.log('💰 Checking for payment plans in finances_paymentplanrow...');
+        const { data: paymentPlans, error: paymentError } = await supabase
+          .from('finances_paymentplanrow')
+          .select('lead_id')
+          .in('lead_id', leadIds);
+
+        if (paymentError) {
+          console.error('❌ Error fetching payment plans:', paymentError);
+        } else {
+          console.log('✅ Payment plans found:', paymentPlans?.length || 0);
+        }
+
+        // Create a set of lead IDs that have payment plans
+        // Handle potential type mismatches between lead.id and plan.lead_id
+        const leadsWithPaymentPlans = new Set();
+        (paymentPlans || []).forEach(plan => {
+          if (plan.lead_id) {
+            // Add both string and number versions to handle type mismatches
+            leadsWithPaymentPlans.add(plan.lead_id);
+            leadsWithPaymentPlans.add(Number(plan.lead_id));
+            leadsWithPaymentPlans.add(String(plan.lead_id));
+          }
+        });
+
+        console.log('🔍 Payment plan debugging:');
+        console.log('  - Total payment plans found:', paymentPlans?.length || 0);
+        console.log('  - Sample payment plan lead_ids:', paymentPlans?.slice(0, 5).map(p => ({ id: p.lead_id, type: typeof p.lead_id })));
+        console.log('  - Sample legacy lead IDs:', leadIds.slice(0, 5).map(id => ({ id, type: typeof id })));
+        console.log('  - Payment plan lead_ids set size:', leadsWithPaymentPlans.size);
+        console.log('  - Payment plan set contents:', Array.from(leadsWithPaymentPlans).slice(0, 10));
+        
+        // Debug: Check if any legacy leads have matching payment plans
+        const sampleLegacyLeads = legacyLeads.slice(0, 5);
+        sampleLegacyLeads.forEach(lead => {
+          const hasPaymentPlan = leadsWithPaymentPlans.has(lead.id);
+          const hasPaymentPlanString = leadsWithPaymentPlans.has(String(lead.id));
+          const hasPaymentPlanNumber = leadsWithPaymentPlans.has(Number(lead.id));
+          console.log(`  - Legacy lead ${lead.id} (${lead.name}): hasPaymentPlan=${hasPaymentPlan}, hasPaymentPlanString=${hasPaymentPlanString}, hasPaymentPlanNumber=${hasPaymentPlanNumber}, meeting_paid=${lead.meeting_paid}`);
+          console.log(`  - Full lead object keys:`, Object.keys(lead));
+          console.log(`  - Lead object sample:`, {
+            id: lead.id,
+            name: lead.name,
+            stage: lead.stage,
+            meeting_paid: lead.meeting_paid,
+            meeting_paid_type: typeof lead.meeting_paid,
+            has_meeting_paid: 'meeting_paid' in lead
+          });
+        });
+        
+        // Debug: Check all unique meeting_paid values
+        const uniqueMeetingPaidValues = [...new Set(legacyLeads.map(lead => lead.meeting_paid))];
+        console.log('🔍 Unique meeting_paid values found:', uniqueMeetingPaidValues);
+
+        // Fetch related data for better display
+        const employeeIds = [...new Set([
+          ...legacyLeads.map(lead => lead.expert_id).filter(Boolean),
+          ...legacyLeads.map(lead => lead.meeting_manager_id).filter(Boolean)
+        ])];
+        const categoryIds = [...new Set(legacyLeads.map(lead => lead.category_id).filter(Boolean))];
+        const stageIds = [...new Set(legacyLeads.map(lead => lead.stage).filter(Boolean))];
+        console.log('🔍 Stage IDs to fetch:', stageIds.slice(0, 10));
+        console.log('🔍 Stage IDs types:', stageIds.slice(0, 5).map(id => ({ id, type: typeof id })));
+
+        // Fetch employee names, category names, and stage names
+        const [employeeResult, categoryResult, stageResult] = await Promise.allSettled([
+          employeeIds.length > 0 ? supabase.from('tenants_employee').select('id, display_name').in('id', employeeIds) : Promise.resolve({ data: [] }),
+          categoryIds.length > 0 ? supabase.from('misc_category').select('id, name').in('id', categoryIds) : Promise.resolve({ data: [] }),
+          stageIds.length > 0 ? supabase.from('lead_stages').select('id, name').in('id', stageIds) : Promise.resolve({ data: [] })
+        ]);
+
+        const employeeMap = new Map();
+        const categoryMap = new Map();
+        const stageMap = new Map();
+
+        if (employeeResult.status === 'fulfilled' && employeeResult.value.data) {
+          employeeResult.value.data.forEach(emp => {
+            employeeMap.set(emp.id, emp.display_name);
+          });
+        }
+
+        if (categoryResult.status === 'fulfilled' && categoryResult.value.data) {
+          categoryResult.value.data.forEach(cat => {
+            categoryMap.set(cat.id, cat.name);
+          });
+        }
+
+        if (stageResult.status === 'fulfilled' && stageResult.value.data) {
+          console.log('🔍 Stage result data:', stageResult.value.data.slice(0, 3));
+          stageResult.value.data.forEach(stage => {
+            stageMap.set(stage.id, stage.name);
+          });
+          console.log('🔍 Stage map created with', stageMap.size, 'entries');
+          console.log('🔍 Sample stage entries:', Array.from(stageMap.entries()).slice(0, 5));
+        } else {
+          console.log('❌ Stage result not fulfilled or no data:', stageResult);
+        }
+
+        // Process and categorize legacy leads
+        const processedLegacyLeads = legacyLeads.map(lead => ({
+          ...lead,
+          lead_type: 'legacy',
+          lead_number: lead.id?.toString() || '',
+          expert_name: employeeMap.get(lead.expert_id) || 'Not assigned',
+          manager_name: employeeMap.get(lead.meeting_manager_id) || 'Not assigned',
+          category_name: categoryMap.get(lead.category_id) || 'Not specified',
+          stage_name: stageMap.get(lead.stage) || `Stage ${lead.stage}`,
+          currency_symbol: getCurrencySymbol(lead.currency_id?.toString()),
+          amount: lead.total || 0,
+          cdate: lead.cdate, // Add cdate field for date filtering
+          contract_signed_date: leadToStage60DateMap.get(lead.id) || null, // Date when contract was signed (stage 60)
+          meeting_paid: lead.meeting_paid || false // Add meeting_paid field for categorization
+        }));
+
+        // Categorize leads based on payment plan availability, contract status, and meeting_paid status
+        // Note: We show leads at stage 60 and over stage 60 in noPaymentLeads
+        // But exclude stages 100, 105, and 110 from noPaymentLeads
+        // Also exclude leads where meeting_paid stage is reached (they go to paid meetings tab)
+        
+        const noPaymentLeads = processedLegacyLeads.filter(lead => {
+          const hasPaymentPlan = leadsWithPaymentPlans.has(lead.id);
+          const meetsStageCriteria = lead.stage && lead.stage >= 60 && ![100, 105, 110].includes(lead.stage);
+          const isMeetingPaid = lead.meeting_paid === true || lead.meeting_paid === "true" || lead.stage_name === 'meeting_paid';
+          const shouldInclude = !hasPaymentPlan && meetsStageCriteria && !isMeetingPaid;
+          
+          // Debug logging for first few leads
+          if (lead.id <= 5 || lead.id % 100 === 0) {
+            console.log(`🔍 Lead ${lead.id} (${lead.name}): stage=${lead.stage}, stage_name=${lead.stage_name}, hasPaymentPlan=${hasPaymentPlan}, meetsStageCriteria=${meetsStageCriteria}, meeting_paid=${isMeetingPaid}, shouldInclude=${shouldInclude}`);
+          }
+          
+          return shouldInclude;
+        });
+
+        const awaitingPaymentLeads = processedLegacyLeads.filter(lead => 
+          leadsWithPaymentPlans.has(lead.id) && lead.stage && lead.stage < 100 // Has payment plan but not completed
+        );
+
+        // Updated paid meetings logic: include leads with meeting_paid=true OR meeting_paid stage OR leads with payment plans meeting criteria
+        const paidMeetingsLeads = processedLegacyLeads.filter(lead => {
+          const hasPaymentPlan = leadsWithPaymentPlans.has(lead.id);
+          const meetsPaymentPlanCriteria = hasPaymentPlan && lead.stage && lead.stage >= 60 && lead.stage < 100 && lead.total && lead.total > 0;
+          const isMeetingPaid = lead.meeting_paid === true || lead.meeting_paid === "true" || lead.stage_name === 'meeting_paid';
+          
+          return meetsPaymentPlanCriteria || isMeetingPaid;
+        });
+
+        const paidCasesLeads = processedLegacyLeads.filter(lead => 
+          leadsWithPaymentPlans.has(lead.id) && lead.stage && lead.stage >= 100 // Has payment plan and completed
+        );
+
+        console.log('📊 Legacy leads categorized:', {
+          total: processedLegacyLeads.length,
+          noPayment: noPaymentLeads.length,
+          awaiting: awaitingPaymentLeads.length,
+          paidMeetings: paidMeetingsLeads.length,
+          paidCases: paidCasesLeads.length,
+          withPaymentPlans: leadsWithPaymentPlans.size,
+          withoutPaymentPlans: processedLegacyLeads.length - leadsWithPaymentPlans.size,
+          stage60Leads: processedLegacyLeads.filter(lead => lead.stage === 60).length,
+          stage60PlusLeads: processedLegacyLeads.filter(lead => lead.stage && lead.stage >= 60).length,
+          stage100Leads: processedLegacyLeads.filter(lead => lead.stage === 100).length,
+          stage105Leads: processedLegacyLeads.filter(lead => lead.stage === 105).length,
+          stage110Leads: processedLegacyLeads.filter(lead => lead.stage === 110).length,
+          excludedStages: processedLegacyLeads.filter(lead => [100, 105, 110].includes(lead.stage) && !leadsWithPaymentPlans.has(lead.id)).length,
+          meetingPaidLeads: processedLegacyLeads.filter(lead => lead.meeting_paid === true || lead.meeting_paid === "true" || lead.stage_name === 'meeting_paid').length
+        });
+
+        console.log('🔍 Sample no payment leads:', noPaymentLeads.slice(0, 3).map(lead => ({
+          id: lead.id,
+          name: lead.name,
+          stage: lead.stage,
+          stage_name: lead.stage_name,
+          contract_signed_date: lead.contract_signed_date,
+          hasPaymentPlan: leadsWithPaymentPlans.has(lead.id)
+        })));
+        
+        // Debug: Check what stage names are actually being assigned
+        console.log('🔍 Stage name debugging:');
+        noPaymentLeads.slice(0, 5).forEach(lead => {
+          console.log(`  Lead ${lead.id} (${lead.name}): stage=${lead.stage}, stage_name="${lead.stage_name}", stageMap.get(${lead.stage})="${stageMap.get(lead.stage)}"`);
+        });
+
+        console.log('🔍 Stage mapping sample:', Array.from(stageMap.entries()).slice(0, 5));
+        
+        // Debug: Check for meeting_paid stage
+        const meetingPaidStageId = Array.from(stageMap.entries()).find(([id, name]) => name === 'meeting_paid');
+        console.log('🔍 Meeting paid stage lookup:', meetingPaidStageId ? `ID: ${meetingPaidStageId[0]}, Name: ${meetingPaidStageId[1]}` : 'Not found');
+        
+        // Debug: Check how many leads have the meeting_paid stage
+        const leadsWithMeetingPaidStage = processedLegacyLeads.filter(lead => lead.stage_name === 'meeting_paid');
+        console.log('🔍 Leads with meeting_paid stage:', leadsWithMeetingPaidStage.length);
+        if (leadsWithMeetingPaidStage.length > 0) {
+          console.log('🔍 Sample leads with meeting_paid stage:', leadsWithMeetingPaidStage.slice(0, 3).map(lead => ({
+            id: lead.id,
+            name: lead.name,
+            stage: lead.stage,
+            stage_name: lead.stage_name
+          })));
+        }
+        
+        // Debug: Check how many leads have meeting_paid: "true" (string)
+        const leadsWithMeetingPaidTrue = processedLegacyLeads.filter(lead => lead.meeting_paid === "true");
+        console.log('🔍 Leads with meeting_paid: "true" (string):', leadsWithMeetingPaidTrue.length);
+        if (leadsWithMeetingPaidTrue.length > 0) {
+          console.log('🔍 Sample leads with meeting_paid: "true":', leadsWithMeetingPaidTrue.slice(0, 3).map(lead => ({
+            id: lead.id,
+            name: lead.name,
+            stage: lead.stage,
+            meeting_paid: lead.meeting_paid
+          })));
+        }
+
+        // Log breakdown of leads by stage and payment plan status
+        console.log('🔍 Detailed breakdown:');
+        const stageBreakdown = new Map();
+        processedLegacyLeads.forEach(lead => {
+          const stage = lead.stage || 'unknown';
+          const hasPaymentPlan = leadsWithPaymentPlans.has(lead.id);
+          const key = `Stage ${stage} (${hasPaymentPlan ? 'with' : 'without'} payment plan)`;
+          stageBreakdown.set(key, (stageBreakdown.get(key) || 0) + 1);
+        });
+        console.log('Stage breakdown:', Object.fromEntries(stageBreakdown));
+
+        setLegacyNoPaymentLeads(noPaymentLeads);
+        setLegacyAwaitingPayments(awaitingPaymentLeads);
+        setLegacyPaidMeetings(paidMeetingsLeads);
+        setLegacyPaidCases(paidCasesLeads);
+      }
+    } catch (error) {
+      console.error('❌ Error in fetchLegacyLeads:', error);
+    } finally {
+      setLegacyLeadsLoading(false);
     }
   };
 
@@ -286,47 +603,270 @@ const CollectionPage: React.FC = () => {
     fetchTotalPaidThisMonth();
   }, []); // Empty dependency array means this runs once on mount
 
+  // Fetch legacy leads when component mounts
+  useEffect(() => {
+    fetchLegacyLeads();
+  }, []); // Empty dependency array means this runs once on mount
+
   useEffect(() => {
     const fetchAwaitingPayments = async () => {
       setLoading(true);
-      // Fetch all payment_plans with a proforma, join to leads for lead_number and name
-      const { data, error } = await supabase
-        .from('payment_plans')
-        .select('id, lead_id, due_date, value, value_vat, proforma, payment_order, paid, client_name, leads:lead_id(lead_number, name)')
-        .not('proforma', 'is', null)
-        .order('due_date', { ascending: true });
-      if (error) {
+      
+      // Fetch legacy payment plan rows where actual_date IS NULL (payment hasn't been made yet)
+      console.log('🔍 Fetching awaiting payments from finances_paymentplanrow (legacy)...');
+      console.log('🔍 Filtering: paid=false, actual_date IS NULL, date NOT NULL, due_date NOT NULL');
+      const { data: legacyData, error: legacyError } = await supabase
+        .from('finances_paymentplanrow')
+        .select(`
+          id,
+          lead_id,
+          date,
+          due_date,
+          value,
+          value_base,
+          vat_value,
+          vat_value_base,
+          "order",
+          notes,
+          currency_id
+        `)
+        .is('actual_date', null) // Payment hasn't been made yet
+        .not('date', 'is', null) // Payment is scheduled
+        .not('due_date', 'is', null) // Only fetch payment plans with a due date
+        .order('date', { ascending: true });
+      
+      if (legacyError) {
+        console.log('❌ Error fetching legacy payment plans:', legacyError);
         setAwaitingPayments([]);
         setLoading(false);
         return;
       }
-      // Map to display format and filter out paid
-      const mapped = (data || [])
-        .filter((row: any) => !row.paid)
-        .map((row: any) => {
-        let proformaName = 'Proforma';
-        if (row.proforma) {
-          try {
-            const parsed = JSON.parse(row.proforma);
-            proformaName = parsed.proformaName || 'Proforma';
-          } catch {}
+      
+      console.log('✅ Legacy payment plans fetched:', legacyData?.length || 0);
+      
+      // Now fetch new payment plans from payment_plans table where paid = false
+      console.log('🔍 Fetching awaiting payments from payment_plans (new)...');
+      console.log('🔍 Filtering: paid=false, due_date NOT NULL');
+      const { data: newData, error: newError } = await supabase
+        .from('payment_plans')
+        .select(`
+          id,
+          lead_id,
+          date,
+          due_date,
+          value,
+          value_base,
+          value_vat,
+          vat_value_base,
+          "order",
+          notes,
+          currency_id,
+          client_name,
+          payment_order,
+          proforma,
+          currency
+        `)
+        .eq('paid', false) // Payment hasn't been made yet
+        .not('due_date', 'is', null) // Only fetch payment plans with a due date
+        .order('date', { ascending: true });
+      
+      if (newError) {
+        console.log('❌ Error fetching new payment plans:', newError);
+        setAwaitingPayments([]);
+        setLoading(false);
+        return;
+      }
+      
+      console.log('✅ New payment plans fetched:', newData?.length || 0);
+      
+      if (newData && newData.length > 0) {
+        console.log('🔍 Sample new payment plan columns:', Object.keys(newData[0]));
+        console.log('🔍 Sample new payment plan data:', newData[0]);
+      }
+      
+      // Combine both datasets
+      const allPaymentPlans = [
+        ...(legacyData || []).map(row => ({ ...row, source: 'legacy' })),
+        ...(newData || []).map(row => ({ ...row, source: 'new' }))
+      ];
+      
+      console.log('✅ Combined payment plans:', allPaymentPlans.length);
+      
+      if (allPaymentPlans.length === 0) {
+        setAwaitingPayments([]);
+        setLoading(false);
+        return;
+      }
+      
+      // Now fetch the lead information for these payment plans
+      if (allPaymentPlans && allPaymentPlans.length > 0) {
+        const leadIds = [...new Set(allPaymentPlans.map(row => row.lead_id))];
+        console.log('🔍 Fetching lead information for payment plan lead_ids:', leadIds.slice(0, 10));
+        
+        // Log some sample currency_ids to see what we're working with
+        const sampleCurrencyIds = allPaymentPlans.slice(0, 10).map(row => row.currency_id).filter(Boolean);
+        console.log('🔍 Sample currency_ids from payment plans:', sampleCurrencyIds);
+        
+        // Show the breakdown of currency_ids
+        const currencyIdCounts = allPaymentPlans.reduce((acc: any, row) => {
+          if (row.currency_id) {
+            acc[row.currency_id] = (acc[row.currency_id] || 0) + 1;
+          }
+          return acc;
+        }, {});
+        console.log('🔍 Currency ID breakdown:', currencyIdCounts);
+        
+        // Separate legacy and new lead IDs
+        const legacyLeadIds = allPaymentPlans
+          .filter(row => row.source === 'legacy')
+          .map(row => row.lead_id);
+        
+        const newLeadIds = allPaymentPlans
+          .filter(row => row.source === 'new' && row.lead_id)
+          .map(row => row.lead_id);
+        
+        console.log('🔍 Legacy lead IDs:', legacyLeadIds.length, 'New lead IDs:', newLeadIds.length);
+        
+        // Fetch legacy leads from leads_lead table
+        let legacyLeadData = null;
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyData, error: legacyLeadError } = await supabase
+            .from('leads_lead')
+            .select('id, name, lead_number')
+            .in('id', legacyLeadIds);
+          
+          if (legacyLeadError) {
+            console.log('❌ Error fetching legacy leads from leads_lead:', legacyLeadError);
+          } else {
+            console.log('✅ Legacy leads fetched from leads_lead:', legacyData?.length || 0);
+            legacyLeadData = legacyData;
+          }
         }
-        return {
-          id: row.id,
-          lead_number: row.leads?.lead_number || '',
-          name: row.leads?.name || '',
-          contact_name: row.client_name || row.leads?.name || '',
-          date: row.due_date,
-          total_amount: Number(row.value) + Number(row.value_vat),
-          proformaName,
-          order: row.payment_order || '',
-        };
-      });
-      setAwaitingPayments(mapped);
-      setLoading(false);
+        
+        // Fetch new leads from leads table
+        let newLeadData = null;
+        if (newLeadIds.length > 0) {
+          const { data: newData, error: newLeadError } = await supabase
+            .from('leads')
+            .select('id, name, lead_number')
+            .in('id', newLeadIds);
+          
+          if (newLeadError) {
+            console.log('❌ Error fetching new leads from leads:', newLeadError);
+          } else {
+            console.log('✅ New leads fetched from leads:', newData?.length || 0);
+            newLeadData = newData;
+          }
+        }
+        
+        // Create a combined map for quick lookup
+        const leadMap = new Map();
+        if (legacyLeadData) {
+          legacyLeadData.forEach(lead => {
+            leadMap.set(String(lead.id), { ...lead, source: 'legacy' });
+          });
+        }
+        if (newLeadData) {
+          newLeadData.forEach(lead => {
+            leadMap.set(String(lead.id), { ...lead, source: 'new' });
+          });
+        }
+        
+        console.log('🔍 Combined lead map created with', leadMap.size, 'entries');
+        
+        // Fetch currency information for all unique currency_ids
+        const currencyIds = [...new Set(allPaymentPlans.filter(row => row.currency_id).map(row => row.currency_id))];
+        console.log('🔍 Fetching currency information for currency_ids:', currencyIds.slice(0, 10));
+        
+        const { data: currencyData, error: currencyError } = await supabase
+          .from('accounting_currencies')
+          .select('id, name, iso_code')
+          .in('id', currencyIds);
+        
+        if (currencyError) {
+          console.log('❌ Error fetching currencies:', currencyError);
+        } else {
+          console.log('✅ Currencies fetched:', currencyData?.length || 0);
+          if (currencyData && currencyData.length > 0) {
+            console.log('🔍 Sample currencies:', currencyData.slice(0, 3).map(c => ({ id: c.id, name: c.name, iso_code: c.iso_code })));
+          }
+        }
+        
+        // Create a currency map for quick lookup
+        const currencyMap = new Map();
+        if (currencyData) {
+          currencyData.forEach(currency => {
+            currencyMap.set(currency.id, currency);
+          });
+        }
+        
+        console.log('🔍 Currency map created with', currencyMap.size, 'entries');
+        
+        // Map to display format using the fetched lead data
+        const mapped = allPaymentPlans.map((row: any) => {
+          let totalAmount, totalAmountBase, lead, currency, contactName, proformaName, order;
+          
+          if (row.source === 'legacy') {
+            // Legacy payment plan from finances_paymentplanrow
+            totalAmount = (Number(row.value) || 0) + (Number(row.vat_value) || 0);
+            totalAmountBase = (Number(row.value_base) || 0) + (Number(row.vat_value_base) || 0);
+            
+            // Try to find the lead information from the fetched leads
+            lead = leadMap.get(String(row.lead_id));
+            contactName = lead?.name || 'Unknown Lead';
+            proformaName = 'Payment Plan';
+            order = getOrderDescription(row.order) || '';
+          } else {
+            // New payment plan from payment_plans table
+            totalAmount = Number(row.value) || 0;
+            totalAmountBase = Number(row.value_base) || 0;
+            
+            // For new payment plans, try to get lead info first, fallback to client_name
+            lead = leadMap.get(String(row.lead_id));
+            contactName = lead?.name || row.client_name || 'Unknown Client';
+            proformaName = row.proforma || 'Payment Plan';
+            order = row.payment_order || getOrderDescription(row.order) || '';
+          }
+          
+          // Try to find the currency information
+          currency = currencyMap.get(row.currency_id);
+          
+          // Debug: Log the payment plan processing
+          if (row.id <= 5) { // Only log first 5 for debugging
+            console.log(`🔍 Payment plan ${row.id} (${row.source}): lead_id=${row.lead_id}, contact: ${contactName}`);
+            console.log(`🔍 Payment plan ${row.id}: currency_id=${row.currency_id}, found currency:`, currency ? `${currency.name} (${currency.iso_code})` : 'NOT FOUND');
+          }
+          
+          return {
+            id: row.id,
+            lead_number: row.source === 'legacy' ? (lead ? `L${lead.id}` : `L${row.lead_id}`) : `N${row.id}`,
+            name: row.source === 'legacy' ? (lead?.name || 'Unknown Lead') : row.client_name || 'Unknown Client',
+            contact_name: contactName,
+            date: row.date || row.due_date,
+            total_amount: totalAmount,
+            total_amount_base: totalAmountBase,
+            currency_symbol: currency?.name || '₪',
+            currency_code: currency?.iso_code || 'ILS',
+            proformaName: proformaName,
+            order: order,
+            currency_id: row.currency_id,
+            notes: row.notes || '',
+            lead_id: row.lead_id,
+            source: row.source
+          };
+        });
+        
+        setAwaitingPayments(mapped);
+        setLoading(false);
+      } else {
+        setAwaitingPayments([]);
+        setLoading(false);
+      }
+      
+
     };
     fetchAwaitingPayments();
-  }, []);
+  }, [legacyNoPaymentLeads, legacyPaidMeetings, legacyAwaitingPayments, legacyPaidCases]); // Re-run when legacy leads are populated
 
   // Helper to open drawer for a lead/meeting
   const handleOpenDrawer = (item: any) => {
@@ -435,11 +975,37 @@ const CollectionPage: React.FC = () => {
     );
   };
 
+  // Helper to convert order numbers to meaningful descriptions
+  const getOrderDescription = (orderNumber: number | string) => {
+    if (!orderNumber) return '';
+    const num = Number(orderNumber);
+    if (num === 1) return 'First Payment';
+    if (num === 2) return 'Second Payment';
+    if (num === 3) return 'Third Payment';
+    if (num === 4) return 'Fourth Payment';
+    if (num === 5) return 'Fifth Payment';
+    if (num === 6) return 'Sixth Payment';
+    if (num === 7) return 'Seventh Payment';
+    if (num === 8) return 'Eighth Payment';
+    if (num === 9) return 'Ninth Payment';
+    if (num === 10) return 'Tenth Payment';
+    return `Payment ${num}`;
+  };
+
   // Calculate the number of due soon payments
   const dueSoonCount = awaitingPayments.filter(row => isDueSoon(row.date)).length;
 
+  // Combine new and legacy awaiting payments
+  // Note: awaitingPayments now comes from finances_paymentplanrow directly
+  const combinedAwaitingPayments = [
+    ...awaitingPayments.map(payment => ({ 
+      ...payment, 
+      lead_type: 'legacy', // All payments from finances_paymentplanrow are legacy leads
+    }))
+  ];
+
   // Filtered awaiting payments
-  const filteredAwaitingPayments = awaitingPayments.filter(row => {
+  const filteredAwaitingPayments = combinedAwaitingPayments.filter(row => {
     let statusMatch = true;
     if (awaitingStatusFilter === 'due') statusMatch = !isOverdue(row.date) && !isDueSoon(row.date);
     if (awaitingStatusFilter === 'overdue') statusMatch = isOverdue(row.date);
@@ -470,6 +1036,46 @@ const CollectionPage: React.FC = () => {
     return statusMatch && dateMatch && searchMatch;
   });
 
+  // State for combined and filtered paid meetings
+  const [combinedPaidMeetings, setCombinedPaidMeetings] = useState<any[]>([]);
+  const [filteredPaidMeetings, setFilteredPaidMeetings] = useState<any[]>([]);
+
+  // Update combined and filtered paid meetings when dependencies change
+  useEffect(() => {
+    const combined = [
+      ...paidMeetings.map(meeting => ({ ...meeting, lead_type: 'new' })),
+      ...legacyPaidMeetings.map(lead => ({
+        ...lead,
+        lead_type: 'legacy',
+        date: lead.contract_signed_date || lead.cdate, // Use contract_signed_date if available, otherwise cdate
+        lead_number: `L${lead.id}`,
+        name: lead.name,
+        total: lead.total,
+        details: lead.meeting_paid === "true" ? 'Meeting Paid' : 'Payment Plan Available'
+      }))
+    ];
+
+    const filtered = combined.filter(row => {
+      // Add any filtering logic here if needed
+      return true; // For now, show all combined paid meetings
+    });
+
+    setCombinedPaidMeetings(combined);
+    setFilteredPaidMeetings(filtered);
+
+    // Debug: Log the counts for paid meetings
+    console.log('🔍 Paid Meetings Debug:', {
+      newPaidMeetings: paidMeetings.length,
+      legacyPaidMeetings: legacyPaidMeetings.length,
+      combinedPaidMeetings: combined.length,
+      filteredPaidMeetings: filtered.length
+    });
+    
+    // Debug: Log the actual arrays to see their content
+    console.log('🔍 combinedPaidMeetings array:', combined);
+    console.log('🔍 filteredPaidMeetings array:', filtered);
+  }, [paidMeetings, legacyPaidMeetings]);
+
   // Calculate the number of overdue payments
   const overdueCount = awaitingPayments.filter(row => isOverdue(row.date)).length;
 
@@ -477,7 +1083,22 @@ const CollectionPage: React.FC = () => {
   const [paidCasesDateFilter, setPaidCasesDateFilter] = useState('');
   const [paidCasesSearch, setPaidCasesSearch] = useState('');
 
-  const filteredPaidCases = paidCases.filter(row => {
+  // Combine new and legacy paid cases
+  const combinedPaidCases = [
+    ...paidCases.map(case_ => ({ ...case_, lead_type: 'new' })),
+    ...legacyPaidCases.map(lead => ({
+      ...lead,
+      lead_type: 'legacy',
+      leads: { lead_number: lead.lead_number, name: lead.name },
+      client_name: lead.expert_name,
+      paid_at: lead.cdate,
+      value: lead.amount,
+      value_vat: 0,
+      payment_order: lead.category_name
+    }))
+  ];
+
+  const filteredPaidCases = combinedPaidCases.filter(row => {
     let orderMatch = true;
     if (paidCasesOrderFilter !== 'all') orderMatch = (row.payment_order || '').toLowerCase() === paidCasesOrderFilter.toLowerCase();
     let dateMatch = true;
@@ -516,10 +1137,18 @@ const CollectionPage: React.FC = () => {
   const [noPaymentComments, setNoPaymentComments] = useState('all');
   const [noPaymentSearch, setNoPaymentSearch] = useState('');
 
-  const filteredNoPaymentLeads = leads.filter(lead => {
+  // Combine new leads and legacy leads for no payment plan
+  const combinedNoPaymentLeads = [
+    ...leads.map(lead => ({ ...lead, lead_type: 'new' })),
+    ...legacyNoPaymentLeads
+  ];
+
+  const filteredNoPaymentLeads = combinedNoPaymentLeads.filter(lead => {
     let dateMatch = true;
     if (noPaymentDateFrom || noPaymentDateTo) {
-      const rowDate = lead.date_signed ? new Date(lead.date_signed) : null;
+      const rowDate = lead.date_signed ? new Date(lead.date_signed) : 
+                     lead.lead_type === 'legacy' && lead.contract_signed_date ? new Date(lead.contract_signed_date) :
+                     lead.cdate ? new Date(lead.cdate) : null;
       dateMatch = !!rowDate;
       if (dateMatch && noPaymentDateFrom && rowDate) {
         const fromDate = new Date(noPaymentDateFrom);
@@ -540,7 +1169,9 @@ const CollectionPage: React.FC = () => {
       const q = noPaymentSearch.trim().toLowerCase();
       searchMatch = (
         (lead.lead_number && lead.lead_number.toLowerCase().includes(q)) ||
-        (lead.name && lead.name.toLowerCase().includes(q))
+        (lead.name && lead.name.toLowerCase().includes(q)) ||
+        (lead.expert_name && lead.expert_name.toLowerCase().includes(q)) ||
+        (lead.category_name && lead.category_name.toLowerCase().includes(q))
       );
     }
     return dateMatch && labelMatch && commentsMatch && searchMatch;
@@ -870,7 +1501,7 @@ const CollectionPage: React.FC = () => {
               <input
                 type="text"
                 className="input input-bordered w-full"
-                placeholder="Search by lead #, client, contact, proforma..."
+                placeholder="Search by lead #, client, contact, payment plan..."
                 value={noPaymentSearch}
                 onChange={e => setNoPaymentSearch(e.target.value)}
               />
@@ -954,22 +1585,35 @@ const CollectionPage: React.FC = () => {
                     <div className="flex justify-between items-center py-1">
                       <span className="text-xs font-semibold text-gray-500">Stage</span>
                       <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
-                        {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A'}
+                        {lead.lead_type === 'legacy' 
+                          ? (lead.stage_name || `Stage ${lead.stage}`)
+                          : (lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A')
+                        }
                       </span>
                     </div>
                     <div className="space-y-2 divide-y divide-gray-100">
                       {/* Date Signed */}
                       <div className="flex justify-between items-center py-1">
                         <span className="text-xs font-semibold text-gray-500">Date Signed</span>
-                        <span className="text-sm font-bold text-gray-800 ml-2">{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : '-'}</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">
+                          {lead.lead_type === 'legacy' && lead.contract_signed_date 
+                            ? new Date(lead.contract_signed_date).toLocaleDateString()
+                            : lead.date_signed 
+                            ? new Date(lead.date_signed).toLocaleDateString() 
+                            : '-'
+                          }
+                        </span>
                       </div>
                       {/* Total Amount */}
                       <div className="flex justify-between items-center py-1">
                         <span className="text-xs font-semibold text-gray-500">Total Amount</span>
                         <span className="text-sm font-bold text-gray-800 ml-2">
-                          {lead.balance !== undefined && lead.balance !== null
-                            ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
-                            : 'N/A'}
+                          {lead.lead_type === 'legacy'
+                            ? (lead.total ? `${lead.currency_symbol || '₪'}${Number(lead.total).toLocaleString()}` : 'N/A')
+                            : (lead.balance !== undefined && lead.balance !== null
+                              ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
+                              : 'N/A')
+                          }
                         </span>
                       </div>
                       {/* Details */}
@@ -1053,7 +1697,7 @@ const CollectionPage: React.FC = () => {
               <input
                 type="text"
                 className="input input-bordered w-full"
-                placeholder="Search by lead #, client, contact, proforma..."
+                placeholder="Search by lead #, client, contact, payment plan..."
                 value={awaitingSearch}
                 onChange={e => setAwaitingSearch(e.target.value)}
               />
@@ -1090,7 +1734,8 @@ const CollectionPage: React.FC = () => {
                     <th className="text-lg font-bold">Date</th>
                     <th className="text-lg font-bold">Total Amount</th>
                     <th className="text-lg font-bold">Order</th>
-                    <th className="text-lg font-bold">Proforma</th>
+                    <th className="text-lg font-bold">Payment Plan</th>
+                    <th className="text-lg font-bold">Source</th>
                     <th className="text-lg font-bold">Actions</th>
                   </tr>
                 </thead>
@@ -1106,15 +1751,21 @@ const CollectionPage: React.FC = () => {
                       <td>{row.name}</td>
                       <td className="font-semibold text-purple-600">{row.contact_name}</td>
                       <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
-                      <td>{row.total_amount ? `₪${row.total_amount.toLocaleString()}` : '-'}</td>
+                      <td>{row.total_amount ? `${row.currency_symbol || '₪'}${row.total_amount.toLocaleString()}` : '-'}</td>
                       <td>{row.order || '-'}</td>
                       <td>
-                        <button
-                          className="btn btn-sm btn-outline btn-primary"
-                          onClick={() => navigate(`/proforma/${row.id}`)}
-                        >
+                        <span className="text-sm font-bold text-blue-600">
                           {row.proformaName}
-                        </button>
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                          row.source === 'legacy' 
+                            ? 'bg-orange-100 text-orange-700 border border-orange-200' 
+                            : 'bg-blue-100 text-blue-700 border border-blue-200'
+                        }`}>
+                          {row.source === 'legacy' ? 'Legacy' : 'New'}
+                        </span>
                       </td>
                       <td>
                         {/* Dollar icon button to mark as paid and remove row */}
@@ -1165,7 +1816,7 @@ const CollectionPage: React.FC = () => {
                       <div className="flex justify-between items-center py-1">
                         <span className="text-xs font-semibold text-gray-500">Total Amount</span>
                         <span className="text-sm font-bold text-gray-800 ml-2">
-                          {row.total_amount ? `₪${row.total_amount.toLocaleString()}` : 'N/A'}
+                          {row.total_amount ? `${row.currency_symbol || '₪'}${row.total_amount.toLocaleString()}` : 'N/A'}
                         </span>
                       </div>
                       {/* Order */}
@@ -1173,18 +1824,23 @@ const CollectionPage: React.FC = () => {
                         <span className="text-xs font-semibold text-gray-500">Order</span>
                         <span className="text-sm font-bold text-gray-800 ml-2">{row.order || '-'}</span>
                       </div>
-                      {/* Proforma */}
+                      {/* Payment Plan */}
                       <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Proforma</span>
-                        <button 
-                          className="text-sm font-bold text-blue-600 hover:text-blue-800 cursor-pointer underline ml-2"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(`/proforma/${row.id}`);
-                          }}
-                        >
+                        <span className="text-xs font-semibold text-gray-500">Payment Plan</span>
+                        <span className="text-sm font-bold text-blue-600 ml-2">
                           {row.proformaName}
-                        </button>
+                        </span>
+                      </div>
+                      {/* Source */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Source</span>
+                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                          row.source === 'legacy' 
+                            ? 'bg-orange-100 text-orange-700 border border-orange-200' 
+                            : 'bg-blue-100 text-blue-700 border border-blue-200'
+                        }`}>
+                          {row.source === 'legacy' ? 'Legacy' : 'New'}
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -1195,196 +1851,205 @@ const CollectionPage: React.FC = () => {
         </>
       )}
       {tab === 'paid' && (
-        paidMeetings.length === 0 ? (
-          <div className="text-center text-gray-500 mt-12">No paid meetings found.</div>
-        ) : viewMode === 'list' ? (
-          <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
-            <table className="table w-full">
-              <thead>
-                <tr>
-                  <th className="text-lg font-bold">&nbsp;</th>
-                  <th className="text-lg font-bold">Lead</th>
-                  <th className="text-lg font-bold">Client Name</th>
-                  <th className="text-lg font-bold">Date</th>
-                  <th className="text-lg font-bold">Total</th>
-                  <th className="text-lg font-bold">Details</th>
-                </tr>
-              </thead>
-              <tbody className="text-base">
-                {paidMeetings.map((row) => (
-                  <tr key={row.id}>
-                    <td>
-                      <span className="flex items-center gap-2">
-                        <CurrencyDollarIcon className="w-5 h-5 text-green-600" />
-                        <CalendarIcon className="w-5 h-5 text-blue-500" />
-                      </span>
-                    </td>
-                    <td className="font-bold text-primary">{row.lead_number}</td>
-                    <td>{row.name}</td>
-                    <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
-                    <td>{row.total ? `₪${row.total.toLocaleString()}` : '-'}</td>
-                    <td>{row.details}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full">
-            {paidMeetings.map((row) => (
-              <div 
-                key={row.id} 
-                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
-                onClick={() => handleOpenDrawer(row)}
-              >
-                {row.collection_label && (
-                  <div className="flex justify-end">
-                    <span className="mt-[-18px] mb-2 px-3 py-1 rounded-full font-bold text-xs shadow bg-white border-2 border-[#3b28c7] text-[#3b28c7]">
-                      {row.collection_label}
-                    </span>
-                  </div>
-                )}
-                <div className="flex-1 flex flex-col">
-                  {/* Lead Number and Name */}
-                  <div className="mb-3 flex items-center gap-2">
-                    <span className="flex items-center gap-2">
-                      <CurrencyDollarIcon className="w-5 h-5 text-green-600" />
-                      <CalendarIcon className="w-5 h-5 text-blue-500" />
-                    </span>
-                    <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.lead_number}</span>
-                    <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                    <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{row.name}</span>
-                  </div>
-                  <div className="space-y-2 divide-y divide-gray-100">
-                    {/* Date */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Date</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">{row.date ? new Date(row.date).toLocaleDateString() : '-'}</span>
-                    </div>
-                    {/* Total */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Total</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">
-                        {row.total ? `${getCurrencySymbol()}${row.total.toLocaleString()}` : 'N/A'}
-                      </span>
-                    </div>
-                    {/* Details */}
-                    <div className="flex justify-between items-center py-1">
-                      <span className="text-xs font-semibold text-gray-500">Details</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">{row.details}</span>
-                    </div>
-                  </div>
-                </div>
-                {row.collection_comments && row.collection_comments.length > 0 && (
-                  <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
-                    <div className="flex items-start gap-2">
-                      <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
-                      </div>
-                      <div className="relative bg-white border border-base-200 rounded-2xl px-4 py-2 shadow-md text-sm text-base-content/90" style={{minWidth: '120px'}}>
-                        <div className="font-medium leading-snug max-w-xs truncate" title={row.collection_comments[row.collection_comments.length - 1].text}>{row.collection_comments[row.collection_comments.length - 1].text}</div>
-                        <div className="text-[11px] text-base-content/50 text-right mt-1">
-                          {row.collection_comments[row.collection_comments.length - 1].user} · {new Date(row.collection_comments[row.collection_comments.length - 1].timestamp).toLocaleString()}
-                        </div>
-                        <div className="absolute left-[-10px] bottom-2 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-white border-l-0"></div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )
-      )}
-      {tab === 'paid_cases' && (
         <>
-          <div className="space-y-4 mb-6">
-            {/* Order Filter */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Order:</label>
-              <select
-                className="select select-bordered w-full md:w-auto"
-                value={paidCasesOrderFilter}
-                onChange={e => setPaidCasesOrderFilter(e.target.value)}
-              >
-                <option value="all">All</option>
-                <option value="first payment">First Payment</option>
-                <option value="intermediate payment">Intermediate Payment</option>
-                <option value="one payment">One Payment</option>
-                <option value="final payment">Final Payment</option>
-              </select>
-            </div>
-            
-            {/* Date Range */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Date Paid:</label>
-              <div className="flex flex-col sm:flex-row gap-2 w-full">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-                  <span className="text-xs text-gray-500 sm:hidden">From:</span>
-                  <input
-                    type="date"
-                    className="input input-bordered input-sm w-full"
-                    value={paidCasesDateFrom}
-                    onChange={e => setPaidCasesDateFrom(e.target.value)}
-                  />
-                </div>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-                  <span className="text-xs text-gray-500 sm:hidden">To:</span>
-                  <input
-                    type="date"
-                    className="input input-bordered input-sm w-full"
-                    value={paidCasesDateTo}
-                    onChange={e => setPaidCasesDateTo(e.target.value)}
-                  />
-                </div>
-              </div>
-            </div>
-            
-            {/* Search Bar */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
-              <input
-                type="text"
-                className="input input-bordered w-full"
-                placeholder="Search by lead #, client, contact, proforma..."
-                value={paidCasesSearch}
-                onChange={e => setPaidCasesSearch(e.target.value)}
-              />
-            </div>
-            
-            {/* Clear Filters Button */}
-            <div className="flex justify-start">
-              <button
-                className="btn btn-outline btn-sm"
-                onClick={() => {
-                  setPaidCasesOrderFilter('all');
-                  setPaidCasesDateFrom('');
-                  setPaidCasesDateTo('');
-                  setPaidCasesSearch('');
-                }}
-              >
-                Clear Filters
-              </button>
-            </div>
-          </div>
-          {loading ? (
-            <div className="text-center text-gray-500 mt-12">Loading...</div>
-          ) : filteredPaidCases.length === 0 ? (
-            <div className="text-center text-gray-500 mt-12">No paid cases found.</div>
+          {filteredPaidMeetings.length === 0 ? (
+            <div className="text-center text-gray-500 mt-12">No paid meetings found.</div>
           ) : viewMode === 'list' ? (
             <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
               <table className="table w-full">
                 <thead>
                   <tr>
+                    <th className="text-lg font-bold">&nbsp;</th>
                     <th className="text-lg font-bold">Lead</th>
                     <th className="text-lg font-bold">Client Name</th>
-                    <th className="text-lg font-bold">Contact Name</th>
-                    <th className="text-lg font-bold">Date Paid</th>
-                    <th className="text-lg font-bold">Amount (with VAT)</th>
-                    <th className="text-lg font-bold">Order</th>
-                    <th className="text-lg font-bold">Invoice</th>
+                    <th className="text-lg font-bold">Date</th>
+                    <th className="text-lg font-bold">Total</th>
+                    <th className="text-lg font-bold">Details</th>
                   </tr>
                 </thead>
+                <tbody className="text-base">
+                  {filteredPaidMeetings.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <span className="flex items-center gap-2">
+                          <CurrencyDollarIcon className="w-5 h-5 text-green-600" />
+                          <CalendarIcon className="w-5 h-5 text-blue-500" />
+                          {row.lead_type === 'legacy' && (
+                            <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Legacy</span>
+                          )}
+                        </span>
+                      </td>
+                      <td className="font-bold text-primary">{row.lead_number}</td>
+                      <td>{row.name}</td>
+                      <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
+                      <td>{row.total ? `₪${row.total.toLocaleString()}` : '-'}</td>
+                      <td>{row.details}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full">
+              {filteredPaidMeetings.map((row) => (
+                <div 
+                  key={row.id} 
+                  className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[300px] relative pb-8 cursor-pointer"
+                  onClick={() => handleOpenDrawer(row)}
+                >
+                  {row.collection_label && (
+                    <div className="flex justify-end">
+                      <span className="mt-[-18px] mb-2 px-3 py-1 rounded-full font-bold text-xs shadow bg-white border-2 border-[#3b28c7] text-[#3b28c7]">
+                        {row.collection_label}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex-1 flex flex-col">
+                    {/* Lead Number and Name */}
+                    <div className="mb-3 flex items-center gap-2">
+                      <span className="flex items-center gap-2">
+                        <CurrencyDollarIcon className="w-5 h-5 text-green-600" />
+                        <CalendarIcon className="w-5 h-5 text-blue-500" />
+                        {row.lead_type === 'legacy' && (
+                          <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Legacy</span>
+                        )}
+                      </span>
+                      <span className="text-xs font-semibold text-gray-400 tracking-widest">{row.lead_number}</span>
+                      <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                      <span className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{row.name}</span>
+                    </div>
+                    <div className="space-y-2 divide-y divide-gray-100">
+                      {/* Date */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Date</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">{row.date ? new Date(row.date).toLocaleDateString() : '-'}</span>
+                      </div>
+                      {/* Total */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Total</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">
+                          {row.total ? `₪${row.total.toLocaleString()}` : 'N/A'}
+                        </span>
+                      </div>
+                      {/* Details */}
+                      <div className="flex justify-between items-center py-1">
+                        <span className="text-xs font-semibold text-gray-500">Details</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">{row.details}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {row.collection_comments && row.collection_comments.length > 0 && (
+                    <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
+                      <div className="flex items-start gap-2">
+                        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
+                        </div>
+                        <div className="relative bg-white border border-base-200 rounded-2xl px-4 py-2 shadow-md text-sm text-base-content/90" style={{minWidth: '120px'}}>
+                          <div className="font-medium leading-snug max-w-xs truncate" title={row.collection_comments[row.collection_comments.length - 1].text}>{row.collection_comments[row.collection_comments.length - 1].text}</div>
+                          <div className="text-[11px] text-base-content/50 text-right mt-1">
+                            {row.collection_comments[row.collection_comments.length - 1].user} · {new Date(row.collection_comments[row.collection_comments.length - 1].timestamp).toLocaleString()}
+                          </div>
+                          <div className="absolute left-[-10px] bottom-2 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-white border-l-0"></div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+  
+  {tab === 'paid_cases' && (
+    <>
+      <div className="space-y-4 mb-6">
+        {/* Order Filter */}
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+          <label className="font-semibold text-sm whitespace-nowrap">Order:</label>
+          <select
+            className="select select-bordered w-full md:w-auto"
+            value={paidCasesOrderFilter}
+            onChange={e => setPaidCasesOrderFilter(e.target.value)}
+          >
+            <option value="all">All</option>
+            <option value="first payment">First Payment</option>
+            <option value="intermediate payment">Intermediate Payment</option>
+            <option value="one payment">One Payment</option>
+            <option value="final payment">Final Payment</option>
+          </select>
+        </div>
+        
+        {/* Date Range */}
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+          <label className="font-semibold text-sm whitespace-nowrap">Date Paid:</label>
+          <div className="flex flex-col sm:flex-row gap-2 w-full">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+              <span className="text-xs text-gray-500 sm:hidden">From:</span>
+              <input
+                type="date"
+                className="input input-bordered input-sm w-full"
+                value={paidCasesDateFrom}
+                onChange={e => setPaidCasesDateFrom(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
+              <span className="text-xs text-gray-500 sm:hidden">To:</span>
+              <input
+                type="date"
+                className="input input-bordered input-sm w-full"
+                value={paidCasesDateTo}
+                onChange={e => setPaidCasesDateTo(e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+        
+        {/* Search Bar */}
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
+          <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
+          <input
+            type="text"
+            className="input input-bordered w-full"
+            placeholder="Search by lead #, client, contact, proforma..."
+            value={paidCasesSearch}
+            onChange={e => setPaidCasesSearch(e.target.value)}
+          />
+        </div>
+        
+        {/* Clear Filters Button */}
+        <div className="flex justify-start">
+          <button
+            className="btn btn-outline btn-sm"
+            onClick={() => {
+              setPaidCasesOrderFilter('all');
+              setPaidCasesDateFrom('');
+              setPaidCasesDateTo('');
+              setPaidCasesSearch('');
+            }}
+          >
+            Clear Filters
+          </button>
+        </div>
+      </div>
+      {loading ? (
+        <div className="text-center text-gray-500 mt-12">Loading...</div>
+      ) : filteredPaidCases.length === 0 ? (
+        <div className="text-center text-gray-500 mt-12">No paid cases found.</div>
+      ) : viewMode === 'list' ? (
+        <div className="overflow-x-auto bg-white rounded-2xl shadow-lg p-6 w-full">
+          <table className="table w-full">
+            <thead>
+              <tr>
+                <th className="text-lg font-bold">Lead</th>
+                <th className="text-lg font-bold">Client Name</th>
+                <th className="text-lg font-bold">Contact Name</th>
+                <th className="text-lg font-bold">Date Paid</th>
+                <th className="text-lg font-bold">Amount (with VAT)</th>
+                <th className="text-lg font-bold">Order</th>
+                <th className="text-lg font-bold">Invoice</th>
+              </tr>
+            </thead>
                 <tbody className="text-base">
                   {filteredPaidCases.map((row) => {
                     let proforma = null;

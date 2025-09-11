@@ -265,12 +265,29 @@ export const sendEmail = async (accessToken: string, email: {
   subject: string;
   body: string;
 }) => {
+  // Get the user's email signature from the database
+  const { getCurrentUserEmailSignature } = await import('./emailSignature');
+  const userSignature = await getCurrentUserEmailSignature();
+  
+  // Handle signature (HTML or plain text)
+  let fullBody = email.body;
+  if (userSignature) {
+    // Check if signature is already HTML
+    if (userSignature.includes('<') && userSignature.includes('>')) {
+      fullBody = email.body + `<br><br>${userSignature}`;
+    } else {
+      // Convert plain text to HTML
+      const signatureHtml = `<br><br>${userSignature.replace(/\n/g, '<br>')}`;
+      fullBody = email.body + signatureHtml;
+    }
+  }
+
   const emailToSend = {
     message: {
       subject: email.subject,
       body: {
         contentType: 'HTML',
-        content: email.body,
+        content: fullBody,
       },
       toRecipients: [
         {

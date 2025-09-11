@@ -13,6 +13,8 @@ import {
   EnvelopeIcon,
   DevicePhoneMobileIcon
 } from '@heroicons/react/24/outline';
+import EmployeeAvailability from '../components/EmployeeAvailability';
+import OutlookSignature from '../components/OutlookSignature';
 
 interface SettingsSection {
   id: string;
@@ -34,6 +36,7 @@ interface SettingItem {
 
 const SettingsPage: React.FC = () => {
   const [activeSection, setActiveSection] = useState('appearance');
+  const [activeCalendarTab, setActiveCalendarTab] = useState('availability');
   const [settings, setSettings] = useState<Record<string, any>>({
     // Appearance Settings
     theme: localStorage.getItem('theme') || 'light',
@@ -54,12 +57,6 @@ const SettingsPage: React.FC = () => {
     defaultCurrency: localStorage.getItem('defaultCurrency') || 'EUR',
     proposalTemplate: localStorage.getItem('proposalTemplate') || 'standard',
     
-    // Calendar Settings
-    calendarSync: localStorage.getItem('calendarSync') !== 'false',
-    meetingDuration: parseInt(localStorage.getItem('meetingDuration') || '60'),
-    bufferTime: parseInt(localStorage.getItem('bufferTime') || '15'),
-    workingHoursStart: localStorage.getItem('workingHoursStart') || '09:00',
-    workingHoursEnd: localStorage.getItem('workingHoursEnd') || '17:00',
     
     // Security Settings
     sessionTimeout: parseInt(localStorage.getItem('sessionTimeout') || '480'),
@@ -215,47 +212,7 @@ const SettingsPage: React.FC = () => {
       id: 'calendar',
       title: 'Calendar & Meetings',
       icon: CalendarIcon,
-      items: [
-        {
-          id: 'calendarSync',
-          label: 'Calendar Sync',
-          description: 'Sync with Microsoft Outlook calendar',
-          type: 'toggle',
-          value: settings.calendarSync
-        },
-        {
-          id: 'meetingDuration',
-          label: 'Default Meeting Duration (minutes)',
-          description: 'Default duration for new meetings',
-          type: 'number',
-          value: settings.meetingDuration,
-          min: 15,
-          max: 240
-        },
-        {
-          id: 'bufferTime',
-          label: 'Buffer Time (minutes)',
-          description: 'Time buffer between meetings',
-          type: 'number',
-          value: settings.bufferTime,
-          min: 0,
-          max: 60
-        },
-        {
-          id: 'workingHoursStart',
-          label: 'Working Hours Start',
-          description: 'Start of working day',
-          type: 'input',
-          value: settings.workingHoursStart
-        },
-        {
-          id: 'workingHoursEnd',
-          label: 'Working Hours End',
-          description: 'End of working day',
-          type: 'input',
-          value: settings.workingHoursEnd
-        }
-      ]
+      items: []
     },
     {
       id: 'security',
@@ -485,6 +442,56 @@ const SettingsPage: React.FC = () => {
                       {renderSettingItem(item)}
                     </div>
                   ))}
+                  
+                  {/* Special case for Calendar section - add tabbed interface */}
+                  {activeSection === 'calendar' && (
+                    <div className="bg-base-100 dark:bg-base-300 rounded-lg p-4">
+                      {/* Tab Navigation */}
+                      <div className="flex border-b border-base-300 mb-6">
+                        <button
+                          className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                            activeCalendarTab === 'availability'
+                              ? 'border-primary text-primary'
+                              : 'border-transparent text-base-content/70 hover:text-base-content'
+                          }`}
+                          onClick={() => setActiveCalendarTab('availability')}
+                        >
+                          <CalendarIcon className="w-4 h-4 inline mr-2" />
+                          Availability
+                        </button>
+                        <button
+                          className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                            activeCalendarTab === 'outlook'
+                              ? 'border-primary text-primary'
+                              : 'border-transparent text-base-content/70 hover:text-base-content'
+                          }`}
+                          onClick={() => setActiveCalendarTab('outlook')}
+                        >
+                          <EnvelopeIcon className="w-4 h-4 inline mr-2" />
+                          Outlook
+                        </button>
+                      </div>
+                      
+                      {/* Tab Content */}
+                      {activeCalendarTab === 'availability' && (
+                        <div>
+                          <div className="mb-4">
+                            <h3 className="text-lg font-semibold text-base-content mb-2">Employee Availability</h3>
+                            <p className="text-base-content/70 text-sm">
+                              Manage your unavailable times and sync with Microsoft Outlook calendar.
+                            </p>
+                          </div>
+                          <EmployeeAvailability />
+                        </div>
+                      )}
+                      
+                      {activeCalendarTab === 'outlook' && (
+                        <div>
+                          <OutlookSignature />
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             )}

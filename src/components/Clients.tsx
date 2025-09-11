@@ -173,11 +173,8 @@ async function fetchCurrentUserFullName() {
     const { data: { user } } = await supabase.auth.getUser();
     
     if (!user?.email) {
-      console.log('No authenticated user found');
       return 'System User';
     }
-    
-    console.log('Current user email:', user.email);
     
     // Get user from users table
     const { data: userData, error } = await supabase
@@ -187,32 +184,23 @@ async function fetchCurrentUserFullName() {
       .single();
     
     if (error) {
-      console.log('Error fetching user from users table:', error);
       return user.email;
     }
     
     if (userData) {
-      console.log('User data from DB:', userData);
       if (userData.full_name) {
-        console.log('Using full_name:', userData.full_name);
         return userData.full_name;
       } else if (userData.first_name && userData.last_name) {
-        const name = `${userData.first_name} ${userData.last_name}`;
-        console.log('Using first_name + last_name:', name);
-        return name;
+        return `${userData.first_name} ${userData.last_name}`;
       } else if (userData.first_name) {
-        console.log('Using first_name:', userData.first_name);
         return userData.first_name;
       } else if (userData.last_name) {
-        console.log('Using last_name:', userData.last_name);
         return userData.last_name;
       } else {
-        console.log('Using email as fallback:', userData.email);
         return userData.email;
       }
     }
     
-    console.log('No user data found, using email:', user.email);
     return user.email;
   } catch (error) {
     console.error('Error getting current user name:', error);
@@ -225,13 +213,7 @@ const Clients: React.FC<ClientsProps> = ({
   setSelectedClient,
   refreshClientData,
 }) => {
-  console.log('🔍 Clients component rendering with selectedClient:', selectedClient);
-  if (selectedClient) {
-    console.log('🔍 selectedClient.stage:', selectedClient.stage);
-    console.log('🔍 selectedClient.deactivate_note:', selectedClient.deactivate_note);
-    console.log('🔍 selectedClient.lead_type:', selectedClient.lead_type);
-    console.log('🔍 selectedClient keys:', Object.keys(selectedClient));
-  }
+  // Removed excessive console.log statements for performance
   // State to store all employees for name lookup
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   // State to store all categories for name lookup
@@ -343,6 +325,7 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Local loading state for client data
   const [localLoading, setLocalLoading] = useState(true);
+  const [backgroundLoading, setBackgroundLoading] = useState(false);
 
   // Fetch all employees and categories for name lookup
   useEffect(() => {
@@ -779,15 +762,16 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [selectedClient?.id, setSelectedClient]);
 
+  // Essential data loading for initial page display
   useEffect(() => {
     let isMounted = true;
-    const fetchClient = async () => {
-      console.log('🚀 fetchClient STARTED');
+    const fetchEssentialData = async () => {
+      console.log('🚀 fetchEssentialData STARTED');
       setLocalLoading(true);
-      console.log('🔍 fetchClient called with lead_number:', lead_number);
+      console.log('🔍 fetchEssentialData called with lead_number:', lead_number);
       console.log('🔍 fullLeadNumber:', fullLeadNumber);
       if (lead_number) {
-        console.log('Fetching client with lead_number:', fullLeadNumber);
+        console.log('Fetching essential client data with lead_number:', fullLeadNumber);
         
         // Try to find the lead in both tables
         let clientData = null;
@@ -978,156 +962,109 @@ const Clients: React.FC<ClientsProps> = ({
       if (isMounted) setLocalLoading(false);
     };
 
-    fetchClient();
-    // Fetch categories for Edit Lead drawer
-    const fetchCategories = async () => {
+    fetchEssentialData();
+    
+    return () => { isMounted = false; };
+  }, [lead_number, navigate, setSelectedClient, fullLeadNumber]); // Removed selectedClient dependencies to prevent infinite loops
+
+  // Background loading for non-essential data (runs after essential data is loaded)
+  useEffect(() => {
+    const loadBackgroundData = async () => {
+      setBackgroundLoading(true);
       try {
-        const { data, error } = await supabase.from('sub_categories').select('name');
-        if (!error && data) {
-          const names = data.map((row: any) => row.name).filter(Boolean);
+        // Fetch all non-essential data in parallel for better performance
+        const [categoriesResult, sourcesResult, languagesResult, currenciesResult, meetingLocationsResult] = await Promise.all([
+          supabase.from('sub_categories').select('name'),
+          supabase.from('sources').select('name'),
+          supabase.from('misc_language').select('name'),
+          // Fetch currencies (try both tables)
+          Promise.all([
+            supabase.from('currencies').select('id, front_name, iso_code, name').order('id'),
+            supabase.from('accounting_currencies').select('id, name, iso_code').order('id')
+          ]).then(([newCurrencies, legacyCurrencies]) => ({ newCurrencies, legacyCurrencies })),
+          supabase.from('meeting_locations').select('id, name').eq('is_active', true).order('order_value', { ascending: true })
+        ]);
+        
+        // Process dropdown data results
+        if (!categoriesResult.error && categoriesResult.data) {
+          const names = categoriesResult.data.map((row: any) => row.name).filter(Boolean);
           setMainCategories(names);
         }
-      } catch {
-        // ignore
-      }
-    };
-    fetchCategories();
-    // Fetch sources for Edit Lead drawer
-    const fetchSources = async () => {
-      try {
-        const { data, error } = await supabase.from('sources').select('name');
-        if (!error && data) {
-          const names = data.map((row: any) => row.name).filter(Boolean);
+        
+        if (!sourcesResult.error && sourcesResult.data) {
+          const names = sourcesResult.data.map((row: any) => row.name).filter(Boolean);
           setSources(names);
         }
-      } catch {
-        // ignore
-      }
-    };
-    fetchSources();
-    // Fetch languages for Edit Lead drawer
-    const fetchLanguages = async () => {
-      try {
-        const { data, error } = await supabase.from('misc_language').select('name');
-        if (!error && data) {
-          const names = data.map((row: any) => row.name).filter(Boolean);
+        
+        if (!languagesResult.error && languagesResult.data) {
+          const names = languagesResult.data.map((row: any) => row.name).filter(Boolean);
           setLanguagesList(names);
         }
-      } catch {
-        // ignore
-      }
-    };
-    fetchLanguages();
-    
-    // Fetch currencies for Edit Lead drawer
-    const fetchCurrencies = async () => {
-      try {
-        // Check if this is a legacy lead to determine which currency table to use
-        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
         
-        if (isLegacyLead) {
-          // For legacy leads, fetch from accounting_currencies table
-          console.log('Fetching currencies for legacy lead from accounting_currencies table');
-          const { data, error } = await supabase
-            .from('accounting_currencies')
-            .select('id, name, iso_code')
-            .order('id');
-          
-          console.log('accounting_currencies query result:', { data, error });
-          
-          if (error) {
-            console.error('Error fetching accounting currencies:', error);
-            // Fallback to hardcoded currencies for legacy leads
-            const fallbackCurrencies = [
-              { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
-              { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
-              { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
-              { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
-            ];
-            setCurrencies(fallbackCurrencies);
-          } else if (data && data.length > 0) {
-            // Transform accounting_currencies to match the expected format
-            const transformedCurrencies = data.map(currency => ({
-              id: currency.id.toString(),
-              front_name: currency.name,
-              iso_code: currency.iso_code,
-              name: currency.name
-            }));
-            console.log('Transformed currencies for legacy lead:', transformedCurrencies);
-            setCurrencies(transformedCurrencies);
-          } else {
-            console.log('No data found in accounting_currencies, using fallback');
-            // Fallback to hardcoded currencies for legacy leads
-            const fallbackCurrencies = [
-              { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
-              { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
-              { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
-              { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
-            ];
-            setCurrencies(fallbackCurrencies);
-          }
+        // Process currencies
+        const { newCurrencies, legacyCurrencies } = currenciesResult;
+        if (!newCurrencies.error && newCurrencies.data && newCurrencies.data.length > 0) {
+          setCurrencies(newCurrencies.data);
+        } else if (!legacyCurrencies.error && legacyCurrencies.data && legacyCurrencies.data.length > 0) {
+          const transformedCurrencies = legacyCurrencies.data.map(currency => ({
+            id: currency.id.toString(),
+            front_name: currency.iso_code === 'NIS' ? '₪' : currency.iso_code === 'EUR' ? '€' : currency.iso_code === 'USD' ? '$' : currency.iso_code === 'GBP' ? '£' : currency.iso_code,
+            iso_code: currency.iso_code,
+            name: currency.name
+          }));
+          setCurrencies(transformedCurrencies);
         } else {
-          // For new leads, fetch from currencies table
-          console.log('Fetching currencies for new lead from currencies table');
-          const { data, error } = await supabase
-            .from('currencies')
-            .select('id, front_name, iso_code, name')
-            .eq('is_active', true)
-            .order('order_value');
-          
-          console.log('currencies query result:', { data, error });
-          
-          if (error) {
-            console.error('Error fetching currencies:', error);
-          } else if (data) {
-            console.log('Currencies for new lead:', data);
-            setCurrencies(data);
-          }
+          // Fallback to hardcoded currencies
+          const fallbackCurrencies = [
+            { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
+            { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
+            { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
+            { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
+          ];
+          setCurrencies(fallbackCurrencies);
         }
+        
+        // Process meeting locations
+        if (!meetingLocationsResult.error && meetingLocationsResult.data) {
+          setMeetingLocations(meetingLocationsResult.data);
+        }
+        
+        console.log('✅ Background data loading completed');
       } catch (error) {
-        console.error('Error fetching currencies:', error);
+        console.error('Error fetching background data:', error);
+      } finally {
+        setBackgroundLoading(false);
       }
     };
-    fetchCurrencies();
     
-    // Fetch meeting locations for the dropdown
-    const fetchMeetingLocations = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('meeting_locations')
-          .select('id, name')
-          .eq('is_active', true)
-          .order('order_value', { ascending: true });
-        if (!error && data) {
-          setMeetingLocations(data);
-        }
-      } catch (error) {
-        console.error('Error fetching meeting locations:', error);
-      }
-    };
-    fetchMeetingLocations();
+    // Start background loading
+    loadBackgroundData();
+  }, []); // Run once when component mounts
+
+  // Additional data loading for specific client
+  useEffect(() => {
+    if (!selectedClient?.id) return;
     
-    // Also fetch latest meeting date for case summary
-    const fetchLatestMeeting = async () => {
+    const loadAdditionalData = async () => {
       try {
-        const leadId = selectedClient?.id;
-        if (!leadId) return setLatestMeetingDate(null);
+        // Fetch latest meeting date for case summary
         const { data, error } = await supabase
           .from('meetings')
           .select('meeting_date')
-          .eq('client_id', leadId)
+          .eq('client_id', selectedClient.id)
           .not('meeting_date', 'is', null)
           .order('meeting_date', { ascending: false })
           .limit(1);
         if (!error && data && data.length > 0) setLatestMeetingDate(data[0].meeting_date);
         else setLatestMeetingDate(null);
-      } catch {
+      } catch (error) {
+        console.error('Error fetching latest meeting:', error);
         setLatestMeetingDate(null);
       }
     };
-    fetchLatestMeeting();
-    return () => { isMounted = false; };
-  }, [lead_number, navigate, setSelectedClient, fullLeadNumber, selectedClient?.id, selectedClient?.lead_type]);
+    
+    loadAdditionalData();
+  }, [selectedClient?.id]);
 
   // Set default location when meeting locations are loaded
   useEffect(() => {
@@ -3407,24 +3344,6 @@ const Clients: React.FC<ClientsProps> = ({
 
             {/* Content */}
             <div className="p-6 space-y-4">
-              {/* Stage Badge */}
-              {(() => {
-                console.log('🔍 Stage badge condition check - selectedClient.stage:', selectedClient.stage);
-                console.log('🔍 Stage badge condition check - selectedClient.stage type:', typeof selectedClient.stage);
-                console.log('🔍 Stage badge condition check - selectedClient.stage truthy:', !!selectedClient.stage);
-                return selectedClient.stage !== null && selectedClient.stage !== undefined && selectedClient.stage !== '';
-              })() && (
-                <div className="flex items-center gap-2">
-                  <div className="px-3 py-1 rounded-full text-xs font-bold bg-[#3b28c7] text-white">
-                    {(() => {
-                      console.log('🔍 Stage badge rendering for client:', selectedClient.id);
-                      console.log('🔍 Client stage value:', selectedClient.stage);
-                      return getStageName(selectedClient.stage);
-                    })()}
-                  </div>
-                </div>
-              )}
-
               {/* Two Row Grid Layout */}
               <div className="grid grid-cols-2 gap-4">
                 {/* Row 1 */}
@@ -3560,6 +3479,13 @@ const Clients: React.FC<ClientsProps> = ({
   console.log('🔍 RENDERING MAIN VIEW for client:', selectedClient?.id);
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900">
+      {/* Background loading indicator */}
+      {backgroundLoading && (
+        <div className="fixed top-4 right-4 z-40 bg-blue-100 text-blue-800 px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
+          <div className="loading loading-spinner loading-xs"></div>
+          Loading additional data...
+        </div>
+      )}
       {/* Mobile-Only Stylish Client Card (Pipeline Style) */}
       <div className="md:hidden px-2 pt-4 pb-2">
         <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 min-h-[340px] flex flex-col justify-between relative">
@@ -3569,41 +3495,6 @@ const Clients: React.FC<ClientsProps> = ({
             <span className="text-xs font-semibold text-[#411CCF] tracking-widest saira-regular">{selectedClient?.lead_number}</span>
             <span className="text-[#411CCF] font-bold text-xs">/</span>
             <span className="text-lg font-extrabold text-[#411CCF] truncate flex-1 saira-regular">{selectedClient?.name || 'Loading...'}</span>
-            {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
-              <div className="dropdown dropdown-end">
-                <label 
-                  tabIndex={0} 
-                  className="ml-2 px-2 py-1 rounded-full text-xs font-bold bg-[#3b28c7] text-white whitespace-nowrap cursor-pointer hover:bg-purple-600 transition-colors flex items-center gap-1"
-                >
-                  {getStageName(selectedClient.stage)}
-                  <ChevronDownIcon className="w-3 h-3" />
-                </label>
-                <ul 
-                  tabIndex={0} 
-                  className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
-                >
-                  {availableStages.map((stageOption) => (
-                    <li key={stageOption.id}>
-                      <a 
-                        className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
-                          selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
-                        }`}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleStageChange(stageOption.id);
-                        }}
-                      >
-                        <span className="font-medium">{stageOption.name}</span>
-                        {selectedClient.stage === stageOption.id && (
-                          <CheckIcon className="w-4 h-4 text-purple-600" />
-                        )}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
           {isSubLead && masterLeadNumber && (
             <div className="text-xs text-gray-500 mb-2">
@@ -3761,6 +3652,8 @@ const Clients: React.FC<ClientsProps> = ({
                     </div>
                   </div>
                 </div>
+                
+                
                 <div className="text-center">
                   <div className="flex items-center justify-center gap-2">
                     <span className="text-2xl font-bold text-[#411CCF]">{selectedClient?.lead_number || '---'}</span>
@@ -3784,14 +3677,16 @@ const Clients: React.FC<ClientsProps> = ({
                         {dropdownItems}
                       </ul>
                     </div>
+                    
+                    {/* Stage Badge - Between Stages and Actions buttons */}
                     {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
                       <div className="dropdown dropdown-end">
                         <label 
                           tabIndex={0} 
-                          className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm truncate cursor-pointer"
+                          className="btn btn-lg text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm sm:text-base cursor-pointer hover:from-pink-600 hover:via-purple-600 hover:to-purple-700 transition-all duration-200 flex items-center gap-2 whitespace-nowrap px-4"
                         >
                           {getStageName(selectedClient.stage)}
-                          <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                          <ChevronDownIcon className="w-4 h-4" />
                         </label>
                         <ul 
                           tabIndex={0} 

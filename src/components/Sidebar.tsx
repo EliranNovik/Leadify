@@ -69,6 +69,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
   { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
+  { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: Cog6ToothIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
@@ -102,6 +103,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
   { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
+  { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: Cog6ToothIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
