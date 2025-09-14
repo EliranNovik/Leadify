@@ -40,8 +40,24 @@ export const sessionManager = {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
       if (error) throw error;
+      
+      // Check if session is expired
+      if (session && this.isSessionExpired(session)) {
+        console.log('🕐 Session expired, attempting refresh...');
+        const refreshedSession = await this.refreshSession();
+        if (refreshedSession) {
+          console.log('✅ Session refreshed successfully');
+          return refreshedSession;
+        } else {
+          console.log('❌ Session refresh failed, signing out...');
+          await supabase.auth.signOut();
+          return null;
+        }
+      }
+      
       return session;
     } catch (error) {
+      console.error('Error getting session:', error);
       return null;
     }
   },

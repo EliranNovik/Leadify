@@ -197,24 +197,7 @@ export const useAuth = () => {
     };
   }, [handleAuthStateChange]);
 
-  // Session monitoring with refresh token support
-  useEffect(() => {
-    if (!authState.user) return;
-
-    const monitorSession = async () => {
-      try {
-        const session = await sessionManager.getSession();
-        if (!session) {
-          await supabase.auth.signOut();
-        }
-      } catch (error) {
-        console.error('Error monitoring session:', error);
-      }
-    };
-
-    const monitorInterval = setInterval(monitorSession, 50 * 60 * 1000);
-    return () => clearInterval(monitorInterval);
-  }, [authState.user]);
+  // Session monitoring is handled in App.tsx to avoid conflicts
 
   return authState;
 }; 

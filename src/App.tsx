@@ -192,17 +192,56 @@ const AppContentInner: React.FC = () => {
   // Set up session monitoring with refresh token support
   useEffect(() => {
     if (user) {
+      let isSigningIn = false;
+      
       // Set up periodic session check with automatic refresh
       const checkInterval = setInterval(async () => {
-        const session = await sessionManager.getSession();
-        if (!session) {
-          // Session expired and refresh failed, user will be logged out
-        } else {
-          // Session is valid, continue monitoring
+        // Skip monitoring if we're in the middle of a sign-in process
+        if (isSigningIn) {
+          console.log('⏸️ Skipping session check - sign-in in progress');
+          return;
         }
-      }, 10 * 60 * 1000); // Check every 10 minutes
+        
+        try {
+          const session = await sessionManager.getSession();
+          if (!session) {
+            console.log('🕐 Session expired and refresh failed, signing out user...');
+            // Force sign out - this will trigger the auth state change
+            await supabase.auth.signOut();
+          } else {
+            console.log('✅ Session is valid, continuing monitoring');
+          }
+        } catch (error) {
+          console.error('Error during session monitoring:', error);
+          // Only sign out if it's not a temporary auth error
+          if (error instanceof Error && !error.message?.includes('auth') && !error.message?.includes('session')) {
+            await supabase.auth.signOut();
+          }
+        }
+      }, 10 * 60 * 1000); // Check every 10 minutes (less frequent)
 
-      return () => clearInterval(checkInterval);
+      // Listen for sign-in events to set the protection flag
+      const handleSignInStart = () => {
+        isSigningIn = true;
+        console.log('🔐 Sign-in started - protecting session monitoring');
+      };
+      
+      const handleSignInEnd = () => {
+        isSigningIn = false;
+        console.log('✅ Sign-in completed - resuming session monitoring');
+      };
+
+      // Add event listeners for Microsoft sign-in
+      window.addEventListener('msal:signInStart', handleSignInStart);
+      window.addEventListener('msal:signInSuccess', handleSignInEnd);
+      window.addEventListener('msal:signInFailure', handleSignInEnd);
+
+      return () => {
+        clearInterval(checkInterval);
+        window.removeEventListener('msal:signInStart', handleSignInStart);
+        window.removeEventListener('msal:signInSuccess', handleSignInEnd);
+        window.removeEventListener('msal:signInFailure', handleSignInEnd);
+      };
     }
   }, [user]);
 

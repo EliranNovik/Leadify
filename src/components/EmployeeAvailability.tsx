@@ -20,11 +20,21 @@ interface UnavailableTime {
   outlookEventId?: string;
 }
 
+interface UnavailableRange {
+  id: string;
+  startDate: string;
+  endDate: string;
+  reason: string;
+  outlookEventId?: string;
+}
+
 interface CalendarDay {
   date: Date;
   isCurrentMonth: boolean;
   isToday: boolean;
   unavailableTimes: UnavailableTime[];
+  isInUnavailableRange: boolean;
+  unavailableRangeReason?: string;
 }
 
 const EmployeeAvailability: React.FC = () => {
@@ -32,10 +42,17 @@ const EmployeeAvailability: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [unavailableTimes, setUnavailableTimes] = useState<UnavailableTime[]>([]);
+  const [unavailableRanges, setUnavailableRanges] = useState<UnavailableRange[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [showAddRangeModal, setShowAddRangeModal] = useState(false);
   const [newUnavailableTime, setNewUnavailableTime] = useState({
     startTime: '09:00',
     endTime: '17:00',
+    reason: ''
+  });
+  const [newUnavailableRange, setNewUnavailableRange] = useState({
+    startDate: '',
+    endDate: '',
     reason: ''
   });
   const [loading, setLoading] = useState(false);
@@ -71,11 +88,40 @@ const EmployeeAvailability: React.FC = () => {
       const dateString = date.toISOString().split('T')[0];
       const dayUnavailableTimes = unavailableTimes.filter(ut => ut.date === dateString);
       
+      // Check if this date is in any unavailable range
+      const rangeInfo = unavailableRanges.find(range => {
+        const startDate = new Date(range.startDate);
+        const endDate = new Date(range.endDate);
+        
+        // Normalize dates to start of day for comparison
+        const checkDate = new Date(date);
+        checkDate.setHours(0, 0, 0, 0);
+        startDate.setHours(0, 0, 0, 0);
+        endDate.setHours(0, 0, 0, 0);
+        
+        const isInRange = checkDate >= startDate && checkDate <= endDate;
+        
+        // Debug logging for first few days
+        if (day <= 3 && unavailableRanges.length > 0) {
+          console.log('🔍 Date range check:', {
+            checkDate: checkDate.toISOString().split('T')[0],
+            startDate: startDate.toISOString().split('T')[0],
+            endDate: endDate.toISOString().split('T')[0],
+            isInRange,
+            rangeReason: range.reason
+          });
+        }
+        
+        return isInRange;
+      });
+      
       days.push({
         date,
         isCurrentMonth: true,
         isToday: date.toDateString() === new Date().toDateString(),
-        unavailableTimes: dayUnavailableTimes
+        unavailableTimes: dayUnavailableTimes,
+        isInUnavailableRange: !!rangeInfo,
+        unavailableRangeReason: rangeInfo?.reason
       });
     }
     
@@ -126,7 +172,24 @@ const EmployeeAvailability: React.FC = () => {
 
       if (employeeData) {
         setUnavailableTimes(employeeData.unavailable_times || []);
+        setUnavailableRanges([]); // Initialize as empty array for now
         setOutlookSyncEnabled(employeeData.outlook_calendar_sync || false);
+      }
+
+      // Try to fetch unavailable_ranges separately (in case column doesn't exist yet)
+      try {
+        const { data: rangesData, error: rangesError } = await supabase
+          .from('tenants_employee')
+          .select('unavailable_ranges')
+          .eq('display_name', userData.full_name)
+          .single();
+
+        if (!rangesError && rangesData?.unavailable_ranges) {
+          setUnavailableRanges(rangesData.unavailable_ranges);
+        }
+      } catch (rangesError) {
+        console.log('unavailable_ranges column not found, using empty array');
+        setUnavailableRanges([]);
       }
     } catch (error) {
       console.error('Error fetching unavailable times:', error);
@@ -349,6 +412,240 @@ const EmployeeAvailability: React.FC = () => {
     }
   };
 
+  // Save unavailable range
+  const saveUnavailableRange = async () => {
+    if (!newUnavailableRange.startDate || !newUnavailableRange.endDate || !newUnavailableRange.reason.trim()) {
+      toast.error('Please fill in all fields');
+      return;
+    }
+
+    // Check if start date is before end date
+    if (new Date(newUnavailableRange.startDate) > new Date(newUnavailableRange.endDate)) {
+      toast.error('Start date must be before end date');
+      return;
+    }
+
+    // Check if the start date is in the past
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (new Date(newUnavailableRange.startDate) < today) {
+      toast.error('Cannot add unavailable ranges for past dates');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) {
+        toast.error('User not authenticated');
+        return;
+      }
+
+      // Get the user's full_name from users table
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('auth_id', user.id)
+        .single();
+
+      if (userError || !userData?.full_name) {
+        toast.error('Could not get user information');
+        return;
+      }
+
+      const newRange: UnavailableRange = {
+        id: Date.now().toString(),
+        startDate: newUnavailableRange.startDate,
+        endDate: newUnavailableRange.endDate,
+        reason: newUnavailableRange.reason
+      };
+
+      console.log('🔍 Saving unavailable range:', {
+        startDate: newRange.startDate,
+        endDate: newRange.endDate,
+        reason: newRange.reason,
+        startDateObj: new Date(newRange.startDate),
+        endDateObj: new Date(newRange.endDate)
+      });
+
+      // If Outlook sync is enabled, create event in Outlook
+      if (outlookSyncEnabled) {
+        try {
+          const outlookEventId = await createOutlookRangeEvent(newRange);
+          newRange.outlookEventId = outlookEventId;
+        } catch (error) {
+          console.error('Error creating Outlook event:', error);
+          toast.error('Failed to sync with Outlook calendar');
+        }
+      }
+
+      const updatedRanges = [...unavailableRanges, newRange];
+      setUnavailableRanges(updatedRanges);
+
+      // Save to database - try to update unavailable_ranges column
+      try {
+        const { error } = await supabase
+          .from('tenants_employee')
+          .update({ 
+            unavailable_ranges: updatedRanges,
+            last_sync_date: new Date().toISOString()
+          })
+          .eq('display_name', userData.full_name);
+
+        if (error) {
+          // If column doesn't exist, show warning but continue
+          if (error.code === '42703') {
+            console.log('unavailable_ranges column not found, saving locally only');
+            toast.success('Unavailable range saved locally (database column not available yet)');
+            return;
+          }
+          throw error;
+        }
+      } catch (columnError) {
+        console.error('Error saving unavailable ranges:', columnError);
+        toast.error('Failed to save unavailable range - database column not available');
+        return;
+      }
+
+      toast.success('Unavailable range saved successfully');
+      setShowAddRangeModal(false);
+      setNewUnavailableRange({ startDate: '', endDate: '', reason: '' });
+    } catch (error) {
+      console.error('Error saving unavailable range:', error);
+      toast.error('Failed to save unavailable range');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Create Outlook event for range
+  const createOutlookRangeEvent = async (range: UnavailableRange): Promise<string> => {
+    const account = instance.getActiveAccount();
+    if (!account) {
+      throw new Error('No active account');
+    }
+
+    const accessToken = await instance.acquireTokenSilent({
+      scopes: ['https://graph.microsoft.com/calendars.readwrite'],
+      account: account
+    });
+
+    const startDateTime = new Date(range.startDate);
+    startDateTime.setHours(0, 0, 0, 0);
+    const endDateTime = new Date(range.endDate);
+    endDateTime.setHours(23, 59, 59, 999);
+
+    // For all-day events, use date format instead of dateTime
+    const event = {
+      subject: `Unavailable - ${range.reason}`,
+      body: {
+        contentType: 'text',
+        content: `Marked as unavailable: ${range.reason}`
+      },
+      start: {
+        dateTime: startDateTime.toISOString(),
+        timeZone: 'UTC'
+      },
+      end: {
+        dateTime: endDateTime.toISOString(),
+        timeZone: 'UTC'
+      },
+      isAllDay: false, // Changed to false for better compatibility
+      showAs: 'busy'
+    };
+
+    console.log('Creating Outlook event:', event);
+
+    const response = await fetch('https://graph.microsoft.com/v1.0/me/events', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken.accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(event)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Outlook API error:', response.status, errorText);
+      throw new Error(`Failed to create Outlook event: ${response.status} - ${errorText}`);
+    }
+
+    const eventData = await response.json();
+    return eventData.id;
+  };
+
+  // Delete unavailable range
+  const deleteUnavailableRange = async (rangeId: string) => {
+    setLoading(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) {
+        toast.error('User not authenticated');
+        return;
+      }
+
+      // Get the user's full_name from users table
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('auth_id', user.id)
+        .single();
+
+      if (userError || !userData?.full_name) {
+        toast.error('Could not get user information');
+        return;
+      }
+
+      const rangeToDelete = unavailableRanges.find(r => r.id === rangeId);
+      if (!rangeToDelete) return;
+
+      // Delete from Outlook if synced
+      if (rangeToDelete.outlookEventId && outlookSyncEnabled) {
+        try {
+          await deleteOutlookEvent(rangeToDelete.outlookEventId);
+        } catch (error) {
+          console.error('Error deleting Outlook event:', error);
+        }
+      }
+
+      const updatedRanges = unavailableRanges.filter(r => r.id !== rangeId);
+      setUnavailableRanges(updatedRanges);
+
+      // Save to database - try to update unavailable_ranges column
+      try {
+        const { error } = await supabase
+          .from('tenants_employee')
+          .update({ 
+            unavailable_ranges: updatedRanges,
+            last_sync_date: new Date().toISOString()
+          })
+          .eq('display_name', userData.full_name);
+
+        if (error) {
+          // If column doesn't exist, show warning but continue
+          if (error.code === '42703') {
+            console.log('unavailable_ranges column not found, deleting locally only');
+            toast.success('Unavailable range deleted locally (database column not available yet)');
+            return;
+          }
+          throw error;
+        }
+      } catch (columnError) {
+        console.error('Error deleting unavailable ranges:', columnError);
+        toast.error('Failed to delete unavailable range - database column not available');
+        return;
+      }
+
+      toast.success('Unavailable range deleted successfully');
+    } catch (error) {
+      console.error('Error deleting unavailable range:', error);
+      toast.error('Failed to delete unavailable range');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Toggle Outlook sync
   const toggleOutlookSync = async () => {
     setLoading(true);
@@ -422,6 +719,14 @@ const EmployeeAvailability: React.FC = () => {
         </div>
         
         <div className="flex items-center gap-4">
+          <button
+            onClick={() => setShowAddRangeModal(true)}
+            className="btn btn-primary btn-sm"
+            disabled={loading}
+          >
+            <PlusIcon className="w-4 h-4 mr-2" />
+            Add Range
+          </button>
           <label className="flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
@@ -488,6 +793,7 @@ const EmployeeAvailability: React.FC = () => {
                   ${isClickable ? 'cursor-pointer hover:bg-base-200' : 'cursor-not-allowed opacity-60'}
                   ${day.isToday ? 'ring-2 ring-primary' : ''}
                   ${day.unavailableTimes.length > 0 ? 'bg-error/10 border-error/30' : ''}
+                  ${day.isInUnavailableRange ? 'bg-warning/10 border-warning/30' : ''}
                   ${isPastDate ? 'bg-gray-100 text-gray-400' : ''}
                 `}
                 onClick={() => {
@@ -501,6 +807,12 @@ const EmployeeAvailability: React.FC = () => {
               <div className="text-sm font-medium mb-1">
                 {day.date.getDate()}
               </div>
+              {day.isInUnavailableRange && (
+                <div className="text-xs bg-warning/20 text-warning rounded px-1 py-0.5 truncate mb-1"
+                     title={day.unavailableRangeReason}>
+                  Range: {day.unavailableRangeReason}
+                </div>
+              )}
               {day.unavailableTimes.length > 0 && (
                 <div className="space-y-1">
                   {day.unavailableTimes.slice(0, 2).map(time => (
@@ -526,7 +838,7 @@ const EmployeeAvailability: React.FC = () => {
       </div>
 
       {/* Unavailable Times List */}
-      <div className="bg-base-100 rounded-xl shadow-lg p-6">
+      <div className="bg-base-100 rounded-xl shadow-lg p-6 mb-6">
         <h3 className="text-xl font-bold mb-4">Your Unavailable Times</h3>
         {unavailableTimes.length === 0 ? (
           <p className="text-base-content/70 text-center py-8">
@@ -558,6 +870,46 @@ const EmployeeAvailability: React.FC = () => {
                   <button
                     className="btn btn-ghost btn-sm text-error hover:bg-error/10"
                     onClick={() => deleteUnavailableTime(time.id)}
+                    disabled={loading}
+                  >
+                    <TrashIcon className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
+          </div>
+        )}
+      </div>
+
+      {/* Unavailable Ranges List */}
+      <div className="bg-base-100 rounded-xl shadow-lg p-6">
+        <h3 className="text-xl font-bold mb-4">Your Unavailable Ranges</h3>
+        {unavailableRanges.length === 0 ? (
+          <p className="text-base-content/70 text-center py-8">
+            No unavailable ranges set. Click "Add Range" to create one.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {unavailableRanges
+              .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
+              .map(range => (
+                <div key={range.id} className="flex items-center justify-between p-4 bg-base-200 rounded-lg">
+                  <div className="flex items-center gap-4">
+                    <div className="text-sm font-medium">
+                      {new Date(range.startDate).toLocaleDateString()} - {new Date(range.endDate).toLocaleDateString()}
+                    </div>
+                    <div className="text-sm">
+                      {range.reason}
+                    </div>
+                    {range.outlookEventId && (
+                      <div className="flex items-center gap-1 text-xs text-success">
+                        <CheckIcon className="w-4 h-4" />
+                        Synced
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    className="btn btn-ghost btn-sm text-error hover:bg-error/10"
+                    onClick={() => deleteUnavailableRange(range.id)}
                     disabled={loading}
                   >
                     <TrashIcon className="w-4 h-4" />
@@ -645,6 +997,79 @@ const EmployeeAvailability: React.FC = () => {
               <button
                 className="btn btn-ghost"
                 onClick={() => setShowAddModal(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Unavailable Range Modal */}
+      {showAddRangeModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-base-100 rounded-xl p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold">Add Unavailable Range</h3>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowAddRangeModal(false)}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="label">
+                    <span className="label-text">Start Date</span>
+                  </label>
+                  <input
+                    type="date"
+                    className="input input-bordered w-full"
+                    value={newUnavailableRange.startDate}
+                    onChange={(e) => setNewUnavailableRange(prev => ({ ...prev, startDate: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="label">
+                    <span className="label-text">End Date</span>
+                  </label>
+                  <input
+                    type="date"
+                    className="input input-bordered w-full"
+                    value={newUnavailableRange.endDate}
+                    onChange={(e) => setNewUnavailableRange(prev => ({ ...prev, endDate: e.target.value }))}
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <label className="label">
+                  <span className="label-text">Reason</span>
+                </label>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="e.g., Vacation, Sick Leave, Conference"
+                  value={newUnavailableRange.reason}
+                  onChange={(e) => setNewUnavailableRange(prev => ({ ...prev, reason: e.target.value }))}
+                />
+              </div>
+            </div>
+            
+            <div className="flex gap-3 mt-6">
+              <button
+                className="btn btn-primary flex-1"
+                onClick={saveUnavailableRange}
+                disabled={loading}
+              >
+                {loading ? 'Saving...' : 'Save Range'}
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setShowAddRangeModal(false)}
               >
                 Cancel
               </button>

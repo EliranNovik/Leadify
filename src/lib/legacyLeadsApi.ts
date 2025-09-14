@@ -169,7 +169,7 @@ function fuzzyMatch(query: string, text: string): boolean {
   
   // Calculate Levenshtein distance for fuzzy matching
   const distance = levenshteinDistance(queryLower, textLower);
-  const maxDistance = Math.max(1, Math.floor(queryLower.length * 0.4)); // Allow 40% difference, minimum 1
+  const maxDistance = Math.max(1, Math.floor(queryLower.length * 0.25)); // Allow only 25% difference, minimum 1
   
   return distance <= maxDistance;
 }
@@ -203,35 +203,68 @@ function levenshteinDistance(str1: string, str2: string): number {
   return matrix[str2.length][str1.length];
 }
 
-// Enhanced search function with fuzzy matching
-function searchWithFuzzyMatching(results: any[], query: string, searchFields: string[]): any[] {
-  const trimmedQuery = query.trim();
+// Enhanced search function with intelligent matching
+function searchWithIntelligentMatching(results: any[], query: string, searchFields: string[]): any[] {
+  const trimmedQuery = query.trim().toLowerCase();
   
-  // First, try exact matches (higher priority)
-  const exactMatches = results.filter(result => 
-    searchFields.some(field => {
+  // Score each result based on match quality
+  const scoredResults = results.map(result => {
+    let bestScore = 0;
+    let bestMatchType = '';
+    
+    searchFields.forEach(field => {
       const value = result[field];
-      return value && value.toLowerCase().includes(trimmedQuery.toLowerCase());
-    })
-  );
-  
-  // Then, try fuzzy matches (lower priority) and mark them
-  const fuzzyMatches = results.filter(result => 
-    !exactMatches.includes(result) && // Don't include exact matches again
-    searchFields.some(field => {
-      const value = result[field];
-      if (!value) return false;
+      if (!value) return;
       
-      const isFuzzy = fuzzyMatch(trimmedQuery, value);
-      return isFuzzy;
-    })
-  ).map(result => ({
-    ...result,
-    isFuzzyMatch: true // Mark as fuzzy match
-  }));
+      const valueLower = value.toLowerCase();
+      
+      // Perfect exact match (highest priority)
+      if (valueLower === trimmedQuery) {
+        bestScore = Math.max(bestScore, 100);
+        bestMatchType = 'exact';
+      }
+      // Starts with query (very high priority)
+      else if (valueLower.startsWith(trimmedQuery)) {
+        bestScore = Math.max(bestScore, 90);
+        bestMatchType = 'starts_with';
+      }
+      // Contains query (high priority)
+      else if (valueLower.includes(trimmedQuery)) {
+        bestScore = Math.max(bestScore, 80);
+        bestMatchType = 'contains';
+      }
+      // Word boundary match (medium-high priority)
+      else if (new RegExp(`\\b${trimmedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`, 'i').test(value)) {
+        bestScore = Math.max(bestScore, 70);
+        bestMatchType = 'word_boundary';
+      }
+      // Fuzzy match (lower priority) - only for longer queries and stricter matching
+      else if (trimmedQuery.length >= 4 && fuzzyMatch(trimmedQuery, value)) {
+        bestScore = Math.max(bestScore, 50);
+        bestMatchType = 'fuzzy';
+      }
+    });
+    
+    return {
+      ...result,
+      matchScore: bestScore,
+      matchType: bestMatchType,
+      isFuzzyMatch: bestMatchType === 'fuzzy'
+    };
+  });
   
-  // Combine results with exact matches first, then fuzzy matches
-  return [...exactMatches, ...fuzzyMatches];
+  // Filter out results with no matches and sort by score
+  return scoredResults
+    .filter(result => result.matchScore > 0)
+    .sort((a, b) => {
+      // First sort by score (descending)
+      if (b.matchScore !== a.matchScore) {
+        return b.matchScore - a.matchScore;
+      }
+      // Then by match type priority
+      const typePriority: Record<string, number> = { exact: 4, starts_with: 3, contains: 2, word_boundary: 1, fuzzy: 0 };
+      return (typePriority[b.matchType] || 0) - (typePriority[a.matchType] || 0);
+    });
 }
 
 // Fetch all leads from both tables
@@ -406,7 +439,7 @@ export async function fetchLeadById(id: string): Promise<CombinedLead | null> {
   }
 }
 
-// Search leads in both tables with performance optimizations and fuzzy matching
+// Search leads in both tables with intelligent matching and performance optimizations
 export async function searchLeads(query: string): Promise<CombinedLead[]> {
   try {
     // Don't search if query is too short
@@ -417,90 +450,71 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
     const trimmedQuery = query.trim();
     const results: CombinedLead[] = [];
 
-    // Search in both tables concurrently with limits
+    // Check if query is a number for exact ID matching
+    const isNumericQuery = !isNaN(Number(trimmedQuery));
+    const numericValue = isNumericQuery ? parseInt(trimmedQuery) : null;
+
+    // Search in both tables concurrently with optimized queries
     const [legacyPromise, newPromise] = await Promise.allSettled([
-      // Search legacy leads with limit - fetch more results for fuzzy matching
+      // Search legacy leads
       (async () => {
         let legacyQuery = supabase
           .from('leads_lead')
           .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number')
-          .limit(20); // Increased limit for fuzzy matching
+          .limit(15); // Reduced limit for better performance
         
-        // If query is a number, try exact ID match first
-        if (!isNaN(Number(trimmedQuery))) {
-          const numQuery = parseInt(trimmedQuery);
-          return await legacyQuery.eq('id', numQuery);
+        if (isNumericQuery) {
+          // For numeric queries, prioritize exact ID match
+          return await legacyQuery.eq('id', numericValue);
         } else {
-          // Much broader search to capture potential matches for fuzzy processing
-          // Split query into words and search for partial matches
-          const words = trimmedQuery.split(' ').filter(word => word.length > 0);
-          let searchConditions = [];
-          
-          // Search for the full query
-          searchConditions.push(`name.ilike.%${trimmedQuery}%`);
-          searchConditions.push(`email.ilike.%${trimmedQuery}%`);
-          searchConditions.push(`phone.ilike.%${trimmedQuery}%`);
-          searchConditions.push(`mobile.ilike.%${trimmedQuery}%`);
-          searchConditions.push(`topic.ilike.%${trimmedQuery}%`);
-          
-          // Also search for individual words
-          words.forEach(word => {
-            if (word.length >= 2) {
-              searchConditions.push(`name.ilike.%${word}%`);
-              searchConditions.push(`email.ilike.%${word}%`);
-              searchConditions.push(`phone.ilike.%${word}%`);
-              searchConditions.push(`mobile.ilike.%${word}%`);
-              searchConditions.push(`topic.ilike.%${word}%`);
-            }
-          });
+          // For text queries, use more targeted search
+          const searchConditions = [
+            `name.ilike.%${trimmedQuery}%`,
+            `email.ilike.%${trimmedQuery}%`,
+            `phone.ilike.%${trimmedQuery}%`,
+            `mobile.ilike.%${trimmedQuery}%`,
+            `topic.ilike.%${trimmedQuery}%`
+          ];
           
           return await legacyQuery.or(searchConditions.join(','));
         }
       })(),
       
-      // Search new leads with limit - fetch more results for fuzzy matching
+      // Search new leads
       (async () => {
-        // Much broader search to capture potential matches for fuzzy processing
-        const words = trimmedQuery.split(' ').filter(word => word.length > 0);
-        let searchConditions = [];
-        
-        // Search for the full query
-        searchConditions.push(`lead_number.ilike.%${trimmedQuery}%`);
-        searchConditions.push(`name.ilike.%${trimmedQuery}%`);
-        searchConditions.push(`email.ilike.%${trimmedQuery}%`);
-        searchConditions.push(`phone.ilike.%${trimmedQuery}%`);
-        searchConditions.push(`mobile.ilike.%${trimmedQuery}%`);
-        
-        // Also search for individual words
-        words.forEach(word => {
-          if (word.length >= 2) {
-            searchConditions.push(`lead_number.ilike.%${word}%`);
-            searchConditions.push(`name.ilike.%${word}%`);
-            searchConditions.push(`email.ilike.%${word}%`);
-            searchConditions.push(`phone.ilike.%${word}%`);
-            searchConditions.push(`mobile.ilike.%${word}%`);
-          }
-        });
-        
-        return await supabase
+        let newQuery = supabase
           .from('leads')
           .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-          .or(searchConditions.join(','))
-          .limit(20) // Increased limit for fuzzy matching
-          .order('created_at', { ascending: false });
+          .limit(15); // Reduced limit for better performance
+        
+        if (isNumericQuery) {
+          // For numeric queries, search lead_number
+          return await newQuery.eq('lead_number', trimmedQuery);
+        } else {
+          // For text queries, use targeted search
+          const searchConditions = [
+            `lead_number.ilike.%${trimmedQuery}%`,
+            `name.ilike.%${trimmedQuery}%`,
+            `email.ilike.%${trimmedQuery}%`,
+            `phone.ilike.%${trimmedQuery}%`,
+            `mobile.ilike.%${trimmedQuery}%`
+          ];
+          
+          return await newQuery.or(searchConditions.join(','));
+        }
       })()
     ]);
 
-    // Process legacy results with fuzzy matching
+    // Process legacy results with intelligent matching
     if (legacyPromise.status === 'fulfilled' && legacyPromise.value.data) {
       let processedLegacyResults;
       
-      // If query is a number, don't apply fuzzy matching - use exact results
-      if (!isNaN(Number(trimmedQuery))) {
+      if (isNumericQuery) {
+        // For numeric queries, use exact results without additional processing
         processedLegacyResults = legacyPromise.value.data;
       } else {
-        // Apply fuzzy matching to legacy results for text queries
-        processedLegacyResults = searchWithFuzzyMatching(
+        // Apply intelligent matching to legacy results for text queries
+        processedLegacyResults = searchWithIntelligentMatching(
           legacyPromise.value.data, 
           trimmedQuery, 
           ['name', 'email', 'phone', 'mobile', 'topic']
@@ -528,20 +542,21 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
         balance: '',
         lead_type: 'legacy' as const,
         unactivation_reason: null,
+        isFuzzyMatch: lead.isFuzzyMatch || false,
       }));
       results.push(...transformedLegacyLeads);
     }
 
-    // Process new results with fuzzy matching
+    // Process new results with intelligent matching
     if (newPromise.status === 'fulfilled' && newPromise.value.data) {
       let processedNewResults;
       
-      // If query is a number, don't apply fuzzy matching - use exact results
-      if (!isNaN(Number(trimmedQuery))) {
+      if (isNumericQuery) {
+        // For numeric queries, use exact results without additional processing
         processedNewResults = newPromise.value.data;
       } else {
-        // Apply fuzzy matching to new results for text queries
-        processedNewResults = searchWithFuzzyMatching(
+        // Apply intelligent matching to new results for text queries
+        processedNewResults = searchWithIntelligentMatching(
           newPromise.value.data, 
           trimmedQuery, 
           ['lead_number', 'name', 'email', 'phone', 'mobile', 'topic']
@@ -569,14 +584,30 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
         balance: '',
         lead_type: 'new' as const,
         unactivation_reason: null,
+        isFuzzyMatch: lead.isFuzzyMatch || false,
       }));
       results.push(...transformedNewLeads);
     }
 
-    // Sort by creation date and return top results
-    return results
-      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-      .slice(0, 15); // Return max 15 results total
+    // Separate exact matches from other results
+    const exactMatches = results.filter(result => 
+      result.name.toLowerCase() === trimmedQuery.toLowerCase() ||
+      result.lead_number === trimmedQuery ||
+      result.email.toLowerCase() === trimmedQuery.toLowerCase()
+    );
+
+    const nonExactResults = results.filter(result => !exactMatches.includes(result));
+    
+    // Sort non-exact results by relevance
+    const sortedNonExactResults = nonExactResults
+      .sort((a, b) => {
+        // Sort by creation date for same relevance level
+        return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      })
+      .slice(0, 8); // Limit to 8 non-exact results
+
+    // Return exact matches first, then non-exact results
+    return [...exactMatches, ...sortedNonExactResults];
 
   } catch (error) {
     console.error('Error searching leads:', error);

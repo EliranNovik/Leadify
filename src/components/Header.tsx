@@ -92,6 +92,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const searchInputRef = useRef<HTMLInputElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
   const searchDropdownRef = useRef<HTMLDivElement>(null);
+  const filterDropdownRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const { instance } = useMsal();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
@@ -117,11 +118,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isAdvancedSearching, setIsAdvancedSearching] = useState(false);
   const [searchDropdownStyle, setSearchDropdownStyle] = useState({ top: 0, left: 0, width: 0 });
   const [isSearchAnimationDone, setIsSearchAnimationDone] = useState(false);
-  const searchHoverTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
   const [showMobileQuickActionsDropdown, setShowMobileQuickActionsDropdown] = useState(false);
   const [showSignOutModal, setShowSignOutModal] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const [stageOptions, setStageOptions] = useState<string[]>([]);
+  const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
+  const [sourceOptions, setSourceOptions] = useState<string[]>([]);
+  const [languageOptions, setLanguageOptions] = useState<string[]>([]);
+  const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -172,19 +177,55 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   ];
 
   useEffect(() => {
-    const handleClickOutside = (event: Event) => {
-      if (
-        searchContainerRef.current &&
-        !searchContainerRef.current.contains(event.target as Node) &&
-        searchDropdownRef.current &&
-        !searchDropdownRef.current.contains(event.target as Node)
-      ) {
-        if (!showFilterDropdown) {
-          setIsSearchActive(false);
-          setSearchResults([]);
-          setSearchValue('');
-        }
+    let clickTimeout: NodeJS.Timeout;
+    let isScrolling = false;
+    
+    const handleScroll = () => {
+      isScrolling = true;
+      // Clear any pending click outside handler during scroll
+      if (clickTimeout) {
+        clearTimeout(clickTimeout);
       }
+      // Reset scrolling flag after scroll ends
+      setTimeout(() => {
+        isScrolling = false;
+      }, 150);
+    };
+    
+    const handleClickOutside = (event: Event) => {
+      // Don't close if we're currently scrolling
+      if (isScrolling) {
+        return;
+      }
+      
+      // Clear any existing timeout
+      if (clickTimeout) {
+        clearTimeout(clickTimeout);
+      }
+      
+      // Add a small delay to prevent accidental closures during scrolling
+      clickTimeout = setTimeout(() => {
+        if (
+          searchContainerRef.current &&
+          !searchContainerRef.current.contains(event.target as Node) &&
+          searchDropdownRef.current &&
+          !searchDropdownRef.current.contains(event.target as Node) &&
+          filterDropdownRef.current &&
+          !filterDropdownRef.current.contains(event.target as Node)
+        ) {
+          // Only close search bar if filter dropdown is not open
+          if (!showFilterDropdown) {
+            setIsSearchActive(false);
+            setSearchResults([]);
+            setSearchValue('');
+            setHasAppliedFilters(false);
+          }
+        }
+      }, 100); // Small delay to prevent accidental closures
+    };
+
+    const handleMouseDown = (event: Event) => {
+      // Only handle mousedown for notifications and quick actions
       if (
         notificationsRef.current &&
         !notificationsRef.current.contains(event.target as Node)
@@ -201,12 +242,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
 
-    // Add both mouse and touch events for better mobile support
-    document.addEventListener('mousedown', handleClickOutside);
-    document.addEventListener('touchstart', handleClickOutside);
+    // Use click events for search bar (more reliable for scrolling)
+    document.addEventListener('click', handleClickOutside);
+    // Use mousedown for other elements
+    document.addEventListener('mousedown', handleMouseDown);
+    document.addEventListener('touchstart', handleMouseDown);
+    // Add scroll listener to prevent closing during scroll
+    document.addEventListener('scroll', handleScroll, true);
+    
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-      document.removeEventListener('touchstart', handleClickOutside);
+      if (clickTimeout) {
+        clearTimeout(clickTimeout);
+      }
+      document.removeEventListener('click', handleClickOutside);
+      document.removeEventListener('mousedown', handleMouseDown);
+      document.removeEventListener('touchstart', handleMouseDown);
+      document.removeEventListener('scroll', handleScroll, true);
     };
   }, [showFilterDropdown]);
 
@@ -227,7 +278,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         } finally {
           setIsSearching(false);
         }
-      }, 200); // Reduced from 300ms to 200ms for faster response
+      }, 150); // Reduced to 150ms for even faster response
     } else {
       setSearchResults([]);
     }
@@ -239,7 +290,115 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, [searchValue]);
 
+  // Keep search active when filter dropdown is open
+  useEffect(() => {
+    if (showFilterDropdown && !isSearchActive) {
+      setIsSearchActive(true);
+    }
+  }, [showFilterDropdown, isSearchActive]);
 
+  // Fetch stage options from lead_stages table
+  useEffect(() => {
+    const fetchStageOptions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('lead_stages')
+          .select('name')
+          .order('name');
+        
+        if (error) throw error;
+        
+        const stages = data?.map(stage => stage.name) || [];
+        setStageOptions(stages);
+      } catch (error) {
+        console.error('Error fetching stage options:', error);
+        // Fallback to hardcoded options if database fetch fails
+        setStageOptions([
+          "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", 
+          "unactivated", "communication_started", "another_meeting", "revised_offer", 
+          "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined", 
+          "lead_summary", "meeting_rescheduled", "meeting_ended"
+        ]);
+      }
+    };
+
+    fetchStageOptions();
+  }, []);
+
+  // Fetch category options from misc_category table
+  useEffect(() => {
+    const fetchCategoryOptions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_category')
+          .select('name')
+          .order('name');
+        
+        if (error) throw error;
+        
+        const categories = data?.map(category => category.name) || [];
+        setCategoryOptions(categories);
+      } catch (error) {
+        console.error('Error fetching category options:', error);
+        // Fallback to hardcoded options if database fetch fails
+        setCategoryOptions([
+          "German Citizenship", "Austrian Citizenship", "Inquiry", "Consultation", "Other"
+        ]);
+      }
+    };
+
+    fetchCategoryOptions();
+  }, []);
+
+  // Fetch source options from sources table
+  useEffect(() => {
+    const fetchSourceOptions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('sources')
+          .select('name')
+          .order('name');
+        
+        if (error) throw error;
+        
+        const sources = data?.map(source => source.name) || [];
+        setSourceOptions(sources);
+      } catch (error) {
+        console.error('Error fetching source options:', error);
+        // Fallback to hardcoded options if database fetch fails
+        setSourceOptions([
+          "Manual", "AI Assistant", "Referral", "Website", "Other"
+        ]);
+      }
+    };
+
+    fetchSourceOptions();
+  }, []);
+
+  // Fetch language options from misc_language table
+  useEffect(() => {
+    const fetchLanguageOptions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_language')
+          .select('name')
+          .order('name');
+        
+        if (error) throw error;
+        
+        const languages = data?.map(language => language.name) || [];
+        setLanguageOptions(languages);
+      } catch (error) {
+        console.error('Error fetching language options:', error);
+        // Fallback to hardcoded options if database fetch fails
+        setLanguageOptions([
+          "English", "Hebrew", "German", "French", "Russian", "Other"
+        ]);
+      }
+    };
+
+    fetchLanguageOptions();
+  }, []);
 
   useEffect(() => {
     const initializeMsal = async () => {
@@ -336,30 +495,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const handleSearchResultClick = (lead: CombinedLead) => {
     navigate(`/clients/${lead.lead_number}`);
-    setSearchValue('');
-    setSearchResults([]);
-    setIsSearchActive(false);
+    closeSearchBar();
   };
 
   const handleClearSearch = () => {
     setSearchValue('');
     setSearchResults([]);
     setIsSearchActive(false);
+    setHasAppliedFilters(false);
     searchInputRef.current?.blur();
   };
 
-  const handleSearchMouseLeave = () => {
-    // Only collapse if there's no search value and no results
-    if (!searchValue.trim() && searchResults.length === 0) {
-      // Add a small delay to prevent accidental collapses
-      setTimeout(() => {
-        // Double-check that we're still not hovering and still have no content
-        if (!searchValue.trim() && searchResults.length === 0) {
-          setIsSearchActive(false);
-        }
-      }, 150);
-    }
+  const closeSearchBar = () => {
+    setIsSearchActive(false);
+    setSearchResults([]);
+    setSearchValue('');
+    setHasAppliedFilters(false);
+    setShowFilterDropdown(false);
+    searchInputRef.current?.blur();
   };
+
+  const closeFilterDropdown = () => {
+    setShowFilterDropdown(false);
+  };
+
 
   const handleNotificationClick = () => {
     setShowNotifications(!showNotifications);
@@ -387,6 +546,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
 
     setIsMsalLoading(true);
+    
+    // Dispatch custom event to signal sign-in start
+    window.dispatchEvent(new CustomEvent('msal:signInStart'));
+    
     try {
       const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
       if (isMobile) {
@@ -395,8 +558,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         const loginResponse = await instance.loginPopup(loginRequest);
         const account = instance.getAllAccounts()[0];
         setUserAccount(account);
+        
+        // Dispatch custom event to signal sign-in success
+        window.dispatchEvent(new CustomEvent('msal:signInSuccess'));
       }
     } catch (error) {
+      // Dispatch custom event to signal sign-in failure
+      window.dispatchEvent(new CustomEvent('msal:signInFailure'));
+      
       if (error instanceof Error && error.message.includes('interaction_in_progress')) {
         return;
       }
@@ -437,16 +606,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   // Add missing dropdown options and fields for advanced filters
-  const categoryOptions = ["German Citizenship", "Austrian Citizenship", "Inquiry", "Consultation", "Other"];
-  const languageOptions = ["English", "Hebrew", "German", "French", "Russian", "Other"];
   const reasonOptions = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
   const tagOptions = ["VIP", "Urgent", "Family", "Business", "Other"];
   const statusOptions = ["new", "in_progress", "qualified", "not_qualified"];
-  const sourceOptions = ["Manual", "AI Assistant", "Referral", "Website", "Other"];
-  const stageOptions = [
-    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated", "communication_started", "another_meeting", "revised_offer", "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary", "meeting_rescheduled", "meeting_ended"
-  ];
-  const topicOptions = ["German Citizenship", "Austrian Citizenship", "Inquiry", "Consultation", "Other"];
 
   return (
     <>
@@ -636,23 +798,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               })
             }}
             onMouseEnter={!isMobile ? () => {
-              if (searchHoverTimeoutRef.current) {
-                clearTimeout(searchHoverTimeoutRef.current);
-                searchHoverTimeoutRef.current = null;
-              }
               setIsSearchActive(true);
               setTimeout(() => searchInputRef.current?.focus(), 100);
             } : undefined}
-            onMouseLeave={!isMobile ? () => {
-              if (searchHoverTimeoutRef.current) {
-                clearTimeout(searchHoverTimeoutRef.current);
-              }
-              searchHoverTimeoutRef.current = setTimeout(() => {
-                if (!searchValue.trim() && searchResults.length === 0) {
-                  setIsSearchActive(false);
-                }
-              }, 600);
-            } : undefined}
+            onMouseLeave={undefined}
           >
             <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-[700ms] ease-in-out`}>
               {/* Large search icon (always visible) */}
@@ -714,23 +863,169 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 <button
                   type="button"
                   className="absolute right-8 top-1/2 -translate-y-1/2 btn btn-ghost btn-circle btn-sm hidden md:block"
-                  onClick={() => setShowFilterDropdown(v => !v)}
+                  onClick={() => {
+                    setShowFilterDropdown(v => !v);
+                    // Ensure search stays active when opening filter
+                    if (!isSearchActive) {
+                      setIsSearchActive(true);
+                    }
+                  }}
                   tabIndex={0}
                   title="Advanced Filters"
                 >
                   <FunnelIcon className="w-5 h-5 text-cyan-900" />
                 </button>
               )}
-              {/* Advanced filter dropdown */}
-              {showFilterDropdown && (
-                <div
-                  className="fixed bg-white rounded-xl shadow-xl border border-white/30 z-60 p-6 animate-fadeInUp"
+            </div>
+          </div>
+        </div>
+
+        {/* End of search bar container */}
+        {isSearchActive && (
+          <div className="fixed z-50 flex gap-4" style={{
+            top: searchDropdownStyle.top,
+            left: searchDropdownStyle.left,
+          }}>
+            {/* Search Results - only show if there are results, searching, or filters applied */}
+            {((searchValue.trim() && (searchResults.length > 0 || isSearching)) || isAdvancedSearching || hasAppliedFilters) && (
+              <div
+                ref={searchDropdownRef}
+                className="bg-white rounded-xl shadow-xl border border-gray-200 max-h-96 overflow-y-auto"
                   style={{
-                    minWidth: 320,
-                    top: searchDropdownStyle.top,
-                    left: searchDropdownStyle.left + searchDropdownStyle.width + 16, // 16px margin to the right of search bar
-                  }}
-                >
+                  width: searchDropdownStyle.width,
+                }}
+              >
+            {isSearching || isAdvancedSearching ? (
+              <div className="p-4 text-center text-gray-500">
+                <div className="loading loading-spinner loading-sm"></div>
+                <span className="ml-2">Searching...</span>
+              </div>
+            ) : searchResults.length > 0 ? (
+              <div>
+                {(() => {
+                  // Separate exact matches from other results
+                  const exactMatches = searchResults.filter(result => 
+                    result.name.toLowerCase() === searchValue.toLowerCase() ||
+                    result.lead_number === searchValue ||
+                    result.email.toLowerCase() === searchValue.toLowerCase()
+                  );
+                  
+                  const otherResults = searchResults.filter(result => !exactMatches.includes(result));
+                  
+                  return (
+                    <>
+                      {/* Exact Matches Section */}
+                      {exactMatches.length > 0 && (
+                        <div className="divide-y divide-gray-100">
+                          {exactMatches.map((result) => (
+                            <button
+                              key={result.id}
+                              className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors duration-200"
+                              onClick={() => handleSearchResultClick(result)}
+                            >
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold text-gray-900">{result.name}</span>
+                                  <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
+                                </div>
+                                {result.topic && (
+                                  <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
+                                )}
+                                {/* Unactivation Status */}
+                                {(() => {
+                                  const isLegacy = result.id?.toString().startsWith('legacy_');
+                                  const unactivationReason = isLegacy ? result.deactivate_note : result.unactivation_reason;
+                                  return unactivationReason || (result.stage && (result.stage === '91' || result.stage === 'unactivated'));
+                                })() && (
+                                  <div className="flex items-center gap-2 mt-1">
+                                    <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                                    <span className="text-xs text-red-600 font-medium">
+                                      {result.unactivation_reason ? 'Unactivated' : 'Dropped (Spam/Irrelevant)'}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      
+                      {/* Separator and "Did you mean" section */}
+                      {exactMatches.length > 0 && otherResults.length > 0 && (
+                        <div className="px-4 py-2 border-t border-gray-200 bg-gray-50">
+                          <div className="text-xs font-medium text-gray-600">Did you mean...</div>
+                        </div>
+                      )}
+                      
+                      {/* Other Results Section */}
+                      {otherResults.length > 0 && (
+                        <div className="divide-y divide-gray-100">
+                          {otherResults.map((result) => (
+                            <button
+                              key={result.id}
+                              className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors duration-200"
+                              onClick={() => handleSearchResultClick(result)}
+                            >
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-semibold text-gray-900">{result.name}</span>
+                                  <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
+                                  {result.isFuzzyMatch && (
+                                    <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">
+                                      Similar match
+                                    </span>
+                                  )}
+                                </div>
+                                {result.topic && (
+                                  <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
+                                )}
+                                {/* Unactivation Status */}
+                                {(() => {
+                                  const isLegacy = result.id?.toString().startsWith('legacy_');
+                                  const unactivationReason = isLegacy ? result.deactivate_note : result.unactivation_reason;
+                                  return unactivationReason || (result.stage && (result.stage === '91' || result.stage === 'unactivated'));
+                                })() && (
+                                  <div className="flex items-center gap-2 mt-1">
+                                    <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                                    <span className="text-xs text-red-600 font-medium">
+                                      {result.unactivation_reason ? 'Unactivated' : 'Dropped (Spam/Irrelevant)'}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
+            ) : searchValue.trim() ? (
+              <div className="p-4 text-center text-gray-500">
+                No leads found for "{searchValue}"
+              </div>
+            ) : null}
+              </div>
+            )}
+            
+            {/* Advanced Filter Dropdown - positioned to the right of search results */}
+            {showFilterDropdown && (
+              <div ref={filterDropdownRef} className="bg-white rounded-xl shadow-xl border border-gray-200 p-6 animate-fadeInUp min-w-80">
+                <div className="mb-4 flex justify-between items-start">
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2">Advanced Filters</h3>
+                    <p className="text-sm text-gray-600">Filter search results by specific criteria</p>
+                  </div>
+                  <button
+                    onClick={closeFilterDropdown}
+                    className="btn btn-ghost btn-sm btn-circle"
+                    title="Close filters"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                </div>
+                
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-semibold mb-1">From date</label>
@@ -744,102 +1039,279 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       <label className="block text-xs font-semibold mb-1">Category</label>
                       <select className="select select-bordered w-full" value={advancedFilters.category} onChange={e => setAdvancedFilters(f => ({ ...f, category: e.target.value }))}>
                         <option value="">Please choose</option>
-                        {categoryOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      {categoryOptions.map((opt, index) => <option key={`category-${index}-${opt}`} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold mb-1">Language</label>
                       <select className="select select-bordered w-full" value={advancedFilters.language} onChange={e => setAdvancedFilters(f => ({ ...f, language: e.target.value }))}>
                         <option value="">Please choose</option>
-                        {languageOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      {languageOptions.map((opt, index) => <option key={`language-${index}-${opt}`} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold mb-1">Reason</label>
                       <select className="select select-bordered w-full" value={advancedFilters.reason} onChange={e => setAdvancedFilters(f => ({ ...f, reason: e.target.value }))}>
                         <option value="">Please choose</option>
-                        {reasonOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      {reasonOptions.map((opt, index) => <option key={`reason-${index}-${opt}`} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold mb-1">Tags</label>
                       <select className="select select-bordered w-full" value={advancedFilters.tags} onChange={e => setAdvancedFilters(f => ({ ...f, tags: e.target.value }))}>
                         <option value="">Please choose</option>
-                        {tagOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      {tagOptions.map((opt, index) => <option key={`tag-${index}-${opt}`} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold mb-1">Status</label>
                       <select className="select select-bordered w-full" value={advancedFilters.status} onChange={e => setAdvancedFilters(f => ({ ...f, status: e.target.value }))}>
                         <option value="">Please choose</option>
-                        {statusOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      {statusOptions.map((opt, index) => <option key={`status-${index}-${opt}`} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold mb-1">Source</label>
                       <select className="select select-bordered w-full" value={advancedFilters.source} onChange={e => setAdvancedFilters(f => ({ ...f, source: e.target.value }))}>
                         <option value="">Please choose</option>
-                        {sourceOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      {sourceOptions.map((opt, index) => <option key={`source-${index}-${opt}`} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold mb-1">Stage</label>
                       <select className="select select-bordered w-full" value={advancedFilters.stage} onChange={e => setAdvancedFilters(f => ({ ...f, stage: e.target.value }))}>
                         <option value="">Please choose</option>
-                        {stageOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                      {stageOptions.map((opt, index) => <option key={`stage-${index}-${opt}`} value={opt}>{opt}</option>)}
                       </select>
                     </div>
                     <div>
                       <label className="block text-xs font-semibold mb-1">Topic</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.topic} onChange={e => setAdvancedFilters(f => ({ ...f, topic: e.target.value }))}>
-                        <option value="">Please choose</option>
-                        {topicOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                      </select>
+                    <input 
+                      type="text" 
+                      className="input input-bordered w-full" 
+                      placeholder="Enter topic..." 
+                      value={advancedFilters.topic} 
+                      onChange={e => setAdvancedFilters(f => ({ ...f, topic: e.target.value }))} 
+                    />
                     </div>
                   </div>
-                  <div className="mt-4 flex justify-end gap-2">
-                    <button className="btn btn-outline btn-sm" onClick={() => {
-                      setShowFilterDropdown(false);
-                      setIsSearchActive(false);
-                      setSearchResults([]);
-                      setSearchValue('');
-                    }}>Cancel</button>
+                
+                <div className="mt-6 flex justify-end gap-2">
+                  <button className="btn btn-outline btn-sm" onClick={() => {
+                    closeSearchBar();
+                  }}>Cancel</button>
                     <button className="btn btn-primary btn-sm" onClick={async () => {
                       setIsAdvancedSearching(true);
                       try {
-                        let query = supabase.from('leads').select('*');
                         console.log('[Filter] Applying filters:', advancedFilters);
                         
-                        // Build the query based on selected filters
+                      // Search both legacy and new leads with filters
+                      const [legacyPromise, newPromise] = await Promise.allSettled([
+                        // Search legacy leads with filters
+                        (async () => {
+                          let legacyQuery = supabase
+                            .from('leads_lead')
+                            .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id')
+                            .limit(50);
+                          
+                          console.log('[Filter] Legacy filters:', {
+                            category: advancedFilters.category,
+                            stage: advancedFilters.stage,
+                            fromDate: advancedFilters.fromDate,
+                            toDate: advancedFilters.toDate,
+                            fileId: advancedFilters.fileId,
+                            topic: advancedFilters.topic
+                          });
+                          
+                          // Apply filters to legacy leads
                         if (advancedFilters.category) {
-                          query = query.eq('topic', advancedFilters.category);
+                            legacyQuery = legacyQuery.eq('topic', advancedFilters.category);
                         }
-                        if (advancedFilters.stage) {
-                          query = query.eq('stage', advancedFilters.stage);
-                        }
-                        if (advancedFilters.status) {
-                          query = query.eq('status', advancedFilters.status);
-                        }
-                        if (advancedFilters.fromDate) {
-                          query = query.gte('created_at', advancedFilters.fromDate);
-                        }
-                        if (advancedFilters.toDate) {
-                          query = query.lte('created_at', advancedFilters.toDate);
+                          if (advancedFilters.stage) {
+                            // For now, skip stage filtering for legacy leads since we need to map stage names to IDs
+                            console.log('[Filter] Stage filtering for legacy leads temporarily disabled - need stage name to ID mapping');
+                          }
+                          if (advancedFilters.language) {
+                            // For now, skip language filtering for legacy leads since we need to map language names to IDs
+                            console.log('[Filter] Language filtering for legacy leads temporarily disabled - need language name to ID mapping');
+                          }
+                          // Test with a simple query first to see if cdate field exists
+                          console.log('[Filter] Testing legacy query without date filters first...');
+                          const testQuery = supabase
+                            .from('leads_lead')
+                            .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id')
+                            .limit(5);
+                          
+                          const testResult = await testQuery;
+                          console.log('[Filter] Test query result:', testResult);
+                          
+                          if (advancedFilters.fromDate && advancedFilters.toDate) {
+                            // Try a different approach - use filter with date range
+                            legacyQuery = legacyQuery.filter('cdate', 'gte', advancedFilters.fromDate).filter('cdate', 'lte', advancedFilters.toDate);
+                            console.log('[Filter] Legacy date range filter applied:', advancedFilters.fromDate, 'to', advancedFilters.toDate);
+                          } else if (advancedFilters.fromDate) {
+                            legacyQuery = legacyQuery.filter('cdate', 'gte', advancedFilters.fromDate);
+                            console.log('[Filter] Legacy fromDate filter applied:', advancedFilters.fromDate);
+                          } else if (advancedFilters.toDate) {
+                            legacyQuery = legacyQuery.filter('cdate', 'lte', advancedFilters.toDate);
+                            console.log('[Filter] Legacy toDate filter applied:', advancedFilters.toDate);
+                          }
+                          if (advancedFilters.fileId) {
+                            legacyQuery = legacyQuery.ilike('id', `%${advancedFilters.fileId}%`);
+                          }
+                          if (advancedFilters.topic) {
+                            legacyQuery = legacyQuery.ilike('topic', `%${advancedFilters.topic}%`);
+                          }
+                          
+                          const result = await legacyQuery.order('cdate', { ascending: false });
+                          console.log('[Filter] Legacy query result:', result);
+                          if (result.error) {
+                            console.error('[Filter] Legacy query error details:', result.error);
+                          }
+                          return result;
+                        })(),
+                        
+                        // Search new leads with filters
+                        (async () => {
+                          let newQuery = supabase
+                            .from('leads')
+                            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+                            .limit(50);
+                          
+                          console.log('[Filter] New leads filters:', {
+                            category: advancedFilters.category,
+                            stage: advancedFilters.stage,
+                            status: advancedFilters.status,
+                            fromDate: advancedFilters.fromDate,
+                            toDate: advancedFilters.toDate,
+                            fileId: advancedFilters.fileId,
+                            topic: advancedFilters.topic
+                          });
+                          
+                          // Apply filters to new leads
+                          if (advancedFilters.category) {
+                            newQuery = newQuery.eq('topic', advancedFilters.category);
+                          }
+                          if (advancedFilters.stage) {
+                            newQuery = newQuery.eq('stage', advancedFilters.stage);
+                          }
+                          if (advancedFilters.status) {
+                            newQuery = newQuery.eq('status', advancedFilters.status);
+                          }
+                          if (advancedFilters.fromDate && advancedFilters.toDate) {
+                            newQuery = newQuery.gte('created_at', advancedFilters.fromDate).lte('created_at', advancedFilters.toDate);
+                            console.log('[Filter] New leads date range filter applied:', advancedFilters.fromDate, 'to', advancedFilters.toDate);
+                          } else if (advancedFilters.fromDate) {
+                            newQuery = newQuery.gte('created_at', advancedFilters.fromDate);
+                            console.log('[Filter] New leads fromDate filter applied:', advancedFilters.fromDate);
+                          } else if (advancedFilters.toDate) {
+                            newQuery = newQuery.lte('created_at', advancedFilters.toDate);
+                            console.log('[Filter] New leads toDate filter applied:', advancedFilters.toDate);
                         }
                         if (advancedFilters.fileId) {
-                          query = query.ilike('lead_number', `%${advancedFilters.fileId}%`);
+                            newQuery = newQuery.ilike('lead_number', `%${advancedFilters.fileId}%`);
+                          }
+                          if (advancedFilters.topic) {
+                            newQuery = newQuery.ilike('topic', `%${advancedFilters.topic}%`);
+                          }
+                          
+                          const result = await newQuery.order('created_at', { ascending: false });
+                          console.log('[Filter] New leads query result:', result);
+                          return result;
+                        })()
+                      ]);
+                      
+                      const results: any[] = [];
+                      
+                      // Process legacy results
+                      if (legacyPromise.status === 'fulfilled' && legacyPromise.value.data) {
+                        // Fetch stage mapping
+                        const { data: stageMapping } = await supabase
+                          .from('lead_stages')
+                          .select('id, name');
+                        
+                        const stageMap = new Map();
+                        if (stageMapping) {
+                          stageMapping.forEach(stage => {
+                            stageMap.set(stage.id, stage.name);
+                          });
                         }
                         
-                        const { data, error } = await query.order('created_at', { ascending: false });
-                        console.log('[Filter] Query result:', { data, error, count: data?.length });
+                        // Fetch language mapping
+                        const { data: languageMapping } = await supabase
+                          .from('misc_language')
+                          .select('id, name');
                         
-                        if (error) throw error;
+                        const languageMap = new Map();
+                        if (languageMapping) {
+                          languageMapping.forEach(language => {
+                            languageMap.set(language.id, language.name);
+                          });
+                        }
                         
-                        setSearchResults(data || []);
-                        setIsSearchActive(true);
-                        setShowFilterDropdown(false);
+                        const transformedLegacyLeads = legacyPromise.value.data.map(lead => ({
+                          id: `legacy_${lead.id}`,
+                          lead_number: String(lead.id),
+                          name: lead.name || '',
+                          email: lead.email || '',
+                          phone: lead.phone || '',
+                          mobile: lead.mobile || '',
+                          topic: lead.topic || '',
+                          stage: stageMap.get(lead.stage) || String(lead.stage || ''),
+                          source: '',
+                          created_at: lead.cdate || '',
+                          updated_at: lead.cdate || '',
+                          notes: '',
+                          special_notes: '',
+                          next_followup: '',
+                          probability: '',
+                          category: '',
+                          language: languageMap.get(lead.language_id) || '',
+                          balance: '',
+                          lead_type: 'legacy' as const,
+                          unactivation_reason: null,
+                          deactivate_note: lead.deactivate_notes || null,
+                          isFuzzyMatch: false,
+                        }));
+                        results.push(...transformedLegacyLeads);
+                      }
+                      
+                      // Process new leads results
+                      if (newPromise.status === 'fulfilled' && newPromise.value.data) {
+                        const transformedNewLeads = newPromise.value.data.map(lead => ({
+                          id: lead.id,
+                          lead_number: lead.lead_number || '',
+                          name: lead.name || '',
+                          email: lead.email || '',
+                          phone: lead.phone || '',
+                          mobile: lead.mobile || '',
+                          topic: lead.topic || '',
+                          stage: lead.stage || '',
+                          source: '',
+                          created_at: lead.created_at || '',
+                          updated_at: lead.created_at || '',
+                          notes: '',
+                          special_notes: '',
+                          next_followup: '',
+                          probability: '',
+                          category: '',
+                          language: '',
+                          balance: '',
+                          lead_type: 'new' as const,
+                          unactivation_reason: null,
+                          deactivate_note: null,
+                          isFuzzyMatch: false,
+                        }));
+                        results.push(...transformedNewLeads);
+                      }
+                      
+                      console.log('[Filter] Combined results:', results.length);
+                      
+                      setSearchResults(results);
+                      setIsSearchActive(true);
+                      setHasAppliedFilters(true);
+                      // Keep filter dropdown open - only close when user clicks X or Cancel
                         
-                        console.log('[Filter] Set search results:', data?.length || 0);
                       } catch (error) {
                         console.error('[Filter] Error applying filters:', error);
                         setSearchResults([]);
@@ -849,70 +1321,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       }
                     }}>Apply Filters</button>
                   </div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* End of search bar container */}
-        {isSearchActive && (searchValue.trim() || (searchResults.length > 0 && !isAdvancedSearching)) && (
-          <div
-            ref={searchDropdownRef}
-            className="fixed bg-white rounded-xl shadow-xl border border-gray-200 max-h-96 overflow-y-auto z-50"
-            style={{
-              top: searchDropdownStyle.top,
-              left: searchDropdownStyle.left,
-              width: searchDropdownStyle.width,
-              pointerEvents: showFilterDropdown ? 'none' : 'auto',
-            }}
-          >
-            {isSearching || isAdvancedSearching ? (
-              <div className="p-4 text-center text-gray-500">
-                <div className="loading loading-spinner loading-sm"></div>
-                <span className="ml-2">Searching...</span>
-              </div>
-            ) : searchResults.length > 0 ? (
-              <div className="divide-y divide-gray-100">
-                {searchResults.map((result) => (
-                  <button
-                    key={result.id}
-                    className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors duration-200"
-                    onClick={() => handleSearchResultClick(result)}
-                  >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-gray-900">{result.name}</span>
-                        <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
-                        {result.isFuzzyMatch && (
-                          <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">
-                            Similar match
-                          </span>
-                        )}
-                      </div>
-                      {result.topic && (
-                        <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
-                      )}
-                      {/* Unactivation Status */}
-                      {(() => {
-                        const isLegacy = result.id?.toString().startsWith('legacy_');
-                        const unactivationReason = isLegacy ? result.deactivate_note : result.unactivation_reason;
-                        return unactivationReason || (result.stage && (result.stage === '91' || result.stage === 'unactivated'));
-                      })() && (
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                          <span className="text-xs text-red-600 font-medium">
-                            {result.unactivation_reason ? 'Unactivated' : 'Dropped (Spam/Irrelevant)'}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="p-4 text-center text-gray-500">
-                {searchValue.trim() ? `No leads found for "${searchValue}"` : 'No results found'}
               </div>
             )}
           </div>

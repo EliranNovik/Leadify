@@ -1773,7 +1773,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         </div>
                         
                         <div className="flex flex-wrap gap-1 text-xs mb-2">
-                          {row.status && (
+                          {/* Only show status badge for WhatsApp interactions */}
+                          {row.kind === 'whatsapp' && row.status && (
                             <span className={`px-2 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>
                               {row.status}
                             </span>

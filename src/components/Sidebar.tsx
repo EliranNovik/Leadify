@@ -22,6 +22,7 @@ import {
   MagnifyingGlassIcon,
   ArrowRightOnRectangleIcon,
   ExclamationTriangleIcon,
+  ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 
@@ -70,7 +71,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
-  { icon: Cog6ToothIcon, label: 'Admin Panel', path: '/admin' },
+  { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
 const mobileSidebarItems: SidebarItem[] = [
@@ -104,7 +105,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
   { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
-  { icon: Cog6ToothIcon, label: 'Admin Panel', path: '/admin' },
+  { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
 const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat }) => {
@@ -231,12 +232,12 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
       <div className="hidden md:block">
         <div
           ref={sidebarRef}
-          className={`fixed top-20 left-4 flex flex-col bg-gradient-to-b from-indigo-700 via-purple-700 to-teal-600 shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl max-h-[calc(100vh-2rem)] min-h-[120px] border border-white/10`}
+          className={`fixed top-20 left-4 flex flex-col bg-gradient-to-b from-indigo-700 via-purple-700 to-teal-600 shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl h-[calc(100vh-6rem)] max-h-[calc(100vh-6rem)] min-h-[120px] border border-white/10`}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
         >
           {/* Navigation Items */}
-          <nav className="flex flex-col mt-8 gap-2 flex-1">
+          <nav className="flex flex-col mt-8 gap-2 flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent hover:scrollbar-thumb-white/30 pb-4">
             {desktopSidebarItems
               .map((item, index) => {
               const Icon = item.icon;
@@ -300,7 +301,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
           </nav>
 
           {/* User info and sign out button */}
-          <div className="flex flex-col px-4 py-6 border-t border-white/10 mt-4 w-full gap-3">
+          <div className="flex flex-col px-4 py-6 border-t border-white/10 mt-auto w-full gap-3 flex-shrink-0">
             <div className={`flex items-center w-full justify-start gap-3`}>
               {/* Sign out button */}
               <div className="relative group">
