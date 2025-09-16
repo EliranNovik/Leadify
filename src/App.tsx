@@ -48,6 +48,7 @@ import HowItWorksPage from './pages/HowItWorksPage';
 import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
 import SimpleTestPage from './pages/SimpleTestPage';
 import DebugTestPage from './pages/DebugTestPage';
+import EmployeePerformancePage from './pages/EmployeePerformancePage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -303,6 +304,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/double-leads" element={<DoubleLeadsPage />} />
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />
+                    <Route path="/employee-performance" element={<EmployeePerformancePage />} />
                     <Route path="/whatsapp" element={<WhatsAppPage />} />
                     <Route path="/collection" element={<CollectionPage />} />
                     <Route path="/performance" element={<MyPerformancePage />} />

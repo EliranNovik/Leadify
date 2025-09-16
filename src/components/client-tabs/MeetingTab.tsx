@@ -1082,7 +1082,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Scheduler</label>
-                <div className="bg-gray-50 rounded-lg p-3">
+                <div className="p-3">
                   <span className="text-base font-semibold text-gray-900">
                     {getEmployeeDisplayName(leadSchedulingInfo.scheduler) || <span className="text-gray-400 font-normal">Not assigned</span>}
                   </span>
@@ -1090,7 +1090,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Scheduling Notes</label>
-                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                <div className="p-3 min-h-[60px]">
                   <span className="text-sm text-gray-900 whitespace-pre-line">
                     {leadSchedulingInfo.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
                   </span>
@@ -1098,7 +1098,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Next Follow-up</label>
-                <div className="bg-gray-50 rounded-lg p-3">
+                <div className="p-3">
                   <span className="text-base font-semibold text-gray-900">
                     {leadSchedulingInfo.next_followup ? new Date(leadSchedulingInfo.next_followup).toLocaleDateString() : <span className="text-gray-400 font-normal">Not set</span>}
                   </span>
@@ -1106,7 +1106,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Follow-up Notes</label>
-                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                <div className="p-3 min-h-[60px]">
                   <span className="text-sm text-gray-900 whitespace-pre-line">
                     {leadSchedulingInfo.followup || <span className="text-gray-400 italic">No notes</span>}
                   </span>
@@ -1118,7 +1118,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       )}
 
       {/* Meeting Summary Content Box */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+      {/* <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="px-6 py-4 bg-gradient-to-r from-blue-50 to-purple-50 border-b border-gray-100">
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 bg-gradient-to-tr from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
@@ -1137,7 +1137,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
             
             {/* Summary Status */}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            {/* <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
               <div className="flex items-center gap-2 mb-2">
                 <div className="w-4 h-4 bg-blue-500 rounded-full"></div>
                 <span className="font-medium text-blue-900">Summary Status</span>
@@ -1148,7 +1148,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
 
             {/* Instructions */}
-            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+            {/* <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
               <div className="flex items-center gap-2 mb-2">
                 <div className="w-4 h-4 bg-yellow-500 rounded-full"></div>
                 <span className="font-medium text-yellow-900">How to Get Summaries</span>
@@ -1162,7 +1162,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
           </div>
         </div>
-      </div>
+      </div> */}
 
       {/* Two-column grid: Upcoming (left) and Past (right) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

@@ -78,35 +78,32 @@ const EmployeeAvailability: React.FC = () => {
         date,
         isCurrentMonth: false,
         isToday: false,
-        unavailableTimes: []
+        unavailableTimes: [],
+        isInUnavailableRange: false
       });
     }
     
     // Add current month's days
-    for (let day = 1; day <= daysInMonth; day++) {
-      const date = new Date(currentYear, currentMonth, day);
-      const dateString = date.toISOString().split('T')[0];
+    for (let dayNum = 1; dayNum <= daysInMonth; dayNum++) {
+      const date = new Date(currentYear, currentMonth, dayNum);
+      // Format date as YYYY-MM-DD in local timezone to match saved format
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      const dateString = `${year}-${month}-${day}`;
       const dayUnavailableTimes = unavailableTimes.filter(ut => ut.date === dateString);
       
       // Check if this date is in any unavailable range
       const rangeInfo = unavailableRanges.find(range => {
-        const startDate = new Date(range.startDate);
-        const endDate = new Date(range.endDate);
-        
-        // Normalize dates to start of day for comparison
-        const checkDate = new Date(date);
-        checkDate.setHours(0, 0, 0, 0);
-        startDate.setHours(0, 0, 0, 0);
-        endDate.setHours(0, 0, 0, 0);
-        
-        const isInRange = checkDate >= startDate && checkDate <= endDate;
+        // Compare date strings directly to avoid timezone issues
+        const isInRange = dateString >= range.startDate && dateString <= range.endDate;
         
         // Debug logging for first few days
-        if (day <= 3 && unavailableRanges.length > 0) {
+        if (dayNum <= 3 && unavailableRanges.length > 0) {
           console.log('🔍 Date range check:', {
-            checkDate: checkDate.toISOString().split('T')[0],
-            startDate: startDate.toISOString().split('T')[0],
-            endDate: endDate.toISOString().split('T')[0],
+            checkDate: dateString,
+            startDate: range.startDate,
+            endDate: range.endDate,
             isInRange,
             rangeReason: range.reason
           });
@@ -127,13 +124,14 @@ const EmployeeAvailability: React.FC = () => {
     
     // Add next month's leading days
     const remainingDays = 42 - days.length; // 6 weeks * 7 days
-    for (let day = 1; day <= remainingDays; day++) {
-      const date = new Date(currentYear, currentMonth + 1, day);
+    for (let dayNum = 1; dayNum <= remainingDays; dayNum++) {
+      const date = new Date(currentYear, currentMonth + 1, dayNum);
       days.push({
         date,
         isCurrentMonth: false,
         isToday: false,
-        unavailableTimes: []
+        unavailableTimes: [],
+        isInUnavailableRange: false
       });
     }
     
@@ -231,9 +229,15 @@ const EmployeeAvailability: React.FC = () => {
         return;
       }
 
+      // Format date as YYYY-MM-DD in local timezone to avoid UTC conversion issues
+      const year = selectedDate.getFullYear();
+      const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+      const day = String(selectedDate.getDate()).padStart(2, '0');
+      const dateString = `${year}-${month}-${day}`;
+
       const newTime: UnavailableTime = {
         id: Date.now().toString(),
-        date: selectedDate.toISOString().split('T')[0],
+        date: dateString,
         startTime: newUnavailableTime.startTime,
         endTime: newUnavailableTime.endTime,
         reason: newUnavailableTime.reason
@@ -291,8 +295,14 @@ const EmployeeAvailability: React.FC = () => {
       account: account
     });
 
-    const startDateTime = new Date(`${unavailableTime.date}T${unavailableTime.startTime}:00`);
-    const endDateTime = new Date(`${unavailableTime.date}T${unavailableTime.endTime}:00`);
+    // Create dates in local timezone to avoid UTC conversion issues
+    const [year, month, day] = unavailableTime.date.split('-').map(Number);
+    const startDateTime = new Date(year, month - 1, day, 
+      parseInt(unavailableTime.startTime.split(':')[0]), 
+      parseInt(unavailableTime.startTime.split(':')[1]), 0);
+    const endDateTime = new Date(year, month - 1, day, 
+      parseInt(unavailableTime.endTime.split(':')[0]), 
+      parseInt(unavailableTime.endTime.split(':')[1]), 0);
 
     const event = {
       subject: `Unavailable - ${unavailableTime.reason}`,
@@ -530,10 +540,12 @@ const EmployeeAvailability: React.FC = () => {
       account: account
     });
 
-    const startDateTime = new Date(range.startDate);
-    startDateTime.setHours(0, 0, 0, 0);
-    const endDateTime = new Date(range.endDate);
-    endDateTime.setHours(23, 59, 59, 999);
+    // Create dates in local timezone to avoid UTC conversion issues
+    const [startYear, startMonth, startDay] = range.startDate.split('-').map(Number);
+    const [endYear, endMonth, endDay] = range.endDate.split('-').map(Number);
+    
+    const startDateTime = new Date(startYear, startMonth - 1, startDay, 0, 0, 0, 0);
+    const endDateTime = new Date(endYear, endMonth - 1, endDay, 23, 59, 59, 999);
 
     // For all-day events, use date format instead of dateTime
     const event = {

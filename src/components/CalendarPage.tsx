@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -15,6 +15,8 @@ import { useRef } from 'react';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../lib/api';
 import { fetchStageNames, getStageName } from '../lib/stageUtils';
+import TeamsMeetingModal from './TeamsMeetingModal';
+import DepartmentList from './DepartmentList';
 
 // Email templates
 const emailTemplates = [
@@ -253,73 +255,8 @@ const getCurrencySymbol = (currency?: string) => {
   }
 };
 
-// Department mapping: department name to categories
-const DEPARTMENT_CATEGORIES = [
-  {
-    name: 'Austria/Undefined',
-    categories: ['Austrian Citizenship', 'Austrian Passport'],
-  },
-  {
-    name: 'Germany/Undefined',
-    categories: ['German Citizenship'],
-  },
-  {
-    name: 'Germany/Lived bef 1933,le af',
-    categories: ['Germany/Lived bef 1933,le af'],
-  },
-  {
-    name: 'Immigration Israel/Joint life/Family r',
-    categories: ['Immigration Israel/Joint life/Family r'],
-  },
-  {
-    name: 'Immigration Israel/Entry into Israel',
-    categories: ['Immigration Israel/Entry into Israel'],
-  },
-  {
-    name: 'USA/Citiz. f gr+children',
-    categories: ['USA/Citiz. f gr+children'],
-  },
-  {
-    name: 'USA/Citiz. f grandchild',
-    categories: ['USA/Citiz. f grandchild'],
-  },
-  {
-    name: 'USA/Green Cards',
-    categories: ['USA/Green Cards'],
-  },
-  {
-    name: 'Commer/Civil/Adm/Fam/Inheritance',
-    categories: ['Commer/Civil/Adm/Fam/Inheritance'],
-  },
-  {
-    name: 'Eligibility Checker/German/Austria',
-    categories: ['Eligibility Checker/German/Austria'],
-  },
-];
+// Department mapping is now loaded dynamically from database
 
-// Helper: group meetings by department
-function groupMeetingsByDepartment(meetings: any[]) {
-  const grouped: { [key: string]: any[] } = {};
-  for (const dept of DEPARTMENT_CATEGORIES) {
-    grouped[dept.name] = [];
-  }
-  for (const meeting of meetings) {
-    const lead = meeting.lead || {};
-    const category = lead.category || meeting.category || '';
-    // Map category to department
-    let dept = DEPARTMENT_CATEGORIES.find(d => d.categories.includes(category));
-    // Special logic for German Citizenship and Austrian Citizenship/Passport
-    if (category === 'German Citizenship') {
-      dept = DEPARTMENT_CATEGORIES.find(d => d.name === 'Germany/Undefined');
-    } else if (category === 'Austrian Citizenship' || category === 'Austrian Passport') {
-      dept = DEPARTMENT_CATEGORIES.find(d => d.name === 'Austria/Undefined');
-    }
-    if (dept) {
-      grouped[dept.name].push(meeting);
-    }
-  }
-  return grouped;
-}
 
 const CalendarPage: React.FC = () => {
   const [meetings, setMeetings] = useState<any[]>([]);
@@ -330,6 +267,7 @@ const CalendarPage: React.FC = () => {
   const [totalAmount, setTotalAmount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isBackgroundLoading, setIsBackgroundLoading] = useState(false);
+  const [isLegacyLoading, setIsLegacyLoading] = useState(false);
   const [expandedMeetingId, setExpandedMeetingId] = useState<number | null>(null);
   const [expandedMeetingData, setExpandedMeetingData] = useState<{
     [meetingId: number]: {
@@ -340,8 +278,6 @@ const CalendarPage: React.FC = () => {
   }>({});
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<any>(null);
-  // Accordion state for departments
-  const [expandedDept, setExpandedDept] = useState<string | null>(null);
   const navigate = useNavigate();
 
   // WhatsApp functionality
@@ -351,6 +287,27 @@ const CalendarPage: React.FC = () => {
   // WhatsApp chat messages for the chat box (from selectedLead.manual_interactions)
   const [selectedLeadForWhatsApp, setSelectedLeadForWhatsApp] = useState<any>(null);
   const { instance, accounts } = useMsal();
+
+  // Currency conversion rates (same as DepartmentList)
+  const currencyRates = {
+    'USD': 3.7,  // 1 USD = 3.7 NIS (approximate)
+    'EUR': 4.0,  // 1 EUR = 4.0 NIS (approximate)
+    'GBP': 4.7,  // 1 GBP = 4.7 NIS (approximate)
+    'NIS': 1,    // 1 NIS = 1 NIS
+    '₪': 1,      // 1 ₪ = 1 NIS
+    'ILS': 1     // 1 ILS = 1 NIS
+  };
+
+  // Helper function to convert any currency amount to NIS
+  const convertToNIS = (amount: number, currency: string): number => {
+    if (!amount || amount <= 0) return 0;
+    
+    const normalizedCurrency = currency?.toUpperCase().trim();
+    const rate = currencyRates[normalizedCurrency as keyof typeof currencyRates] || 1;
+    
+    console.log(`💰 Calendar: Converting ${amount} ${currency} to NIS (rate: ${rate}) = ${amount * rate}`);
+    return amount * rate;
+  };
 
   // Set default view mode based on screen size
   useEffect(() => {
@@ -406,6 +363,9 @@ const CalendarPage: React.FC = () => {
   const [employeeAvailability, setEmployeeAvailability] = useState<{[key: string]: any[]}>({});
   const [unavailableEmployees, setUnavailableEmployees] = useState<{[key: string]: any[]}>({});
   const [showMoreUnavailableDropdown, setShowMoreUnavailableDropdown] = useState(false);
+  const [meetingCounts, setMeetingCounts] = useState<{[clientId: string]: number}>({});
+  const [previousManagers, setPreviousManagers] = useState<{[meetingId: number]: string}>({});
+  const [meetingLocations, setMeetingLocations] = useState<{[locationId: number]: string}>({});
   const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number } | null>(null);
   const [activeDropdown, setActiveDropdown] = useState<{ meetingId: number; type: 'manager' | 'helper' } | null>(null);
   const [dropdownStates, setDropdownStates] = useState<{
@@ -424,42 +384,129 @@ const CalendarPage: React.FC = () => {
   // State to store all employees and categories for name lookup
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
+  
+  // State to track legacy loading failures
+  const [legacyLoadingDisabled, setLegacyLoadingDisabled] = useState(false);
+  
+  // Meeting type filter state
+  const [selectedMeetingType, setSelectedMeetingType] = useState<'all' | 'potential' | 'active' | 'staff'>('all');
+  
+  // Staff meetings state
+  const [staffMeetings, setStaffMeetings] = useState<any[]>([]);
+  const [isStaffMeetingsLoading, setIsStaffMeetingsLoading] = useState(false);
+  
+  // Teams meeting modal state
+  const [isTeamsMeetingModalOpen, setIsTeamsMeetingModalOpen] = useState(false);
+  const [selectedDateForMeeting, setSelectedDateForMeeting] = useState<Date | null>(null);
+  const [selectedTimeForMeeting, setSelectedTimeForMeeting] = useState<string>('');
+  
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
-    if (!employeeId || employeeId === '---') return 'Not assigned';
+    if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
     // Find employee in the loaded employees array
     const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
     return employee ? employee.display_name : employeeId; // Fallback to ID if not found
   };
 
-  // Helper function to get category name from ID or name
-  const getCategoryName = (categoryId: string | number | null | undefined) => {
-    console.log('🔍 getCategoryName called with:', categoryId, 'type:', typeof categoryId);
-    console.log('🔍 allCategories length:', allCategories.length);
+  // Helper function to get category name from ID or name with main category
+  const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
+    console.log('🔍 Calendar getCategoryName called with categoryId:', categoryId, 'type:', typeof categoryId, 'fallbackCategory:', fallbackCategory);
     
-    if (!categoryId || categoryId === '---') {
-      console.log('🔍 Category is null/empty, returning empty string');
-      return '';
+    if (!categoryId || categoryId === '---' || categoryId === '--') {
+      console.log('🔍 Calendar getCategoryName: categoryId is null/undefined/---, checking fallback');
+      // If no category_id but we have a fallback category, try to find it in the loaded categories
+      if (fallbackCategory && String(fallbackCategory).trim() !== '') {
+        console.log('🔍 Calendar getCategoryName: Looking for fallback category in loaded categories:', fallbackCategory);
+        
+        // Try to find the fallback category in the loaded categories
+        // First try by ID if fallbackCategory is a number
+        let foundCategory = null;
+        if (typeof fallbackCategory === 'number') {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.id.toString() === fallbackCategory.toString()
+          );
+        }
+        
+        // If not found by ID, try by name
+        if (!foundCategory) {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.name.toLowerCase().trim() === String(fallbackCategory).toLowerCase().trim()
+          );
+        }
+        
+        if (foundCategory) {
+          console.log('🔍 Calendar getCategoryName: Found fallback category in loaded categories:', foundCategory);
+          // Return category name with main category in parentheses
+          if (foundCategory.misc_maincategory?.name) {
+            return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
+          } else {
+            return foundCategory.name; // Fallback if no main category
+          }
+        } else {
+          console.log('🔍 Calendar getCategoryName: Fallback category not found in loaded categories, using as-is:', fallbackCategory);
+          return String(fallbackCategory); // Use as-is if not found in loaded categories
+        }
+      }
+      console.log('🔍 Calendar getCategoryName: No fallback category, returning --');
+      return '--';
     }
+    
+    // If allCategories is not loaded yet, return the original value
+    if (!allCategories || allCategories.length === 0) {
+      console.log('🔍 Calendar getCategoryName: Categories not loaded yet, returning original value');
+      return String(categoryId);
+    }
+    
+    console.log('🔍 Calendar getCategoryName processing valid categoryId:', { 
+      categoryId, 
+      allCategoriesLength: allCategories.length,
+      allCategories: allCategories.map(cat => ({ 
+        id: cat.id, 
+        name: cat.name, 
+        parent_id: cat.parent_id,
+        mainCategory: cat.misc_maincategory?.name 
+      }))
+    });
     
     // First try to find by ID
     const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (categoryById) {
-      console.log('🔍 Found category by ID:', categoryById.name);
-      return categoryById.name;
+      console.log('🔍 Calendar Found category by ID:', { 
+        id: categoryById.id, 
+        name: categoryById.name, 
+        mainCategory: categoryById.misc_maincategory?.name 
+      });
+      
+      // Return category name with main category in parentheses
+      if (categoryById.misc_maincategory?.name) {
+        return `${categoryById.name} (${categoryById.misc_maincategory.name})`;
+      } else {
+        return categoryById.name; // Fallback if no main category
+      }
     }
     
     // If not found by ID, try to find by name (in case it's already a name)
     const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
     if (categoryByName) {
-      console.log('🔍 Found category by name:', categoryByName.name);
-      return categoryByName.name;
+      console.log('🔍 Calendar Found category by name:', { 
+        id: categoryByName.id, 
+        name: categoryByName.name, 
+        mainCategory: categoryByName.misc_maincategory?.name 
+      });
+      
+      // Return category name with main category in parentheses
+      if (categoryByName.misc_maincategory?.name) {
+        return `${categoryByName.name} (${categoryByName.misc_maincategory.name})`;
+      } else {
+        return categoryByName.name; // Fallback if no main category
+      }
     }
     
-    console.log('🔍 Category not found, returning as string:', String(categoryId));
+    console.log('🔍 Calendar Category not found, returning original value for categoryId:', categoryId);
     return String(categoryId); // Fallback to original value if not found
   };
+
 
   // Navigation functions for date switching
   const goToPreviousDay = () => {
@@ -484,6 +531,243 @@ const CalendarPage: React.FC = () => {
     setSelectedDate(new Date().toISOString().split('T')[0]);
   };
 
+  // Function to load legacy meetings for a specific date
+  // Fetch staff meetings from shared-staffcalendar@lawoffice.org.il
+  const fetchStaffMeetings = async (targetDate: string) => {
+    console.log('🔄 Fetching staff meetings for date:', targetDate);
+    setIsStaffMeetingsLoading(true);
+    
+    try {
+      const account = instance.getActiveAccount();
+      if (!account) {
+        console.log('No active account for staff meetings');
+        return;
+      }
+
+      const tokenResponse = await instance.acquireTokenSilent({
+        ...loginRequest,
+        account: account,
+      });
+
+      if (!tokenResponse) {
+        console.log('No token response for staff meetings');
+        return;
+      }
+
+      const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
+      const startDate = new Date(targetDate);
+      startDate.setHours(0, 0, 0, 0);
+      const endDate = new Date(targetDate);
+      endDate.setHours(23, 59, 59, 999);
+
+      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events?$filter=start/dateTime ge '${startDate.toISOString()}' and start/dateTime le '${endDate.toISOString()}'&$orderby=start/dateTime`;
+
+      console.log('🔍 Staff meetings URL:', url);
+
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${tokenResponse.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        console.error('Error fetching staff meetings:', response.status, response.statusText);
+        return;
+      }
+
+      const data = await response.json();
+      console.log('📅 Staff meetings fetched:', data.value?.length || 0);
+      console.log('📅 Raw staff meetings data:', data.value);
+
+      if (data.value) {
+        const formattedStaffMeetings = data.value.map((event: any) => ({
+          id: `staff-${event.id}`,
+          meeting_date: targetDate,
+            meeting_time: event.start?.dateTime ? (() => {
+              // Parse UTC time correctly by adding 'Z' to indicate UTC
+              const utcDateTimeString = event.start.dateTime.endsWith('Z') ? event.start.dateTime : event.start.dateTime + 'Z';
+              const utcDate = new Date(utcDateTimeString);
+              
+              // Get local time components directly
+              const localHours = utcDate.getHours();
+              const localMinutes = utcDate.getMinutes();
+              return `${String(localHours).padStart(2, '0')}:${String(localMinutes).padStart(2, '0')}`;
+            })() : '00:00',
+          meeting_manager: '--',
+          helper: '--',
+          meeting_location: event.location?.displayName || 'Teams',
+          teams_meeting_url: event.onlineMeeting?.joinUrl || event.webLink || '',
+          meeting_amount: '--',
+          meeting_currency: '',
+          status: 'scheduled',
+          client_id: null,
+          legacy_lead_id: null,
+          calendar_type: 'staff',
+          lead: {
+            id: `staff-${event.id}`,
+            name: event.subject || 'Staff Meeting',
+            lead_number: 'STAFF',
+            stage: 'Staff Meeting',
+            manager: '--',
+            category: '--',
+            balance: '--',
+            balance_currency: '',
+            expert: '--',
+            probability: '--',
+            phone: '--',
+            email: '--'
+          }
+        }));
+
+        setStaffMeetings(formattedStaffMeetings);
+        console.log('📅 Formatted staff meetings:', formattedStaffMeetings);
+      }
+    } catch (error) {
+      console.error('Error fetching staff meetings:', error);
+    } finally {
+      setIsStaffMeetingsLoading(false);
+    }
+  };
+
+  const loadLegacyForDate = async (targetDate: string) => {
+    if (!targetDate || legacyLoadingDisabled) return;
+    
+    console.log('🔄 Loading legacy meetings for date:', targetDate);
+    setIsLegacyLoading(true);
+    
+    try {
+      const { data: legacyData, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id')
+        .eq('meeting_date', targetDate)
+        .not('meeting_date', 'is', null)
+        .not('name', 'is', null)
+        .limit(20);
+
+      if (legacyError) {
+        console.log('⚠️ Legacy query failed:', legacyError.message);
+        // Don't return, just continue with empty data
+        return;
+      }
+
+      if (legacyData && legacyData.length > 0) {
+        console.log('✅ Found', legacyData.length, 'legacy meetings for', targetDate);
+        
+        // Get unique location IDs from legacy data
+        const locationIds = [...new Set(legacyData
+          .map((lead: any) => lead.meeting_location_id)
+          .filter((id: any) => id !== null && id !== undefined)
+        )];
+        
+        // Fetch location names from tenants_meetinglocation table
+        let locationMap: { [key: number]: string } = {};
+        if (locationIds.length > 0) {
+          try {
+            const { data: locationData, error: locationError } = await supabase
+              .from('tenants_meetinglocation')
+              .select('id, name')
+              .in('id', locationIds);
+            
+            if (!locationError && locationData) {
+              locationMap = locationData.reduce((acc: { [key: number]: string }, loc: any) => {
+                acc[loc.id] = loc.name;
+                return acc;
+              }, {});
+              console.log('✅ Loaded location names:', locationMap);
+            } else {
+              console.log('⚠️ Failed to load location names:', locationError?.message);
+            }
+          } catch (error) {
+            console.log('⚠️ Error fetching location names:', error);
+          }
+        }
+        
+        // Process legacy meetings for this specific date
+        const processedLegacyMeetings = legacyData.map((legacyLead: any) => {
+          const meeting = {
+            id: `legacy_${legacyLead.id}`,
+            created_at: legacyLead.meeting_date || new Date().toISOString(),
+            meeting_date: legacyLead.meeting_date,
+            meeting_time: legacyLead.meeting_time || '09:00',
+            meeting_manager: legacyLead.meeting_manager_id,
+            helper: legacyLead.meeting_lawyer_id,
+            meeting_location: legacyLead.meeting_location_id ? 
+              (locationMap[legacyLead.meeting_location_id] || 'Unknown Location') : 'Teams',
+            meeting_location_id: legacyLead.meeting_location_id,
+            teams_meeting_url: null,
+            meeting_brief: null,
+            meeting_amount: parseFloat(legacyLead.total || '0'),
+            meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                             legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                             legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+            meeting_complexity: 'Simple',
+            meeting_car_no: null,
+            meeting_paid: false,
+            meeting_confirmation: false,
+            meeting_scheduling_notes: '',
+            status: null,
+            lead: {
+              id: `legacy_${legacyLead.id}`,
+              lead_number: legacyLead.lead_number || legacyLead.id?.toString() || 'Unknown',
+              name: legacyLead.name || 'Legacy Lead',
+              email: legacyLead.email || '',
+              phone: legacyLead.phone || '',
+              mobile: legacyLead.mobile || '',
+              topic: '',
+              stage: legacyLead.stage || 'Unknown',
+              manager: legacyLead.meeting_manager_id,
+              helper: legacyLead.meeting_lawyer_id,
+              balance: parseFloat(legacyLead.total || '0'),
+              balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+              expert: legacyLead.expert_id,
+              probability: parseFloat(legacyLead.probability || '0'),
+              category: legacyLead.category || legacyLead.category_id,
+              language: null,
+              onedrive_folder_link: '',
+              expert_notes: '',
+              manual_interactions: [],
+              lead_type: 'legacy' as const
+            }
+          };
+          return meeting;
+        });
+
+        // Add legacy meetings to the current meetings
+        setMeetings(prevMeetings => {
+          // Remove any existing legacy meetings for this date first
+          const filteredMeetings = prevMeetings.filter(meeting => 
+            !(meeting.lead?.lead_type === 'legacy' && meeting.meeting_date === targetDate)
+          );
+          
+          // Add new legacy meetings
+          const allMeetings = [...filteredMeetings, ...processedLegacyMeetings];
+          
+          console.log('✅ Updated meetings with legacy data for', targetDate, ':', {
+            previousCount: prevMeetings.length,
+            legacyCount: processedLegacyMeetings.length,
+            totalCount: allMeetings.length
+          });
+          
+          return allMeetings;
+        });
+      } else {
+        console.log('ℹ️ No legacy meetings found for', targetDate);
+      }
+    } catch (error) {
+      console.log('⚠️ Error loading legacy meetings:', error);
+      // Disable legacy loading after multiple failures to prevent repeated timeouts
+      if (error instanceof Error && error.message.includes('timeout')) {
+        console.log('🚫 Disabling legacy loading due to repeated timeouts');
+        setLegacyLoadingDisabled(true);
+      }
+    } finally {
+      setIsLegacyLoading(false);
+    }
+  };
+
   useEffect(() => {
     const fetchMeetingsAndStaff = async () => {
       setIsLoading(true);
@@ -499,15 +783,25 @@ const CalendarPage: React.FC = () => {
           setAllEmployees(employeesData);
         }
 
-        // Fetch all categories for name lookup
+        // Fetch all categories with their parent main category names using JOINs
         const { data: categoriesData, error: categoriesError } = await supabase
           .from('misc_category')
-          .select('id, name')
+          .select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          `)
           .order('name', { ascending: true });
         
         if (!categoriesError && categoriesData) {
           setAllCategories(categoriesData);
+          console.log('✅ Categories loaded:', categoriesData.length, 'categories');
         }
+
 
         // Initialize stage names cache
         console.log('🔍 Initializing stage names cache...');
@@ -516,6 +810,20 @@ const CalendarPage: React.FC = () => {
         }).catch(error => {
           console.error('❌ Error initializing stage names:', error);
         });
+
+        // Create a helper function to get category name using the loaded data
+        const getCategoryNameFromData = (categoryId: string | number | null | undefined) => {
+          if (!categoryId || categoryId === '---') return '';
+          
+          // Use the categories data directly instead of state
+          const categoryById = categoriesData?.find((cat: any) => cat.id.toString() === categoryId.toString());
+          if (categoryById) return categoryById.name;
+          
+          const categoryByName = categoriesData?.find((cat: any) => cat.name === categoryId);
+          if (categoryByName) return categoryByName.name;
+          
+          return String(categoryId);
+        };
 
         // First, load today's meetings for immediate display - MINIMAL DATA ONLY
         const today = new Date().toISOString().split('T')[0];
@@ -528,48 +836,24 @@ const CalendarPage: React.FC = () => {
           .select(`
             id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
             meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
+            attendance_probability, complexity, car_number, calendar_type,
             lead:leads!client_id(
-              id, name, lead_number, stage, manager, category, balance, balance_currency, 
-              expert, probability, phone, email
+              id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
+              expert, probability, phone, email, number_of_applicants_meeting
             ),
             legacy_lead:leads_lead!legacy_lead_id(
               id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-              total, meeting_total_currency_id, expert_id, probability, phone, email
+              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants
             )
           `)
           .eq('meeting_date', today)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_time', { ascending: true });
 
-        // Try to load legacy meetings with timeout handling
+        // DISABLED: Today's legacy loading removed to prevent timeouts
         let todayLegacyMeetingsData = [];
         let todayLegacyMeetingsError = null;
-        
-        try {
-          console.log('🚀 Loading legacy meetings (with timeout protection)...');
-          const legacyPromise = supabase
-            .from('leads_lead')
-            .select(`
-              id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-              total, meeting_total_currency_id, expert_id, probability, phone, email, mobile,
-              meeting_date, meeting_time, meeting_brief, meeting_location_old, meeting_url, meeting_total
-            `)
-            .eq('meeting_date', today)
-            .order('meeting_time', { ascending: true });
-
-          // Add timeout to legacy query
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Legacy query timeout')), 3000)
-          );
-
-          const result = await Promise.race([legacyPromise, timeoutPromise]) as any;
-          todayLegacyMeetingsData = result.data || [];
-          todayLegacyMeetingsError = result.error;
-        } catch (error) {
-          console.log('⚠️ Legacy meetings query timed out or failed, continuing with regular meetings only');
-          todayLegacyMeetingsData = [];
-          todayLegacyMeetingsError = error;
-        }
+        console.log('🚫 Today\'s legacy loading disabled - only date filter legacy loading enabled');
 
         // Process today's meetings immediately - SIMPLIFIED FOR SPEED
         if (!todayMeetingsError) {
@@ -595,41 +879,8 @@ const CalendarPage: React.FC = () => {
             } : null
           }));
 
-          const todayProcessedLegacyMeetings = (todayLegacyMeetingsData || []).map((legacyLead: any) => ({
-            id: `legacy_${legacyLead.id}`,
-            created_at: legacyLead.meeting_date,
-            meeting_date: legacyLead.meeting_date,
-            meeting_time: legacyLead.meeting_time,
-            meeting_manager: legacyLead.meeting_manager_id,
-            helper: legacyLead.meeting_lawyer_id,
-            meeting_location: legacyLead.meeting_location_old || 'Teams',
-            teams_meeting_url: legacyLead.meeting_url,
-            meeting_amount: parseFloat(legacyLead.meeting_total || '0'),
-            meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                             legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                             legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
-            status: null,
-            lead: {
-              id: `legacy_${legacyLead.id}`,
-              lead_number: legacyLead.id?.toString(),
-              name: legacyLead.name || '',
-              email: legacyLead.email || '',
-              phone: legacyLead.phone || '',
-              mobile: legacyLead.mobile || '',
-              stage: legacyLead.stage,
-              manager: legacyLead.meeting_manager_id,
-              helper: legacyLead.meeting_lawyer_id,
-              balance: parseFloat(legacyLead.total || '0'),
-              balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
-              expert: legacyLead.expert_id,
-              probability: parseFloat(legacyLead.probability || '0'),
-              category: legacyLead.category || legacyLead.category_id,
-              manual_interactions: [],
-              lead_type: 'legacy' as const
-            }
-          }));
+          // DISABLED: Legacy processing removed from today's meetings
+          const todayProcessedLegacyMeetings: any[] = [];
 
           const todayAllMeetings = [...todayProcessedMeetings, ...todayProcessedLegacyMeetings];
           const loadTime = performance.now() - startTime;
@@ -663,123 +914,18 @@ const CalendarPage: React.FC = () => {
           .select(`
             id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
             meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
+            attendance_probability, complexity, car_number, calendar_type,
             lead:leads!client_id(
-              id, name, lead_number, onedrive_folder_link, stage, manager, category, 
+              id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
               balance, balance_currency, expert_notes, expert, probability, phone, email, 
-              manual_interactions
+              manual_interactions, number_of_applicants_meeting
             )
           `)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_date', { ascending: false });
 
-        // Load legacy meetings in background - NO TIMEOUT, let it take as long as needed
-        console.log('🔄 Loading all legacy meetings in background (no timeout)...');
-        
-        // Start legacy query in background without blocking
-        const loadLegacyMeetings = async () => {
-          try {
-            console.log('🔍 DEBUG: Starting background legacy query...');
-            
-            const { data: legacyData, error: legacyError } = await supabase
-              .from('leads_lead')
-              .select(`
-                id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-                total, meeting_total_currency_id, expert_notes, expert_id, probability, phone, email, mobile, topic, language_id,
-                meeting_date, meeting_time, meeting_brief, meeting_location_old, meeting_url, meeting_total,
-                meeting_paid, meeting_confirmation, meeting_scheduling_notes, onedrive_folder_link
-              `)
-              .not('meeting_date', 'is', null)
-              .order('meeting_date', { ascending: false });
-
-            console.log('🔍 DEBUG: Background legacy query completed:', {
-              hasData: !!legacyData,
-              dataLength: legacyData?.length || 0,
-              hasError: !!legacyError,
-              errorMessage: legacyError?.message
-            });
-
-            if (legacyError) {
-              console.log('⚠️ Background legacy query failed:', legacyError.message);
-              return;
-            }
-
-            if (legacyData && legacyData.length > 0) {
-              console.log('✅ Background legacy meetings loaded successfully:', legacyData.length, 'records');
-              
-              // Process legacy meetings
-              const processedLegacyMeetings = legacyData
-                .filter((legacyLead: any) => {
-                  if (!legacyLead.meeting_date) return false;
-                  const date = new Date(legacyLead.meeting_date);
-                  return !isNaN(date.getTime());
-                })
-                .map((legacyLead: any) => {
-                  const meeting = {
-                    id: `legacy_${legacyLead.id}`,
-                    created_at: legacyLead.meeting_date || new Date().toISOString(),
-                    meeting_date: legacyLead.meeting_date,
-                    meeting_time: legacyLead.meeting_time,
-                    meeting_manager: legacyLead.meeting_manager_id,
-                    helper: legacyLead.meeting_lawyer_id,
-                    meeting_location: legacyLead.meeting_location_old || 'Teams',
-                    teams_meeting_url: legacyLead.meeting_url,
-                    meeting_brief: legacyLead.meeting_brief,
-                    meeting_amount: parseFloat(legacyLead.meeting_total || '0'),
-                    meeting_currency: legacyLead.meeting_total_currency_id ? 
-                      (legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                       legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                       legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS') : 'NIS',
-                    meeting_paid: legacyLead.meeting_paid,
-                    meeting_confirmation: legacyLead.meeting_confirmation,
-                    meeting_scheduling_notes: legacyLead.meeting_scheduling_notes,
-                    status: null,
-                    lead: {
-                      id: `legacy_${legacyLead.id}`,
-                      lead_number: legacyLead.id?.toString(),
-                      name: legacyLead.name || '',
-                      email: legacyLead.email || '',
-                      phone: legacyLead.phone || '',
-                      mobile: legacyLead.mobile || '',
-                      topic: legacyLead.topic || '',
-                      stage: legacyLead.stage,
-                      manager: legacyLead.meeting_manager_id,
-                      helper: legacyLead.meeting_lawyer_id,
-                      balance: parseFloat(legacyLead.total || '0'),
-                      balance_currency: legacyLead.meeting_total_currency_id ? 
-                        (legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                         legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                         legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS') : 'NIS',
-                      expert: legacyLead.expert_id,
-                      probability: parseFloat(legacyLead.probability || '0'),
-                      category: legacyLead.category || legacyLead.category_id,
-                      language: legacyLead.language_id,
-                      onedrive_folder_link: legacyLead.onedrive_folder_link,
-                      expert_notes: legacyLead.expert_notes,
-                      manual_interactions: [],
-                      lead_type: 'legacy' as const
-                    }
-                  };
-                  return meeting;
-                });
-
-              // Update meetings state with legacy data
-              setMeetings(prevMeetings => {
-                const allMeetings = [...prevMeetings, ...processedLegacyMeetings];
-                console.log('✅ Updated meetings with legacy data:', {
-                  previousCount: prevMeetings.length,
-                  legacyCount: processedLegacyMeetings.length,
-                  totalCount: allMeetings.length
-                });
-                return allMeetings;
-              });
-            }
-          } catch (error) {
-            console.log('⚠️ Background legacy query failed:', error.message);
-          }
-        };
-
-        // Start legacy loading in background (non-blocking)
-        loadLegacyMeetings();
+        // DISABLED: Background legacy loading removed to prevent timeouts
+        console.log('🚫 Background legacy loading disabled - only date filter legacy loading enabled');
 
         // For now, set empty legacy data so we don't block the main flow
         let legacyMeetingsData = [];
@@ -856,6 +1002,9 @@ const CalendarPage: React.FC = () => {
           setIsBackgroundLoading(false);
         }
 
+        // Fetch staff meetings for today
+        await fetchStaffMeetings(today);
+
         // Fetch all staff from tenants_employee table for the main calendar filter
         const { data: allStaffData, error: allStaffError } = await supabase
           .from('tenants_employee')
@@ -884,7 +1033,21 @@ const CalendarPage: React.FC = () => {
     };
 
     fetchMeetingsAndStaff();
+    fetchMeetingLocations();
+    
+    // DISABLED: Meeting counts query removed to prevent timeouts
+    // fetchMeetingCountsAndPreviousManagers().catch(error => {
+    //   console.log('⚠️ Meeting counts query failed, continuing without flame icons:', error.message);
+    // });
   }, []);
+
+  // Re-render when categories are loaded to update category names
+  useEffect(() => {
+    if (allCategories.length > 0) {
+      console.log('🔄 Categories loaded, re-rendering to update category names');
+      // Force a re-render by updating a dummy state or just let React handle it
+    }
+  }, [allCategories]);
 
   // Fetch latest notes from leads table when a meeting is expanded
   useEffect(() => {
@@ -931,18 +1094,36 @@ const CalendarPage: React.FC = () => {
     }
   }, [expandedMeetingId, meetings]);
 
+  // Load legacy meetings and staff meetings when selected date changes
   useEffect(() => {
-    let filtered = meetings;
+    if (selectedDate) {
+      console.log('🔄 Selected date changed to:', selectedDate, '- loading meetings');
+      // Reset loading state when date changes
+      setIsLegacyLoading(true);
+      loadLegacyForDate(selectedDate);
+      // Also load staff meetings for the selected date
+      fetchStaffMeetings(selectedDate);
+    }
+  }, [selectedDate]);
+
+  useEffect(() => {
+    // Combine regular meetings and staff meetings
+    const allMeetings = [...meetings, ...staffMeetings];
+    let filtered = allMeetings;
 
     console.log('🔍 Calendar: Starting filtering with:', {
       totalMeetings: meetings.length,
+      staffMeetings: staffMeetings.length,
+      allMeetings: allMeetings.length,
       selectedDate,
       selectedStaff,
-      sampleMeetings: meetings.slice(0, 3).map(m => ({
+      selectedMeetingType,
+      sampleMeetings: allMeetings.slice(0, 3).map(m => ({
         id: m.id,
         date: m.meeting_date,
         time: m.meeting_time,
-        lead_name: m.lead?.name
+        lead_name: m.lead?.name,
+        calendar_type: m.calendar_type
       }))
     });
 
@@ -958,11 +1139,58 @@ const CalendarPage: React.FC = () => {
 
     if (selectedStaff) {
       const beforeFilter = filtered.length;
-      filtered = filtered.filter(m => m.meeting_manager === selectedStaff);
+      filtered = filtered.filter(m => {
+        const lead = m.lead || {};
+        const matches = (
+          lead.manager === selectedStaff ||
+          lead.helper === selectedStaff ||
+          m.meeting_manager === selectedStaff ||
+          m.helper === selectedStaff ||
+          m.expert === selectedStaff ||
+          lead.expert === selectedStaff
+        );
+        return matches;
+      });
       console.log('🔍 Calendar: After staff filter:', {
         before: beforeFilter,
         after: filtered.length,
-        selectedStaff
+        selectedStaff,
+        filteredMeetings: filtered.map(m => ({
+          id: m.id,
+          manager: m.meeting_manager,
+          helper: m.helper,
+          expert: m.expert,
+          leadManager: m.lead?.manager,
+          leadHelper: m.lead?.helper,
+          leadExpert: m.lead?.expert
+        }))
+      });
+    }
+
+    // Filter by meeting type
+    if (selectedMeetingType !== 'all') {
+      const beforeFilter = filtered.length;
+      filtered = filtered.filter(m => {
+        if (selectedMeetingType === 'potential' && m.calendar_type !== 'potential_client') {
+          return false;
+        }
+        if (selectedMeetingType === 'active' && m.calendar_type !== 'active_client') {
+          return false;
+        }
+        if (selectedMeetingType === 'staff' && m.calendar_type !== 'staff') {
+          return false;
+        }
+        return true;
+      });
+      console.log('🔍 Calendar: After meeting type filter:', {
+        before: beforeFilter,
+        after: filtered.length,
+        selectedMeetingType,
+        filteredMeetings: filtered.map(m => ({
+          id: m.id,
+          calendar_type: m.calendar_type,
+          lead_name: m.lead?.name
+        }))
       });
     }
 
@@ -987,8 +1215,8 @@ const CalendarPage: React.FC = () => {
     setFilteredMeetings(filtered);
 
     // Calculate total balance for the day - include both regular and legacy meetings
-    // Group by currency and calculate totals
-    const balanceByCurrency = filtered.reduce((acc, meeting) => {
+    // Convert all currencies to NIS and sum them up
+    const totalAmountInNIS = filtered.reduce((sum, meeting) => {
       const lead = meeting.lead || {};
       let amount = 0;
       let currency = 'NIS'; // Default currency
@@ -1006,15 +1234,16 @@ const CalendarPage: React.FC = () => {
         currency = meeting.meeting_currency || 'NIS';
         source = 'meeting.meeting_amount';
       }
-      
-      // Normalize currency symbols
-      if (currency === '₪' || currency === 'ILS') {
+      // Handle "--" values for staff meetings
+      else if (lead.balance === '--' || meeting.meeting_amount === '--') {
+        amount = 0; // Don't include in total calculation
         currency = 'NIS';
+        source = 'staff_meeting';
       }
       
       // Debug logging for first few meetings
       if (filtered.indexOf(meeting) < 3) {
-        console.log('💰 Balance debug for meeting', meeting.id, ':', {
+        console.log('💰 Calendar Balance debug for meeting', meeting.id, ':', {
           leadBalance: lead.balance,
           leadBalanceCurrency: lead.balance_currency,
           meetingAmount: meeting.meeting_amount,
@@ -1026,26 +1255,17 @@ const CalendarPage: React.FC = () => {
         });
       }
       
-      if (amount > 0) {
-        if (!acc[currency]) {
-          acc[currency] = 0;
-        }
-        acc[currency] += amount;
-      }
-      
-      return acc;
-    }, {} as Record<string, number>);
+      // Convert to NIS and add to total
+      const amountInNIS = convertToNIS(amount, currency);
+      return sum + amountInNIS;
+    }, 0);
     
-    // For now, display NIS total (can be enhanced to show multiple currencies)
-    const totalNIS = balanceByCurrency['NIS'] || 0;
-    setTotalAmount(totalNIS);
+    setTotalAmount(totalAmountInNIS);
     
-    // Log all currencies for debugging
-    if (Object.keys(balanceByCurrency).length > 0) {
-      console.log('💰 Daily balance by currency:', balanceByCurrency);
-    }
+    // Log total amount for debugging
+    console.log('💰 Calendar: Total amount in NIS:', totalAmountInNIS);
 
-  }, [selectedDate, selectedStaff, meetings]);
+  }, [selectedDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
 
   useEffect(() => {
     const fetchEmails = async () => {
@@ -1528,13 +1748,14 @@ const CalendarPage: React.FC = () => {
         .from('meetings')
         .select(`
           *, 
+          attendance_probability, complexity, car_number, calendar_type,
           lead:leads!client_id(
-            id, name, lead_number, stage, manager, category, balance, balance_currency, 
-            expert_notes, expert, probability, phone, email, language
+            id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
+            expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting
           ),
           legacy_lead:leads_lead!legacy_lead_id(
             id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id, total, meeting_total_currency_id, 
-            expert_notes, expert_id, probability, phone, email, language_id
+            expert_notes, expert_id, probability, phone, email, language_id, no_of_applicants
           )
         `)
         .gte('meeting_date', sevenDaysAgo)
@@ -1550,7 +1771,8 @@ const CalendarPage: React.FC = () => {
           id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
           total, meeting_total_currency_id, expert_notes, expert_id, probability, phone, email, mobile, topic, language_id,
           meeting_date, meeting_time, meeting_brief, meeting_location_old, meeting_url, meeting_total,
-          meeting_paid, meeting_confirmation, meeting_scheduling_notes, onedrive_folder_link
+          meeting_paid, meeting_confirmation, meeting_scheduling_notes, onedrive_folder_link,
+          meeting_complexity, meeting_location_id, meeting_car_no
         `)
         .not('meeting_date', 'is', null)
         .gte('meeting_date', sevenDaysAgo)
@@ -1662,7 +1884,8 @@ const CalendarPage: React.FC = () => {
             meeting_time: legacyLead.meeting_time,
             meeting_manager: legacyLead.meeting_manager_id,
             helper: legacyLead.meeting_lawyer_id,
-            meeting_location: legacyLead.meeting_location_old || 'Teams',
+            meeting_location: legacyLead.meeting_location_old || getLegacyMeetingLocation(legacyLead.meeting_location_id) || 'Teams',
+            meeting_location_id: legacyLead.meeting_location_id,
             teams_meeting_url: legacyLead.meeting_url,
             meeting_brief: legacyLead.meeting_brief,
             meeting_amount: parseFloat(legacyLead.meeting_total || '0'),
@@ -1670,6 +1893,8 @@ const CalendarPage: React.FC = () => {
               (legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
                legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
                legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS') : 'NIS',
+            meeting_complexity: legacyLead.meeting_complexity,
+            meeting_car_no: legacyLead.meeting_car_no,
             meeting_paid: legacyLead.meeting_paid,
             meeting_confirmation: legacyLead.meeting_confirmation,
             meeting_scheduling_notes: legacyLead.meeting_scheduling_notes,
@@ -1749,6 +1974,131 @@ const CalendarPage: React.FC = () => {
   };
 
   // Fetch employee availability data
+  const fetchMeetingLocations = async () => {
+    try {
+      const { data: locationsData, error } = await supabase
+        .from('tenants_meetinglocation')
+        .select('id, name');
+
+      if (error) throw error;
+
+      const locationsMap: {[locationId: number]: string} = {};
+      locationsData?.forEach(location => {
+        locationsMap[location.id] = location.name;
+      });
+
+      setMeetingLocations(locationsMap);
+      console.log('📍 Meeting locations loaded:', locationsMap);
+    } catch (error) {
+      console.error('Error fetching meeting locations:', error);
+    }
+  };
+
+  const fetchMeetingCountsAndPreviousManagers = async () => {
+    try {
+      // Reduce date range to 3 months to prevent timeout
+      const threeMonthsAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const thirtyDaysFromNow = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Meeting counts query timeout')), 5000)
+      );
+
+      const queryPromise = (async () => {
+        // Get all meetings for the date range to calculate counts and previous managers
+        const { data: allMeetings, error } = await supabase
+          .from('meetings')
+          .select(`
+            id, client_id, meeting_date, meeting_manager,
+            lead:leads!client_id(id, lead_number),
+            legacy_lead:leads_lead!legacy_lead_id(id, lead_number)
+          `)
+          .gte('meeting_date', threeMonthsAgo)
+          .lte('meeting_date', thirtyDaysFromNow)
+          .order('meeting_date', { ascending: true })
+          .order('meeting_time', { ascending: true });
+
+        if (error) throw error;
+
+        // Also get legacy meetings from leads_lead table
+        const { data: legacyMeetings, error: legacyError } = await supabase
+          .from('leads_lead')
+          .select('id, meeting_date, meeting_manager_id')
+          .not('meeting_date', 'is', null)
+          .gte('meeting_date', threeMonthsAgo)
+          .lte('meeting_date', thirtyDaysFromNow)
+          .order('meeting_date', { ascending: true })
+          .order('meeting_time', { ascending: true });
+
+        if (legacyError) throw legacyError;
+
+        return { allMeetings, legacyMeetings };
+      })();
+
+      const { allMeetings, legacyMeetings } = await Promise.race([queryPromise, timeoutPromise]) as any;
+
+      // Combine all meetings for counting
+      const allMeetingsCombined = [
+        ...(allMeetings || []).map((m: any) => ({
+          id: m.id,
+          client_id: m.client_id || (m.legacy_lead as any)?.id || (m.lead as any)?.id,
+          meeting_date: m.meeting_date,
+          meeting_manager: m.meeting_manager
+        })),
+        ...(legacyMeetings || []).map((m: any) => ({
+          id: `legacy_${m.id}`,
+          client_id: m.id,
+          meeting_date: m.meeting_date,
+          meeting_manager: m.meeting_manager_id
+        }))
+      ].sort((a, b) => {
+        const dateA = new Date(a.meeting_date);
+        const dateB = new Date(b.meeting_date);
+        return dateA.getTime() - dateB.getTime();
+      });
+
+      // Calculate meeting counts per client
+      const counts: {[clientId: string]: number} = {};
+      const prevManagers: {[meetingId: number]: string} = {};
+
+      allMeetingsCombined.forEach((meeting, index) => {
+        const clientId = meeting.client_id;
+        if (clientId) {
+          counts[clientId] = (counts[clientId] || 0) + 1;
+          
+          // Find previous meeting for the same client
+          const previousMeeting = allMeetingsCombined
+            .slice(0, index)
+            .reverse()
+            .find(m => m.client_id === clientId);
+          
+          if (previousMeeting && previousMeeting.meeting_manager) {
+            prevManagers[meeting.id] = previousMeeting.meeting_manager;
+          }
+        }
+      });
+
+      console.log('📊 Meeting counts and previous managers:', {
+        totalMeetings: allMeetingsCombined.length,
+        regularMeetings: allMeetings?.length,
+        legacyMeetings: legacyMeetings?.length,
+        counts: counts,
+        prevManagers: prevManagers,
+        sampleMeetings: allMeetings?.slice(0, 3).map((m: any) => ({
+          id: m.id,
+          clientId: m.client_id || (m.legacy_lead as any)?.id || (m.lead as any)?.id,
+          leadNumber: (m.lead as any)?.lead_number || (m.legacy_lead as any)?.lead_number
+        }))
+      });
+
+      setMeetingCounts(counts);
+      setPreviousManagers(prevManagers);
+    } catch (error) {
+      console.error('Error fetching meeting counts and previous managers:', error);
+    }
+  };
+
   const fetchEmployeeAvailability = async () => {
     try {
       const { data: employeesData, error } = await supabase
@@ -1906,6 +2256,58 @@ const CalendarPage: React.FC = () => {
   };
 
   // Get unavailable info for a staff member at a specific date and time
+  const isNotFirstMeeting = (meeting: any) => {
+    // For legacy meetings, check if stage is 55
+    if (typeof meeting.id === 'string' && meeting.id.startsWith('legacy_')) {
+      const isLegacyStage55 = meeting.lead?.stage === 55;
+      
+      // Debug logging for legacy meetings
+      console.log('🔥 Flame icon check (legacy):', {
+        meetingId: meeting.id,
+        leadNumber: meeting.lead?.lead_number || meeting.lead_number,
+        stage: meeting.lead?.stage,
+        isLegacyStage55: isLegacyStage55
+      });
+      
+      return isLegacyStage55;
+    }
+    
+    // For regular meetings, use the meeting count logic if available
+    const clientId = meeting.client_id || (meeting.legacy_lead as any)?.id || (meeting.lead as any)?.id;
+    
+    // If meeting counts are loaded, use them
+    if (Object.keys(meetingCounts).length > 0) {
+      const isNotFirst = clientId && meetingCounts[clientId] > 1;
+      
+      // Debug logging for regular meetings
+      console.log('🔥 Flame icon check (regular):', {
+        meetingId: meeting.id,
+        leadNumber: meeting.lead?.lead_number || meeting.lead_number,
+        clientId: clientId,
+        meetingCount: meetingCounts[clientId],
+        isNotFirst: isNotFirst,
+        allMeetingCounts: meetingCounts
+      });
+      
+      return isNotFirst;
+    }
+    
+    // Fallback: If meeting counts are not loaded, use a simple heuristic
+    // Show flame icon for meetings that are not today (likely past meetings)
+    const today = new Date().toISOString().split('T')[0];
+    const isPastMeeting = meeting.meeting_date && meeting.meeting_date < today;
+    
+    console.log('🔥 Flame icon check (fallback):', {
+      meetingId: meeting.id,
+      leadNumber: meeting.lead?.lead_number || meeting.lead_number,
+      meetingDate: meeting.meeting_date,
+      today: today,
+      isPastMeeting: isPastMeeting
+    });
+    
+    return isPastMeeting;
+  };
+
   const getStaffUnavailableInfo = (staffName: string, date: string, time: string) => {
     const unavailableForDate = unavailableEmployees[date] || [];
     const unavailable = unavailableForDate.find(unavailable => {
@@ -1933,10 +2335,38 @@ const CalendarPage: React.FC = () => {
   };
 
   // Get currency symbol helper
+  const getLegacyMeetingComplexity = (complexityNumber?: number) => {
+    if (complexityNumber === 3) return 'Simple';
+    if (complexityNumber === 5) return 'Complex';
+    return 'Simple'; // Default to Simple if not specified
+  };
+
+  const getLegacyMeetingLocation = (locationId?: number | string) => {
+    if (!locationId) {
+      console.log('🔍 getLegacyMeetingLocation: No locationId provided');
+      return 'N/A';
+    }
+    // Convert to number if it's a string
+    const numericId = typeof locationId === 'string' ? parseInt(locationId, 10) : locationId;
+    const location = meetingLocations[numericId];
+    console.log('🔍 getLegacyMeetingLocation:', { locationId, numericId, location, allLocations: meetingLocations });
+    return location || 'N/A';
+  };
+
+  const getLegacyCarNumber = (meeting: any) => {
+    // For legacy meetings, use meeting_car_no from the lead data
+    if (typeof meeting.id === 'string' && meeting.id.startsWith('legacy_')) {
+      return meeting.meeting_car_no || null;
+    }
+    // For regular meetings, use car_number
+    return meeting.car_number || null;
+  };
+
   const getCurrencySymbol = (currencyCode?: string) => {
     if (!currencyCode) return '₪';
     const symbols: { [key: string]: string } = {
       'ILS': '₪',
+      'NIS': '₪',
       'USD': '$',
       'EUR': '€',
       'GBP': '£'
@@ -2053,6 +2483,7 @@ const CalendarPage: React.FC = () => {
     setIsAssignStaffModalOpen(true);
     fetchAssignStaffData();
     fetchEmployeeAvailability();
+    // DISABLED: fetchMeetingCountsAndPreviousManagers(); // causing timeouts
   };
 
   // Helper function to get available dates from meetings
@@ -2061,7 +2492,8 @@ const CalendarPage: React.FC = () => {
     return dates;
   };
 
-  // Helper function to filter meetings by date and staff
+
+  // Helper function to filter meetings by date and staff (for assign staff modal)
   const getFilteredMeetings = () => {
     console.log('🔍 Filtering meetings:', {
       modalSelectedDate,
@@ -2090,7 +2522,9 @@ const CalendarPage: React.FC = () => {
           lead.manager === selectedStaffFilter ||
           lead.helper === selectedStaffFilter ||
           m.meeting_manager === selectedStaffFilter ||
-          m.helper === selectedStaffFilter
+          m.helper === selectedStaffFilter ||
+          m.expert === selectedStaffFilter ||
+          lead.expert === selectedStaffFilter
         );
         return matches;
       });
@@ -2103,9 +2537,21 @@ const CalendarPage: React.FC = () => {
           id: m.id,
           manager: m.meeting_manager,
           helper: m.helper,
+          expert: m.expert,
+          leadManager: m.lead?.manager,
+          leadHelper: m.lead?.helper,
+          leadExpert: m.lead?.expert
+        })),
+        allMeetingsForDebug: assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate).map(m => ({
+          id: m.id,
+          expert: m.expert,
+          leadExpert: m.lead?.expert,
+          meeting_manager: m.meeting_manager,
+          helper: m.helper,
           leadManager: m.lead?.manager,
           leadHelper: m.lead?.helper
-        }))
+        })),
+        availableStaffList: availableStaff
       });
     }
     
@@ -2188,6 +2634,15 @@ const CalendarPage: React.FC = () => {
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
     const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
+    
+    // For legacy leads, convert numeric probability to L/M/H/VH format
+    const getLegacyProbabilityLetter = (prob: number) => {
+      if (prob >= 80) return 'VH';
+      if (prob >= 60) return 'H';
+      if (prob >= 40) return 'M';
+      return 'L';
+    };
+    
     let probabilityColor = 'text-red-600';
     if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
@@ -2198,9 +2653,24 @@ const CalendarPage: React.FC = () => {
         <div onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)} className="flex-1 cursor-pointer flex flex-col">
           {/* Lead Number and Name */}
           <div className="mb-3 flex items-center gap-2">
-            <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">{lead.lead_number || meeting.lead_number}</span>
+            <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">
+              {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
+            </span>
             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
             <h3 className="text-lg md:text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name || meeting.name}</h3>
+            {/* Calendar type badge */}
+            {meeting.calendar_type && (
+              <span className={`badge badge-sm ${
+                meeting.calendar_type === 'active_client' 
+                  ? 'badge-success' 
+                  : meeting.calendar_type === 'staff'
+                  ? 'badge-warning'
+                  : 'badge-info'
+              }`}>
+                {meeting.calendar_type === 'active_client' ? 'Active' : 
+                 meeting.calendar_type === 'staff' ? 'Staff' : 'Potential'}
+              </span>
+            )}
             {/* Expert status indicator */}
             {hasExpertNotes ? (
               <AcademicCapIcon className="w-6 h-6 md:w-7 md:h-7 text-green-400 ml-4" title="Expert opinion exists" />
@@ -2213,7 +2683,7 @@ const CalendarPage: React.FC = () => {
           <div className="flex justify-between items-center py-1">
             <span className="text-xs md:text-base font-semibold text-gray-500">Stage</span>
             <span className="text-xs md:text-base font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
-              {lead.stage || meeting.stage ? (lead.stage || meeting.stage).replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A'}
+              {lead.stage || meeting.stage ? String(lead.stage || meeting.stage).replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A'}
             </span>
           </div>
 
@@ -2245,14 +2715,16 @@ const CalendarPage: React.FC = () => {
             {/* Category */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">{getCategoryName(lead.category || meeting.category) || 'N/A'}</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</span>
             </div>
 
             {/* Amount */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Amount</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {typeof lead.balance === 'number'
+                {lead.balance === '--' || meeting.meeting_amount === '--' 
+                  ? '--'
+                  : typeof lead.balance === 'number'
                   ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
                   : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '₪0')}
               </span>
@@ -2270,16 +2742,60 @@ const CalendarPage: React.FC = () => {
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Location</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {meeting.location || meeting.meeting_location || 'N/A'}
+                {meeting.location || meeting.meeting_location || 
+                 (meeting.meeting_location_id ? getLegacyMeetingLocation(meeting.meeting_location_id) : null) || 
+                 'N/A'}
               </span>
             </div>
 
-            {/* Probability */}
+            {/* Info Column - Probability, Complexity, Car, Flame */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Probability</span>
-              <span className={`text-sm md:text-lg font-bold ml-2 ${probabilityColor}`}>
-                {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? `${probabilityNumber}%` : 'N/A'}
-              </span>
+              <span className="text-xs md:text-base font-semibold text-gray-500">Info</span>
+              <div className="flex items-center gap-2 ml-2">
+                {/* Probability Display */}
+                {meeting.attendance_probability ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm font-bold text-gray-800">
+                      {meeting.attendance_probability === 'Low' ? 'L' : 
+                       meeting.attendance_probability === 'Medium' ? 'M' : 
+                       meeting.attendance_probability === 'High' ? 'H' : 
+                       meeting.attendance_probability === 'Very High' ? 'VH' : 
+                       meeting.attendance_probability}
+                    </span>
+                    {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) && (
+                      <span className="text-xs text-gray-500">({probabilityNumber}%)</span>
+                    )}
+                  </div>
+                ) : typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-sm font-bold text-gray-800">
+                      {getLegacyProbabilityLetter(probabilityNumber)}
+                    </span>
+                    <span className="text-xs text-gray-500">({probabilityNumber}%)</span>
+                  </div>
+                ) : (
+                  <span className="text-sm text-gray-500">N/A</span>
+                )}
+
+                {/* Complexity Icon */}
+                {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
+                  <BookOpenIcon className="w-5 h-5 text-blue-500" title="Complex meeting" />
+                )}
+
+                {/* Car Icon */}
+                {(meeting.location?.toLowerCase().includes('tlv with parking') || 
+                  meeting.meeting_location?.toLowerCase().includes('tlv with parking')) && (
+                  <TruckIcon 
+                    className="w-5 h-5 text-green-500" 
+                    title={getLegacyCarNumber(meeting) || "TLV with parking location"} 
+                  />
+                )}
+
+                {/* Flame Icon */}
+                {isNotFirstMeeting(meeting) && (
+                  <FireIcon className="w-5 h-5 text-orange-500" title="Another meeting" />
+                )}
+              </div>
             </div>
           </div>
 
@@ -2294,7 +2810,7 @@ const CalendarPage: React.FC = () => {
 
         {/* Action Buttons */}
         <div className="mt-4 flex flex-row gap-2 justify-end">
-            <button 
+            <button
               className="btn btn-outline btn-primary btn-sm"
               onClick={(e) => {
                 e.stopPropagation();
@@ -2309,7 +2825,8 @@ const CalendarPage: React.FC = () => {
             >
               <VideoCameraIcon className="w-4 h-4" />
             </button>
-            {lead.phone && (
+            {/* Only show WhatsApp and Email buttons for non-staff meetings */}
+            {meeting.calendar_type !== 'staff' && lead.phone && (
               <button
                 className="btn btn-outline btn-success btn-sm"
                 title="WhatsApp"
@@ -2321,7 +2838,7 @@ const CalendarPage: React.FC = () => {
                 <FaWhatsapp className="w-4 h-4" />
               </button>
             )}
-            {(lead.lead_number || meeting.lead_number) && (
+            {meeting.calendar_type !== 'staff' && (lead.lead_number || meeting.lead_number) && (
               <button
                 className="btn btn-outline btn-info btn-sm"
                 title="Email"
@@ -2442,20 +2959,58 @@ const CalendarPage: React.FC = () => {
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
     else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
     
+    // Debug: Log meeting data for troubleshooting
+    console.log('🔍 Meeting data:', {
+      id: meeting.id,
+      leadNumber: lead.lead_number || meeting.lead_number,
+      clientId: meeting.client_id || (meeting.legacy_lead as any)?.id || (meeting.lead as any)?.id,
+      attendance_probability: meeting.attendance_probability,
+      complexity: meeting.complexity,
+      car_number: meeting.car_number,
+      location: meeting.location || meeting.meeting_location,
+      meeting_location_id: meeting.meeting_location_id,
+      meeting_location_old: meeting.meeting_location_old,
+      probability: probability,
+      probabilityNumber: probabilityNumber,
+      isNotFirst: isNotFirstMeeting(meeting)
+    });
+    
     return (
       <React.Fragment key={meeting.id}>
         <tr className="hover:bg-base-200/50">
           <td className="font-bold">
-            <Link to={`/clients/${lead.lead_number || meeting.lead_number}`} className="text-black hover:opacity-75">
-              {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
-            </Link>
+            <div className="flex items-center gap-2">
+              {meeting.calendar_type === 'staff' ? (
+                <span className="text-black">
+                  {lead.name || meeting.name}
+                </span>
+              ) : (
+                <Link to={`/clients/${lead.lead_number || meeting.lead_number}`} className="text-black hover:opacity-75">
+                  {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
+                </Link>
+              )}
+              {meeting.calendar_type && (
+                <span className={`badge badge-sm ${
+                  meeting.calendar_type === 'active_client' 
+                    ? 'badge-success' 
+                    : meeting.calendar_type === 'staff'
+                    ? 'badge-warning'
+                    : 'badge-info'
+                }`}>
+                  {meeting.calendar_type === 'active_client' ? 'Active' : 
+                   meeting.calendar_type === 'staff' ? 'Staff' : 'Potential'}
+                </span>
+              )}
+            </div>
           </td>
           <td>{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
           <td>{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</td>
           <td>{getEmployeeDisplayName(lead.helper || meeting.helper)}</td>
-          <td>{getCategoryName(lead.category || meeting.category) || 'N/A'}</td>
+          <td>{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</td>
           <td>
-            {typeof lead.balance === 'number'
+            {lead.balance === '--' || meeting.meeting_amount === '--' 
+              ? '--'
+              : typeof lead.balance === 'number'
               ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
               : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '0')}
           </td>
@@ -2469,11 +3024,48 @@ const CalendarPage: React.FC = () => {
               {getEmployeeDisplayName(lead.expert || meeting.expert) || <span className="text-gray-400">N/A</span>}
             </span>
           </td>
-          <td>{meeting.location || meeting.meeting_location || 'N/A'}</td>
+          <td>{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
           <td>
+            <div className="flex items-center gap-1">
+              {isNotFirstMeeting(meeting) && (
+                <FireIcon className="w-6 h-6 text-orange-500" title="Another meeting" />
+              )}
             <span className={`font-bold ${probabilityColor}`}>
-              {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? `${probabilityNumber}%` : 'N/A'}
+                {(() => {
+                  // For new meetings, use attendance_probability
+                  if (meeting.attendance_probability && ['Low', 'Medium', 'High', 'Very High'].includes(meeting.attendance_probability)) {
+                    const letter = meeting.attendance_probability === 'Low' ? 'L' : 
+                                  meeting.attendance_probability === 'Medium' ? 'M' : 
+                                  meeting.attendance_probability === 'High' ? 'H' : 'VH';
+                    const title = `${meeting.attendance_probability} Attendance Probability`;
+                    return <span title={title}>{letter}</span>;
+                  }
+                  // For legacy meetings, convert probability number to letter
+                  else if (typeof probabilityNumber === 'number' && !isNaN(probabilityNumber)) {
+                    let letter, title;
+                    if (probabilityNumber >= 80) { letter = 'VH'; title = 'Very High Attendance Probability'; }
+                    else if (probabilityNumber >= 60) { letter = 'H'; title = 'High Attendance Probability'; }
+                    else if (probabilityNumber >= 40) { letter = 'M'; title = 'Medium Attendance Probability'; }
+                    else { letter = 'L'; title = 'Low Attendance Probability'; }
+                    return <span title={title}>{letter}</span>;
+                  }
+                  return 'N/A';
+                })()}
+                {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? ` ${probabilityNumber}%` : ''}
             </span>
+              {((meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id))?.toLowerCase().includes('tlv with parking')) && (
+                <TruckIcon 
+                  className="w-6 h-6 text-blue-600 cursor-help" 
+                  title={getLegacyCarNumber(meeting) ? `Car Number: ${getLegacyCarNumber(meeting)}` : 'TLV with parking location'}
+                />
+              )}
+              {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
+                <BookOpenIcon 
+                  className="w-6 h-6 text-purple-600" 
+                  title="Complex Meeting"
+                />
+              )}
+            </div>
           </td>
           <td>{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
@@ -2492,7 +3084,8 @@ const CalendarPage: React.FC = () => {
               >
                 <VideoCameraIcon className="w-4 h-4" />
               </button>
-              {lead.phone && (
+              {/* Only show WhatsApp and Email buttons for non-staff meetings */}
+              {meeting.calendar_type !== 'staff' && lead.phone && (
                 <button
                   className="btn btn-success btn-sm"
                   title="WhatsApp"
@@ -2501,7 +3094,7 @@ const CalendarPage: React.FC = () => {
                   <FaWhatsapp className="w-4 h-4" />
                 </button>
               )}
-              {(lead.lead_number || meeting.lead_number) && (
+              {meeting.calendar_type !== 'staff' && (lead.lead_number || meeting.lead_number) && (
                 <button
                   className="btn btn-info btn-sm"
                   title="Email"
@@ -2614,8 +3207,6 @@ const CalendarPage: React.FC = () => {
     );
   };
 
-  // After the main table, render department tables
-  const departmentMeetings = groupMeetingsByDepartment(filteredMeetings);
 
   return (
     <div className="p-4 md:p-6 lg:p-8 text-base">
@@ -2662,6 +3253,10 @@ const CalendarPage: React.FC = () => {
             <CalendarIcon className="w-8 h-8 text-primary" />
             <span className="text-3xl">Calendar</span>
           </h1>
+          <div className="btn btn-lg flex items-center gap-2 bg-base-200 border-base-300 hover:bg-base-300">
+            <span className="text-sm font-medium text-base-content/70">Total Meetings:</span>
+            <span className="text-lg font-bold text-primary">{filteredMeetings.length}</span>
+          </div>
           <button
             className="btn btn-primary btn-lg flex items-center gap-2"
             onClick={openAssignStaffModal}
@@ -2693,11 +3288,36 @@ const CalendarPage: React.FC = () => {
               {staff.map((s, index) => <option key={`${s}-${index}`} value={s}>{s}</option>)}
             </select>
           </div>
+          <div className="flex items-center gap-2">
+            <CalendarIcon className="w-5 h-5 text-gray-500" />
+            <select 
+              className="select select-bordered w-full md:w-auto"
+              value={selectedMeetingType}
+              onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff')}
+            >
+              <option value="all">All Meetings</option>
+              <option value="potential">Potential Clients</option>
+              <option value="active">Active Clients</option>
+              <option value="staff">Staff Meetings</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      {/* View Toggle Button */}
-      <div className="flex justify-end mb-4">
+      {/* Action Buttons */}
+      <div className="flex justify-end gap-2 mb-4">
+        <button
+          className="btn btn-primary btn-sm flex items-center gap-2"
+          onClick={() => {
+            setSelectedDateForMeeting(new Date());
+            setSelectedTimeForMeeting('09:00');
+            setIsTeamsMeetingModalOpen(true);
+          }}
+          title="Create Teams Meeting"
+        >
+          <VideoCameraIcon className="w-5 h-5" />
+          <span className="hidden md:inline">Create Teams Meeting</span>
+        </button>
         <button
           className="btn btn-outline btn-primary btn-sm flex items-center gap-2"
           onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
@@ -2728,7 +3348,7 @@ const CalendarPage: React.FC = () => {
                 <th>Amount</th>
                 <th>Expert</th>
                 <th>Location</th>
-                <th>Probability</th>
+                <th>Info</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
@@ -2738,6 +3358,13 @@ const CalendarPage: React.FC = () => {
                 <tr><td colSpan={11} className="text-center p-8 text-lg">Loading meetings...</td></tr>
               ) : filteredMeetings.length > 0 ? (
                 filteredMeetings.map(renderMeetingRow)
+              ) : isLegacyLoading ? (
+                <tr><td colSpan={11} className="text-center p-8 text-lg">
+                  <div className="flex items-center justify-center gap-2">
+                    <span className="loading loading-spinner loading-sm"></span>
+                    Loading meetings...
+                  </div>
+                </td></tr>
               ) : (
                 <tr><td colSpan={11} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
               )}
@@ -2760,9 +3387,19 @@ const CalendarPage: React.FC = () => {
             ) : (
               <div className="text-center p-8">
                 <div className="text-base-content/60">
-                  <CalendarIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                  <p className="text-lg font-medium">No meetings found</p>
-                  <p className="text-sm">Try adjusting your search or filters</p>
+                  {isLegacyLoading ? (
+                    <>
+                      <span className="loading loading-spinner loading-lg mx-auto mb-4"></span>
+                      <p className="text-lg font-medium">Loading legacy meetings...</p>
+                      <p className="text-sm">Please wait while we fetch the data</p>
+                    </>
+                  ) : (
+                    <>
+                      <CalendarIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                      <p className="text-lg font-medium">No meetings found</p>
+                      <p className="text-sm">Try adjusting your search or filters</p>
+                    </>
+                  )}
                 </div>
               </div>
             )}
@@ -2783,71 +3420,13 @@ const CalendarPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Department Tables - Accordion Style */}
-      {DEPARTMENT_CATEGORIES.map(({ name: deptName }) => {
-        const deptMeetings = departmentMeetings[deptName] || [];
-        const totalAmount = deptMeetings.reduce((sum: number, meeting: any) => {
-          const lead = meeting.lead || {};
-          if (typeof lead.balance === 'number') {
-            return sum + lead.balance;
-          }
-          return sum;
-        }, 0);
-        const isExpanded = expandedDept === deptName;
-        return (
-          <div key={deptName} className="mt-6 bg-base-100 rounded-lg shadow-lg overflow-x-auto border border-base-200">
-            {/* Header row with chevron */}
-            <button
-              className="w-full flex items-center justify-between px-6 py-3 bg-base-200 rounded-t-lg focus:outline-none cursor-pointer"
-              onClick={() => setExpandedDept(isExpanded ? null : deptName)}
-              aria-expanded={isExpanded}
-            >
-              <span className="text-lg font-bold text-gray-800 flex items-center gap-2">
-                {deptName}
-                <span className="ml-2 text-base-content/60 font-semibold">({deptMeetings.length})</span>
-                {totalAmount > 0 && (
-                  <span className="ml-2 text-sm text-primary font-semibold">₪{totalAmount.toLocaleString()}</span>
-                )}
-              </span>
-              <ChevronDownIcon className={`w-6 h-6 text-gray-700 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`} />
-            </button>
-            {/* Content */}
-            {isExpanded && (
-              <div className="p-4">
-                {/* Desktop Table - Show when viewMode is 'list' */}
-                {viewMode === 'list' && (
-                  <table className="table w-full text-base">
-                    <thead>
-                      <tr className="bg-base-200 text-lg">
-                        <th>Lead</th>
-                        <th>Time</th>
-                        <th>Manager</th>
-                        <th>Helper</th>
-                        <th>Category</th>
-                        <th>Amount</th>
-                        <th>Expert</th>
-                        <th>Location</th>
-                        <th>Probability</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {deptMeetings.map(renderMeetingRow)}
-                    </tbody>
-                  </table>
-                )}
-                {/* Cards View - Show when viewMode is 'cards' */}
-                {viewMode === 'cards' && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
-                    {deptMeetings.map(renderMeetingCard)}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
+      {/* Department List Component */}
+      <DepartmentList 
+        meetings={filteredMeetings}
+        viewMode={viewMode}
+        renderMeetingCard={renderMeetingCard}
+        renderMeetingRow={renderMeetingRow}
+      />
 
       {/* WhatsApp Modal */}
       {isWhatsAppOpen && selectedLeadForWhatsApp && createPortal(
@@ -3310,34 +3889,46 @@ const CalendarPage: React.FC = () => {
         <div className="fixed inset-0 bg-white z-50">
           <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="bg-gradient-to-r from-purple-600 to-blue-600 text-white p-6">
+            <div className="bg-white border-b border-gray-200 p-6">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <UserGroupIcon className="w-8 h-8" />
-                  <h2 className="text-2xl font-bold">Assign Staff to Meetings</h2>
+                <div className="flex items-center gap-6">
+                  <span className="text-3xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-2xl font-bold text-black">Assign Staff</h2>
+                  </div>
+                  
                 </div>
                 <button
                   onClick={() => setIsAssignStaffModalOpen(false)}
-                  className="btn btn-ghost btn-circle text-white hover:bg-white hover:bg-opacity-20"
+                  className="btn btn-ghost btn-circle text-gray-500 hover:text-gray-700 hover:bg-gray-100"
                 >
                   <XMarkIcon className="w-6 h-6" />
                 </button>
               </div>
-              <p className="text-purple-100 mt-2">Assign managers and helpers to meetings</p>
               
               {/* Unavailable Employees for Selected Date */}
               {unavailableEmployees[modalSelectedDate] && unavailableEmployees[modalSelectedDate].length > 0 && (
-                <div className="mt-4 p-3 bg-red-500/20 border border-red-400/30 rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <ClockIcon className="w-5 h-5 text-red-300" />
-                      <span className="text-red-200 font-semibold text-sm">Unavailable Staff for {new Date(modalSelectedDate).toLocaleDateString('en-GB')}</span>
+                <div className="mt-6 p-5 bg-gradient-to-r from-purple-50 to-purple-100 border-l-4 rounded-lg shadow-sm" style={{ borderLeftColor: '#3b28c7' }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-full" style={{ backgroundColor: 'rgba(59, 40, 199, 0.1)' }}>
+                        <ClockIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold text-base" style={{ color: '#3b28c7' }}>Unavailable Staff</h3>
+                        <p className="text-sm" style={{ color: '#3b28c7' }}>{new Date(modalSelectedDate).toLocaleDateString('en-GB')}</p>
+                      </div>
                     </div>
                     {unavailableEmployees[modalSelectedDate].length > 3 && (
                       <div className="relative more-unavailable-dropdown">
                         <button
                           onClick={() => setShowMoreUnavailableDropdown(!showMoreUnavailableDropdown)}
-                          className="btn btn-sm bg-red-600/30 border border-red-400/50 text-red-100 hover:bg-red-600/50"
+                          className="btn btn-sm border hover:bg-opacity-20"
+                          style={{ 
+                            backgroundColor: 'rgba(59, 40, 199, 0.1)', 
+                            borderColor: '#3b28c7', 
+                            color: '#3b28c7' 
+                          }}
                         >
                           More ({unavailableEmployees[modalSelectedDate].length - 3})
                           <ChevronDownIcon className="w-4 h-4 ml-1" />
@@ -3367,16 +3958,19 @@ const CalendarPage: React.FC = () => {
                       </div>
                     )}
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-3">
                     {unavailableEmployees[modalSelectedDate].slice(0, 3).map((unavailable, index) => (
-                      <div key={index} className="bg-red-600/30 border border-red-400/50 rounded-lg px-3 py-1">
-                        <span className="text-red-100 text-sm font-medium">{unavailable.employeeName}</span>
-                        <span className="text-red-200 text-xs ml-2">
+                      <div key={index} className="bg-white border rounded-full px-4 py-2 shadow-sm hover:shadow-md transition-shadow" style={{ borderColor: '#3b28c7' }}>
+                        <div className="flex items-center gap-2">
+                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#3b28c7' }}></div>
+                          <span className="text-sm font-semibold" style={{ color: '#3b28c7' }}>{unavailable.employeeName}</span>
+                        </div>
+                        <div className="text-xs mt-1 ml-4" style={{ color: '#3b28c7' }}>
                           {unavailable.isRange || unavailable.startTime === 'All Day' ? 'All Day' : `${unavailable.startTime} - ${unavailable.endTime}`}
-                        </span>
-                        {unavailable.reason && (
-                          <span className="text-red-200 text-xs ml-2">({unavailable.reason})</span>
-                        )}
+                          {unavailable.reason && (
+                            <span className="ml-1">• {unavailable.reason}</span>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -3477,41 +4071,60 @@ const CalendarPage: React.FC = () => {
                           <table className="table table-zebra w-full overflow-visible">
                             <thead>
                               <tr>
-                                <th className="text-left">Lead</th>
-                                <th className="text-left">Time</th>
-                                <th className="text-left">Location</th>
-                                <th className="text-left">Category</th>
-                                <th className="text-left">Expert</th>
-                                <th className="text-left">Language</th>
-                                <th className="text-left">Balance</th>
-                                <th className="text-left">Manager</th>
-                                <th className="text-left">Helper</th>
+                                <th className="text-left text-base font-semibold">Lead</th>
+                                <th className="text-left text-base font-semibold">Time</th>
+                                <th className="text-left text-base font-semibold">Location</th>
+                                <th className="text-left text-base font-semibold">Category</th>
+                                <th className="text-left text-base font-semibold">Expert</th>
+                                <th className="text-left text-base font-semibold">Language</th>
+                                <th className="text-left text-base font-semibold">Balance</th>
+                                <th className="text-left text-base font-semibold">Info</th>
+                                <th className="text-left text-base font-semibold">
+                                  <div className="flex items-center gap-2">
+                                    <span>Manager</span>
+                                    {(() => {
+                                      const meeting = filteredMeetings.find(m => previousManagers[m.id]);
+                                      return meeting && previousManagers[meeting.id] ? (
+                                        <span className="text-xs bg-orange-100 text-orange-700 px-2 py-1 rounded-full animate-pulse">
+                                          Prev: {previousManagers[meeting.id]}
+                                        </span>
+                                      ) : null;
+                                    })()}
+                                  </div>
+                                </th>
+                                <th className="text-left text-base font-semibold">Helper</th>
                               </tr>
                             </thead>
                             <tbody>
                           {filteredMeetings.map((meeting) => (
                                 <tr key={meeting.id} className="hover:bg-gray-50">
                                   {/* Lead */}
-                                  <td>
-                                    <Link 
-                                      to={`/clients/${meeting.lead?.lead_number || meeting.lead_number}`}
-                                      className="text-blue-600 hover:text-blue-800 hover:underline font-medium"
-                                    >
-                                      {meeting.lead?.lead_number || meeting.lead_number} - {meeting.lead?.name || 'N/A'}
-                                    </Link>
+                                  <td className="text-base">
+                                    {meeting.calendar_type === 'staff' ? (
+                                      <span className="font-medium">
+                                        {meeting.lead?.name || 'N/A'}
+                                      </span>
+                                    ) : (
+                                      <Link 
+                                        to={`/clients/${meeting.lead?.lead_number || meeting.lead_number}`}
+                                        className="text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                                      >
+                                        {meeting.lead?.lead_number || meeting.lead_number} - {meeting.lead?.name || 'N/A'}
+                                      </Link>
+                                    )}
                                   </td>
                                   
                                   {/* Time */}
-                                  <td className="font-medium">{formatTime(meeting.meeting_time)}</td>
+                                  <td className="font-medium text-base">{formatTime(meeting.meeting_time)}</td>
                                   
                                   {/* Location */}
-                                  <td>{meeting.meeting_location || 'N/A'}</td>
+                                  <td className="text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
                                   
                                   {/* Category */}
-                                  <td>{getCategoryName(meeting.lead?.category) || 'N/A'}</td>
+                                  <td className="text-base">{getCategoryName(meeting.lead?.category_id, meeting.lead?.category) || 'N/A'}</td>
                                   
                                   {/* Expert */}
-                                  <td>
+                                  <td className="text-base">
                                     <div className="flex items-center gap-1">
                                       <span>{meeting.lead?.expert || 'N/A'}</span>
                                       {meeting.lead?.expert_notes ? (
@@ -3523,18 +4136,77 @@ const CalendarPage: React.FC = () => {
                                   </td>
                                   
                                   {/* Language */}
-                                  <td>{meeting.lead?.language || 'N/A'}</td>
+                                  <td className="text-base">{meeting.lead?.language || 'N/A'}</td>
                                   
                                   {/* Balance */}
-                                  <td className="font-medium">
+                                  <td className="font-medium text-base">
                                     {meeting.lead?.balance ? 
                                       `${getCurrencySymbol(meeting.lead?.balance_currency)}${meeting.lead.balance.toLocaleString()}` : 
                                       'N/A'
                                     }
                                   </td>
 
+                                  {/* Info */}
+                                  <td className="text-base">
+                                    <div className="flex items-center gap-1">
+                                      {isNotFirstMeeting(meeting) && (
+                                        <FireIcon className="w-6 h-6 text-orange-500" title="Another meeting" />
+                                      )}
+                                      <span className={`font-bold ${(() => {
+                                        const probability = meeting.lead?.probability ?? meeting.probability;
+                                        const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
+                                        let probabilityColor = 'text-red-600';
+                                        if (probabilityNumber >= 80) probabilityColor = 'text-green-600';
+                                        else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
+                                        else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
+                                        return probabilityColor;
+                                      })()}`}>
+                                        {(() => {
+                                          const probability = meeting.lead?.probability ?? meeting.probability;
+                                          const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
+                                          
+                                          // For new meetings, use attendance_probability
+                                          if (meeting.attendance_probability && ['Low', 'Medium', 'High', 'Very High'].includes(meeting.attendance_probability)) {
+                                            const letter = meeting.attendance_probability === 'Low' ? 'L' : 
+                                                          meeting.attendance_probability === 'Medium' ? 'M' : 
+                                                          meeting.attendance_probability === 'High' ? 'H' : 'VH';
+                                            const title = `${meeting.attendance_probability} Attendance Probability`;
+                                            return <span title={title}>{letter}</span>;
+                                          }
+                                          // For legacy meetings, convert probability number to letter
+                                          else if (typeof probabilityNumber === 'number' && !isNaN(probabilityNumber)) {
+                                            let letter, title;
+                                            if (probabilityNumber >= 80) { letter = 'VH'; title = 'Very High Attendance Probability'; }
+                                            else if (probabilityNumber >= 60) { letter = 'H'; title = 'High Attendance Probability'; }
+                                            else if (probabilityNumber >= 40) { letter = 'M'; title = 'Medium Attendance Probability'; }
+                                            else { letter = 'L'; title = 'Low Attendance Probability'; }
+                                            return <span title={title}>{letter}</span>;
+                                          }
+                                          return 'N/A';
+                                        })()}
+                                        {(() => {
+                                          const probability = meeting.lead?.probability ?? meeting.probability;
+                                          const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
+                                          return typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? ` ${probabilityNumber}%` : '';
+                                        })()}
+                                      </span>
+                                      {((meeting.meeting_location || meeting.location || getLegacyMeetingLocation(meeting.meeting_location_id))?.toLowerCase().includes('tlv with parking')) && (
+                                        <TruckIcon 
+                                          className="w-6 h-6 text-blue-600 cursor-help" 
+                                          title={getLegacyCarNumber(meeting) ? `Car Number: ${getLegacyCarNumber(meeting)}` : 'TLV with parking location'}
+                                        />
+                                      )}
+                                      {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
+                                        <BookOpenIcon 
+                                          className="w-6 h-6 text-purple-600" 
+                                          title="Complex Meeting"
+                                        />
+                                      )}
+                                  </div>
+                                  </td>
+
                                 {/* Manager Assignment */}
-                                  <td className="overflow-visible">
+                                  <td className="overflow-visible text-base">
                                   <div className="relative">
                                     {(() => {
                                       const state = getMeetingDropdownState(meeting.id);
@@ -3567,7 +4239,7 @@ const CalendarPage: React.FC = () => {
                                   </td>
 
                                 {/* Helper Assignment */}
-                                  <td className="overflow-visible">
+                                  <td className="overflow-visible text-base">
                                   <div className="relative">
                                     {(() => {
                                       const state = getMeetingDropdownState(meeting.id);
@@ -3752,6 +4424,18 @@ const CalendarPage: React.FC = () => {
         </div>,
         document.body
       )}
+
+      {/* Teams Meeting Modal */}
+      <TeamsMeetingModal
+        isOpen={isTeamsMeetingModalOpen}
+        onClose={() => {
+          setIsTeamsMeetingModalOpen(false);
+          // Refresh meetings when modal closes
+          window.location.reload();
+        }}
+        selectedDate={selectedDateForMeeting || undefined}
+        selectedTime={selectedTimeForMeeting}
+      />
     </div>
   );
 };

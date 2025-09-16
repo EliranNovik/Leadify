@@ -44,14 +44,7 @@ interface SidebarItem {
 
 const desktopSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
-  {
-    icon: CalendarIcon,
-    label: 'Calendar',
-    subItems: [
-      { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
-      { icon: CalendarIcon, label: 'Outlook Calendar', path: '/outlook-calendar' },
-    ],
-  },
+  { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
   { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
   { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: UserIcon, label: 'Expert', path: '/expert' },
@@ -70,20 +63,14 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
   { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
+  { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
 const mobileSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
-  {
-    icon: CalendarIcon,
-    label: 'Calendar',
-    subItems: [
-      { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
-      { icon: CalendarIcon, label: 'Outlook Calendar', path: '/outlook-calendar' },
-    ],
-  },
+  { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
   { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
   { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: UserIcon, label: 'Expert', path: '/expert' },
@@ -102,6 +89,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: FolderIcon, label: 'My Cases', path: '/my-cases' },
   { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
+  { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
   { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },

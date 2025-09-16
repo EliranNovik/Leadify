@@ -12,7 +12,23 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
         <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
           <UserIcon className="w-5 h-5 text-white" />
         </div>
-        <span className="text-base font-semibold text-gray-900">Client Information</span>
+        <div className="flex flex-col flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xl font-bold text-gray-900">
+              {selectedClient ? (selectedClient.lead_number || selectedClient.id || '---') : '---'}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-lg font-semibold text-gray-700 truncate max-w-[200px]">
+              {selectedClient ? (selectedClient.name || '---') : '---'}
+            </span>
+            {selectedClient?.language && (
+              <span className="px-2 py-1 text-xs font-medium text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full">
+                {selectedClient.language}
+              </span>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="space-y-3">

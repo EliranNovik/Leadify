@@ -227,17 +227,68 @@ const Clients: React.FC<ClientsProps> = ({
     return employee ? employee.display_name : employeeId; // Fallback to ID if not found
   };
 
-  // Helper function to get category name from ID
-  const getCategoryName = (categoryId: string | number | null | undefined) => {
-    if (!categoryId || categoryId === '---') return '';
+  // Helper function to get category name from ID with main category
+  const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
+    console.log('🔍 getCategoryName called with categoryId:', categoryId, 'type:', typeof categoryId, 'fallbackCategory:', fallbackCategory);
+    
+    if (!categoryId || categoryId === '---') {
+      console.log('🔍 getCategoryName: categoryId is null/undefined/---, checking fallback');
+      // If no category_id but we have a fallback category, try to find it in the loaded categories
+      if (fallbackCategory && fallbackCategory.trim() !== '') {
+        console.log('🔍 getCategoryName: Looking for fallback category in loaded categories:', fallbackCategory);
+        
+        // Try to find the fallback category in the loaded categories
+        const foundCategory = allCategories.find((cat: any) => 
+          cat.name.toLowerCase().trim() === fallbackCategory.toLowerCase().trim()
+        );
+        
+        if (foundCategory) {
+          console.log('🔍 getCategoryName: Found fallback category in loaded categories:', foundCategory);
+          // Return category name with main category in parentheses
+          if (foundCategory.misc_maincategory?.name) {
+            return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
+          } else {
+            return foundCategory.name; // Fallback if no main category
+          }
+        } else {
+          console.log('🔍 getCategoryName: Fallback category not found in loaded categories, using as-is:', fallbackCategory);
+          return fallbackCategory; // Use as-is if not found in loaded categories
+        }
+      }
+      console.log('🔍 getCategoryName: No fallback category, returning empty string');
+      return '';
+    }
+    
+    console.log('🔍 getCategoryName processing valid categoryId:', { 
+      categoryId, 
+      allCategoriesLength: allCategories.length,
+      allCategories: allCategories.map(cat => ({ 
+        id: cat.id, 
+        name: cat.name, 
+        parent_id: cat.parent_id,
+        mainCategory: cat.misc_maincategory?.name 
+      }))
+    });
     
     // Find category in loaded categories
     const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (category) {
-      return category.name;
+      console.log('🔍 Found category:', { 
+        id: category.id, 
+        name: category.name, 
+        mainCategory: category.misc_maincategory?.name 
+      });
+      
+      // Return category name with main category in parentheses
+      if (category.misc_maincategory?.name) {
+        return `${category.name} (${category.misc_maincategory.name})`;
+      } else {
+        return category.name; // Fallback if no main category
+      }
     }
     
-    return String(categoryId); // Fallback to ID if not found
+    console.log('🔍 Category not found, returning empty string for categoryId:', categoryId);
+    return ''; // Return empty string instead of ID to show "Not specified"
   };
   const { lead_number = "" } = useParams();
   const location = useLocation();
@@ -258,6 +309,10 @@ const Clients: React.FC<ClientsProps> = ({
     manager: '',
     helper: '',
     brief: '',
+    attendance_probability: 'Medium',
+    complexity: 'Simple',
+    car_number: '',
+    calendar: 'current', // 'current' or 'active_client'
   });
   const [meetingLocations, setMeetingLocations] = useState<Array<{id: string, name: string}>>([]);
   const navigate = useNavigate();
@@ -345,12 +400,30 @@ const Clients: React.FC<ClientsProps> = ({
       try {
         const { data, error } = await supabase
           .from('misc_category')
-          .select('id, name')
+          .select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          `)
           .order('name', { ascending: true });
         
         if (error) {
           console.error('Clients: Error fetching categories:', error);
         } else if (data) {
+          // Store the full category data with parent information
+          console.log('🔍 Categories loaded successfully:', {
+            count: data.length,
+            categories: data.map((cat: any) => ({
+              id: cat.id,
+              name: cat.name,
+              parent_id: cat.parent_id,
+              mainCategory: cat.misc_maincategory?.name
+            }))
+          });
           setAllCategories(data);
         }
       } catch (err) {
@@ -379,9 +452,8 @@ const Clients: React.FC<ClientsProps> = ({
     fetchCategories();
     fetchAvailableStages();
     // Initialize stage names cache
-    console.log('🔍 Initializing stage names cache...');
     fetchStageNames().then(stageNames => {
-      console.log('✅ Stage names initialized:', stageNames);
+      // Stage names initialized
     }).catch(error => {
       console.error('❌ Error initializing stage names:', error);
     });
@@ -393,16 +465,12 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Debug isUnactivatedView changes
   useEffect(() => {
-    console.log('🔍 isUnactivatedView changed to:', isUnactivatedView);
-    console.log('🔍 useEffect triggered - isUnactivatedView updated');
+    // isUnactivatedView changed
   }, [isUnactivatedView]);
 
   // Check selectedClient prop and set isUnactivatedView accordingly
   useEffect(() => {
-    console.log('🔍 useEffect triggered - selectedClient:', selectedClient);
-    console.log('🔍 useEffect triggered - selectedClient ID:', selectedClient?.id);
     if (selectedClient) {
-      console.log('🔍 Clients component - selectedClient prop changed:', selectedClient);
       
       // Reset userManuallyExpanded when a new client is selected
       setUserManuallyExpanded(false);
@@ -413,23 +481,6 @@ const Clients: React.FC<ClientsProps> = ({
         (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
         ((unactivationReason && unactivationReason.trim() !== '') || false);
       
-      console.log('🔍 Unactivation logic check:', {
-        isLegacy,
-        stage: selectedClient.stage,
-        stageString: String(selectedClient.stage),
-        stageCheck: String(selectedClient.stage) === '91',
-        deactivate_note: selectedClient.deactivate_note,
-        unactivationReason,
-        isUnactivated
-      });
-      
-      console.log('🔍 Clients component - Unactivation check:', {
-        isLegacy,
-        stage: selectedClient.stage,
-        deactivate_note: selectedClient.deactivate_note,
-        unactivation_reason: selectedClient.unactivation_reason,
-        isUnactivated
-      });
       
       setIsUnactivatedView(isUnactivated);
     }
@@ -443,20 +494,9 @@ const Clients: React.FC<ClientsProps> = ({
       (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
       ((unactivationReason && unactivationReason.trim() !== '') || false);
     
-    console.log('🔍 Manual unactivation check:', {
-      isLegacy,
-      stage: selectedClient.stage,
-      stageCheck: String(selectedClient.stage) === '91',
-      deactivate_note: selectedClient.deactivate_note,
-      unactivationReason,
-      isUnactivated,
-      currentIsUnactivatedView: isUnactivatedView
-    });
-    
     // Only set to true if it's currently false and should be true
     // Don't override if user has manually set it to false
     if (isUnactivated && isUnactivatedView === false) {
-      console.log('🔍 FORCING isUnactivatedView to true');
       setIsUnactivatedView(true);
     }
   }
@@ -702,7 +742,17 @@ const Clients: React.FC<ClientsProps> = ({
             special_notes: data.special_notes || '',
             next_followup: data.next_followup || '',
             probability: String(data.probability || ''),
-            category: getCategoryName(data.category_id),
+            category: (() => {
+              console.log('🔍 Processing new lead category - raw data:', { 
+                category_id: data.category_id, 
+                category: data.category,
+                allCategoriesLoaded: allCategories.length > 0,
+                allCategories: allCategories.map(cat => ({ id: cat.id, name: cat.name }))
+              });
+              const categoryName = getCategoryName(data.category_id, data.category);
+              console.log('🔍 Processing new lead category result:', { category_id: data.category_id, category_name: categoryName });
+              return categoryName;
+            })(),
             language: data.misc_language?.name || String(data.language_id || ''), // Get language name from joined table
             balance: String(data.total || ''), // Map total to balance
             balance_currency: (() => {
@@ -744,10 +794,17 @@ const Clients: React.FC<ClientsProps> = ({
         error = newError;
 
         if (data) {
-          // Transform new lead to include category name
+          // Transform new lead to include category name with main category
+          console.log('🔍 Processing onClientUpdate category - raw data:', { 
+            category_id: data.category_id, 
+            category: data.category,
+            allCategoriesLoaded: allCategories.length > 0
+          });
+          const categoryName = getCategoryName(data.category_id, data.category);
+          console.log('🔍 Processing onClientUpdate category result:', { category_id: data.category_id, category_name: categoryName });
           const transformedData = {
             ...data,
-            category: getCategoryName(data.category_id),
+            category: categoryName,
           };
           console.log('onClientUpdate: Setting new lead data:', transformedData);
           setSelectedClient(transformedData);
@@ -760,7 +817,23 @@ const Clients: React.FC<ClientsProps> = ({
     } catch (error) {
       console.error('Error refreshing client data:', error);
     }
-  }, [selectedClient?.id, setSelectedClient]);
+  }, [selectedClient?.id, setSelectedClient, allCategories]);
+
+  // Refresh client data when categories are loaded to update category names
+  useEffect(() => {
+    const refreshClientData = async () => {
+      if (allCategories.length > 0 && selectedClient?.id) {
+        console.log('🔄 Categories loaded, refreshing client data to update category names');
+        try {
+          await onClientUpdate();
+        } catch (error) {
+          console.error('🔄 onClientUpdate failed:', error);
+        }
+      }
+    };
+    
+    refreshClientData();
+  }, [allCategories, selectedClient?.id, onClientUpdate]);
 
   // Essential data loading for initial page display
   useEffect(() => {
@@ -863,7 +936,16 @@ const Clients: React.FC<ClientsProps> = ({
               special_notes: legacyLead.special_notes || '',
               next_followup: legacyLead.next_followup || '',
               probability: String(legacyLead.probability || ''),
-                    category: getCategoryName(legacyLead.category_id),
+                    category: (() => {
+                      console.log('🔍 Processing legacy lead category - raw data:', { 
+                        category_id: legacyLead.category_id, 
+                        category: legacyLead.category,
+                        allCategoriesLoaded: allCategories.length > 0
+                      });
+                      const categoryName = getCategoryName(legacyLead.category_id, legacyLead.category);
+                      console.log('🔍 Processing legacy lead category result:', { category_id: legacyLead.category_id, category_name: categoryName });
+                      return categoryName;
+                    })(),
               language: legacyLead.misc_language?.name || String(legacyLead.language_id || ''), // Get language name from joined table
               balance: String(legacyLead.total || ''), // Map total to balance
               balance_currency: (() => {
@@ -907,9 +989,17 @@ const Clients: React.FC<ClientsProps> = ({
 
           if (!newError && newLead) {
             // Transform new lead to include category name
+            console.log('🔍 Processing new lead lookup category - raw data:', { 
+              category_id: newLead.category_id, 
+              category: newLead.category,
+              allCategoriesLoaded: allCategories.length > 0,
+              allCategories: allCategories.map(cat => ({ id: cat.id, name: cat.name }))
+            });
+            const categoryName = getCategoryName(newLead.category_id, newLead.category);
+            console.log('🔍 Processing new lead lookup category result:', { category_id: newLead.category_id, category_name: categoryName });
             clientData = {
               ...newLead,
-                    category: getCategoryName(newLead.category_id),
+                    category: categoryName,
             };
           }
         }
@@ -929,16 +1019,6 @@ const Clients: React.FC<ClientsProps> = ({
           const isUnactivated = isLegacy ? 
             (String(clientData.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
             ((unactivationReason && unactivationReason.trim() !== '') || stageUnactivated);
-          console.log('🔍 setIsUnactivatedView check:');
-          console.log('🔍 Client ID:', clientData.id);
-          console.log('🔍 Is legacy:', isLegacy);
-          console.log('🔍 Stage name:', stageName);
-          console.log('🔍 Deactivate note:', clientData.deactivate_note);
-          console.log('🔍 Unactivation reason:', clientData.unactivation_reason);
-          console.log('🔍 Unactivation reason (mapped):', unactivationReason);
-          console.log('🔍 Stage unactivated:', stageUnactivated);
-          console.log('🔍 Is unactivated:', isUnactivated);
-          console.log('🔍 Setting isUnactivatedView to:', clientData && isUnactivated && !userManuallyExpanded);
           setIsUnactivatedView(!!(clientData && isUnactivated && !userManuallyExpanded));
         }
       } else {
@@ -974,7 +1054,18 @@ const Clients: React.FC<ClientsProps> = ({
       try {
         // Fetch all non-essential data in parallel for better performance
         const [categoriesResult, sourcesResult, languagesResult, currenciesResult, meetingLocationsResult] = await Promise.all([
-          supabase.from('sub_categories').select('name'),
+          // Fetch categories with their parent main category names using JOINs
+          supabase.from('misc_category')
+            .select(`
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id (
+                id,
+                name
+              )
+            `)
+            .order('name', { ascending: true }),
           supabase.from('sources').select('name'),
           supabase.from('misc_language').select('name'),
           // Fetch currencies (try both tables)
@@ -987,8 +1078,15 @@ const Clients: React.FC<ClientsProps> = ({
         
         // Process dropdown data results
         if (!categoriesResult.error && categoriesResult.data) {
-          const names = categoriesResult.data.map((row: any) => row.name).filter(Boolean);
-          setMainCategories(names);
+          // Create formatted category names with parent main category
+          const formattedNames = categoriesResult.data.map((category: any) => {
+            if (category.misc_maincategory) {
+              return `${category.name} (${category.misc_maincategory.name})`;
+            } else {
+              return category.name; // Fallback if no parent main category
+            }
+          }).filter(Boolean);
+          setMainCategories(formattedNames);
         }
         
         if (!sourcesResult.error && sourcesResult.data) {
@@ -1477,20 +1575,94 @@ const Clients: React.FC<ClientsProps> = ({
       manager: '',
       helper: '',
       brief: '',
+      attendance_probability: 'Medium',
+      complexity: 'Simple',
+      car_number: '',
+      calendar: 'current',
     });
   };
 
-  // Function to create calendar event in potential clients calendar
+  // Function to test calendar access permissions
+  const testCalendarAccess = async (accessToken: string, calendarEmail: string) => {
+    try {
+      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      console.log(`🔍 Calendar access test for ${calendarEmail}:`, {
+        status: response.status,
+        statusText: response.statusText
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        console.log(`✅ Calendar access confirmed for ${calendarEmail}:`, data.name);
+        return true;
+      } else {
+        const error = await response.json();
+        console.error(`❌ Calendar access denied for ${calendarEmail}:`, error);
+        return false;
+      }
+    } catch (error) {
+      console.error(`❌ Calendar access test failed for ${calendarEmail}:`, error);
+      return false;
+    }
+  };
+
+  // Function to create calendar event in selected calendar
   const createCalendarEvent = async (accessToken: string, meetingDetails: {
     subject: string;
     startDateTime: string;
     endDateTime: string;
     location: string;
-    attendees?: { email: string }[];
+    calendar?: string;
+    manager?: string;
+    helper?: string;
+    brief?: string;
+    attendance_probability?: string;
+    complexity?: string;
+    car_number?: string;
+    expert?: string;
+    amount?: number;
+    currency?: string;
   }) => {
-    const potentialClientsCalendarEmail = 'shared-potentialclients@lawoffice.org.il';
-    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(potentialClientsCalendarEmail)}/calendar/events`;
+    // Determine which calendar to use based on selection
+    const calendarEmail = meetingDetails.calendar === 'active_client' 
+      ? 'shared-newclients@lawoffice.org.il' 
+      : 'shared-potentialclients@lawoffice.org.il';
     
+    console.log('Using calendar:', calendarEmail, 'for selection:', meetingDetails.calendar);
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events`;
+    
+    console.log('🔍 Calendar creation details:', {
+      calendarEmail,
+      url,
+      subject: meetingDetails.subject,
+      startDateTime: meetingDetails.startDateTime,
+      endDateTime: meetingDetails.endDateTime,
+      location: meetingDetails.location
+    });
+    
+    // Create detailed description with meeting information
+    const description = [
+      'Meeting Details:',
+      `Manager: ${meetingDetails.manager || 'Not specified'}`,
+      `Helper: ${meetingDetails.helper || 'Not specified'}`,
+      `Expert: ${meetingDetails.expert || 'Not specified'}`,
+      `Amount: ${meetingDetails.currency || '₪'}${meetingDetails.amount || 0}`,
+      `Attendance Probability: ${meetingDetails.attendance_probability || 'Not specified'}`,
+      `Complexity: ${meetingDetails.complexity || 'Not specified'}`,
+      meetingDetails.car_number ? `Car Number: ${meetingDetails.car_number}` : '',
+      meetingDetails.brief ? `Brief: ${meetingDetails.brief}` : '',
+      '',
+      'Generated by RMQ 2.0 System'
+    ].filter(line => line !== '').join('\n');
+
     const body: any = {
       subject: meetingDetails.subject,
       start: {
@@ -1504,12 +1676,17 @@ const Clients: React.FC<ClientsProps> = ({
       location: {
         displayName: meetingDetails.location
       },
-      attendees: (meetingDetails.attendees || []).map(a => ({
-        emailAddress: {
-          address: a.email
-        },
-        type: 'required'
-      }))
+      body: {
+        contentType: 'text',
+        content: description
+      },
+      // Removed attendees to prevent automatic email invitations
+      // attendees: (meetingDetails.attendees || []).map(a => ({
+      //   emailAddress: {
+      //     address: a.email
+      //   },
+      //   type: 'required'
+      // }))
     };
 
     // Add Teams meeting properties only if location is Teams
@@ -1529,8 +1706,26 @@ const Clients: React.FC<ClientsProps> = ({
 
     if (!response.ok) {
       const error = await response.json();
-      console.error('Calendar event creation error:', error);
-      throw new Error(error.error?.message || 'Failed to create calendar event');
+      console.error('❌ Calendar event creation error:', {
+        status: response.status,
+        statusText: response.statusText,
+        calendarEmail,
+        error: error
+      });
+      
+      // Provide more specific error messages
+      let errorMessage = 'Failed to create calendar event';
+      if (response.status === 403) {
+        errorMessage = `Access denied to calendar ${calendarEmail}. Please check permissions.`;
+      } else if (response.status === 404) {
+        errorMessage = `Calendar ${calendarEmail} not found. Please verify the calendar exists.`;
+      } else if (response.status === 400) {
+        errorMessage = `Invalid request to calendar ${calendarEmail}. ${error.error?.message || ''}`;
+      } else {
+        errorMessage = error.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+      }
+      
+      throw new Error(errorMessage);
     }
 
     const data = await response.json();
@@ -1559,7 +1754,10 @@ const Clients: React.FC<ClientsProps> = ({
     try {
       const account = instance.getAllAccounts()[0];
       if (!account) {
-        alert("You must be signed in to schedule a Teams meeting.");
+        toast.error("You must be signed in to schedule a Teams meeting.", {
+          duration: 4000,
+          position: 'top-right',
+        });
         setIsCreatingMeeting(false);
         return;
       }
@@ -1612,17 +1810,78 @@ const Clients: React.FC<ClientsProps> = ({
       const start = new Date(year, month - 1, day, hours, minutes);
       const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
 
-      // Create calendar event with client name and lead number in subject
-      const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${meetingFormData.brief || 'Meeting'}`;
-      const calendarEventData = await createCalendarEvent(accessToken, {
-        subject: meetingSubject,
-        startDateTime: start.toISOString(),
-        endDateTime: end.toISOString(),
-        location: meetingFormData.location,
-        attendees: selectedClient.email ? [{ email: selectedClient.email }] : [],
+      // Test calendar access first
+      const calendarEmail = meetingFormData.calendar === 'active_client' 
+        ? 'shared-newclients@lawoffice.org.il' 
+        : 'shared-potentialclients@lawoffice.org.il';
+      
+      console.log('🔍 Testing calendar access for:', calendarEmail);
+      const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+      
+      if (!hasAccess) {
+        toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
+          duration: 5000,
+          position: 'top-right',
+          style: {
+            background: '#ef4444',
+            color: '#fff',
+            fontWeight: '500',
+            maxWidth: '500px',
+          },
+          icon: '🔒',
+        });
+        setIsCreatingMeeting(false);
+        return;
+      }
+
+      // Create calendar event with client name, category, and lead number in subject
+      console.log('🔍 Selected client data for calendar:', {
+        id: selectedClient.id,
+        name: selectedClient.name,
+        lead_number: selectedClient.lead_number,
+        category: selectedClient.category,
+        category_id: selectedClient.category_id,
+        isLegacy: selectedClient.id.toString().startsWith('legacy_')
       });
-      teamsMeetingUrl = calendarEventData.joinUrl;
-      console.log('Teams meeting URL set to:', teamsMeetingUrl);
+      const categoryName = selectedClient.category || 'No Category';
+      const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - ${meetingFormData.brief || 'Meeting'}`;
+      console.log('Creating meeting in calendar:', meetingFormData.calendar);
+      
+      try {
+        const calendarEventData = await createCalendarEvent(accessToken, {
+          subject: meetingSubject,
+          startDateTime: start.toISOString(),
+          endDateTime: end.toISOString(),
+          location: meetingFormData.location,
+          calendar: meetingFormData.calendar,
+          manager: meetingFormData.manager,
+          helper: meetingFormData.helper,
+          brief: meetingFormData.brief,
+          attendance_probability: meetingFormData.attendance_probability,
+          complexity: meetingFormData.complexity,
+          car_number: meetingFormData.car_number,
+          expert: selectedClient.expert || '---',
+          amount: 0, // Default amount for new meetings
+          currency: '₪',
+        });
+        teamsMeetingUrl = calendarEventData.joinUrl;
+        console.log('✅ Teams meeting URL set to:', teamsMeetingUrl);
+      } catch (calendarError) {
+        console.error('❌ Calendar creation failed:', calendarError);
+        const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
+        toast.error(`Failed to create calendar event: ${errorMessage}`, {
+          duration: 6000,
+          position: 'top-right',
+          style: {
+            background: '#ef4444',
+            color: '#fff',
+            fontWeight: '500',
+            maxWidth: '500px',
+          },
+        });
+        setIsCreatingMeeting(false);
+        return;
+      }
 
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
@@ -1643,9 +1902,13 @@ const Clients: React.FC<ClientsProps> = ({
         helper: meetingFormData.helper || '---',
         teams_meeting_url: teamsMeetingUrl,
         meeting_brief: meetingFormData.brief || '',
+        attendance_probability: meetingFormData.attendance_probability,
+        complexity: meetingFormData.complexity,
+        car_number: meetingFormData.car_number || '',
         scheduler: currentUserFullName, // Always use Supabase user's full_name
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
+        calendar_type: meetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
       };
 
       console.log('Attempting to insert meeting data:', meetingData);
@@ -1702,10 +1965,23 @@ const Clients: React.FC<ClientsProps> = ({
         manager: '',
         helper: '',
         brief: '',
+        attendance_probability: 'Medium',
+        complexity: 'Simple',
+        car_number: '',
+        calendar: 'current',
       });
       
       // Show success message
-      alert('Meeting scheduled successfully!');
+      toast.success('Meeting scheduled successfully!', {
+        duration: 4000,
+        position: 'top-right',
+        style: {
+          background: '#10b981',
+          color: '#fff',
+          fontWeight: '500',
+        },
+        icon: '✅',
+      });
 
       // Refresh client data
       console.log('Calling onClientUpdate after meeting creation');
@@ -1713,7 +1989,16 @@ const Clients: React.FC<ClientsProps> = ({
       console.log('onClientUpdate completed');
     } catch (error) {
       console.error('Error scheduling meeting:', error);
-      alert('Failed to schedule meeting. Please try again.');
+      toast.error('Failed to schedule meeting. Please try again.', {
+        duration: 4000,
+        position: 'top-right',
+        style: {
+          background: '#ef4444',
+          color: '#fff',
+          fontWeight: '500',
+        },
+        icon: '❌',
+      });
       setIsCreatingMeeting(false);
     }
   };
@@ -1782,7 +2067,16 @@ const Clients: React.FC<ClientsProps> = ({
       await onClientUpdate();
     } catch (error) {
       console.error('Error saving meeting ended data:', error);
-      alert('Failed to save meeting data. Please ensure the new fields exist in the database.');
+      toast.error('Failed to save meeting data. Please ensure the new fields exist in the database.', {
+        duration: 5000,
+        position: 'top-right',
+        style: {
+          background: '#ef4444',
+          color: '#fff',
+          fontWeight: '500',
+        },
+        icon: '❌',
+      });
     } finally {
       setIsSavingMeetingEnded(false);
     }
@@ -2056,7 +2350,14 @@ const Clients: React.FC<ClientsProps> = ({
   }, [selectedClient]);
 
   const handleEditLeadChange = (field: string, value: any) => {
-    setEditLeadData(prev => ({ ...prev, [field]: value }));
+    // Special handling for category field - extract just the category name from formatted string
+    if (field === 'category' && typeof value === 'string') {
+      // If the value contains " (", extract just the part before it
+      const categoryName = value.includes(' (') ? value.split(' (')[0] : value;
+      setEditLeadData(prev => ({ ...prev, [field]: categoryName }));
+    } else {
+      setEditLeadData(prev => ({ ...prev, [field]: value }));
+    }
   };
 
   const openEditLeadDrawer = () => {
@@ -2346,10 +2647,18 @@ const Clients: React.FC<ClientsProps> = ({
         const start = new Date(year, month - 1, day, hours, minutes);
         const end = new Date(start.getTime() + 30 * 60000);
         const teamsMeetingData = await createTeamsMeeting(accessToken, {
-          subject: `Meeting with ${selectedClient.name}`,
+          subject: `[#${selectedClient.lead_number}] ${selectedClient.name} - ${selectedClient.category || 'No Category'} - Meeting`,
           startDateTime: start.toISOString(),
           endDateTime: end.toISOString(),
-          attendees: selectedClient.email ? [{ email: selectedClient.email }] : [],
+          manager: rescheduleFormData.manager,
+          helper: rescheduleFormData.helper,
+          brief: rescheduleFormData.brief,
+          attendance_probability: rescheduleFormData.attendance_probability,
+          complexity: rescheduleFormData.complexity,
+          car_number: rescheduleFormData.car_number,
+          expert: selectedClient.expert || '---',
+          amount: 0,
+          currency: '₪',
         });
         teamsMeetingUrl = teamsMeetingData.joinUrl;
       }
@@ -2951,12 +3260,9 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Before the return statement, add:
   let dropdownItems = null;
-  console.log('🔍 Dropdown logic - selectedClient stage:', selectedClient?.stage);
-  console.log('🔍 Dropdown logic - selectedClient ID:', selectedClient?.id);
   
   // Get the stage name for comparison
   const currentStageName = selectedClient ? getStageName(selectedClient.stage) : '';
-  console.log('🔍 Dropdown logic - resolved stage name:', currentStageName);
   
   if (selectedClient && areStagesEquivalent(currentStageName, 'Client signed agreement'))
     dropdownItems = (
@@ -3065,11 +3371,6 @@ const Clients: React.FC<ClientsProps> = ({
   } else if (selectedClient && (() => {
     const excludedStages = ['client_signed', 'client_declined', 'Mtng sum+Agreement sent'];
     const isExcluded = excludedStages.some(stage => areStagesEquivalent(currentStageName, stage));
-    console.log('🔍 General dropdown condition check:');
-    console.log('🔍 Current stage name:', currentStageName);
-    console.log('🔍 Excluded stages:', excludedStages);
-    console.log('🔍 Is excluded:', isExcluded);
-    console.log('🔍 Should show dropdown:', !isExcluded);
     return !isExcluded;
   })()) {
     dropdownItems = (
@@ -3116,11 +3417,6 @@ const Clients: React.FC<ClientsProps> = ({
         {(() => {
           const communicationExcludedStages = ['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned'];
           const isCommunicationExcluded = communicationExcludedStages.some(stage => areStagesEquivalent(currentStageName, stage));
-          console.log('🔍 Communication Started condition check:');
-          console.log('🔍 Current stage name:', currentStageName);
-          console.log('🔍 Communication excluded stages:', communicationExcludedStages);
-          console.log('🔍 Is communication excluded:', isCommunicationExcluded);
-          console.log('🔍 Should show Communication Started:', !isCommunicationExcluded);
           return !isCommunicationExcluded;
         })() && (
           <li>
@@ -3288,15 +3584,6 @@ const Clients: React.FC<ClientsProps> = ({
     (String(selectedClient?.stage) === '91' || (unactivationReasonForView && unactivationReasonForView.trim() !== '')) :
     ((unactivationReasonForView && unactivationReasonForView.trim() !== '') || false);
   
-  console.log('🔍 View logic check:', {
-    isLegacyForView,
-    stage: selectedClient?.stage,
-    stageCheck: String(selectedClient?.stage) === '91',
-    deactivate_note: selectedClient?.deactivate_note,
-    unactivationReasonForView,
-    isUnactivated,
-    isUnactivatedView
-  });
   
   // Show loading state while determining view
   if (localLoading) {
@@ -3363,12 +3650,10 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
 
                   {/* Category */}
-                  {selectedClient.category && (
-                    <div className="flex items-center gap-2">
-                      <TagIcon className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600">{selectedClient.category}</span>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <TagIcon className="w-4 h-4 text-gray-400" />
+                    <span className="text-sm text-gray-600">{selectedClient.category || 'Not specified'}</span>
+                  </div>
                 </div>
 
                 {/* Row 2 */}
@@ -3404,15 +3689,6 @@ const Clients: React.FC<ClientsProps> = ({
                 const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
                 const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
                 const isUnactivated = (unactivationReason && unactivationReason.trim() !== '') || stageUnactivated;
-                console.log('🔍 Unactivation box check:');
-                console.log('🔍 Stage name:', stageName);
-                console.log('🔍 Is legacy:', isLegacy);
-                console.log('🔍 Unactivation reason:', unactivationReason);
-                console.log('🔍 Stage unactivated:', stageUnactivated);
-                console.log('🔍 Is unactivated:', isUnactivated);
-                console.log('🔍 SelectedClient deactivate_note:', selectedClient.deactivate_note);
-                console.log('🔍 SelectedClient unactivation_reason:', selectedClient.unactivation_reason);
-                console.log('🔍 Full selectedClient object:', selectedClient);
                 return isUnactivated;
               })() && (
                 <div className="pt-3 border-t border-gray-100 space-y-2">
@@ -3476,7 +3752,6 @@ const Clients: React.FC<ClientsProps> = ({
     );
   }
 
-  console.log('🔍 RENDERING MAIN VIEW for client:', selectedClient?.id);
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900">
       {/* Background loading indicator */}
@@ -3513,11 +3788,9 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           )}
           {/* Category badge */}
-          {selectedClient?.category && (
-            <div className="mb-2">
-              <span className="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">{selectedClient.category}</span>
-            </div>
-          )}
+          <div className="mb-2">
+            <span className="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">{selectedClient?.category || 'Not specified'}</span>
+          </div>
           {/* Info Grid: Amount, Probability, Next Follow-up, Category, Topic */}
           <div className="grid grid-cols-2 gap-y-2 gap-x-4 items-center mb-6 mt-2">
             <span className="text-base text-gray-500 text-left font-semibold">Amount</span>
@@ -3526,12 +3799,8 @@ const Clients: React.FC<ClientsProps> = ({
             <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.probability || 0}%</span>
             <span className="text-base text-gray-500 text-left font-semibold">Next Follow-up</span>
             <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.next_followup ? new Date(selectedClient.next_followup).toLocaleDateString() : '--'}</span>
-            {selectedClient?.category && (
-              <>
-                <span className="text-base text-gray-500 text-left font-semibold">Category</span>
-                <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient.category}</span>
-              </>
-            )}
+            <span className="text-base text-gray-500 text-left font-semibold">Category</span>
+            <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.category || 'Not specified'}</span>
             {selectedClient?.topic && (
               <>
                 <span className="text-base text-gray-500 text-left font-semibold">Topic</span>
@@ -3653,116 +3922,52 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 </div>
                 
+                {/* Stage Badge - Under balance badge */}
+                {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
+                  <div className="dropdown dropdown-end mb-3">
+                    <label 
+                      tabIndex={0} 
+                      className="btn btn-md text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm cursor-pointer hover:from-pink-600 hover:via-purple-600 hover:to-purple-700 transition-all duration-200 flex items-center gap-2 whitespace-nowrap px-4"
+                    >
+                      {getStageName(selectedClient.stage)}
+                      <ChevronDownIcon className="w-4 h-4" />
+                    </label>
+                    <ul 
+                      tabIndex={0} 
+                      className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
+                    >
+                      {availableStages.map((stageOption) => (
+                        <li key={stageOption.id}>
+                          <a 
+                            className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
+                              selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
+                            }`}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleStageChange(stageOption.id);
+                            }}
+                          >
+                            <span className="font-medium">{stageOption.name}</span>
+                            {selectedClient.stage === stageOption.id && (
+                              <CheckIcon className="w-4 h-4 text-purple-600" />
+                            )}
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 
-                <div className="text-center">
-                  <div className="flex items-center justify-center gap-2">
-                    <span className="text-2xl font-bold text-[#411CCF]">{selectedClient?.lead_number || '---'}</span>
-                    <span className="text-[#411CCF] font-bold text-xl">/</span>
-                    <span className="text-2xl font-bold text-[#411CCF] truncate max-w-[300px] whitespace-nowrap">{selectedClient?.name || '---'}</span>
-                    {selectedClient?.language && (
-                      <label className="btn btn-md text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm truncate whitespace-nowrap ml-2">
-                        {selectedClient.language}
-                      </label>
-                    )}
-                  </div>
-                  
-                  {/* Stages and Actions dropdowns - positioned under the lead number and name */}
-                  <div className="flex items-center justify-center gap-3 mt-3">
-                    <div className="dropdown">
-                      <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
-                        <span>Stages</span>
-                        <ChevronDownIcon className="w-4 h-4 text-purple-600" />
-                      </label>
-                      <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                        {dropdownItems}
-                      </ul>
-                    </div>
-                    
-                    {/* Stage Badge - Between Stages and Actions buttons */}
-                    {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
-                      <div className="dropdown dropdown-end">
-                        <label 
-                          tabIndex={0} 
-                          className="btn btn-lg text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm sm:text-base cursor-pointer hover:from-pink-600 hover:via-purple-600 hover:to-purple-700 transition-all duration-200 flex items-center gap-2 whitespace-nowrap px-4"
-                        >
-                          {getStageName(selectedClient.stage)}
-                          <ChevronDownIcon className="w-4 h-4" />
-                        </label>
-                        <ul 
-                          tabIndex={0} 
-                          className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
-                        >
-                          {availableStages.map((stageOption) => (
-                            <li key={stageOption.id}>
-                              <a 
-                                className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
-                                  selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
-                                }`}
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  handleStageChange(stageOption.id);
-                                }}
-                              >
-                                <span className="font-medium">{stageOption.name}</span>
-                                {selectedClient.stage === stageOption.id && (
-                                  <CheckIcon className="w-4 h-4 text-purple-600" />
-                                )}
-                              </a>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                      <div className="dropdown">
-                        <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
-                          <span>Assign to</span>
-                          <ChevronDownIcon className="w-4 h-4" />
-                        </label>
-                        <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                          {schedulerOptions.map((scheduler) => (
-                            <li key={scheduler}>
-                              <a 
-                                className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  updateScheduler(scheduler);
-                                }}
-                              >
-                                <UserIcon className="w-5 h-5 text-primary" />
-                                <span className="font-medium">{scheduler}</span>
-                              </a>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    <div className="dropdown dropdown-end">
-                      <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
-                        <span>Actions</span>
-                        <ChevronDownIcon className="w-4 h-4 text-purple-600" />
-                      </label>
-                      <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                      </ul>
+                {/* Show "Case is not active" message for unactivated leads */}
+                {isUnactivated && (
+                  <div className="mt-3">
+                    <div className="inline-flex items-center gap-2 px-4 py-2 bg-red-100 border border-red-300 rounded-lg">
+                      <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                      <span className="text-red-700 font-medium text-sm">Case is not active</span>
                     </div>
                   </div>
-                  
-                  {/* Show "Case is not active" message for unactivated leads */}
-                  {isUnactivated && (
-                    <div className="mt-3">
-                      <div className="inline-flex items-center gap-2 px-4 py-2 bg-red-100 border border-red-300 rounded-lg">
-                        <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                        <span className="text-red-700 font-medium text-sm">Case is not active</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
+                )}
               </div>
               <div className="w-full lg:w-80">
                 <ProgressFollowupBox 
@@ -3783,12 +3988,12 @@ const Clients: React.FC<ClientsProps> = ({
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
           <div className="w-full">
             {/* Desktop version */}
-            <div className="hidden md:flex items-center px-4 py-4">
-              <div className="flex bg-gray-50 dark:bg-gray-700 p-1 gap-1 overflow-hidden w-full rounded-lg">
+            <div className="hidden md:flex items-center px-4 py-4 gap-4">
+              <div className="flex bg-gray-50 dark:bg-gray-700 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide">
                                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
-                      className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
+                      className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] whitespace-nowrap flex-shrink-0 ${
                         activeTab === tab.id
                           ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
                           : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
@@ -3811,6 +4016,57 @@ const Clients: React.FC<ClientsProps> = ({
                     )}
                   </button>
                 ))}
+              </div>
+              
+              {/* Stages and Actions buttons - moved closer to tabs */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                <div className="dropdown">
+                  <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
+                    <span>Stages</span>
+                    <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                    {dropdownItems}
+                  </ul>
+                </div>
+                
+                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                  <div className="dropdown">
+                    <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
+                      <span>Assign to</span>
+                      <ChevronDownIcon className="w-4 h-4" />
+                    </label>
+                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                      {schedulerOptions.map((scheduler) => (
+                        <li key={scheduler}>
+                          <a 
+                            className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              updateScheduler(scheduler);
+                            }}
+                          >
+                            <UserIcon className="w-5 h-5 text-primary" />
+                            <span className="font-medium">{scheduler}</span>
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="dropdown dropdown-end">
+                  <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
+                    <span>Actions</span>
+                    <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                  </label>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  </ul>
+                </div>
               </div>
             </div>
             {/* Mobile version: modern card-based design */}
@@ -3943,14 +4199,18 @@ const Clients: React.FC<ClientsProps> = ({
             onClick={closeSchedulePanel}
           />
           {/* Panel */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+            {/* Fixed Header */}
+            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
               <h3 className="text-2xl font-bold">Schedule Meeting</h3>
               <button className="btn btn-ghost btn-sm" onClick={closeSchedulePanel}>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            <div className="flex flex-col gap-4 flex-1">
+            
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-8 pt-4">
+              <div className="flex flex-col gap-4">
               {/* Location */}
               <div>
                 <label className="block font-semibold mb-1">Location</label>
@@ -3964,6 +4224,19 @@ const Clients: React.FC<ClientsProps> = ({
                       {location.name}
                     </option>
                   ))}
+                </select>
+              </div>
+
+              {/* Calendar Selection */}
+              <div>
+                <label className="block font-semibold mb-1">Calendar</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={meetingFormData.calendar}
+                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
+                >
+                  <option value="current">Potential Client</option>
+                  <option value="active_client">Active Client</option>
                 </select>
               </div>
 
@@ -4048,22 +4321,68 @@ const Clients: React.FC<ClientsProps> = ({
                   placeholder="Brief description of the meeting topic..."
                 />
               </div>
+
+              {/* Meeting Attendance Probability */}
+              <div>
+                <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={meetingFormData.attendance_probability}
+                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
+                >
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                  <option value="Very High">Very High</option>
+                </select>
+              </div>
+
+              {/* Meeting Complexity */}
+              <div>
+                <label className="block font-semibold mb-1">Meeting Complexity</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={meetingFormData.complexity}
+                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
+                >
+                  <option value="Simple">Simple</option>
+                  <option value="Complex">Complex</option>
+                </select>
+              </div>
+
+              {/* Meeting Car Number */}
+              <div>
+                <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
+                <input
+                  id="car-number"
+                  type="text"
+                  className="input input-bordered w-full"
+                  value={meetingFormData.car_number}
+                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
+                  placeholder="Enter car number..."
+                />
+              </div>
+              </div>
             </div>
-            <div className="mt-6 flex justify-end">
-              <button 
-                className="btn btn-primary px-8" 
-                onClick={handleScheduleMeeting}
-                disabled={!meetingFormData.date || !meetingFormData.time || isCreatingMeeting}
-              >
-                {isCreatingMeeting ? (
-                  <>
-                    <span className="loading loading-spinner loading-sm"></span>
-                    Creating Meeting...
-                  </>
-                ) : (
-                  'Create Meeting'
-                )}
-              </button>
+            
+            {/* Fixed Footer */}
+            <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
+              <div className="flex justify-end">
+                <button 
+                  className="btn btn-primary px-8" 
+                  onClick={handleScheduleMeeting}
+                  disabled={!meetingFormData.date || !meetingFormData.time || isCreatingMeeting}
+                >
+                  {isCreatingMeeting ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Creating Meeting...
+                    </>
+                  ) : (
+                    'Create Meeting'
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>
