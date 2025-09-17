@@ -11,6 +11,9 @@ interface Employee {
   department: string;
   is_active: boolean;
   photo_url?: string;
+  phone?: string;
+  mobile?: string;
+  phone_ext?: string;
   performance_metrics?: {
     total_meetings: number;
     completed_meetings: number;
@@ -29,6 +32,15 @@ interface Employee {
     cases_handled?: number;
     applicants_processed?: number;
     total_invoiced_amount?: number;
+    // New role-specific metrics
+    expert_examinations?: number;
+    expert_total?: number;
+    signed_meetings?: number;
+    due_total?: number;
+    successful_meetings?: number;
+    contracts_managed?: number;
+    signed_total?: number;
+    total_due?: number;
   };
 }
 
@@ -120,6 +132,18 @@ const EmployeePerformancePage: React.FC = () => {
         console.log('🔍 Debug: Checking tenants_employee data...');
         console.log('🔍 Debug: Supabase client:', supabase);
         
+        // Let's first check what columns actually exist in tenants_employee
+        const { data: sampleEmployee, error: sampleError } = await supabase
+          .from('tenants_employee')
+          .select('*')
+          .limit(1);
+        
+        console.log('🔍 Debug: Sample employee with all fields:', {
+          error: sampleError,
+          data: sampleEmployee,
+          availableFields: sampleEmployee?.[0] ? Object.keys(sampleEmployee[0]) : []
+        });
+        
         // Check current user session
         const { data: { user }, error: userError } = await supabase.auth.getUser();
         console.log('🔍 Debug: Current user:', {
@@ -178,13 +202,35 @@ const EmployeePerformancePage: React.FC = () => {
             bonuses_role,
             department_id,
             user_id,
-            photo_url
+            photo_url,
+            phone,
+            mobile,
+            phone_ext
           `);
 
         console.log('🔍 Debug: ALL employees:', {
           count: allEmployeesData?.length || 0,
           sample: allEmployeesData?.slice(0, 5)
         });
+
+        // Debug phone data specifically
+        console.log('🔍 Debug: Phone data sample:', allEmployeesData?.slice(0, 3).map(emp => ({
+          name: emp.display_name,
+          phone: emp.phone,
+          mobile: emp.mobile,
+          phone_ext: emp.phone_ext
+        })));
+        
+        // Debug all phone fields to see if they exist
+        console.log('🔍 Debug: All phone fields check:', allEmployeesData?.slice(0, 5).map(emp => ({
+          name: emp.display_name,
+          hasPhone: !!emp.phone,
+          hasMobile: !!emp.mobile,
+          hasPhoneExt: !!emp.phone_ext,
+          phoneValue: emp.phone,
+          mobileValue: emp.mobile,
+          phoneExtValue: emp.phone_ext
+        })));
 
         if (allEmployeesDataError) {
           console.error('Error fetching all employees:', allEmployeesDataError);
@@ -238,7 +284,11 @@ const EmployeePerformancePage: React.FC = () => {
                   bonuses_role: employee.bonuses_role,
                   department: employee.department_id ? departmentMap.get(employee.department_id) || 'Unknown' : 'General',
                   email: 'N/A',
-                  is_active: false
+                  is_active: false,
+                  photo_url: employee.photo_url,
+                  phone: employee.phone,
+                  mobile: employee.mobile,
+                  phone_ext: employee.phone_ext
                 };
               }
 
@@ -249,7 +299,10 @@ const EmployeePerformancePage: React.FC = () => {
                 department: employee.department_id ? departmentMap.get(employee.department_id) || 'Unknown' : 'General',
                 email: authUserData?.email || 'N/A',
                 is_active: authUserData?.is_active || false,
-                photo_url: employee.photo_url
+                photo_url: employee.photo_url,
+                phone: employee.phone,
+                mobile: employee.mobile,
+                phone_ext: employee.phone_ext
               };
             } catch (error) {
               console.error(`Error fetching auth user for employee ${employee.display_name}:`, error);
@@ -260,7 +313,10 @@ const EmployeePerformancePage: React.FC = () => {
                 department: employee.department_id ? departmentMap.get(employee.department_id) || 'Unknown' : 'General',
                 email: 'N/A',
                 is_active: false,
-                photo_url: employee.photo_url
+                photo_url: employee.photo_url,
+                phone: employee.phone,
+                mobile: employee.mobile,
+                phone_ext: employee.phone_ext
               };
             }
           })
@@ -297,10 +353,23 @@ const EmployeePerformancePage: React.FC = () => {
           }))
         });
 
+        // Debug phone data in final filtered employees
+        console.log('🔍 Debug: Final filtered employees phone data:', filteredActiveEmployees.slice(0, 3).map(emp => ({
+          name: emp.display_name,
+          hasPhone: !!emp.phone,
+          hasMobile: !!emp.mobile,
+          hasPhoneExt: !!emp.phone_ext,
+          phoneValue: emp.phone,
+          mobileValue: emp.mobile,
+          phoneExtValue: emp.phone_ext
+        })));
+
         // Fetch performance metrics for each employee
         const employeesWithMetrics = await Promise.all(
           filteredActiveEmployees.map(async (employee) => {
             try {
+              const role = employee.bonuses_role?.toLowerCase();
+              
               // Fetch meetings data for this employee
               const { data: meetingsData, error: meetingsError } = await supabase
                 .from('meetings')
@@ -331,13 +400,13 @@ const EmployeePerformancePage: React.FC = () => {
                 console.error(`Error fetching meetings for ${employee.display_name}:`, meetingsError);
               }
 
-              // Calculate performance metrics
+              // Calculate basic performance metrics
               const meetings = meetingsData || [];
               const completedMeetings = meetings.filter(m => m.status !== 'canceled').length;
               const totalRevenue = meetings.reduce((sum, meeting) => {
                 const lead = meeting.lead || meeting.legacy_lead;
                 if (lead) {
-                  const amount = lead.balance || lead.total || meeting.meeting_amount || 0;
+                  const amount = (lead as any).balance || (lead as any).total || meeting.meeting_amount || 0;
                   return sum + (typeof amount === 'number' ? amount : 0);
                 }
                 return sum;
@@ -348,6 +417,173 @@ const EmployeePerformancePage: React.FC = () => {
                 ? meetings[0].meeting_date 
                 : null;
 
+              // Role-specific data fetching
+              let roleSpecificMetrics = {};
+
+              switch (role) {
+                case 'h': // Handler
+                  // Fetch cases handled and applicants processed
+                  const { data: leadsData, error: leadsError } = await supabase
+                    .from('leads')
+                    .select(`
+                      id,
+                      balance,
+                      balance_currency,
+                      handler_id,
+                      stage_id,
+                      leads_lead:leads_lead!legacy_lead_id(
+                        id,
+                        total,
+                        meeting_total_currency_id
+                      )
+                    `)
+                    .eq('handler_id', employee.id);
+
+                  if (!leadsError && leadsData) {
+                    const casesHandled = leadsData.length;
+                    const applicantsProcessed = leadsData.filter(lead => 
+                      lead.stage_id && lead.stage_id !== 'new'
+                    ).length;
+                    const totalInvoiced = leadsData.reduce((sum, lead) => {
+                      const amount = (lead as any).balance || (lead as any).leads_lead?.total || 0;
+                      return sum + (typeof amount === 'number' ? amount : 0);
+                    }, 0);
+
+                    roleSpecificMetrics = {
+                      cases_handled: casesHandled,
+                      applicants_processed: applicantsProcessed,
+                      total_invoiced_amount: totalInvoiced
+                    };
+                  }
+                  break;
+
+                case 'c': // Closer
+                  // Fetch signed contracts and agreements
+                  const { data: contractsData, error: contractsError } = await supabase
+                    .from('contracts')
+                    .select(`
+                      id,
+                      total_amount,
+                      currency_id,
+                      status,
+                      created_by
+                    `)
+                    .eq('created_by', employee.id)
+                    .eq('status', 'signed');
+
+                  if (!contractsError && contractsData) {
+                    const signedContracts = contractsData.length;
+                    const signedTotal = contractsData.reduce((sum, contract) => 
+                      sum + (contract.total_amount || 0), 0);
+                    const totalDue = contractsData.reduce((sum, contract) => 
+                      sum + (contract.total_amount || 0), 0); // Assuming all signed contracts are due
+
+                    roleSpecificMetrics = {
+                      signed_agreements: signedContracts,
+                      total_agreement_amount: signedTotal,
+                      total_due: totalDue
+                    };
+                  }
+                  break;
+
+                case 'e': // Expert
+                  // Fetch expert examinations (this would need to be implemented based on your data structure)
+                  const { data: expertData, error: expertError } = await supabase
+                    .from('meetings')
+                    .select('id, expert_opinion, feasibility_check')
+                    .eq('expert', employee.id);
+
+                  if (!expertError && expertData) {
+                    const expertExaminations = expertData.length;
+                    const totalExpertRevenue = expertData.reduce((sum, meeting) => 
+                      sum + ((meeting as any).meeting_amount || 0), 0);
+
+                    roleSpecificMetrics = {
+                      expert_examinations: expertExaminations,
+                      expert_total: totalExpertRevenue
+                    };
+                  }
+                  break;
+
+                case 's': // Scheduler
+                  // Fetch scheduled meetings and their outcomes
+                  const { data: scheduledData, error: scheduledError } = await supabase
+                    .from('meetings')
+                    .select(`
+                      id,
+                      meeting_date,
+                      status,
+                      meeting_amount,
+                      meeting_currency,
+                      lead:leads!client_id(
+                        id,
+                        balance,
+                        balance_currency
+                      )
+                    `)
+                    .eq('meeting_manager', employee.id);
+
+                  if (!scheduledError && scheduledData) {
+                    const meetingsTotal = scheduledData.length;
+                    const signedTotal = scheduledData.filter(m => m.status === 'completed').length;
+                    const dueTotal = scheduledData.reduce((sum, meeting) => {
+                      const lead = meeting.lead;
+                      if (lead) {
+                        const amount = (lead as any).balance || meeting.meeting_amount || 0;
+                        return sum + (typeof amount === 'number' ? amount : 0);
+                      }
+                      return sum;
+                    }, 0);
+
+                    roleSpecificMetrics = {
+                      meetings_scheduled: meetingsTotal,
+                      signed_meetings: signedTotal,
+                      due_total: dueTotal
+                    };
+                  }
+                  break;
+
+                case 'z': // Manager
+                case 'Z': // Manager
+                  // Fetch successful meetings and contracts managed
+                  const { data: managerData, error: managerError } = await supabase
+                    .from('meetings')
+                    .select(`
+                      id,
+                      status,
+                      meeting_amount,
+                      meeting_currency,
+                      lead:leads!client_id(
+                        id,
+                        balance,
+                        balance_currency
+                      )
+                    `)
+                    .eq('meeting_manager', employee.id);
+
+                  if (!managerError && managerData) {
+                    const successfulMeetings = managerData.filter(m => m.status === 'completed').length;
+                    const contractsManaged = managerData.filter(m => m.status === 'completed').length;
+                    const signedTotal = managerData.filter(m => m.status === 'completed').reduce((sum, meeting) => {
+                      const lead = meeting.lead;
+                      if (lead) {
+                        const amount = (lead as any).balance || meeting.meeting_amount || 0;
+                        return sum + (typeof amount === 'number' ? amount : 0);
+                      }
+                      return sum;
+                    }, 0);
+                    const dueTotal = signedTotal; // Assuming all completed meetings have due amounts
+
+                    roleSpecificMetrics = {
+                      successful_meetings: successfulMeetings,
+                      contracts_managed: contractsManaged,
+                      signed_total: signedTotal,
+                      due_total: dueTotal
+                    };
+                  }
+                  break;
+              }
+
               return {
                 ...employee,
                 performance_metrics: {
@@ -355,8 +591,9 @@ const EmployeePerformancePage: React.FC = () => {
                   completed_meetings: completedMeetings,
                   total_revenue: totalRevenue,
                   total_bonus: 0,
-                  average_rating: 0, // Placeholder - would need rating system
-                  last_activity: lastActivity || 'No activity'
+                  average_rating: 0,
+                  last_activity: lastActivity || 'No activity',
+                  ...roleSpecificMetrics
                 }
               };
             } catch (error) {
@@ -945,8 +1182,7 @@ const EmployeePerformancePage: React.FC = () => {
           <div key={groupData.name} className="card shadow-sm mb-6">
             <div className="card-header">
               <div className="flex items-center justify-between">
-                <h3 className="text-xl font-bold flex items-center gap-2">
-                  <AcademicCapIcon className="w-6 h-6 text-primary" />
+                <h3 className="text-xl font-bold flex items-center gap-3">
                   {groupData.name}
                   {isSubdepartment && (
                     <span className="badge badge-secondary">
@@ -1023,7 +1259,7 @@ const EmployeePerformancePage: React.FC = () => {
                       </div>
                     </td>
                     <td className="w-1/12">
-                      <span className="badge badge-outline">
+                      <span className="text-xs max-w-full truncate inline-block px-3 py-1 rounded-full text-white font-medium bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 shadow-sm">
                         {getRoleDisplayName(employee.bonuses_role)}
                       </span>
                     </td>
@@ -1108,6 +1344,7 @@ const EmployeePerformancePage: React.FC = () => {
       {/* Employee Modal */}
       <EmployeeModal 
         employee={selectedEmployee} 
+        allEmployees={employees}
         isOpen={isModalOpen} 
         onClose={handleModalClose} 
       />

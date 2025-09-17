@@ -48,6 +48,8 @@ const Dashboard: React.FC = () => {
   const [unavailableEmployeesCount, setUnavailableEmployeesCount] = useState(0);
   const [currentlyUnavailableCount, setCurrentlyUnavailableCount] = useState(0);
   const [scheduledTimeOffCount, setScheduledTimeOffCount] = useState(0);
+  const [unavailableEmployeesData, setUnavailableEmployeesData] = useState<any[]>([]);
+  const [unavailableEmployeesLoading, setUnavailableEmployeesLoading] = useState(false);
 
   // 1. Add state for real signed leads
   const [realSignedLeads, setRealSignedLeads] = useState<any[]>([]);
@@ -67,15 +69,16 @@ const Dashboard: React.FC = () => {
 
   const navigate = useNavigate();
 
-  // Fetch unavailable employees data for dashboard stats
-  const fetchUnavailableEmployeesStats = async () => {
+  // Fetch detailed unavailable employees data for table
+  const fetchUnavailableEmployeesData = async () => {
+    setUnavailableEmployeesLoading(true);
     try {
       const today = new Date();
       const year = today.getFullYear();
       const month = String(today.getMonth() + 1).padStart(2, '0');
       const day = String(today.getDate()).padStart(2, '0');
       const todayString = `${year}-${month}-${day}`;
-      
+
       const { data: employees, error } = await supabase
         .from('tenants_employee')
         .select('id, display_name, unavailable_times, unavailable_ranges')
@@ -87,6 +90,7 @@ const Dashboard: React.FC = () => {
       }
 
       if (!employees) {
+        setUnavailableEmployeesData([]);
         setUnavailableEmployeesCount(0);
         setCurrentlyUnavailableCount(0);
         setScheduledTimeOffCount(0);
@@ -96,6 +100,7 @@ const Dashboard: React.FC = () => {
       let totalUnavailable = 0;
       let currentlyUnavailable = 0;
       let scheduledTimeOff = 0;
+      const detailedData: any[] = [];
 
       const now = new Date();
       const currentTime = now.getHours() * 60 + now.getMinutes();
@@ -115,30 +120,66 @@ const Dashboard: React.FC = () => {
         if (todayTimes.length > 0 || todayRanges.length > 0) {
           totalUnavailable++;
 
-          if (todayTimes.length > 0) {
-            // Check if any time slot is currently active
-            const activeTime = todayTimes.find((time: any) => {
-              const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
-              const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
-              return currentTime >= startTime && currentTime <= endTime;
-            });
+          // Process time slots
+          todayTimes.forEach((time: any) => {
+            const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
+            const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
+            const isCurrentlyActive = currentTime >= startTime && currentTime <= endTime;
             
-            if (activeTime) {
+            if (isCurrentlyActive) {
               currentlyUnavailable++;
             } else {
               scheduledTimeOff++;
             }
-          } else if (todayRanges.length > 0) {
+
+            const formattedDate = new Date(time.date).toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: '2-digit'
+            });
+
+            detailedData.push({
+              id: `${employee.id}-${time.id}`,
+              employeeName: employee.display_name,
+              date: formattedDate,
+              time: `${time.startTime} - ${time.endTime}`,
+              reason: time.reason,
+              isActive: isCurrentlyActive
+            });
+          });
+
+          // Process date ranges
+          todayRanges.forEach((range: any) => {
             scheduledTimeOff++;
-          }
+
+            const startDateFormatted = new Date(range.startDate).toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: '2-digit'
+            });
+            const endDateFormatted = new Date(range.endDate).toLocaleDateString('en-GB', {
+              day: '2-digit',
+              month: '2-digit'
+            });
+
+            detailedData.push({
+              id: `${employee.id}-${range.id}`,
+              employeeName: employee.display_name,
+              date: `${startDateFormatted} to ${endDateFormatted}`,
+              time: 'All Day',
+              reason: range.reason,
+              isActive: false
+            });
+          });
         }
       });
 
+      setUnavailableEmployeesData(detailedData);
       setUnavailableEmployeesCount(totalUnavailable);
       setCurrentlyUnavailableCount(currentlyUnavailable);
       setScheduledTimeOffCount(scheduledTimeOff);
     } catch (error) {
-      console.error('Error fetching unavailable employees stats:', error);
+      console.error('Error fetching unavailable employees data:', error);
+    } finally {
+      setUnavailableEmployeesLoading(false);
     }
   };
 
@@ -1676,15 +1717,15 @@ const Dashboard: React.FC = () => {
     fetchInvoicedData();
   }, [selectedMonth, selectedYear]);
 
-  // Fetch unavailable employees stats on component mount
+  // Fetch unavailable employees data on component mount
   useEffect(() => {
-    fetchUnavailableEmployeesStats();
+    fetchUnavailableEmployeesData();
   }, []);
 
-  // Refresh stats when unavailable employees modal closes
+  // Refresh data when unavailable employees modal closes
   useEffect(() => {
     if (!isUnavailableEmployeesModalOpen) {
-      fetchUnavailableEmployeesStats();
+      fetchUnavailableEmployeesData();
     }
   }, [isUnavailableEmployeesModalOpen]);
 
@@ -3774,93 +3815,100 @@ const Dashboard: React.FC = () => {
 
       {/* Unavailable Employees Section */}
       <div className="w-full mt-12">
-        <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-white via-white to-white">
-          <div className="card shadow-xl rounded-3xl w-full max-w-full relative overflow-hidden bg-white">
-            <div className="card-body p-8">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center justify-center w-12 h-12 rounded-full shadow bg-gradient-to-tr from-purple-600 to-indigo-600">
-                    <UserGroupIcon className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <h2 className="text-2xl font-bold text-gray-900">Team Availability</h2>
-                    <p className="text-gray-600 text-sm mt-1">View employees unavailable today</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => setIsUnavailableEmployeesModalOpen(true)}
-                  className="btn btn-primary bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 border-none text-white px-6 py-3 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105"
-                >
-                  <UserGroupIcon className="w-5 h-5 mr-2" />
-                  View Unavailable Employees
-                </button>
+        <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
+          <div className="p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600">
+                <UserGroupIcon className="w-5 h-5 text-white" />
               </div>
-              
-              <div className="bg-gradient-to-r from-purple-50 to-indigo-50 rounded-2xl p-6 border border-purple-100">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="p-2 bg-purple-100 rounded-lg">
-                    <CalendarIcon className="w-5 h-5 text-purple-600" />
-                  </div>
-                  <div>
-                    <h3 className="text-lg font-semibold text-gray-900">Today's Availability</h3>
-                    <p className="text-sm text-gray-600">
-                      {new Date().toLocaleDateString('en-US', { 
-                        weekday: 'long', 
-                        year: 'numeric', 
-                        month: 'long', 
-                        day: 'numeric' 
-                      })}
-                    </p>
-                  </div>
-                </div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="bg-white rounded-xl p-4 border border-purple-200">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-green-100 rounded-lg">
-                        <CheckCircleIcon className="w-5 h-5 text-green-600" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-600">Available</p>
-                        <p className="text-2xl font-bold text-green-600">
-                          {unavailableEmployeesCount === 0 ? 'All Team' : `${unavailableEmployeesCount} Unavailable`}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="bg-white rounded-xl p-4 border border-orange-200">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-orange-100 rounded-lg">
-                        <ClockIcon className="w-5 h-5 text-orange-600" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-600">Scheduled Time Off</p>
-                        <p className="text-2xl font-bold text-orange-600">{scheduledTimeOffCount}</p>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  <div className="bg-white rounded-xl p-4 border border-red-200">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-red-100 rounded-lg">
-                        <ExclamationTriangleIcon className="w-5 h-5 text-red-600" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-gray-600">Currently Unavailable</p>
-                        <p className="text-2xl font-bold text-red-600">{currentlyUnavailableCount}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="mt-4 text-center">
-                  <p className="text-sm text-gray-500">
-                    Click "View Unavailable Employees" to see detailed availability information
-                  </p>
-                </div>
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Team Availability</h2>
+                <p className="text-gray-500 text-sm">Employees unavailable today</p>
               </div>
             </div>
+              
+              {/* Summary Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                <div className="bg-white rounded-lg p-4 shadow-md border border-gray-200">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-green-100 rounded-lg">
+                      <CheckCircleIcon className="w-5 h-5 text-green-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-600">Total Unavailable</p>
+                      <p className="text-2xl font-bold text-green-600">{unavailableEmployeesCount}</p>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="bg-white rounded-lg p-4 shadow-md border border-gray-200">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-orange-100 rounded-lg">
+                      <ClockIcon className="w-5 h-5 text-orange-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-600">Scheduled Time Off</p>
+                      <p className="text-2xl font-bold text-orange-600">{scheduledTimeOffCount}</p>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="bg-white rounded-lg p-4 shadow-md border border-gray-200">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-red-100 rounded-lg">
+                      <ExclamationTriangleIcon className="w-5 h-5 text-red-600" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-gray-600">Currently Unavailable</p>
+                      <p className="text-2xl font-bold text-red-600">{currentlyUnavailableCount}</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Detailed Table */}
+              {unavailableEmployeesLoading ? (
+                <div className="flex justify-center items-center py-8">
+                  <div className="loading loading-spinner loading-lg text-gray-600"></div>
+                </div>
+              ) : unavailableEmployeesData.length > 0 ? (
+                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="table w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-gray-700 font-medium">Employee</th>
+                          <th className="text-gray-700 font-medium">Date</th>
+                          <th className="text-gray-700 font-medium">Time</th>
+                          <th className="text-gray-700 font-medium">Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unavailableEmployeesData.map((item) => (
+                          <tr key={item.id} className="hover:bg-gray-50 border-b border-gray-100">
+                            <td className="font-medium text-gray-900 py-3">{item.employeeName}</td>
+                            <td className="text-gray-700 py-3">{item.date}</td>
+                            <td className="text-gray-700 py-3">{item.time}</td>
+                            <td className="text-gray-700 py-3">{item.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-gray-50 rounded-lg p-8 border border-gray-200 text-center">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="p-3 bg-green-100 rounded-full">
+                      <CheckCircleIcon className="w-8 h-8 text-green-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
+                      <p className="text-gray-600">No employees are unavailable today. Great job team!</p>
+                    </div>
+                  </div>
+                </div>
+              )}
           </div>
         </div>
       </div>
