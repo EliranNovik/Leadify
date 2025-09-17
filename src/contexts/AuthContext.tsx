@@ -121,18 +121,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading: false,
         isInitialized: true
       }));
-    } else if (event === 'INITIAL_SESSION' && session?.user) {
-      console.log('🔄 Initial session detected');
+      // Redirect to login page
+      window.location.href = '/login';
+    } else if (event === 'INITIAL_SESSION') {
+      if (session?.user) {
+        console.log('🔄 Initial session detected');
+        // Check if session is expired
+        if (sessionManager.isSessionExpired(session)) {
+          console.log('🕐 Initial session is expired, signing out...');
+          await supabase.auth.signOut();
+          return;
+        }
+        setAuthState(prev => ({ 
+          ...prev, 
+          user: session.user,
+          isLoading: false,
+          isInitialized: true 
+        }));
+        // Fetch user details in background
+        fetchUserDetails(session.user);
+      } else {
+        console.log('ℹ️ No initial session found');
+        setAuthState(prev => ({
+          ...prev,
+          user: null,
+          userFullName: null,
+          userInitials: null,
+          isLoading: false,
+          isInitialized: true
+        }));
+      }
+    } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+      console.log('🔄 Token refreshed');
       setAuthState(prev => ({ 
         ...prev, 
         user: session.user,
         isLoading: false,
         isInitialized: true 
       }));
-      // Fetch user details in background
-      fetchUserDetails(session.user);
-    } else if (event === 'TOKEN_REFRESHED' && session?.user) {
-      console.log('🔄 Token refreshed');
+    } else if (event === 'USER_UPDATED' && session?.user) {
+      console.log('🔄 User updated');
       setAuthState(prev => ({ 
         ...prev, 
         user: session.user,
@@ -142,7 +170,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [fetchUserDetails]);
 
-  // Session monitoring is handled in App.tsx to avoid conflicts
+  // Set up session monitoring to ensure users are logged out when session expires
+  useEffect(() => {
+    if (!authState.user || !authState.isInitialized) return;
+
+    let isSigningIn = false;
+    
+    // Set up periodic session check with automatic refresh
+    const checkInterval = setInterval(async () => {
+      // Skip monitoring if we're in the middle of a sign-in process
+      if (isSigningIn) {
+        console.log('⏸️ Skipping session check - sign-in in progress');
+        return;
+      }
+      
+      try {
+        const session = await sessionManager.getSession();
+        if (!session) {
+          console.log('🕐 Session expired and refresh failed, signing out user...');
+          // Force sign out - this will trigger the auth state change
+          await supabase.auth.signOut();
+        } else {
+          console.log('✅ Session is valid, continuing monitoring');
+        }
+      } catch (error) {
+        console.error('Error during session monitoring:', error);
+        // Only sign out if it's not a temporary auth error
+        if (error instanceof Error && !error.message?.includes('auth') && !error.message?.includes('session')) {
+          await supabase.auth.signOut();
+        }
+      }
+    }, 5 * 60 * 1000); // Check every 5 minutes
+
+    // Listen for sign-in events to set the protection flag
+    const handleSignInStart = () => {
+      isSigningIn = true;
+      console.log('🔐 Sign-in started - protecting session monitoring');
+    };
+    
+    const handleSignInEnd = () => {
+      isSigningIn = false;
+      console.log('✅ Sign-in completed - resuming session monitoring');
+    };
+
+    // Add event listeners for Microsoft sign-in
+    window.addEventListener('msal:signInStart', handleSignInStart);
+    window.addEventListener('msal:signInSuccess', handleSignInEnd);
+    window.addEventListener('msal:signInFailure', handleSignInEnd);
+
+    return () => {
+      clearInterval(checkInterval);
+      window.removeEventListener('msal:signInStart', handleSignInStart);
+      window.removeEventListener('msal:signInSuccess', handleSignInEnd);
+      window.removeEventListener('msal:signInFailure', handleSignInEnd);
+    };
+  }, [authState.user, authState.isInitialized]);
 
   useEffect(() => {
     const initializeAuth = async () => {
@@ -229,11 +311,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             // Don't wait for user details to load - let it happen in background
             fetchUserDetails(session.user);
           } else {
-            console.log('ℹ️ No existing session found');
+            console.log('ℹ️ No existing session found - user will need to login');
+            setAuthState(prev => ({
+              ...prev,
+              user: null,
+              userFullName: null,
+              userInitials: null
+            }));
           }
         } catch (sessionError) {
-          console.log('ℹ️ Session check failed, auth listener will handle state changes');
-          // Don't fail completely - the auth listener will handle state changes
+          console.log('ℹ️ Session check failed, user will need to login');
+          setAuthState(prev => ({
+            ...prev,
+            user: null,
+            userFullName: null,
+            userInitials: null
+          }));
         }
         
         setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));

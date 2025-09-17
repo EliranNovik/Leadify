@@ -39,25 +39,39 @@ export const sessionManager = {
   async getSession() {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
-      if (error) throw error;
+      if (error) {
+        console.error('Error getting session:', error);
+        throw error;
+      }
+      
+      // If no session, return null
+      if (!session) {
+        return null;
+      }
       
       // Check if session is expired
-      if (session && this.isSessionExpired(session)) {
+      if (this.isSessionExpired(session)) {
         console.log('🕐 Session expired, attempting refresh...');
-        const refreshedSession = await this.refreshSession();
-        if (refreshedSession) {
-          console.log('✅ Session refreshed successfully');
-          return refreshedSession;
-        } else {
-          console.log('❌ Session refresh failed, signing out...');
-          await supabase.auth.signOut();
-          return null;
+        
+        // Only attempt refresh if we have a refresh token
+        if (this.hasRefreshToken(session)) {
+          const refreshedSession = await this.refreshSession();
+          if (refreshedSession && !this.isSessionExpired(refreshedSession)) {
+            console.log('✅ Session refreshed successfully');
+            return refreshedSession;
+          }
         }
+        
+        console.log('❌ Session refresh failed or no refresh token, signing out...');
+        await supabase.auth.signOut();
+        return null;
       }
       
       return session;
     } catch (error) {
       console.error('Error getting session:', error);
+      // If there's an error getting the session, sign out to be safe
+      await supabase.auth.signOut();
       return null;
     }
   },
@@ -69,9 +83,13 @@ export const sessionManager = {
       const expiresAt = typeof session.expires_at === 'number' 
         ? session.expires_at * 1000 
         : new Date(session.expires_at).getTime();
-      return Date.now() >= expiresAt;
+      
+      // Add a 30-second buffer to account for clock skew and processing time
+      const buffer = 30 * 1000; // 30 seconds
+      return Date.now() >= (expiresAt - buffer);
     } catch (e) {
-      // Could not parse JWT token for expiration check
+      console.error('Could not parse session expiration:', e);
+      // If we can't parse the expiration, treat as expired to be safe
       return true;
     }
   },
