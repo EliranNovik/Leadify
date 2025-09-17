@@ -192,8 +192,8 @@ const AppContentInner: React.FC = () => {
 
   // Session monitoring is now handled in AuthContext to avoid conflicts
 
-  // Only use Microsoft user if Supabase user is not available AND we're not in a loading state
-  const authUser = user || (isInitialized && !isLoading ? msalAccount : null);
+  // Only use Supabase user - no Microsoft fallback
+  const authUser = user;
 
   // Don't block the app on auth loading - allow it to render immediately
   // The auth will load in the background
