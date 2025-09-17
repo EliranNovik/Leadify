@@ -121,8 +121,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading: false,
         isInitialized: true
       }));
-      // Redirect to login page
-      window.location.href = '/login';
     } else if (event === 'INITIAL_SESSION') {
       if (session?.user) {
         console.log('🔄 Initial session detected');
@@ -141,7 +139,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Fetch user details in background
         fetchUserDetails(session.user);
       } else {
-        console.log('ℹ️ No initial session found - redirecting to login');
+        console.log('ℹ️ No initial session found');
         setAuthState(prev => ({
           ...prev,
           user: null,
@@ -150,8 +148,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           isLoading: false,
           isInitialized: true
         }));
-        // Redirect to login page when no session is found
-        window.location.href = '/login';
       }
     } else if (event === 'TOKEN_REFRESHED' && session?.user) {
       console.log('🔄 Token refreshed');
@@ -313,26 +309,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             // Don't wait for user details to load - let it happen in background
             fetchUserDetails(session.user);
           } else {
-            console.log('ℹ️ No existing session found - redirecting to login');
+            console.log('ℹ️ No existing session found');
             setAuthState(prev => ({
               ...prev,
               user: null,
               userFullName: null,
               userInitials: null
             }));
-            // Redirect to login page when no session is found
-            window.location.href = '/login';
           }
         } catch (sessionError) {
-          console.log('ℹ️ Session check failed - redirecting to login');
+          console.log('ℹ️ Session check failed');
           setAuthState(prev => ({
             ...prev,
             user: null,
             userFullName: null,
             userInitials: null
           }));
-          // Redirect to login page when session check fails
-          window.location.href = '/login';
         }
         
         setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
