@@ -183,10 +183,10 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Simple function to fetch overdue leads data
+  // Optimized function to fetch overdue leads data using employee relationship
   const fetchOverdueLeadsData = async (fetchAll = false) => {
     try {
-      // Get current user's full name
+      // Get current user's data with employee relationship using JOIN
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
@@ -194,31 +194,36 @@ const Dashboard: React.FC = () => {
 
       const { data: userData } = await supabase
         .from('users')
-        .select('full_name')
+        .select(`
+          ids,
+          full_name,
+          employee_id,
+          tenants_employee!employee_id(
+            id,
+            display_name
+          )
+        `)
         .eq('auth_id', user.id)
         .single();
 
-      if (!userData?.full_name) {
+      if (!userData) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
 
-      const userFullName = userData.full_name;
+      // Use display_name from employee table or full_name from users table
+      const userFullName = userData.tenants_employee?.display_name || userData.full_name;
+      const userEmployeeId = userData.employee_id;
+      
+      if (!userFullName) {
+        return { newLeads: [], legacyLeads: [], totalCount: 0 };
+      }
       
       const today = new Date().toISOString().split('T')[0];
       const fiftyDaysAgo = new Date();
       fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
       const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
       
-      // Get employee ID for legacy leads
-      const { data: employeeData } = await supabase
-        .from('tenants_employee')
-        .select('id')
-        .eq('display_name', userFullName)
-        .single();
-
-      const userEmployeeId = employeeData?.id;
-      
-      // Fetch new leads
+      // Fetch new leads (using display_name for filtering)
       const { data: newLeadsData, error: newLeadsError } = await supabase
         .from('leads')
         .select('id, lead_number, name, stage, topic, next_followup, expert, manager, meeting_manager, category, balance, balance_currency, probability')
@@ -230,21 +235,25 @@ const Dashboard: React.FC = () => {
 
       if (newLeadsError) throw newLeadsError;
 
-      // Fetch legacy leads
-      let legacyLeadsQuery = supabase
-        .from('leads_lead')
-        .select('id, name, stage, topic, next_followup, expert_id, meeting_manager_id, category_id, total, currency_id')
-        .lte('next_followup', today)
-        .gte('next_followup', fiftyDaysAgoStr)
-        .not('next_followup', 'is', null)
-        .eq('status', 0)
-        .lt('stage', 100);
-
+      // Fetch legacy leads (using employee ID for efficient filtering)
+      let legacyLeadsData = [];
+      let legacyLeadsError = null;
+      
       if (userEmployeeId) {
-        legacyLeadsQuery = legacyLeadsQuery.or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`);
+        const { data, error } = await supabase
+          .from('leads_lead')
+          .select('id, name, stage, topic, next_followup, expert_id, meeting_manager_id, category_id, total, currency_id')
+          .lte('next_followup', today)
+          .gte('next_followup', fiftyDaysAgoStr)
+          .not('next_followup', 'is', null)
+          .eq('status', 0)
+          .lt('stage', 100)
+          .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`)
+          .limit(fetchAll ? 1000 : 12);
+        
+        legacyLeadsData = data;
+        legacyLeadsError = error;
       }
-
-      const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.limit(fetchAll ? 1000 : 12);
 
       if (legacyLeadsError) throw legacyLeadsError;
 
@@ -427,14 +436,14 @@ const Dashboard: React.FC = () => {
       const { data } = await supabase.from('meetings').select('id').eq('meeting_date', today);
       setMeetingsToday(data?.length || 0);
     })();
-    // Fetch overdue followups - simple count query
+    // Fetch overdue followups - optimized count query using employee relationship
     (async () => {
       // Prevent multiple calls
       if (overdueCountFetched) return;
       setOverdueCountFetched(true);
       
       try {
-        // Get current user's full name
+        // Get current user's data with employee relationship using JOIN
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) {
           setOverdueFollowups(0);
@@ -443,55 +452,67 @@ const Dashboard: React.FC = () => {
 
         const { data: userData } = await supabase
           .from('users')
-          .select('full_name')
+          .select(`
+            ids,
+            full_name,
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
           .eq('auth_id', user.id)
           .single();
 
-        if (!userData?.full_name) {
+        if (!userData) {
           setOverdueFollowups(0);
           return;
         }
 
-        const userFullName = userData.full_name;
+        // Use display_name from employee table or full_name from users table
+        const userFullName = userData.tenants_employee?.display_name || userData.full_name;
+        const userEmployeeId = userData.employee_id;
         
-        const today = new Date().toISOString().split('T')[0];
+        if (!userFullName) {
+          setOverdueFollowups(0);
+          return;
+        }
+        
+        const todayStr = new Date().toISOString().split('T')[0];
         const fiftyDaysAgo = new Date();
         fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
         const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
         
-        // Get employee ID for legacy leads
-        const { data: employeeData } = await supabase
-          .from('tenants_employee')
-          .select('id')
-          .eq('display_name', userFullName)
-          .single();
-
-        const userEmployeeId = employeeData?.id;
-        
-        // Simple count queries for total
-        const [newLeadsCount, legacyLeadsCount] = await Promise.all([
+        // Optimized count queries using employee relationship
+        const countPromises = [
           supabase
             .from('leads')
             .select('*', { count: 'exact', head: true })
-            .lte('next_followup', today)
+            .lte('next_followup', todayStr)
             .gte('next_followup', fiftyDaysAgoStr)
             .not('next_followup', 'is', null)
-            .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName}`),
-          
-          userEmployeeId ? 
+            .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName}`)
+        ];
+        
+        // Only add legacy leads query if we have employee ID
+        if (userEmployeeId) {
+          countPromises.push(
             supabase
               .from('leads_lead')
               .select('*', { count: 'exact', head: true })
-              .lte('next_followup', today)
+              .lte('next_followup', todayStr)
               .gte('next_followup', fiftyDaysAgoStr)
               .not('next_followup', 'is', null)
               .eq('status', 0)
               .lt('stage', 100)
-              .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`) :
-            Promise.resolve({ count: 0, error: null })
-        ]);
+              .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`)
+          );
+        }
         
-        const totalCount = (newLeadsCount.count || 0) + (legacyLeadsCount.count || 0);
+        const results = await Promise.all(countPromises);
+        const [newLeadsCount, legacyLeadsCount] = results;
+        
+        const totalCount = (newLeadsCount.count || 0) + (legacyLeadsCount?.count || 0);
         setOverdueFollowups(totalCount);
         
       } catch (error) {
@@ -3268,15 +3289,21 @@ const Dashboard: React.FC = () => {
                                 <h4 className="text-sm font-semibold text-white text-center">{category} - 30 Day Trend</h4>
                               </div>
                               <div className="p-4 h-full">
-                                <div className="w-full h-40">
-                                  <ResponsiveContainer width="100%" height="100%">
-                                    <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                      <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
-                                      <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={25} />
-                                      <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} itemStyle={{ color: '#6366f1', fontWeight: 600 }} />
-                                      <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} />
-                                    </LineChart>
-                                  </ResponsiveContainer>
+                                <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
+                                  {chartData && chartData.length > 0 ? (
+                                    <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
+                                      <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                        <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
+                                        <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={25} />
+                                        <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} itemStyle={{ color: '#6366f1', fontWeight: 600 }} />
+                                        <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} />
+                                      </LineChart>
+                                    </ResponsiveContainer>
+                                  ) : (
+                                    <div className="flex items-center justify-center h-full text-white/70 text-sm">
+                                      No data available
+                                    </div>
+                                  )}
                                 </div>
                                                              </div>
                              </div>
@@ -3316,11 +3343,11 @@ const Dashboard: React.FC = () => {
                     </div>
                   </div>
                   <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-                    <div className="w-full h-[450px]">
+                    <div className="w-full h-[450px]" style={{ minWidth: '400px', minHeight: '450px' }}>
                       {(() => {
                         const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
-                        return (
-                          <ResponsiveContainer width="100%" height="100%">
+                        return chartData && chartData.length > 0 ? (
+                          <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={450}>
                             <BarChart
                               data={chartData}
                               barCategoryGap={16}
@@ -3391,6 +3418,13 @@ const Dashboard: React.FC = () => {
                               />
                             </BarChart>
                           </ResponsiveContainer>
+                        ) : (
+                          <div className="flex items-center justify-center h-full text-gray-500">
+                            <div className="text-center">
+                              <div className="text-lg font-medium mb-2">No data available</div>
+                              <div className="text-sm">Chart will appear when data is loaded</div>
+                            </div>
+                          </div>
                         );
                       })()}
                     </div>
@@ -3633,9 +3667,10 @@ const Dashboard: React.FC = () => {
                   </button>
                 </div>
               </div>
-              <div className="w-full h-72">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+              <div className="w-full h-72" style={{ minWidth: '400px', minHeight: '288px' }}>
+                {performanceData && performanceData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={288}>
+                    <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
                     <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} />
                     <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} width={30} />
                     <Tooltip content={<PerformanceTooltip />} />
@@ -3675,6 +3710,14 @@ const Dashboard: React.FC = () => {
                     })()}
                   </LineChart>
                 </ResponsiveContainer>
+                ) : (
+                  <div className="flex items-center justify-center h-full text-gray-500">
+                    <div className="text-center">
+                      <div className="text-lg font-medium mb-2">No performance data available</div>
+                      <div className="text-sm">Chart will appear when data is loaded</div>
+                    </div>
+                  </div>
+                )}
               </div>
               {/* Legend for My Contracts and Team Avg */}
               <div className="flex gap-6 mt-4 items-center">

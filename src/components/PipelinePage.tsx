@@ -108,6 +108,65 @@ const PipelinePage: React.FC = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [contactDrawerOpen, setContactDrawerOpen] = useState(false);
+  
+  // State to store all categories for name lookup (same as Clients.tsx)
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+
+  // Helper function to get category name from ID with main category (copied from Clients.tsx)
+  const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
+    console.log('🔍 PipelinePage getCategoryName called with:', { 
+      categoryId, 
+      fallbackCategory, 
+      allCategoriesLength: allCategories.length,
+      sampleCategories: allCategories.slice(0, 3).map(cat => ({ id: cat.id, name: cat.name }))
+    });
+    
+    if (!categoryId || categoryId === '---') {
+      // If no category_id but we have a fallback category, try to find it in the loaded categories
+      if (fallbackCategory && fallbackCategory.trim() !== '') {
+        console.log('🔍 Looking for fallback category:', fallbackCategory);
+        // Try to find the fallback category in the loaded categories
+        const foundCategory = allCategories.find((cat: any) => 
+          cat.name.toLowerCase().trim() === fallbackCategory.toLowerCase().trim()
+        );
+        
+        if (foundCategory) {
+          console.log('🔍 Found fallback category:', foundCategory);
+          // Return category name with main category in parentheses
+          if (foundCategory.misc_maincategory?.name) {
+            return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
+          } else {
+            return foundCategory.name; // Fallback if no main category
+          }
+        } else {
+          console.log('🔍 Fallback category not found, using as-is:', fallbackCategory);
+          return fallbackCategory; // Use as-is if not found in loaded categories
+        }
+      }
+      console.log('🔍 No category_id and no fallback, returning empty string');
+      return '';
+    }
+    
+    // Find category in loaded categories
+    const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    console.log('🔍 Category lookup result:', { categoryId, found: !!category, category });
+    
+    if (category) {
+      // Return category name with main category in parentheses
+      if (category.misc_maincategory?.name) {
+        const result = `${category.name} (${category.misc_maincategory.name})`;
+        console.log('🔍 Returning category with main category:', result);
+        return result;
+      } else {
+        console.log('🔍 Returning category without main category:', category.name);
+        return category.name; // Fallback if no main category
+      }
+    }
+    
+    console.log('🔍 Category not found, returning empty string for categoryId:', categoryId);
+    return ''; // Return empty string instead of ID to show "Not specified"
+  };
+
   const [newContact, setNewContact] = useState({
     method: 'email',
     date: '',
@@ -156,6 +215,7 @@ const PipelinePage: React.FC = () => {
   const [showSignedAgreements, setShowSignedAgreements] = useState(false);
   const [pipelineMode, setPipelineMode] = useState<'closer' | 'scheduler'>('closer');
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
+  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   
   // Assignment modal state
   const [assignmentModalOpen, setAssignmentModalOpen] = useState(false);
@@ -172,6 +232,36 @@ const PipelinePage: React.FC = () => {
   // Status filter state
   const [showUnassignedOnly, setShowUnassignedOnly] = useState(false);
   const [showLostInteractionsOnly, setShowLostInteractionsOnly] = useState(false);
+
+  // Fetch categories on component mount (same as Clients.tsx)
+  useEffect(() => {
+    const fetchCategories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_category')
+          .select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          `)
+          .order('name', { ascending: true });
+        
+        if (error) {
+          console.error('PipelinePage: Error fetching categories:', error);
+        } else if (data) {
+          setAllCategories(data);
+        }
+      } catch (err) {
+        console.error('PipelinePage: Exception while fetching categories:', err);
+      }
+    };
+
+    fetchCategories();
+  }, []);
 
   // Dynamically collect all unique stages from leads with proper stage names
   const stageOptions = useMemo(() => {
@@ -289,71 +379,119 @@ const PipelinePage: React.FC = () => {
       await Promise.race([
         (async () => {
           // Initialize stage names cache first
-          console.log('🔍 Initializing stage names cache...');
           await initializeStageNames();
-          console.log('✅ Stage names cache initialized');
           
-          // Build filter based on pipeline mode and current user
-          console.log('🔍 Current user full name:', currentUserFullName);
-          console.log('🔍 Pipeline mode:', pipelineMode);
+          // Fetch new leads using JOINs for efficient filtering
+          let newLeadsQuery;
           
-          // For debugging: let's see what fields are available
-          console.log('🔍 Will filter by:');
-          if (pipelineMode === 'closer') {
-            console.log('  - New leads: expert field');
-            console.log('  - Legacy leads: closer_id field');
-          } else if (pipelineMode === 'scheduler') {
-            console.log('  - New leads: manager field');
-            console.log('  - Legacy leads: meeting_scheduler_id field');
-          }
-          
-          // If no user name, fetch all leads for debugging
-          if (!currentUserFullName) {
-            console.log('🔍 WARNING: No user full name available, fetching all leads for debugging');
-          }
-          
-          // Fetch new leads - optimized for performance
-          let newLeadsQuery = supabase
-            .from('leads')
-            .select(`
-              id,
-              lead_number,
-              name,
-              created_at,
-              expert,
-              manager,
-              scheduler,
-              closer,
-              topic,
-              stage,
-              number_of_applicants_meeting,
-              potential_applicants_meeting,
-              balance,
-              balance_currency,
-              probability,
-              next_followup,
-              email,
-              phone,
-              comments,
-              label,
-              latest_interaction,
-              meetings (
-                meeting_date
-              )
-            `);
-          
-          // Apply filter if user is logged in
-          if (currentUserFullName) {
-            console.log(`🔍 Applying filter for ${pipelineMode} mode with user: ${currentUserFullName}`);
+          if (currentUserEmployeeId) {
             if (pipelineMode === 'closer') {
-              console.log('🔍 Filtering new leads by closer field');
-              newLeadsQuery = newLeadsQuery.eq('closer', currentUserFullName);
-            } else if (pipelineMode === 'scheduler') {
-              console.log('🔍 Filtering new leads by scheduler field');
-              newLeadsQuery = newLeadsQuery.eq('scheduler', currentUserFullName);
+              // Use direct employee name filtering (more reliable than complex JOINs)
+              newLeadsQuery = supabase
+                .from('leads')
+                .select(`
+                  id,
+                  lead_number,
+                  name,
+                  created_at,
+                  expert,
+                  manager,
+                  scheduler,
+                  closer,
+                  topic,
+                  category,
+                  category_id,
+                  stage,
+                  number_of_applicants_meeting,
+                  potential_applicants_meeting,
+                  balance,
+                  balance_currency,
+                  probability,
+                  next_followup,
+                  email,
+                  phone,
+                  comments,
+                  label,
+                  latest_interaction,
+                  meetings (
+                    meeting_date
+                  )
+                `)
+                .eq('closer', currentUserFullName);
+            } else {
+              // Use direct employee name filtering (more reliable than complex JOINs)
+              newLeadsQuery = supabase
+                .from('leads')
+                .select(`
+                  id,
+                  lead_number,
+                  name,
+                  created_at,
+                  expert,
+                  manager,
+                  scheduler,
+                  closer,
+                  topic,
+                  category,
+                  category_id,
+                  stage,
+                  number_of_applicants_meeting,
+                  potential_applicants_meeting,
+                  balance,
+                  balance_currency,
+                  probability,
+                  next_followup,
+                  email,
+                  phone,
+                  comments,
+                  label,
+                  latest_interaction,
+                  meetings (
+                    meeting_date
+                  )
+                `)
+                .eq('scheduler', currentUserFullName);
             }
           } else {
-            console.log('🔍 No current user full name, fetching all leads');
+            newLeadsQuery = supabase
+              .from('leads')
+              .select(`
+                id,
+                lead_number,
+                name,
+                created_at,
+                expert,
+                manager,
+                scheduler,
+                closer,
+                topic,
+                category,
+                category_id,
+                stage,
+                number_of_applicants_meeting,
+                potential_applicants_meeting,
+                balance,
+                balance_currency,
+                probability,
+                next_followup,
+                email,
+                phone,
+                comments,
+                label,
+                latest_interaction,
+                meetings (
+                  meeting_date
+                )
+              `);
+            
+            // Apply filter if user is logged in
+            if (currentUserFullName) {
+              if (pipelineMode === 'closer') {
+                newLeadsQuery = newLeadsQuery.eq('closer', currentUserFullName);
+              } else if (pipelineMode === 'scheduler') {
+                newLeadsQuery = newLeadsQuery.eq('scheduler', currentUserFullName);
+              }
+            }
           }
           
           const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
@@ -363,7 +501,6 @@ const PipelinePage: React.FC = () => {
             throw newLeadsError;
           }
           
-          console.log('🔍 New leads fetched:', newLeadsData?.length || 0);
 
           // Fetch legacy leads - optimized for performance
           let legacyLeadsQuery = supabase
@@ -395,23 +532,17 @@ const PipelinePage: React.FC = () => {
             .neq('stage', 51) // Exclude Client declined price offer stage by ID only
             .neq('stage', 35); // Exclude Meeting Irrelevant stage by ID only
           
-          // Apply filter if user is logged in
+          // Apply filter using employee display_name (legacy tables store display_name directly)
           if (currentUserFullName) {
-            console.log(`🔍 Applying legacy filter for ${pipelineMode} mode with user: ${currentUserFullName}`);
             if (pipelineMode === 'closer') {
-              console.log('🔍 Filtering legacy leads by closer_id field');
               legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', currentUserFullName);
             } else if (pipelineMode === 'scheduler') {
-              console.log('🔍 Filtering legacy leads by meeting_scheduler_id field');
               legacyLeadsQuery = legacyLeadsQuery.eq('meeting_scheduler_id', currentUserFullName);
             }
-          } else {
-            console.log('🔍 No current user full name, fetching all legacy leads');
           }
           
           const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.order('cdate', { ascending: false });
 
-          console.log('🔍 Legacy leads query result:', { data: legacyLeadsData, error: legacyLeadsError });
 
           if (legacyLeadsError) {
             console.error('Error fetching legacy leads:', legacyLeadsError);
@@ -438,33 +569,13 @@ const PipelinePage: React.FC = () => {
             }
           }
           
-          // Fetch category data separately - optimized
-          const categoryIds = legacyLeadsData?.map(lead => lead.category_id).filter(id => id !== null) || [];
-          let categoryMap: Record<number, string> = {};
+          // Note: Category handling is now done via getCategoryName function using allCategories state
           
-          if (categoryIds.length > 0) {
-            // Query misc_category table for legacy leads
-            const { data: categoryData, error: categoryError } = await supabase
-              .from('misc_category')
-              .select('id, name')
-              .in('id', categoryIds);
-            
-            if (categoryError) {
-              console.error('Error fetching categories from misc_category:', categoryError);
-            } else if (categoryData) {
-              categoryMap = categoryData.reduce((acc, cat) => {
-                acc[cat.id] = cat.name;
-                return acc;
-              }, {} as Record<number, string>);
-              console.log('🔍 Category map created from misc_category:', categoryMap);
-            }
-          }
-          
-          console.log('🔍 Legacy leads fetched:', legacyLeadsData?.length || 0);
 
-          // Process new leads
+          // Process new leads with proper category handling
           const processedNewLeads = (newLeadsData || []).map(lead => ({
             ...lead,
+            category: getCategoryName(lead.category_id, lead.category), // Use proper category handling
             meetings: lead.meetings || [], // Ensure meetings is always an array
             lead_type: 'new' as const
           }));
@@ -472,7 +583,6 @@ const PipelinePage: React.FC = () => {
           // Process legacy leads
           const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
             const currencyCode = currencyMap[lead.currency_id] || null;
-            // Removed excessive logging for performance
             
             return {
               id: `legacy_${lead.id}`,
@@ -481,7 +591,7 @@ const PipelinePage: React.FC = () => {
               created_at: lead.cdate || new Date().toISOString(),
               expert: lead.closer_id, // Use closer_id as expert for legacy leads
               topic: null, // Legacy leads don't have topic field
-              category: lead.category_id ? categoryMap[lead.category_id] || null : null,
+              category: getCategoryName(lead.category_id), // Use proper category handling
               handler_notes: [],
               expert_notes: [],
               meetings: [], // Legacy leads don't have meetings relationship
@@ -506,7 +616,7 @@ const PipelinePage: React.FC = () => {
               // Legacy specific fields
               meeting_manager_id: lead.meeting_scheduler_id, // Use meeting_scheduler_id as manager
               meeting_lawyer_id: null,
-              category_id: null,
+              category_id: lead.category_id, // Preserve the original category_id
               total: lead.total,
               meeting_total_currency_id: null,
               expert_id: lead.closer_id,
@@ -519,11 +629,6 @@ const PipelinePage: React.FC = () => {
             new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
           );
 
-          console.log('PipelinePage leads fetch:', { 
-            newLeads: processedNewLeads.length, 
-            legacyLeads: processedLegacyLeads.length,
-            totalLeads: allLeads.length 
-          });
 
           setLeads(allLeads as LeadForPipeline[]);
         })(),
@@ -539,12 +644,10 @@ const PipelinePage: React.FC = () => {
   // Only fetch leads when we have a valid user name
   useEffect(() => {
     if (!currentUserFullName) {
-      console.log('🔍 Skipping leads fetch - no user name available yet');
       return;
     }
-    console.log('🔍 Starting leads fetch with user:', currentUserFullName);
     fetchLeads();
-  }, [pipelineMode, currentUserFullName]);
+  }, [pipelineMode, currentUserFullName, currentUserEmployeeId]);
 
   // Get signed agreement leads
   const signedAgreementLeads = useMemo(() => {
@@ -552,26 +655,14 @@ const PipelinePage: React.FC = () => {
   }, [leads]);
 
   const filteredLeads = useMemo(() => {
-    // Debug logging to see what's being filtered
-    console.log('Pipeline filtering:', {
-      showSignedAgreements,
-      totalLeads: leads.length,
-      signedAgreements: signedAgreementLeads.length,
-      filterBy,
-      searchQuery,
-      pipelineMode,
-      currentUserFullName
-    });
 
     // If showing signed agreements, return all signed agreement leads
     if (showSignedAgreements) {
-      console.log('Showing signed agreements:', signedAgreementLeads);
       return signedAgreementLeads;
     }
     
     // Start with all leads, excluding signed agreements
     let filtered = leads.filter(lead => !isSignedAgreementLead(lead));
-    console.log('Base filtered leads (excluding signed agreements):', filtered.length);
     
     // Apply search filter
     if (searchQuery) {
@@ -581,7 +672,6 @@ const PipelinePage: React.FC = () => {
         const searchLower = searchQuery.toLowerCase();
         return leadNameLower.includes(searchLower) || leadNumberLower.includes(searchLower);
       });
-      console.log('After search filter:', filtered.length);
     }
     
     // Apply date filters
@@ -592,7 +682,6 @@ const PipelinePage: React.FC = () => {
         const matchesTo = filterCreatedDateTo ? createdDate <= filterCreatedDateTo : true;
         return matchesFrom && matchesTo;
       });
-      console.log('After date filter:', filtered.length);
     }
     
     // Apply balance filter
@@ -601,38 +690,30 @@ const PipelinePage: React.FC = () => {
         const balance = lead.balance !== undefined && lead.balance !== null ? Number(lead.balance) : null;
         return balance !== null && balance >= Number(filterBalanceMin);
       });
-      console.log('After balance filter:', filtered.length);
     }
     
     // Apply label filter
     if (labelFilter) {
       filtered = filtered.filter(lead => lead.label === labelFilter);
-      console.log('After label filter:', filtered.length);
     }
     
     // Apply status filters
     if (showUnassignedOnly) {
       filtered = filtered.filter(lead => isUnassignedLead(lead));
-      console.log('After unassigned filter:', filtered.length);
     }
     
     if (showLostInteractionsOnly) {
       filtered = filtered.filter(lead => hasLostInteractions(lead));
-      console.log('After lost interactions filter:', filtered.length);
     }
     
     // Apply stage filter
     if (filterBy.startsWith('stage:')) {
       const selectedStageName = filterBy.replace('stage:', '');
-      console.log('Filtering by stage:', selectedStageName);
       filtered = filtered.filter(lead => {
         if (!lead.stage) return false;
         const leadStageName = getStageName(lead.stage);
-        const matches = leadStageName === selectedStageName;
-        console.log(`Lead ${lead.name}: stage "${lead.stage}" -> "${leadStageName}" matches "${selectedStageName}": ${matches}`);
-        return matches;
+        return leadStageName === selectedStageName;
       });
-      console.log('After stage filter:', filtered.length);
     }
     
     // Apply other specific filters
@@ -647,21 +728,10 @@ const PipelinePage: React.FC = () => {
       return [...past, ...noDate];
     } else if (filterBy === 'followup_upcoming') {
       // Only leads with a today/future follow up date, sorted by soonest first, then leads with no date
-      console.log('🔍 followup_upcoming filter - checking leads:', filtered.length);
-      filtered.forEach(lead => {
-        console.log(`🔍 Lead ${lead.name}: next_followup = ${lead.next_followup}, has followup = ${!!lead.next_followup}`);
-        if (lead.next_followup) {
-          const followupDate = parseISO(lead.next_followup);
-          const isFuture = followupDate >= today;
-          console.log(`🔍 Lead ${lead.name}: followup date = ${followupDate.toISOString()}, today = ${today.toISOString()}, isFuture = ${isFuture}`);
-        }
-      });
-      
       const future = filtered.filter(lead => lead.next_followup && parseISO(lead.next_followup) >= today)
         .sort((a, b) => parseISO(a.next_followup!).getTime() - parseISO(b.next_followup!).getTime());
       const noDate = filtered.filter(lead => !lead.next_followup);
       
-      console.log(`🔍 followup_upcoming results: future = ${future.length}, noDate = ${noDate.length}, total = ${future.length + noDate.length}`);
       return [...future, ...noDate];
     } else if (filterBy === 'commented') {
       // Only leads with at least one comment
@@ -693,7 +763,6 @@ const PipelinePage: React.FC = () => {
   };
 
   const sortedLeads = useMemo(() => {
-    console.log('sortedLeads useMemo - filteredLeads:', filteredLeads.length, 'showSignedAgreements:', showSignedAgreements);
     let leadsToSort = [...filteredLeads];
     if (sortColumn) {
       leadsToSort.sort((a, b) => {
@@ -771,13 +840,6 @@ const PipelinePage: React.FC = () => {
     const pipelineLeads = displayedLeads.filter(lead => !isSignedAgreementLead(lead));
     const totalLeads = pipelineLeads.length;
     
-    console.log('🔍 Summary stats calculation:', {
-      totalLeadsFromDB: displayedLeads.length,
-      signedAgreements: contractsSignedLeads.length,
-      pipelineLeads: pipelineLeads.length,
-      pipelineMode,
-      currentUserFullName
-    });
 
     // Calculate top worker based on pipeline mode
     const roleCounts: Record<string, number> = {};
@@ -1179,11 +1241,8 @@ const PipelinePage: React.FC = () => {
   // Fetch user id and full name on mount
   useEffect(() => {
     (async () => {
-      console.log('🔍 Fetching user data...');
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-        console.log('🔍 Auth user:', user);
-        console.log('🔍 Auth error:', authError);
         
         if (authError) {
           console.error('🔍 Authentication error:', authError);
@@ -1194,33 +1253,44 @@ const PipelinePage: React.FC = () => {
         
         setUserId(user?.id || null);
         
-        // Fetch current user's full name
-        if (user?.email) {
-          console.log('🔍 Fetching user data for email:', user.email);
+        // Fetch current user's data with employee relationship using JOIN
+        if (user?.id) {
           const { data: userData, error: userError } = await supabase
             .from('users')
-            .select('full_name')
-            .eq('email', user.email)
+            .select(`
+              ids,
+              full_name,
+              email,
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name
+              )
+            `)
+            .eq('auth_id', user.id)
             .single();
-          
-          console.log('🔍 User data result:', { userData, userError });
           
           if (userError) {
             console.error('🔍 User data fetch error details:', userError);
-            // Set fallback name if database query fails
             setCurrentUserFullName('Eliran');
             return;
           }
           
           if (userData?.full_name) {
-            console.log('🔍 Setting full name:', userData.full_name);
             setCurrentUserFullName(userData.full_name);
+          } else if (userData?.tenants_employee?.display_name) {
+            setCurrentUserFullName(userData.tenants_employee.display_name);
           } else {
-            console.log('🔍 No user name found in database, using fallback');
             setCurrentUserFullName('Eliran');
           }
+          
+          // Store employee ID for efficient filtering
+          if (userData?.employee_id) {
+            setCurrentUserEmployeeId(userData.employee_id);
+          } else {
+            setCurrentUserEmployeeId(null);
+          }
         } else {
-          console.log('🔍 No user email found, using fallback');
           setCurrentUserFullName('Eliran');
         }
       } catch (error) {
@@ -1296,6 +1366,8 @@ const PipelinePage: React.FC = () => {
           scheduler,
           closer,
           topic,
+          category,
+          category_id,
           stage,
           number_of_applicants_meeting,
           potential_applicants_meeting,
@@ -1421,51 +1493,20 @@ const PipelinePage: React.FC = () => {
         }
       }
 
-      // Fetch category data for legacy leads
-      const categoryIds = legacyLeadsData?.map(lead => lead.category_id).filter(id => id !== null) || [];
-      let categoryMap: Record<number, string> = {};
-      
-      console.log('🔍 Assignment Modal - Raw category IDs from legacy leads:', categoryIds);
-      
-      if (categoryIds.length > 0) {
-        // Query misc_category table for legacy leads
-        const { data: categoryData, error: categoryError } = await supabase
-          .from('misc_category')
-          .select('id, name')
-          .in('id', categoryIds);
-        
-        console.log('🔍 Assignment Modal - Misc category query result:', { data: categoryData, error: categoryError });
-        
-        if (categoryError) {
-          console.error('Error fetching categories from misc_category:', categoryError);
-        } else if (categoryData) {
-          categoryMap = categoryData.reduce((acc, cat) => {
-            acc[cat.id] = cat.name;
-            return acc;
-          }, {} as Record<number, string>);
-          console.log('🔍 Assignment Modal - Category map created from misc_category:', categoryMap);
-        }
-      }
+      // Note: Category handling is now done via getCategoryName function using allCategories state
 
-      // Process new leads
+      // Process new leads with proper category handling
       const processedNewLeads = (newLeadsData || []).map(lead => ({
         ...lead,
+        category: getCategoryName(lead.category_id, lead.category), // Use proper category handling
         meetings: lead.meetings || [],
         lead_type: 'new' as const
       }));
 
-      console.log('🔍 Assignment Modal - New leads sample:', processedNewLeads.slice(0, 2).map(lead => ({
-        id: lead.id,
-        name: lead.name,
-        topic: lead.topic
-      })));
 
       // Process legacy leads
       const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
         const currencyCode = currencyMap[lead.currency_id] || null;
-        const categoryName = lead.category_id ? categoryMap[lead.category_id] || null : null;
-        
-        console.log(`🔍 Processing legacy lead ${lead.id}: category_id=${lead.category_id}, categoryMap[${lead.category_id}]=${categoryMap[lead.category_id]}, final_category=${categoryName}`);
         
         return {
           id: `legacy_${lead.id}`,
@@ -1474,7 +1515,7 @@ const PipelinePage: React.FC = () => {
           created_at: lead.cdate || new Date().toISOString(),
           expert: lead.closer_id,
           topic: lead.topic,
-          category: categoryName,
+          category: getCategoryName(lead.category_id), // Use proper category handling
           handler_notes: [],
           expert_notes: [],
           meetings: [],
@@ -1506,16 +1547,7 @@ const PipelinePage: React.FC = () => {
         };
       });
 
-      console.log('🔍 Assignment Modal - Legacy leads sample:', processedLegacyLeads.slice(0, 2).map(lead => ({
-        id: lead.id,
-        name: lead.name,
-        topic: lead.topic,
-        category: lead.category,
-        category_id: lead.category_id
-      })));
       
-      console.log('🔍 Assignment Modal - Category map:', categoryMap);
-      console.log('🔍 Assignment Modal - Category IDs found:', categoryIds);
 
       // Combine and sort all leads
       const allAssignmentLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => 
@@ -1604,22 +1636,11 @@ const PipelinePage: React.FC = () => {
     setAssigningLead(lead.id.toString());
     try {
       if (lead.lead_type === 'legacy') {
-        // For legacy leads, get employee ID from tenants_employee table
-        const { data: employeeData, error: employeeError } = await supabase
-          .from('tenants_employee')
-          .select('id')
-          .eq('display_name', currentUserFullName)
-          .single();
-
-        if (employeeError || !employeeData) {
-          console.error('Error finding employee record:', employeeError);
-          throw new Error('Could not find employee record');
-        }
-
+        // For legacy leads, use the employee display_name directly (no need for additional query)
         const numericId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
         
         if (pipelineMode === 'closer') {
-          // Assign as closer
+          // Assign as closer using display_name
           const { error } = await supabase
             .from('leads_lead')
             .update({ closer_id: currentUserFullName })
@@ -1627,7 +1648,7 @@ const PipelinePage: React.FC = () => {
           
           if (error) throw error;
         } else {
-          // Assign as scheduler
+          // Assign as scheduler using display_name
           const { error } = await supabase
             .from('leads_lead')
             .update({ meeting_scheduler_id: currentUserFullName })
@@ -1868,7 +1889,6 @@ const PipelinePage: React.FC = () => {
         <div 
           className="bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105 cursor-pointer"
           onClick={() => {
-            console.log('Contracts Signed box clicked! Current state:', showSignedAgreements);
             setShowSignedAgreements(!showSignedAgreements);
           }}
         >
@@ -2005,7 +2025,7 @@ const PipelinePage: React.FC = () => {
                     {/* Category */}
                     <div className="flex justify-between items-center py-1">
                       <span className="text-sm font-semibold text-gray-500">Category</span>
-                      <span className="text-sm font-bold text-gray-800 ml-2">{lead.topic ?? 'N/A'}</span>
+                      <span className="text-sm font-bold text-gray-800 ml-2">{lead.category || 'N/A'}</span>
                     </div>
                     {/* Offer (Balance) */}
                     <div className="flex justify-between items-center py-1">
@@ -2278,7 +2298,7 @@ const PipelinePage: React.FC = () => {
               <div className="flex items-center gap-3">
                 <ChatBubbleLeftRightIcon className="w-6 h-6 text-base-content/70" />
                 <span className="font-medium">Category:</span>
-                <span>{selectedLead.topic ?? <span className='text-base-content/40'>N/A</span>}</span>
+                <span>{selectedLead.category || <span className='text-base-content/40'>N/A</span>}</span>
               </div>
               {/* Documents Button */}
               <div>

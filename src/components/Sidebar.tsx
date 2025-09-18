@@ -105,34 +105,57 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>('User');
   const [userDepartment, setUserDepartment] = React.useState<string>('');
   
-  // Fetch user role and department from database
+  // Helper function to get role display name
+  const getRoleDisplayName = (role: string): string => {
+    const roleMap: { [key: string]: string } = {
+      'pm': 'Project Manager',
+      'se': 'Software Engineer',
+      'dv': 'Developer',
+      'dm': 'Department Manager',
+      'b': 'Business',
+      'f': 'Finance'
+    };
+    return roleMap[role?.toLowerCase()] || role || 'User';
+  };
+  
+  // Fetch user role and department from database using new employee relationship
   React.useEffect(() => {
     const fetchUserInfo = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        if (user && user.email) {
-          // Fetch user role from users table
+        if (user) {
+          // Get current user's data with employee relationship
           const { data: userData, error: userError } = await supabase
             .from('users')
-            .select('role, full_name')
-            .eq('email', user.email)
+            .select(`
+              ids,
+              full_name,
+              email,
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name,
+                bonuses_role,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            `)
+            .eq('auth_id', user.id)
             .single();
-          
-          if (!userError && userData && userData.role) {
-            setUserRoleFromDB(userData.role);
-          }
-          
-          // Fetch department from employees table using full_name
-          if (userData && userData.full_name) {
-            const { data: employeeData, error: employeeError } = await supabase
-              .from('employees')
-              .select('department')
-              .eq('display_name', userData.full_name)
-              .single();
+
+          if (!userError && userData && userData.tenants_employee) {
+            const empData = userData.tenants_employee;
             
-            if (!employeeError && employeeData && employeeData.department) {
-              setUserDepartment(employeeData.department);
-            }
+            // Set role with proper mapping
+            const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
+            setUserRoleFromDB(roleDisplay);
+            
+            // Set department
+            const deptName = empData.tenant_departement?.name || 'General';
+            setUserDepartment(deptName);
           }
         }
       } catch (error) {

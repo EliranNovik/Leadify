@@ -459,61 +459,95 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           }
         }
 
-        // Fetch current user's employee data
+        // Fetch current user's employee data using the new users-employee relationship
         try {
-          // First get all employees for the modal
-          const { data: employeesData, error: employeesError } = await supabase
-            .from('tenants_employee')
+          // Get current user's data with employee relationship
+          const { data: userData, error: userError } = await supabase
+            .from('users')
             .select(`
-              id,
-              display_name,
-              bonuses_role,
-              department_id,
-              user_id,
-              photo_url,
-              photo,
-              phone,
-              mobile,
-              phone_ext
-            `);
+              ids,
+              full_name,
+              email,
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name,
+                bonuses_role,
+                department_id,
+                user_id,
+                photo_url,
+                photo,
+                phone,
+                mobile,
+                phone_ext,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            `)
+            .eq('auth_id', user.id)
+            .single();
 
-          if (!employeesError && employeesData) {
-            setAllEmployees(employeesData);
+          if (!userError && userData && userData.tenants_employee) {
+            const empData = userData.tenants_employee;
+            
+            setCurrentUserEmployee({
+              ...empData,
+              department: empData.tenant_departement?.name || 'General',
+              email: userData.email,
+              is_active: true,
+              performance_metrics: {
+                total_meetings: 0,
+                completed_meetings: 0,
+                total_revenue: 0,
+                average_rating: 0,
+                last_activity: 'No activity'
+              }
+            });
 
-            // Find current user's employee record by email match
-            const currentEmployee = employeesData.find(emp => 
-              emp.display_name && user.email && 
-              emp.display_name.toLowerCase().includes(user.email.split('@')[0].toLowerCase())
-            );
+            // Also fetch all employees for the modal (simplified query to avoid JOIN issues)
+            const { data: allEmployeesData, error: allEmployeesError } = await supabase
+              .from('tenants_employee')
+              .select(`
+                id,
+                display_name,
+                bonuses_role,
+                department_id,
+                user_id,
+                photo_url,
+                photo,
+                phone,
+                mobile,
+                phone_ext
+              `);
 
-            if (currentEmployee) {
-              // Get department name
-              const { data: departmentData } = await supabase
-                .from('tenant_departement')
-                .select('name')
-                .eq('id', currentEmployee.department_id)
-                .single();
+            if (!allEmployeesError && allEmployeesData) {
+              // Fetch department and user data separately for better reliability
+              const departmentIds = [...new Set(allEmployeesData.map(emp => emp.department_id).filter(Boolean))];
+              const userIds = [...new Set(allEmployeesData.map(emp => emp.user_id).filter(Boolean))];
+              
+              const [departmentData, usersData] = await Promise.all([
+                departmentIds.length > 0 ? supabase
+                  .from('tenant_departement')
+                  .select('id, name')
+                  .in('id', departmentIds) : Promise.resolve({ data: [] }),
+                userIds.length > 0 ? supabase
+                  .from('users')
+                  .select('ids, email')
+                  .in('ids', userIds) : Promise.resolve({ data: [] })
+              ]);
 
-              // Get auth user data
-              const { data: authUserData } = await supabase
-                .from('auth_user')
-                .select('email, is_active')
-                .eq('id', currentEmployee.user_id)
-                .single();
+              // Create lookup maps
+              const deptMap = new Map((departmentData.data || []).map(dept => [dept.id, dept.name]));
+              const userMap = new Map((usersData.data || []).map(user => [user.ids, user.email]));
 
-              setCurrentUserEmployee({
-                ...currentEmployee,
-                department: departmentData?.name || 'General',
-                email: authUserData?.email || user.email,
-                is_active: authUserData?.is_active || true,
-                performance_metrics: {
-                  total_meetings: 0,
-                  completed_meetings: 0,
-                  total_revenue: 0,
-                  average_rating: 0,
-                  last_activity: 'No activity'
-                }
-              });
+              const processedEmployees = allEmployeesData.map(emp => ({
+                ...emp,
+                department: deptMap.get(emp.department_id) || 'General',
+                email: userMap.get(emp.user_id) || ''
+              }));
+              setAllEmployees(processedEmployees);
             }
           }
         } catch (error) {

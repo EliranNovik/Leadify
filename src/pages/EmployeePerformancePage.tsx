@@ -328,7 +328,7 @@ const EmployeePerformancePage: React.FC = () => {
         );
 
         // Filter to only active employees and exclude specific employees
-        const excludedEmployees = ['FINANCE', 'INTERNS', 'NO SCHEDULER', 'Mango Test'];
+        const excludedEmployees = ['FINANCE', 'INTERNS', 'NO SCHEDULER', 'Mango Test', 'pink', 'Interns'];
         const filteredActiveEmployees = activeEmployees.filter(emp => 
           emp.is_active && !excludedEmployees.includes(emp.display_name)
         );
@@ -973,7 +973,40 @@ const EmployeePerformancePage: React.FC = () => {
       {/* Filters */}
       <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
         <div className="card-body p-3 sm:p-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3 sm:gap-4">
+            {/* Search Employee - First */}
+            <div className="form-control xl:col-span-2">
+              <label className="label">
+                <span className="label-text font-semibold text-xs sm:text-sm">Search Employee</span>
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  placeholder="Search by name or email..."
+                  className="input input-bordered input-sm sm:input-md w-full pr-10"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                <div className="absolute inset-y-0 right-0 flex items-center pr-3 gap-2">
+                  {searchQuery && (
+                    <button
+                      onClick={() => setSearchQuery('')}
+                      className="btn btn-ghost btn-xs"
+                      title="Clear search"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                  <svg className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                </div>
+              </div>
+            </div>
+
+            {/* Department/Subdepartment */}
             <div className="form-control">
               <label className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">
@@ -1008,6 +1041,7 @@ const EmployeePerformancePage: React.FC = () => {
               </select>
             </div>
 
+            {/* Role */}
             <div className="form-control">
               <label className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">Role</span>
@@ -1024,37 +1058,7 @@ const EmployeePerformancePage: React.FC = () => {
               </select>
             </div>
 
-            <div className="form-control sm:col-span-2 lg:col-span-1">
-              <label className="label">
-                <span className="label-text font-semibold text-xs sm:text-sm">Search Employee</span>
-              </label>
-              <div className="relative">
-                <input
-                  type="text"
-                  placeholder="Search by name or email..."
-                  className="input input-bordered input-sm sm:input-md w-full pr-10"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                <div className="absolute inset-y-0 right-0 flex items-center pr-3 gap-2">
-                  {searchQuery && (
-                    <button
-                      onClick={() => setSearchQuery('')}
-                      className="btn btn-ghost btn-xs"
-                      title="Clear search"
-                    >
-                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                    </button>
-                  )}
-                  <svg className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
+            {/* Date From */}
             <div className="form-control">
               <label className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">Date From</span>
@@ -1067,6 +1071,7 @@ const EmployeePerformancePage: React.FC = () => {
               />
             </div>
 
+            {/* Date To */}
             <div className="form-control">
               <label className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">Date To</span>
@@ -1079,15 +1084,16 @@ const EmployeePerformancePage: React.FC = () => {
               />
             </div>
 
-            <div className="form-control sm:col-span-2 lg:col-span-1">
+            {/* Monthly Bonus Pool with Clear All */}
+            <div className="form-control">
               <label className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">Monthly Bonus Pool</span>
               </label>
-              <div className="flex gap-2">
-                <div className="relative flex-1">
+              <div className="flex flex-col gap-2">
+                <div className="relative">
                   <input
                     type="number"
-                    placeholder="Enter total bonus pool amount..."
+                    placeholder="Enter amount..."
                     className="input input-bordered input-sm sm:input-md w-full pr-8 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                     value={bonusAmount}
                     onChange={(e) => setBonusAmount(e.target.value)}
@@ -1099,7 +1105,7 @@ const EmployeePerformancePage: React.FC = () => {
                   </div>
                 </div>
                 <button
-                  className="btn btn-outline btn-xs sm:btn-sm hidden sm:flex"
+                  className="btn btn-outline btn-xs sm:btn-sm w-full"
                   onClick={() => {
                     setSelectedDepartment('all');
                     setSelectedSubdepartment('all');
@@ -1117,25 +1123,6 @@ const EmployeePerformancePage: React.FC = () => {
               <div className="label">
                 <span className="label-text-alt text-gray-500 text-xs">Total bonus amount for all employees</span>
               </div>
-            </div>
-
-            {/* Mobile Clear All Button */}
-            <div className="form-control flex items-end sm:hidden">
-              <button
-                className="btn btn-outline btn-sm w-full"
-                onClick={() => {
-                  setSelectedDepartment('all');
-                  setSelectedSubdepartment('all');
-                  setSelectedRole('all');
-                  setSearchQuery('');
-                  setDateFrom('');
-                  setDateTo('');
-                  setBonusAmount('');
-                }}
-                title="Clear all filters"
-              >
-                Clear All
-              </button>
             </div>
           </div>
         </div>
