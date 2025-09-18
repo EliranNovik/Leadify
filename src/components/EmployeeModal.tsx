@@ -9,6 +9,7 @@ interface Employee {
   department: string;
   is_active: boolean;
   photo_url?: string;
+  photo?: string; // Background photo from tenants_employee
   phone?: string;
   mobile?: string;
   phone_ext?: string;
@@ -70,7 +71,13 @@ const getRoleDisplayName = (roleCode: string): string => {
     'Z': 'Manager',
     'ma': 'Marketing',
     'p': 'Partner',
-    'helper-closer': 'Helper Closer'
+    'helper-closer': 'Helper Closer',
+    'pm': 'Project Manager',
+    'se': 'Secretary',
+    'dv': 'Developer',
+    'dm': 'Department Manager',
+    'b': 'Book Keeper',
+    'f': 'Finance'
   };
   
   return roleMap[roleCode] || roleCode || 'No role';
@@ -97,6 +104,17 @@ const formatDate = (dateString: string) => {
     });
   } catch {
     return 'Invalid date';
+  }
+};
+
+// Get currency symbol
+const getCurrencySymbol = (currency?: string) => {
+  switch (currency) {
+    case 'USD': return '$';
+    case 'EUR': return '€';
+    case 'GBP': return '£';
+    case 'NIS':
+    default: return '₪';
   }
 };
 
@@ -185,6 +203,150 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const [selectedRole, setSelectedRole] = useState<string>('');
   const [roleLeads, setRoleLeads] = useState<any[]>([]);
   const [loadingRoleLeads, setLoadingRoleLeads] = useState(false);
+  const [fromDate, setFromDate] = useState<string>('');
+  const [toDate, setToDate] = useState<string>('');
+  const [activeTab, setActiveTab] = useState<'overview' | 'availability' | 'tasks' | 'clients' | 'feedback'>('overview');
+  const [unavailableTimes, setUnavailableTimes] = useState<any[]>([]);
+  const [unavailableRanges, setUnavailableRanges] = useState<any[]>([]);
+  const [loadingAvailability, setLoadingAvailability] = useState(false);
+  const [currentWeekMeetings, setCurrentWeekMeetings] = useState<any[]>([]);
+
+  // Function to fetch employee availability data
+  const fetchAvailabilityData = React.useCallback(async () => {
+    if (!employee) return;
+    
+    setLoadingAvailability(true);
+    try {
+      const { supabase } = await import('../lib/supabase');
+      
+      // Calculate current week date range
+      const today = new Date();
+      const currentDay = today.getDay(); // 0 = Sunday, 1 = Monday, etc.
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - currentDay); // Go to Sunday
+      startOfWeek.setHours(0, 0, 0, 0);
+      
+      const endOfWeek = new Date(startOfWeek);
+      endOfWeek.setDate(startOfWeek.getDate() + 6); // Go to Saturday
+      endOfWeek.setHours(23, 59, 59, 999);
+
+      const startOfWeekStr = startOfWeek.toISOString().split('T')[0];
+      const endOfWeekStr = endOfWeek.toISOString().split('T')[0];
+
+      // Run all queries in parallel with timeout for better performance
+      const queryTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Query timeout')), 5000)
+      );
+
+      const [availabilityResult, meetingsResult]: any = await Promise.race([
+        Promise.all([
+          // Fetch unavailable times and ranges
+          supabase
+            .from('tenants_employee')
+            .select('unavailable_times, unavailable_ranges')
+            .eq('display_name', employee.display_name)
+            .single(),
+          
+        // Fetch current week meetings with client data
+        supabase
+          .from('meetings')
+          .select(`
+            id,
+            meeting_date,
+            meeting_time,
+            meeting_manager,
+            helper,
+            meeting_location,
+            status,
+            lead:leads!client_id(
+              id,
+              name,
+              lead_number,
+              stage,
+              language,
+              category,
+              balance,
+              balance_currency
+            ),
+            legacy_lead:leads_lead!legacy_lead_id(
+              id,
+              name,
+              lead_number,
+              stage,
+              category,
+              total,
+              meeting_total_currency_id
+            )
+          `)
+          .gte('meeting_date', startOfWeekStr)
+          .lte('meeting_date', endOfWeekStr)
+          .or(`meeting_manager.eq.${employee.display_name},helper.eq.${employee.display_name}`)
+          .limit(15)
+        ]),
+        queryTimeout
+      ]);
+
+      // Process availability data
+      if (availabilityResult.error) {
+        console.error('Error fetching availability data:', availabilityResult.error);
+        setUnavailableTimes([]);
+        setUnavailableRanges([]);
+      } else {
+        setUnavailableTimes(availabilityResult.data?.unavailable_times || []);
+        setUnavailableRanges(availabilityResult.data?.unavailable_ranges || []);
+      }
+
+      // Process meetings data with client information
+      if (meetingsResult.error) {
+        console.error('Error fetching meetings data:', meetingsResult.error);
+        setCurrentWeekMeetings([]);
+      } else {
+        const processedMeetings = (meetingsResult.data || [])
+          .filter((meeting: any) => meeting.meeting_date) // Only include meetings with valid dates
+          .map((meeting: any) => ({
+            id: meeting.id,
+            meeting_date: meeting.meeting_date,
+            meeting_time: meeting.meeting_time || '09:00',
+            meeting_manager: meeting.meeting_manager,
+            helper: meeting.helper,
+            meeting_location: meeting.meeting_location || 'Teams',
+            status: meeting.status || 'Scheduled',
+            client_name: meeting.lead?.name || meeting.legacy_lead?.name || 'Unknown Client',
+            lead_number: meeting.lead?.lead_number || meeting.legacy_lead?.lead_number || 'N/A',
+            stage: meeting.lead?.stage || meeting.legacy_lead?.stage || 'N/A',
+            language: meeting.lead?.language || 'N/A',
+            category: meeting.lead?.category || meeting.legacy_lead?.category || 'N/A',
+            balance: meeting.lead?.balance || meeting.legacy_lead?.total || 0,
+            balance_currency: meeting.lead?.balance_currency || 
+              (meeting.legacy_lead?.meeting_total_currency_id === 1 ? 'NIS' : 
+               meeting.legacy_lead?.meeting_total_currency_id === 2 ? 'USD' : 
+               meeting.legacy_lead?.meeting_total_currency_id === 3 ? 'EUR' : 'NIS'),
+            role_in_meeting: meeting.meeting_manager === employee.display_name ? 'Manager' : 'Helper'
+          }))
+          .sort((a: any, b: any) => {
+            const dateComparison = a.meeting_date.localeCompare(b.meeting_date);
+            if (dateComparison !== 0) return dateComparison;
+            return a.meeting_time.localeCompare(b.meeting_time);
+          });
+        
+        setCurrentWeekMeetings(processedMeetings);
+      }
+    } catch (error) {
+      console.error('Error fetching availability data:', error);
+      setUnavailableTimes([]);
+      setUnavailableRanges([]);
+      setCurrentWeekMeetings([]);
+    } finally {
+      setLoadingAvailability(false);
+    }
+  }, [employee]);
+
+  // Fetch availability data when availability tab is selected
+  React.useEffect(() => {
+    if (activeTab === 'availability' && employee) {
+      fetchAvailabilityData();
+    }
+  }, [activeTab, employee, fetchAvailabilityData]);
 
   if (!employee) return null;
 
@@ -209,7 +371,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       
       let query = supabase.from('leads_lead').select(`
         lead_number,
-        client_name,
+        name,
         category,
         stage,
         language,
@@ -276,6 +438,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     setSelectedRole('');
     setRoleLeads([]);
   };
+
 
   // Helper function to format currency
   const formatCurrency = (amount: number) => {
@@ -580,12 +743,111 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
               {/* Front Page - Role Performance */}
               <div className="page-front">
         {/* Header */}
-        <div className="mb-8">
+        <div className="mb-8 relative">
+          {/* Background Image with Overlay */}
+          {employee.photo && (
+            <div 
+              className="absolute inset-0 rounded-lg bg-cover bg-center bg-no-repeat"
+              style={{ backgroundImage: `url(${employee.photo})` }}
+            >
+              <div className="absolute inset-0 bg-gradient-to-r from-black/60 via-black/40 to-black/60 rounded-lg"></div>
+            </div>
+          )}
+          <div className={`relative z-10 p-3 sm:p-6 rounded-lg ${employee.photo ? 'text-white' : ''}`}>
+          {/* Mobile Layout */}
+          <div className="sm:hidden">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                <div className="avatar flex-shrink-0">
+                  {employee.photo_url ? (
+                    <div className="rounded-full w-16">
+                      <img 
+                        src={employee.photo_url} 
+                        alt={employee.display_name}
+                        className="w-full h-full object-cover rounded-full"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.style.display = 'none';
+                          const parent = target.parentElement;
+                          if (parent) {
+                            parent.innerHTML = `
+                              <div class="bg-primary text-primary-content rounded-full w-16 h-16 flex items-center justify-center">
+                                <span class="text-lg font-bold">${getInitials(employee.display_name)}</span>
+                              </div>
+                            `;
+                          }
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="placeholder">
+                      <div className="bg-primary text-primary-content rounded-full w-16 h-16 flex items-center justify-center">
+                        <span className="text-lg font-bold">
+                          {getInitials(employee.display_name)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h2 className={`text-xl font-bold mb-1 truncate ${employee.photo ? 'text-white drop-shadow-lg' : ''}`}>{employee.display_name}</h2>
+                  <p className={`text-sm mb-2 truncate ${employee.photo ? 'text-white/90 drop-shadow-md' : 'text-gray-600'}`}>{employee.email}</p>
+                  
+                  {/* Mobile Contact Info - Compact */}
+                  {(employee.phone || employee.mobile || employee.phone_ext) && (
+                    <div className="flex items-center gap-3 text-xs">
+                      {employee.phone && (
+                        <div className={`flex items-center gap-1 ${employee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                          <PhoneIcon className={`w-3 h-3 ${employee.photo ? 'text-white/80' : 'text-gray-500'}`} />
+                          <span>{employee.phone}</span>
+                        </div>
+                      )}
+                      {employee.mobile && (
+                        <div className={`flex items-center gap-1 ${employee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                          <DevicePhoneMobileIcon className={`w-3 h-3 ${employee.photo ? 'text-white/80' : 'text-gray-500'}`} />
+                          <span>{employee.mobile}</span>
+                        </div>
+                      )}
+                      {employee.phone_ext && (
+                        <div className={`flex items-center gap-1 ${employee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                          <span className={`text-xs ${employee.photo ? 'text-white/70' : 'text-gray-500'}`}>Ext:</span>
+                          <span>{employee.phone_ext}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+              <button 
+                className={`btn btn-sm btn-circle ml-2 flex-shrink-0 ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
+                onClick={onClose}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Mobile Badges */}
+            <div className="flex items-center gap-2 justify-center">
+              <div className="flex flex-col items-center">
+                <span className={`text-xs uppercase tracking-wide mb-1 ${employee.photo ? 'text-white/80 drop-shadow-md' : 'text-gray-500'}`}>Role</span>
+                <span className="badge badge-primary badge-md px-3 py-2 w-fit whitespace-nowrap bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0 text-sm leading-tight shadow-lg">
+                  {getRoleDisplayName(employee.bonuses_role)}
+                </span>
+              </div>
+              <div className="flex flex-col items-center">
+                <span className={`text-xs uppercase tracking-wide mb-1 ${employee.photo ? 'text-white/80 drop-shadow-md' : 'text-gray-500'}`}>Department</span>
+                <span className={`badge badge-md px-3 py-2 w-fit whitespace-nowrap text-sm leading-tight shadow-lg ${employee.photo ? 'bg-white/20 text-white border-white/30 backdrop-blur-sm' : 'badge-outline'}`}>{employee.department}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Desktop Layout */}
+          <div className="hidden sm:block">
           <div className="flex items-start justify-between mb-6">
             <div className="flex items-start gap-6 flex-1">
               <div className="avatar">
                 {employee.photo_url ? (
-                  <div className="rounded-full w-32">
+                  <div className="rounded-full w-32 sm:w-40">
                     <img 
                       src={employee.photo_url} 
                       alt={employee.display_name}
@@ -596,8 +858,8 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                         const parent = target.parentElement;
                         if (parent) {
                           parent.innerHTML = `
-                            <div class="bg-primary text-primary-content rounded-full w-32 h-32 flex items-center justify-center">
-                              <span class="text-3xl font-bold">${getInitials(employee.display_name)}</span>
+                            <div class="bg-primary text-primary-content rounded-full w-32 sm:w-40 h-32 sm:h-40 flex items-center justify-center">
+                              <span class="text-3xl sm:text-4xl font-bold">${getInitials(employee.display_name)}</span>
                             </div>
                           `;
                         }
@@ -606,8 +868,8 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                   </div>
                 ) : (
                   <div className="placeholder">
-                    <div className="bg-primary text-primary-content rounded-full w-32 h-32 flex items-center justify-center">
-                      <span className="text-3xl font-bold">
+                    <div className="bg-primary text-primary-content rounded-full w-32 sm:w-40 h-32 sm:h-40 flex items-center justify-center">
+                      <span className="text-3xl sm:text-4xl font-bold">
                         {getInitials(employee.display_name)}
                       </span>
                     </div>
@@ -618,28 +880,28 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
               <div className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Left Column - Name, Email & Contact */}
                 <div className="lg:col-span-1">
-                  <h2 className="text-3xl font-bold mb-2">{employee.display_name}</h2>
-                  <p className="text-gray-600 text-lg mb-3">{employee.email}</p>
+                  <h2 className={`text-3xl font-bold mb-2 ${employee.photo ? 'text-white drop-shadow-lg' : ''}`}>{employee.display_name}</h2>
+                  <p className={`text-lg mb-3 ${employee.photo ? 'text-white/90 drop-shadow-md' : 'text-gray-600'}`}>{employee.email}</p>
                   
-                  {/* Contact Information */}
+                  {/* Desktop Contact Information - Horizontal */}
                   {(employee.phone || employee.mobile || employee.phone_ext) && (
-                    <div className="space-y-2">
+                    <div className="flex items-center gap-6">
                       {employee.phone && (
-                        <div className="flex items-center gap-2 text-gray-700">
-                          <PhoneIcon className="w-5 h-5 text-gray-500" />
+                        <div className={`flex items-center gap-2 ${employee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                          <PhoneIcon className={`w-5 h-5 ${employee.photo ? 'text-white/80' : 'text-gray-500'}`} />
                           <span className="text-base">{employee.phone}</span>
                         </div>
                       )}
                       {employee.mobile && (
-                        <div className="flex items-center gap-2 text-gray-700">
-                          <DevicePhoneMobileIcon className="w-5 h-5 text-gray-500" />
+                        <div className={`flex items-center gap-2 ${employee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                          <DevicePhoneMobileIcon className={`w-5 h-5 ${employee.photo ? 'text-white/80' : 'text-gray-500'}`} />
                           <span className="text-base">{employee.mobile}</span>
                         </div>
                       )}
                       {employee.phone_ext && (
-                        <div className="flex items-center gap-2 text-gray-700">
-                          <PhoneIcon className="w-5 h-5 text-gray-500" />
-                          <span className="text-sm text-gray-500">Extension:</span>
+                        <div className={`flex items-center gap-2 ${employee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                          <PhoneIcon className={`w-5 h-5 ${employee.photo ? 'text-white/80' : 'text-gray-500'}`} />
+                          <span className={`text-sm ${employee.photo ? 'text-white/70' : 'text-gray-500'}`}>Ext:</span>
                           <span className="text-base">{employee.phone_ext}</span>
                         </div>
                       )}
@@ -649,16 +911,16 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                 
                 {/* Right Column - Role & Department */}
                 <div className="lg:col-span-1">
-                  <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2 sm:gap-6">
                     <div className="flex flex-col">
-                      <span className="text-xs text-gray-500 uppercase tracking-wide mb-1">Role</span>
-                      <span className="badge badge-primary badge-xl w-fit whitespace-nowrap overflow-hidden text-ellipsis bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0">
+                      <span className={`text-xs sm:text-sm uppercase tracking-wide mb-1 sm:mb-2 ${employee.photo ? 'text-white/80 drop-shadow-md' : 'text-gray-500'}`}>Role</span>
+                      <span className="badge badge-primary badge-md sm:badge-xl px-3 py-2 sm:px-4 sm:py-3 w-fit whitespace-nowrap bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0 text-sm sm:text-lg leading-tight shadow-lg">
                         {getRoleDisplayName(employee.bonuses_role)}
                       </span>
                     </div>
                     <div className="flex flex-col">
-                      <span className="text-xs text-gray-500 uppercase tracking-wide mb-1">Department</span>
-                      <span className="badge badge-outline badge-xl w-fit">{employee.department}</span>
+                      <span className={`text-xs sm:text-sm uppercase tracking-wide mb-1 sm:mb-2 ${employee.photo ? 'text-white/80 drop-shadow-md' : 'text-gray-500'}`}>Department</span>
+                      <span className={`badge badge-md sm:badge-xl px-3 py-2 sm:px-4 sm:py-3 w-fit whitespace-nowrap text-sm sm:text-lg leading-tight shadow-lg ${employee.photo ? 'bg-white/20 text-white border-white/30 backdrop-blur-sm' : 'badge-outline'}`}>{employee.department}</span>
                     </div>
                   </div>
                 </div>
@@ -666,14 +928,175 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             </div>
             
             <button 
-              className="btn btn-sm btn-circle btn-ghost ml-4"
+              className={`btn btn-sm btn-circle ml-4 ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
               onClick={onClose}
             >
               <XMarkIcon className="w-5 h-5" />
             </button>
           </div>
+          </div>
+          </div>
         </div>
 
+        {/* Date Filters */}
+        <div className="mb-6">
+          {/* Mobile Layout */}
+          <div className="sm:hidden">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <label className="text-sm font-medium text-base-content/70">From:</label>
+                <input
+                  type="date"
+                  className="input input-bordered input-sm w-32"
+                  value={fromDate}
+                  onChange={(e) => setFromDate(e.target.value)}
+                  placeholder="Start date"
+                />
+              </div>
+              <div className="flex items-center gap-1">
+                <label className="text-sm font-medium text-base-content/70">To:</label>
+                <input
+                  type="date"
+                  className="input input-bordered input-sm w-32"
+                  value={toDate}
+                  onChange={(e) => setToDate(e.target.value)}
+                  placeholder="End date"
+                />
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  // TODO: Implement date filtering logic
+                  console.log('Filtering data from', fromDate, 'to', toDate);
+                }}
+                disabled={!fromDate || !toDate}
+              >
+                Save
+              </button>
+              {(fromDate || toDate) && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setFromDate('');
+                    setToDate('');
+                    // TODO: Reset to show all data
+                    console.log('Clearing date filters');
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+          
+          {/* Desktop Layout */}
+          <div className="hidden sm:flex items-center gap-3 flex-wrap">
+            <h3 className="text-lg font-semibold text-base-content">Performance Period</h3>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-base-content/70">From:</label>
+              <input
+                type="date"
+                className="input input-bordered input-sm w-auto"
+                value={fromDate}
+                onChange={(e) => setFromDate(e.target.value)}
+                placeholder="Start date"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-base-content/70">To:</label>
+              <input
+                type="date"
+                className="input input-bordered input-sm w-auto"
+                value={toDate}
+                onChange={(e) => setToDate(e.target.value)}
+                placeholder="End date"
+              />
+            </div>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                // TODO: Implement date filtering logic
+                console.log('Filtering data from', fromDate, 'to', toDate);
+              }}
+              disabled={!fromDate || !toDate}
+            >
+              Apply Filter
+            </button>
+            {(fromDate || toDate) && (
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  setFromDate('');
+                  setToDate('');
+                  // TODO: Reset to show all data
+                  console.log('Clearing date filters');
+                }}
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Tab Navigation */}
+        <div className="mb-6">
+          <div className="flex border-b border-base-300 overflow-x-auto">
+            <button
+              className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
+                activeTab === 'overview'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setActiveTab('overview')}
+            >
+              Overview
+            </button>
+            <button
+              className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
+                activeTab === 'availability'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setActiveTab('availability')}
+            >
+              Availability
+            </button>
+            <button
+              className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
+                activeTab === 'tasks'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setActiveTab('tasks')}
+            >
+              Tasks & Projects
+            </button>
+            <button
+              className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
+                activeTab === 'clients'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setActiveTab('clients')}
+            >
+              Client Cases
+            </button>
+            <button
+              className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
+                activeTab === 'feedback'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setActiveTab('feedback')}
+            >
+              Feedback & Reviews
+            </button>
+          </div>
+        </div>
+
+        {/* Tab Content */}
+        {activeTab === 'overview' && (
+          <>
         {/* Role-Specific Stats Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {getRoleSpecificStats()}
@@ -982,6 +1405,372 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             </div>
           </div>
         </div>
+          </>
+        )}
+
+        {/* Availability Tab */}
+        {activeTab === 'availability' && (
+          <div className="space-y-6">
+            {loadingAvailability ? (
+              <div className="flex justify-center items-center py-8">
+                <span className="loading loading-spinner loading-lg"></span>
+                <span className="ml-3">Loading availability data...</span>
+              </div>
+            ) : (
+              <>
+                {/* Current Week Meetings */}
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body">
+                    <h3 className="card-title">Current Week Meetings</h3>
+                    <p className="text-sm text-gray-600 mb-4">Client meetings scheduled for {employee.display_name} this week</p>
+                    
+                    {currentWeekMeetings.length === 0 ? (
+                      <div className="text-center py-8">
+                        <p className="text-gray-500">No meetings scheduled for this week</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="table table-zebra w-full">
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th>Time</th>
+                              <th>Client</th>
+                              <th>Role</th>
+                              <th>Location</th>
+                              <th>Language</th>
+                              <th>Category</th>
+                              <th>Balance</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {currentWeekMeetings.map((meeting, index) => (
+                              <tr key={meeting.id || index}>
+                                <td className="font-medium">
+                                  {new Date(meeting.meeting_date).toLocaleDateString('en-US', {
+                                    weekday: 'short',
+                                    month: 'short',
+                                    day: 'numeric'
+                                  })}
+                                </td>
+                                <td className="text-sm">
+                                  {meeting.meeting_time ? meeting.meeting_time.slice(0, 5) : 'No time'}
+                                </td>
+                                <td className="text-sm">
+                                  <div className="font-medium">
+                                    {meeting.lead_number} - {meeting.client_name}
+                                  </div>
+                                </td>
+                                <td className="text-sm text-black">
+                                  {meeting.role_in_meeting}
+                                </td>
+                                <td className="text-sm">
+                                  {meeting.meeting_location}
+                                </td>
+                                <td className="text-sm text-black">
+                                  {meeting.language && meeting.language !== 'N/A' ? meeting.language : 'N/A'}
+                                </td>
+                                <td className="text-sm text-black">
+                                  {meeting.category && meeting.category !== 'N/A' ? meeting.category : 'N/A'}
+                                </td>
+                                <td className="text-sm font-semibold text-black">
+                                  {meeting.balance && meeting.balance > 0 
+                                    ? `${getCurrencySymbol(meeting.balance_currency)}${meeting.balance.toLocaleString()}`
+                                    : '₪0'
+                                  }
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Unavailable Times */}
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body">
+                    <h3 className="card-title">Unavailable Times</h3>
+                    <p className="text-sm text-gray-600 mb-4">Specific time blocks when {employee.display_name} is unavailable</p>
+                    
+                    {unavailableTimes.length === 0 ? (
+                      <div className="text-center py-8">
+                        <p className="text-gray-500">No unavailability records found</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="table table-zebra w-full">
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th>Time</th>
+                              <th>Reason</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {unavailableTimes
+                              .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                              .map((time, index) => (
+                                <tr key={index}>
+                                  <td className="font-medium">
+                                    {new Date(time.date).toLocaleDateString('en-US', {
+                                      weekday: 'short',
+                                      year: 'numeric',
+                                      month: 'short',
+                                      day: 'numeric'
+                                    })}
+                                  </td>
+                                  <td className="text-sm">
+                                    {time.startTime} - {time.endTime}
+                                  </td>
+                                  <td className="text-sm">
+                                    {time.reason || 'No reason provided'}
+                                  </td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Unavailable Ranges */}
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body">
+                    <h3 className="card-title">Unavailable Date Ranges</h3>
+                    <p className="text-sm text-gray-600 mb-4">Extended periods when {employee.display_name} is unavailable</p>
+                    
+                    {unavailableRanges.length === 0 ? (
+                      <div className="text-center py-8">
+                        <p className="text-gray-500">No unavailability records found</p>
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="table table-zebra w-full">
+                          <thead>
+                            <tr>
+                              <th>Start Date</th>
+                              <th>End Date</th>
+                              <th>Duration</th>
+                              <th>Reason</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {unavailableRanges
+                              .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
+                              .map((range, index) => {
+                                const startDate = new Date(range.startDate);
+                                const endDate = new Date(range.endDate);
+                                const durationDays = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+                                
+                                return (
+                                  <tr key={index}>
+                                    <td className="font-medium">
+                                      {startDate.toLocaleDateString('en-US', {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: 'numeric'
+                                      })}
+                                    </td>
+                                    <td className="font-medium">
+                                      {endDate.toLocaleDateString('en-US', {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: 'numeric'
+                                      })}
+                                    </td>
+                                    <td className="text-sm">
+                                      {durationDays} day{durationDays !== 1 ? 's' : ''}
+                                    </td>
+                                    <td className="text-sm">
+                                      {range.reason || 'No reason provided'}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Summary */}
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body">
+                    <h3 className="card-title">Availability Summary</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="stat bg-white rounded-lg shadow-sm">
+                        <div className="stat-title">This Week's Meetings</div>
+                        <div className="stat-value text-primary">{currentWeekMeetings.length}</div>
+                        <div className="stat-desc">Scheduled meetings</div>
+                      </div>
+                      
+                      <div className="stat bg-white rounded-lg shadow-sm">
+                        <div className="stat-title">Unavailable Times</div>
+                        <div className="stat-value text-warning">{unavailableTimes.length}</div>
+                        <div className="stat-desc">Time blocks</div>
+                      </div>
+                      
+                      <div className="stat bg-white rounded-lg shadow-sm">
+                        <div className="stat-title">Unavailable Ranges</div>
+                        <div className="stat-value text-secondary">{unavailableRanges.length}</div>
+                        <div className="stat-desc">Extended periods</div>
+                      </div>
+                      
+                      <div className="stat bg-white rounded-lg shadow-sm">
+                        <div className="stat-title">Total Days Off</div>
+                        <div className="stat-value text-accent">
+                          {unavailableRanges.reduce((total, range) => {
+                            const startDate = new Date(range.startDate);
+                            const endDate = new Date(range.endDate);
+                            const days = Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+                            return total + days;
+                          }, 0)}
+                        </div>
+                        <div className="stat-desc">Days in ranges</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Tasks & Projects Tab */}
+        {activeTab === 'tasks' && (
+          <div className="space-y-6">
+            <div className="card bg-base-100 shadow-sm">
+              <div className="card-body">
+                <h3 className="card-title">Tasks & Projects</h3>
+                <p className="text-sm text-gray-600 mb-4">Active tasks and project involvement for {employee.display_name}</p>
+                
+                <div className="space-y-6">
+                  <div>
+                    <h4 className="font-semibold mb-3">Active Tasks</h4>
+                    <div className="bg-base-200 rounded-lg p-4">
+                      <p className="text-sm text-gray-600">Task management integration coming soon...</p>
+                    </div>
+                  </div>
+                  
+                  <div>
+                    <h4 className="font-semibold mb-3">Project Involvement</h4>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-base-200 rounded-lg p-4">
+                        <h5 className="font-medium mb-2">CRM Development</h5>
+                        <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+                          <div className="bg-primary h-2 rounded-full" style={{ width: '65%' }}></div>
+                        </div>
+                        <p className="text-xs text-gray-600">65% Complete</p>
+                      </div>
+                      
+                      <div className="bg-base-200 rounded-lg p-4">
+                        <h5 className="font-medium mb-2">Marketing Campaign</h5>
+                        <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
+                          <div className="bg-success h-2 rounded-full" style={{ width: '80%' }}></div>
+                        </div>
+                        <p className="text-xs text-gray-600">80% Complete</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Client Cases Tab */}
+        {activeTab === 'clients' && (
+          <div className="space-y-6">
+            <div className="card bg-base-100 shadow-sm">
+              <div className="card-body">
+                <h3 className="card-title">Client Cases</h3>
+                <p className="text-sm text-gray-600 mb-4">Clients assigned to {employee.display_name}</p>
+                
+                <div className="overflow-x-auto">
+                  <table className="table table-zebra w-full">
+                    <thead>
+                      <tr>
+                        <th>Client</th>
+                        <th>Status</th>
+                        <th>Last Contact</th>
+                        <th>Documents</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td colSpan={5} className="text-center text-gray-500 py-8">
+                          Client case integration coming soon...
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Feedback & Reviews Tab */}
+        {activeTab === 'feedback' && (
+          <div className="space-y-6">
+            <div className="card bg-base-100 shadow-sm">
+              <div className="card-body">
+                <h3 className="card-title">Feedback & Reviews</h3>
+                <p className="text-sm text-gray-600 mb-4">Performance feedback and reviews for {employee.display_name}</p>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    <h4 className="font-semibold">Recent Feedback</h4>
+                    <div className="bg-base-200 rounded-lg p-4">
+                      <p className="text-sm text-gray-600">Feedback system coming soon...</p>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-4">
+                    <h4 className="font-semibold">Performance Ratings</h4>
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm">Teamwork</span>
+                        <div className="rating rating-sm">
+                          <input type="radio" name="teamwork" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="teamwork" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="teamwork" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="teamwork" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="teamwork" className="mask mask-star-2 bg-orange-400" disabled />
+                        </div>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm">Communication</span>
+                        <div className="rating rating-sm">
+                          <input type="radio" name="communication" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="communication" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="communication" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="communication" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="communication" className="mask mask-star-2 bg-gray-300" disabled />
+                        </div>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm">Performance</span>
+                        <div className="rating rating-sm">
+                          <input type="radio" name="performance" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="performance" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="performance" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="performance" className="mask mask-star-2 bg-orange-400" disabled />
+                          <input type="radio" name="performance" className="mask mask-star-2 bg-orange-400" disabled />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
                 {/* Footer Actions */}
                 <div className="modal-action">
@@ -1043,13 +1832,13 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                             </tr>
                           </thead>
                           <tbody>
-                            {roleLeads.length > 0 ? (
+                              {roleLeads.length > 0 ? (
                               roleLeads.map((lead, index) => (
                                 <tr key={lead.lead_number || index}>
                                   <td className="font-medium">
                                     <div>
                                       <div className="font-semibold">{lead.lead_number}</div>
-                                      <div className="text-sm text-gray-600">{lead.client_name}</div>
+                                      <div className="text-sm text-gray-600">{lead.name}</div>
                                     </div>
                                   </td>
                                   <td>{lead.category || 'N/A'}</td>

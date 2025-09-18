@@ -383,26 +383,51 @@ const SettingsPage: React.FC = () => {
   const activeSettingsSection = settingsSections.find(section => section.id === activeSection);
 
   return (
-    <div className="min-h-screen bg-base-100 p-6">
+    <div className="min-h-screen bg-base-100 p-3 sm:p-6">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center gap-4 mb-4">
-            <div className="p-3 bg-primary/10 rounded-xl">
-              <Cog6ToothIcon className="w-8 h-8 text-primary" />
+        <div className="mb-6 sm:mb-8">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 mb-4">
+            <div className="p-2 sm:p-3 bg-primary/10 rounded-xl">
+              <Cog6ToothIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
             </div>
             <div>
-              <h1 className="text-3xl font-bold text-base-content">Settings</h1>
-              <p className="text-base-content/70">Customize your CRM experience</p>
+              <h1 className="text-2xl sm:text-3xl font-bold text-base-content">Settings</h1>
+              <p className="text-sm sm:text-base text-base-content/70">Customize your CRM experience</p>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 sm:gap-6">
           {/* Settings Navigation */}
           <div className="lg:col-span-1">
-            <div className="bg-base-200 dark:bg-base-300 rounded-xl p-4">
-              <nav className="space-y-1">
+            <div className="bg-base-200 dark:bg-base-300 rounded-xl p-3 sm:p-4">
+              {/* Mobile: Horizontal scrolling navigation */}
+              <div className="lg:hidden">
+                <div className="flex gap-2 overflow-x-auto pb-2 hide-scrollbar">
+                  {settingsSections.map((section) => {
+                    const Icon = section.icon;
+                    const isActive = activeSection === section.id;
+                    return (
+                      <button
+                        key={section.id}
+                        onClick={() => setActiveSection(section.id)}
+                        className={`flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg transition-colors duration-200 whitespace-nowrap text-sm ${
+                          isActive
+                            ? 'bg-primary text-primary-content font-medium'
+                            : 'text-base-content hover:bg-base-300 dark:hover:bg-base-100'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 flex-shrink-0" />
+                        <span>{section.title}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              
+              {/* Desktop: Vertical navigation */}
+              <nav className="hidden lg:block space-y-1">
                 {settingsSections.map((section) => {
                   const Icon = section.icon;
                   const isActive = activeSection === section.id;
@@ -423,51 +448,63 @@ const SettingsPage: React.FC = () => {
                 })}
               </nav>
             </div>
+            
+            <style>
+              {`
+                .hide-scrollbar {
+                  -ms-overflow-style: none;
+                  scrollbar-width: none;
+                }
+                .hide-scrollbar::-webkit-scrollbar {
+                  display: none;
+                }
+              `}
+            </style>
           </div>
 
           {/* Settings Content */}
           <div className="lg:col-span-3">
             {activeSettingsSection && (
-              <div className="bg-base-200 dark:bg-base-300 rounded-xl p-6">
-                <div className="flex items-center gap-3 mb-6">
-                  <activeSettingsSection.icon className="w-6 h-6 text-primary" />
-                  <h2 className="text-2xl font-semibold text-base-content">
+              <div className="bg-base-200 dark:bg-base-300 rounded-xl p-3 sm:p-6">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 mb-4 sm:mb-6">
+                  <activeSettingsSection.icon className="w-5 h-5 sm:w-6 sm:h-6 text-primary" />
+                  <h2 className="text-xl sm:text-2xl font-semibold text-base-content">
                     {activeSettingsSection.title}
                   </h2>
                 </div>
                 
-                <div className="space-y-6">
+                <div className="space-y-4 sm:space-y-6">
                   {activeSettingsSection.items.map((item) => (
-                    <div key={item.id} className="bg-base-100 dark:bg-base-300 rounded-lg p-4">
+                    <div key={item.id} className="bg-base-100 dark:bg-base-300 rounded-lg p-3 sm:p-4">
                       {renderSettingItem(item)}
                     </div>
                   ))}
                   
                   {/* Special case for Calendar section - add tabbed interface */}
                   {activeSection === 'calendar' && (
-                    <div className="bg-base-100 dark:bg-base-300 rounded-lg p-4">
+                    <div className="bg-base-100 dark:bg-base-300 rounded-lg p-3 sm:p-4">
                       {/* Tab Navigation */}
-                      <div className="flex border-b border-base-300 mb-6">
+                      <div className="flex border-b border-base-300 mb-4 sm:mb-6 overflow-x-auto">
                         <button
-                          className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                          className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
                             activeCalendarTab === 'availability'
                               ? 'border-primary text-primary'
                               : 'border-transparent text-base-content/70 hover:text-base-content'
                           }`}
                           onClick={() => setActiveCalendarTab('availability')}
                         >
-                          <CalendarIcon className="w-4 h-4 inline mr-2" />
+                          <CalendarIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
                           Availability
                         </button>
                         <button
-                          className={`px-4 py-2 font-medium text-sm border-b-2 transition-colors ${
+                          className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
                             activeCalendarTab === 'outlook'
                               ? 'border-primary text-primary'
                               : 'border-transparent text-base-content/70 hover:text-base-content'
                           }`}
                           onClick={() => setActiveCalendarTab('outlook')}
                         >
-                          <EnvelopeIcon className="w-4 h-4 inline mr-2" />
+                          <EnvelopeIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
                           Outlook
                         </button>
                       </div>
@@ -475,9 +512,9 @@ const SettingsPage: React.FC = () => {
                       {/* Tab Content */}
                       {activeCalendarTab === 'availability' && (
                         <div>
-                          <div className="mb-4">
-                            <h3 className="text-lg font-semibold text-base-content mb-2">Employee Availability</h3>
-                            <p className="text-base-content/70 text-sm">
+                          <div className="mb-3 sm:mb-4">
+                            <h3 className="text-base sm:text-lg font-semibold text-base-content mb-1 sm:mb-2">Employee Availability</h3>
+                            <p className="text-base-content/70 text-xs sm:text-sm">
                               Manage your unavailable times and sync with Microsoft Outlook calendar.
                             </p>
                           </div>
@@ -499,14 +536,14 @@ const SettingsPage: React.FC = () => {
         </div>
 
         {/* Save Notice */}
-        <div className="mt-6 p-4 bg-info/10 border border-info/20 rounded-lg">
+        <div className="mt-4 sm:mt-6 p-3 sm:p-4 bg-info/10 border border-info/20 rounded-lg">
           <div className="flex items-center gap-2 text-info">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
-            <span className="font-medium">Auto-Save Enabled</span>
+            <span className="font-medium text-sm sm:text-base">Auto-Save Enabled</span>
           </div>
-          <p className="text-info/80 text-sm mt-1">
+          <p className="text-info/80 text-xs sm:text-sm mt-1">
             All settings are automatically saved to your browser's local storage.
           </p>
         </div>

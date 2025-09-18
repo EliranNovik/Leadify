@@ -20,6 +20,21 @@ interface UnavailableEmployee {
   currentUnavailableType?: 'time' | 'range';
 }
 
+interface UnavailabilityEntry {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  type: 'time' | 'range';
+  reason: string;
+  date?: string;
+  startTime?: string;
+  endTime?: string;
+  startDate?: string;
+  endDate?: string;
+  isActive: boolean;
+  status: 'currently_unavailable' | 'scheduled_today' | 'date_range';
+}
+
 interface UnavailableTime {
   id: string;
   date: string;
@@ -46,7 +61,7 @@ const UnavailableEmployeesModal: React.FC<UnavailableEmployeesModalProps> = ({
   isOpen,
   onClose
 }) => {
-  const [unavailableEmployees, setUnavailableEmployees] = useState<UnavailableEmployee[]>([]);
+  const [unavailabilityEntries, setUnavailabilityEntries] = useState<UnavailabilityEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [currentDate, setCurrentDate] = useState(new Date());
 
@@ -73,7 +88,7 @@ const UnavailableEmployeesModal: React.FC<UnavailableEmployeesModalProps> = ({
     return currentTime >= startTime && currentTime <= endTime;
   };
 
-  // Fetch unavailable employees for current date
+  // Fetch unavailable employees for current date and create unified entries
   const fetchUnavailableEmployees = async () => {
     setLoading(true);
     try {
@@ -91,76 +106,78 @@ const UnavailableEmployeesModal: React.FC<UnavailableEmployeesModalProps> = ({
       }
 
       if (!employees) {
-        setUnavailableEmployees([]);
+        setUnavailabilityEntries([]);
         return;
       }
 
-      // Filter employees who are unavailable today
-      const todayUnavailableEmployees: UnavailableEmployee[] = [];
+      // Create unified list of unavailability entries
+      const allEntries: UnavailabilityEntry[] = [];
 
       employees.forEach(employee => {
         const unavailableTimes = employee.unavailable_times || [];
         const unavailableRanges = employee.unavailable_ranges || [];
         
-        // Check for specific time slots today
+        // Add time-based entries for today
         const todayTimes = unavailableTimes.filter((time: UnavailableTime) => time.date === today);
+        todayTimes.forEach((time: UnavailableTime) => {
+          const isCurrentlyActive = isCurrentTimeUnavailable(time);
+          allEntries.push({
+            id: `time-${time.id}`,
+            employeeId: employee.id,
+            employeeName: employee.display_name,
+            type: 'time',
+            reason: time.reason,
+            date: time.date,
+            startTime: time.startTime,
+            endTime: time.endTime,
+            isActive: isCurrentlyActive,
+            status: isCurrentlyActive ? 'currently_unavailable' : 'scheduled_today'
+          });
+        });
         
-        // Check for date ranges that include today
+        // Add range-based entries that include today
         const todayRanges = unavailableRanges.filter((range: UnavailableRange) => 
           isDateInRange(today, range.startDate, range.endDate)
         );
-
-        if (todayTimes.length > 0 || todayRanges.length > 0) {
-          // Determine the current unavailable reason
-          let currentReason = '';
-          let currentType: 'time' | 'range' = 'time';
-          
-          if (todayTimes.length > 0) {
-            // Check if any time slot is currently active
-            const activeTime = todayTimes.find(time => isCurrentTimeUnavailable(time));
-            if (activeTime) {
-              currentReason = activeTime.reason;
-              currentType = 'time';
-            } else {
-              // Show the next upcoming time slot
-              const now = new Date();
-              const currentTime = now.getHours() * 60 + now.getMinutes();
-              const upcomingTimes = todayTimes
-                .filter(time => {
-                  const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
-                  return startTime > currentTime;
-                })
-                .sort((a, b) => {
-                  const timeA = parseInt(a.startTime.split(':')[0]) * 60 + parseInt(a.startTime.split(':')[1]);
-                  const timeB = parseInt(b.startTime.split(':')[0]) * 60 + parseInt(b.startTime.split(':')[1]);
-                  return timeA - timeB;
-                });
-              
-              if (upcomingTimes.length > 0) {
-                currentReason = upcomingTimes[0].reason;
-                currentType = 'time';
-              } else {
-                currentReason = todayTimes[0].reason;
-                currentType = 'time';
-              }
-            }
-          } else if (todayRanges.length > 0) {
-            currentReason = todayRanges[0].reason;
-            currentType = 'range';
-          }
-
-          todayUnavailableEmployees.push({
-            id: employee.id,
-            display_name: employee.display_name,
-            unavailable_times: unavailableTimes,
-            unavailable_ranges: unavailableRanges,
-            currentUnavailableReason: currentReason,
-            currentUnavailableType: currentType
+        todayRanges.forEach((range: UnavailableRange) => {
+          allEntries.push({
+            id: `range-${range.id}`,
+            employeeId: employee.id,
+            employeeName: employee.display_name,
+            type: 'range',
+            reason: range.reason,
+            startDate: range.startDate,
+            endDate: range.endDate,
+            isActive: true, // Range is always "active" if it includes today
+            status: 'date_range'
           });
-        }
+        });
       });
 
-      setUnavailableEmployees(todayUnavailableEmployees);
+      // Sort entries: currently active first, then by employee name, then by time
+      allEntries.sort((a, b) => {
+        // First sort by active status (currently unavailable first)
+        if (a.status === 'currently_unavailable' && b.status !== 'currently_unavailable') return -1;
+        if (b.status === 'currently_unavailable' && a.status !== 'currently_unavailable') return 1;
+        
+        // Then by employee name
+        if (a.employeeName !== b.employeeName) {
+          return a.employeeName.localeCompare(b.employeeName);
+        }
+        
+        // Finally by time (for same employee)
+        if (a.type === 'time' && b.type === 'time') {
+          return (a.startTime || '').localeCompare(b.startTime || '');
+        }
+        
+        // Range entries come after time entries for same employee
+        if (a.type === 'time' && b.type === 'range') return -1;
+        if (a.type === 'range' && b.type === 'time') return 1;
+        
+        return 0;
+      });
+
+      setUnavailabilityEntries(allEntries);
     } catch (error) {
       console.error('Error fetching unavailable employees:', error);
       toast.error('Failed to fetch unavailable employees');
@@ -175,84 +192,43 @@ const UnavailableEmployeesModal: React.FC<UnavailableEmployeesModalProps> = ({
     }
   }, [isOpen, currentDate]);
 
-  const getStatusIcon = (employee: UnavailableEmployee) => {
-    if (employee.currentUnavailableType === 'time') {
-      const todayTimes = employee.unavailable_times.filter(time => time.date === formatDate(currentDate));
-      const activeTime = todayTimes.find(time => isCurrentTimeUnavailable(time));
-      
-      if (activeTime) {
-        return <ClockIcon className="w-5 h-5 text-red-500" />;
-      } else {
-        return <ClockIcon className="w-5 h-5 text-orange-500" />;
-      }
+  const getStatusIcon = (entry: UnavailabilityEntry) => {
+    if (entry.status === 'currently_unavailable') {
+      return <ClockIcon className="w-5 h-5 text-red-500" />;
+    } else if (entry.type === 'time') {
+      return <ClockIcon className="w-5 h-5 text-orange-500" />;
     } else {
-      return <CalendarIcon className="w-5 h-5 text-orange-500" />;
+      return <CalendarIcon className="w-5 h-5 text-blue-500" />;
     }
   };
 
-  const getStatusText = (employee: UnavailableEmployee) => {
-    if (employee.currentUnavailableType === 'time') {
-      const todayTimes = employee.unavailable_times.filter(time => time.date === formatDate(currentDate));
-      const activeTime = todayTimes.find(time => isCurrentTimeUnavailable(time));
-      
-      if (activeTime) {
-        return `Currently unavailable until ${activeTime.endTime}`;
+  const getStatusText = (entry: UnavailabilityEntry) => {
+    if (entry.type === 'time') {
+      if (entry.status === 'currently_unavailable') {
+        return `Currently unavailable until ${entry.endTime}`;
       } else {
-        // Show the next upcoming time slot or all time slots
-        const now = new Date();
-        const currentTime = now.getHours() * 60 + now.getMinutes();
-        const upcomingTimes = todayTimes
-          .filter(time => {
-            const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
-            return startTime > currentTime;
-          })
-          .sort((a, b) => {
-            const timeA = parseInt(a.startTime.split(':')[0]) * 60 + parseInt(a.startTime.split(':')[1]);
-            const timeB = parseInt(b.startTime.split(':')[0]) * 60 + parseInt(b.startTime.split(':')[1]);
-            return timeA - timeB;
-          });
-        
-        if (upcomingTimes.length > 0) {
-          return `Scheduled: ${upcomingTimes[0].startTime} - ${upcomingTimes[0].endTime}`;
-        } else if (todayTimes.length > 0) {
-          return `Time slots: ${todayTimes.map(t => `${t.startTime}-${t.endTime}`).join(', ')}`;
-        } else {
-          return 'Scheduled unavailable time today';
-        }
+        return `Scheduled: ${entry.startTime} - ${entry.endTime}`;
       }
     } else {
-      // Show the actual date range
-      const todayRanges = employee.unavailable_ranges.filter(range => 
-        isDateInRange(formatDate(currentDate), range.startDate, range.endDate)
-      );
-      if (todayRanges.length > 0) {
-        const range = todayRanges[0];
-        const startDate = new Date(range.startDate).toLocaleDateString('en-US', { 
-          month: 'short', 
-          day: 'numeric' 
-        });
-        const endDate = new Date(range.endDate).toLocaleDateString('en-US', { 
-          month: 'short', 
-          day: 'numeric' 
-        });
-        return `Date range: ${startDate} - ${endDate}`;
-      }
-      return 'Unavailable for date range';
+      const startDate = new Date(entry.startDate!).toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric' 
+      });
+      const endDate = new Date(entry.endDate!).toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric' 
+      });
+      return `Date range: ${startDate} - ${endDate}`;
     }
   };
 
-  const getStatusColor = (employee: UnavailableEmployee) => {
-    if (employee.currentUnavailableType === 'time') {
-      const todayTimes = employee.unavailable_times.filter(time => time.date === formatDate(currentDate));
-      const activeTime = todayTimes.find(time => isCurrentTimeUnavailable(time));
-      
-      if (activeTime) {
-        return 'text-red-600 bg-red-50 border-red-200';
-      } else {
-        return 'text-orange-600 bg-orange-50 border-orange-200';
-      }
-    } else {
+  const getStatusColor = (entry: UnavailabilityEntry) => {
+    if (entry.status === 'currently_unavailable') {
+      return 'text-red-600 bg-red-50 border-red-200';
+    } else if (entry.type === 'time') {
       return 'text-orange-600 bg-orange-50 border-orange-200';
+    } else {
+      return 'text-blue-600 bg-blue-50 border-blue-200';
     }
   };
 
@@ -296,71 +272,101 @@ const UnavailableEmployeesModal: React.FC<UnavailableEmployeesModalProps> = ({
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-purple-600"></div>
               <span className="ml-3 text-gray-600">Loading unavailable employees...</span>
             </div>
-          ) : unavailableEmployees.length === 0 ? (
+          ) : unavailabilityEntries.length === 0 ? (
             <div className="text-center py-12">
               <CheckCircleIcon className="w-16 h-16 text-green-500 mx-auto mb-4" />
               <h3 className="text-xl font-semibold text-gray-900 mb-2">All Employees Available</h3>
               <p className="text-gray-600">No employees are marked as unavailable today.</p>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div>
               <div className="flex items-center gap-2 mb-6">
                 <ExclamationTriangleIcon className="w-5 h-5 text-orange-500" />
                 <span className="text-sm font-medium text-gray-700">
-                  {unavailableEmployees.length} employee{unavailableEmployees.length !== 1 ? 's' : ''} unavailable today
+                  {unavailabilityEntries.length} unavailability entr{unavailabilityEntries.length !== 1 ? 'ies' : 'y'} today
                 </span>
               </div>
 
-              {unavailableEmployees.map((employee) => (
-                <div
-                  key={employee.id}
-                  className={`border rounded-xl p-4 transition-all duration-200 hover:shadow-md ${getStatusColor(employee)}`}
-                >
-                  <div className="flex items-start gap-4">
-                    <div className="flex-shrink-0">
-                      {getStatusIcon(employee)}
-                    </div>
-                    
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="text-lg font-semibold text-gray-900 truncate">
-                          {employee.display_name}
-                        </h3>
-                      </div>
-                      
-                      <p className="text-sm text-gray-600 mb-3">
-                        {employee.currentUnavailableReason}
-                      </p>
-                      
-                      <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
-                        <InformationCircleIcon className="w-4 h-4" />
-                        <span>{getStatusText(employee)}</span>
-                      </div>
-                      
-                      {/* Show additional time slots if there are multiple */}
-                      {employee.currentUnavailableType === 'time' && (() => {
-                        const todayTimes = employee.unavailable_times.filter(time => time.date === formatDate(currentDate));
-                        if (todayTimes.length > 1) {
-                          return (
-                            <div className="text-xs text-gray-500">
-                              <span className="font-medium">All time slots today:</span>
-                              <div className="mt-1 space-y-1">
-                                {todayTimes.map((time, index) => (
-                                  <div key={index} className="flex items-center gap-2">
-                                    <ClockIcon className="w-3 h-3" />
-                                    <span>{time.startTime} - {time.endTime}</span>
-                                  </div>
-                                ))}
-                              </div>
+              {/* Unified Table */}
+              <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Status
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Employee
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Type
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Time/Date Range
+                        </th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                          Reason
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {unavailabilityEntries.map((entry) => (
+                        <tr
+                          key={entry.id}
+                          className={`transition-colors duration-200 hover:bg-gray-50 ${
+                            entry.status === 'currently_unavailable' ? 'bg-red-50' : ''
+                          }`}
+                        >
+                          <td className="px-4 py-4 whitespace-nowrap">
+                            <div className="flex items-center gap-2">
+                              {getStatusIcon(entry)}
+                              <span
+                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                  entry.status === 'currently_unavailable'
+                                    ? 'bg-red-100 text-red-800'
+                                    : entry.type === 'time'
+                                    ? 'bg-orange-100 text-orange-800'
+                                    : 'bg-blue-100 text-blue-800'
+                                }`}
+                              >
+                                {entry.status === 'currently_unavailable'
+                                  ? 'Active Now'
+                                  : entry.type === 'time'
+                                  ? 'Scheduled'
+                                  : 'Date Range'}
+                              </span>
                             </div>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                  </div>
+                          </td>
+                          <td className="px-4 py-4 whitespace-nowrap">
+                            <div className="flex items-center">
+                              <UserIcon className="w-5 h-5 text-gray-400 mr-2" />
+                              <span className="text-sm font-medium text-gray-900">
+                                {entry.employeeName}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-4 whitespace-nowrap">
+                            <span className="text-sm text-gray-900 capitalize">
+                              {entry.type === 'time' ? 'Time Slot' : 'Date Range'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4 whitespace-nowrap">
+                            <span className="text-sm text-gray-900">
+                              {getStatusText(entry)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-4">
+                            <span className="text-sm text-gray-600">
+                              {entry.reason}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
+              </div>
             </div>
           )}
         </div>

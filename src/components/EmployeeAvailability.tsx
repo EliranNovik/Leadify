@@ -718,22 +718,22 @@ const EmployeeAvailability: React.FC = () => {
   ];
 
   return (
-    <div className="p-8">
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-4">
-          <div className="p-3 bg-primary/10 rounded-xl">
-            <CalendarIcon className="w-8 h-8 text-primary" />
+    <div className="p-3 sm:p-8">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 sm:gap-0 mb-6 sm:mb-8">
+        <div className="flex items-center gap-3 sm:gap-4">
+          <div className="p-2 sm:p-3 bg-primary/10 rounded-xl">
+            <CalendarIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
           </div>
           <div>
-            <h1 className="text-3xl font-bold">Calendar & Availability</h1>
-            <p className="text-base-content/70">Manage your unavailable times and sync with Outlook</p>
+            <h1 className="text-xl sm:text-3xl font-bold">Calendar & Availability</h1>
+            <p className="text-sm sm:text-base text-base-content/70">Manage your unavailable times and sync with Outlook</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 w-full sm:w-auto">
           <button
             onClick={() => setShowAddRangeModal(true)}
-            className="btn btn-primary btn-sm"
+            className="btn btn-primary btn-sm w-full sm:w-auto"
             disabled={loading}
           >
             <PlusIcon className="w-4 h-4 mr-2" />
@@ -747,32 +747,33 @@ const EmployeeAvailability: React.FC = () => {
               onChange={toggleOutlookSync}
               disabled={loading}
             />
-            <span className="text-sm font-medium">Sync with Outlook</span>
+            <span className="text-xs sm:text-sm font-medium">Sync with Outlook</span>
           </label>
         </div>
       </div>
 
       {/* Calendar */}
-      <div className="bg-base-100 rounded-xl shadow-lg p-6 mb-6">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold">
+      <div className="bg-base-100 rounded-xl shadow-lg p-3 sm:p-6 mb-4 sm:mb-6">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0 mb-4 sm:mb-6">
+          <h2 className="text-lg sm:text-2xl font-bold">
             {monthNames[currentMonth]} {currentYear}
           </h2>
-          <div className="flex gap-2">
+          <div className="flex gap-1 sm:gap-2 w-full sm:w-auto">
             <button
-              className="btn btn-outline btn-sm"
+              className="btn btn-outline btn-xs sm:btn-sm flex-1 sm:flex-none"
               onClick={() => setCurrentDate(new Date(currentYear, currentMonth - 1, 1))}
             >
-              Previous
+              <span className="hidden sm:inline">Previous</span>
+              <span className="sm:hidden">Prev</span>
             </button>
             <button
-              className="btn btn-outline btn-sm"
+              className="btn btn-outline btn-xs sm:btn-sm flex-1 sm:flex-none"
               onClick={() => setCurrentDate(new Date())}
             >
               Today
             </button>
             <button
-              className="btn btn-outline btn-sm"
+              className="btn btn-outline btn-xs sm:btn-sm flex-1 sm:flex-none"
               onClick={() => setCurrentDate(new Date(currentYear, currentMonth + 1, 1))}
             >
               Next
@@ -781,11 +782,12 @@ const EmployeeAvailability: React.FC = () => {
         </div>
 
         {/* Calendar Grid */}
-        <div className="grid grid-cols-7 gap-1">
+        <div className="grid grid-cols-7 gap-0.5 sm:gap-1">
           {/* Day headers */}
-          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
-            <div key={day} className="p-2 text-center font-semibold text-base-content/70">
-              {day}
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, index) => (
+            <div key={day} className="p-1 sm:p-2 text-center font-semibold text-base-content/70 text-xs sm:text-sm">
+              <span className="hidden sm:inline">{day}</span>
+              <span className="sm:hidden">{day.slice(0, 1)}</span>
             </div>
           ))}
           
@@ -800,10 +802,10 @@ const EmployeeAvailability: React.FC = () => {
               <div
                 key={index}
                 className={`
-                  p-2 min-h-[80px] border border-base-200 rounded-lg transition-all duration-200
+                  p-1 sm:p-2 min-h-[60px] sm:min-h-[80px] border border-base-200 rounded transition-all duration-200
                   ${day.isCurrentMonth ? 'bg-base-100' : 'bg-base-200/50 text-base-content/50'}
                   ${isClickable ? 'cursor-pointer hover:bg-base-200' : 'cursor-not-allowed opacity-60'}
-                  ${day.isToday ? 'ring-2 ring-primary' : ''}
+                  ${day.isToday ? 'ring-1 sm:ring-2 ring-primary' : ''}
                   ${day.unavailableTimes.length > 0 ? 'bg-error/10 border-error/30' : ''}
                   ${day.isInUnavailableRange ? 'bg-warning/10 border-warning/30' : ''}
                   ${isPastDate ? 'bg-gray-100 text-gray-400' : ''}
@@ -816,29 +818,32 @@ const EmployeeAvailability: React.FC = () => {
                 }}
                 title={isPastDate ? 'Cannot add unavailable times for past dates' : ''}
               >
-              <div className="text-sm font-medium mb-1">
+              <div className="text-xs sm:text-sm font-medium mb-1">
                 {day.date.getDate()}
               </div>
               {day.isInUnavailableRange && (
-                <div className="text-xs bg-warning/20 text-warning rounded px-1 py-0.5 truncate mb-1"
+                <div className="text-[10px] sm:text-xs bg-warning/20 text-warning rounded px-0.5 sm:px-1 py-0.5 truncate mb-1"
                      title={day.unavailableRangeReason}>
-                  Range: {day.unavailableRangeReason}
+                  <span className="hidden sm:inline">Range: {day.unavailableRangeReason}</span>
+                  <span className="sm:hidden">R</span>
                 </div>
               )}
               {day.unavailableTimes.length > 0 && (
-                <div className="space-y-1">
-                  {day.unavailableTimes.slice(0, 2).map(time => (
+                <div className="space-y-0.5 sm:space-y-1">
+                  {day.unavailableTimes.slice(0, window.innerWidth < 640 ? 1 : 2).map(time => (
                     <div
                       key={time.id}
-                      className="text-xs bg-error/20 text-error rounded px-1 py-0.5 truncate"
+                      className="text-[10px] sm:text-xs bg-error/20 text-error rounded px-0.5 sm:px-1 py-0.5 truncate"
                       title={`${time.startTime}-${time.endTime}: ${time.reason}`}
                     >
-                      {time.startTime}-{time.endTime}
+                      <span className="hidden sm:inline">{time.startTime}-{time.endTime}</span>
+                      <span className="sm:hidden">•</span>
                     </div>
                   ))}
-                  {day.unavailableTimes.length > 2 && (
-                    <div className="text-xs text-error/70">
-                      +{day.unavailableTimes.length - 2} more
+                  {day.unavailableTimes.length > (window.innerWidth < 640 ? 1 : 2) && (
+                    <div className="text-[10px] sm:text-xs text-error/70">
+                      <span className="hidden sm:inline">+{day.unavailableTimes.length - 2} more</span>
+                      <span className="sm:hidden">+{day.unavailableTimes.length - 1}</span>
                     </div>
                   )}
                 </div>
@@ -850,41 +855,45 @@ const EmployeeAvailability: React.FC = () => {
       </div>
 
       {/* Unavailable Times List */}
-      <div className="bg-base-100 rounded-xl shadow-lg p-6 mb-6">
-        <h3 className="text-xl font-bold mb-4">Your Unavailable Times</h3>
+      <div className="bg-base-100 rounded-xl shadow-lg p-3 sm:p-6 mb-4 sm:mb-6">
+        <h3 className="text-lg sm:text-xl font-bold mb-3 sm:mb-4">Your Unavailable Times</h3>
         {unavailableTimes.length === 0 ? (
-          <p className="text-base-content/70 text-center py-8">
+          <p className="text-base-content/70 text-center py-6 sm:py-8 text-sm sm:text-base">
             No unavailable times set. Click on a calendar day to add one.
           </p>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2 sm:space-y-3">
             {unavailableTimes
               .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
               .map(time => (
-                <div key={time.id} className="flex items-center justify-between p-4 bg-base-200 rounded-lg">
-                  <div className="flex items-center gap-4">
-                    <div className="text-sm font-medium">
-                      {new Date(time.date).toLocaleDateString()}
+                <div key={time.id} className="flex items-center justify-between gap-2 p-3 sm:p-4 bg-base-200 rounded-lg">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+                      <div className="text-sm font-medium">
+                        {new Date(time.date).toLocaleDateString()}
+                      </div>
+                      <div className="flex items-center gap-2 sm:gap-4">
+                        <div className="text-xs sm:text-sm text-base-content/70">
+                          {time.startTime} - {time.endTime}
+                        </div>
+                        {time.outlookEventId && (
+                          <div className="flex items-center gap-1 text-xs text-success">
+                            <CheckIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                            <span>Synced</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    <div className="text-sm text-base-content/70">
-                      {time.startTime} - {time.endTime}
-                    </div>
-                    <div className="text-sm">
+                    <div className="text-xs sm:text-sm text-base-content/80 mt-1 truncate">
                       {time.reason}
                     </div>
-                    {time.outlookEventId && (
-                      <div className="flex items-center gap-1 text-xs text-success">
-                        <CheckIcon className="w-4 h-4" />
-                        Synced
-                      </div>
-                    )}
                   </div>
                   <button
-                    className="btn btn-ghost btn-sm text-error hover:bg-error/10"
+                    className="btn btn-ghost btn-xs sm:btn-sm text-error hover:bg-error/10 flex-shrink-0"
                     onClick={() => deleteUnavailableTime(time.id)}
                     disabled={loading}
                   >
-                    <TrashIcon className="w-4 h-4" />
+                    <TrashIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                   </button>
                 </div>
               ))}
@@ -893,38 +902,40 @@ const EmployeeAvailability: React.FC = () => {
       </div>
 
       {/* Unavailable Ranges List */}
-      <div className="bg-base-100 rounded-xl shadow-lg p-6">
-        <h3 className="text-xl font-bold mb-4">Your Unavailable Ranges</h3>
+      <div className="bg-base-100 rounded-xl shadow-lg p-3 sm:p-6">
+        <h3 className="text-lg sm:text-xl font-bold mb-3 sm:mb-4">Your Unavailable Ranges</h3>
         {unavailableRanges.length === 0 ? (
-          <p className="text-base-content/70 text-center py-8">
+          <p className="text-base-content/70 text-center py-6 sm:py-8 text-sm sm:text-base">
             No unavailable ranges set. Click "Add Range" to create one.
           </p>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2 sm:space-y-3">
             {unavailableRanges
               .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
               .map(range => (
-                <div key={range.id} className="flex items-center justify-between p-4 bg-base-200 rounded-lg">
-                  <div className="flex items-center gap-4">
-                    <div className="text-sm font-medium">
-                      {new Date(range.startDate).toLocaleDateString()} - {new Date(range.endDate).toLocaleDateString()}
+                <div key={range.id} className="flex items-center justify-between gap-2 p-3 sm:p-4 bg-base-200 rounded-lg">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+                      <div className="text-sm font-medium">
+                        {new Date(range.startDate).toLocaleDateString()} - {new Date(range.endDate).toLocaleDateString()}
+                      </div>
+                      {range.outlookEventId && (
+                        <div className="flex items-center gap-1 text-xs text-success">
+                          <CheckIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                          <span>Synced</span>
+                        </div>
+                      )}
                     </div>
-                    <div className="text-sm">
+                    <div className="text-xs sm:text-sm text-base-content/80 mt-1 truncate">
                       {range.reason}
                     </div>
-                    {range.outlookEventId && (
-                      <div className="flex items-center gap-1 text-xs text-success">
-                        <CheckIcon className="w-4 h-4" />
-                        Synced
-                      </div>
-                    )}
                   </div>
                   <button
-                    className="btn btn-ghost btn-sm text-error hover:bg-error/10"
+                    className="btn btn-ghost btn-xs sm:btn-sm text-error hover:bg-error/10 flex-shrink-0"
                     onClick={() => deleteUnavailableRange(range.id)}
                     disabled={loading}
                   >
-                    <TrashIcon className="w-4 h-4" />
+                    <TrashIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                   </button>
                 </div>
               ))}
@@ -934,50 +945,50 @@ const EmployeeAvailability: React.FC = () => {
 
       {/* Add Unavailable Time Modal */}
       {showAddModal && selectedDate && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-base-100 rounded-xl p-6 w-full max-w-md">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold">Add Unavailable Time</h3>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-base-100 rounded-xl p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-3 sm:mb-4">
+              <h3 className="text-base sm:text-lg font-bold">Add Unavailable Time</h3>
               <button
-                className="btn btn-ghost btn-sm"
+                className="btn btn-ghost btn-xs sm:btn-sm"
                 onClick={() => setShowAddModal(false)}
               >
-                <XMarkIcon className="w-5 h-5" />
+                <XMarkIcon className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             </div>
             
-            <div className="space-y-4">
+            <div className="space-y-3 sm:space-y-4">
               <div>
                 <label className="label">
-                  <span className="label-text">Date</span>
+                  <span className="label-text text-sm">Date</span>
                 </label>
                 <input
                   type="text"
-                  className="input input-bordered w-full"
+                  className="input input-bordered input-sm sm:input-md w-full"
                   value={selectedDate.toLocaleDateString()}
                   disabled
                 />
               </div>
               
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-2 sm:gap-4">
                 <div>
                   <label className="label">
-                    <span className="label-text">Start Time</span>
+                    <span className="label-text text-sm">Start Time</span>
                   </label>
                   <input
                     type="time"
-                    className="input input-bordered w-full"
+                    className="input input-bordered input-sm sm:input-md w-full"
                     value={newUnavailableTime.startTime}
                     onChange={(e) => setNewUnavailableTime(prev => ({ ...prev, startTime: e.target.value }))}
                   />
                 </div>
                 <div>
                   <label className="label">
-                    <span className="label-text">End Time</span>
+                    <span className="label-text text-sm">End Time</span>
                   </label>
                   <input
                     type="time"
-                    className="input input-bordered w-full"
+                    className="input input-bordered input-sm sm:input-md w-full"
                     value={newUnavailableTime.endTime}
                     onChange={(e) => setNewUnavailableTime(prev => ({ ...prev, endTime: e.target.value }))}
                   />
@@ -986,11 +997,11 @@ const EmployeeAvailability: React.FC = () => {
               
               <div>
                 <label className="label">
-                  <span className="label-text">Reason</span>
+                  <span className="label-text text-sm">Reason</span>
                 </label>
                 <input
                   type="text"
-                  className="input input-bordered w-full"
+                  className="input input-bordered input-sm sm:input-md w-full"
                   placeholder="e.g., Personal appointment, Vacation, etc."
                   value={newUnavailableTime.reason}
                   onChange={(e) => setNewUnavailableTime(prev => ({ ...prev, reason: e.target.value }))}
@@ -998,16 +1009,16 @@ const EmployeeAvailability: React.FC = () => {
               </div>
             </div>
             
-            <div className="flex gap-3 mt-6">
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 mt-4 sm:mt-6">
               <button
-                className="btn btn-primary flex-1"
+                className="btn btn-primary btn-sm sm:btn-md flex-1"
                 onClick={saveUnavailableTime}
                 disabled={loading}
               >
                 {loading ? 'Saving...' : 'Save'}
               </button>
               <button
-                className="btn btn-ghost"
+                className="btn btn-ghost btn-sm sm:btn-md"
                 onClick={() => setShowAddModal(false)}
               >
                 Cancel
@@ -1019,38 +1030,38 @@ const EmployeeAvailability: React.FC = () => {
 
       {/* Add Unavailable Range Modal */}
       {showAddRangeModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-base-100 rounded-xl p-6 w-full max-w-md">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold">Add Unavailable Range</h3>
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-base-100 rounded-xl p-4 sm:p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-3 sm:mb-4">
+              <h3 className="text-base sm:text-lg font-bold">Add Unavailable Range</h3>
               <button
-                className="btn btn-ghost btn-sm"
+                className="btn btn-ghost btn-xs sm:btn-sm"
                 onClick={() => setShowAddRangeModal(false)}
               >
-                <XMarkIcon className="w-5 h-5" />
+                <XMarkIcon className="w-4 h-4 sm:w-5 sm:h-5" />
               </button>
             </div>
             
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-3 sm:space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-4">
                 <div>
                   <label className="label">
-                    <span className="label-text">Start Date</span>
+                    <span className="label-text text-sm">Start Date</span>
                   </label>
                   <input
                     type="date"
-                    className="input input-bordered w-full"
+                    className="input input-bordered input-sm sm:input-md w-full"
                     value={newUnavailableRange.startDate}
                     onChange={(e) => setNewUnavailableRange(prev => ({ ...prev, startDate: e.target.value }))}
                   />
                 </div>
                 <div>
                   <label className="label">
-                    <span className="label-text">End Date</span>
+                    <span className="label-text text-sm">End Date</span>
                   </label>
                   <input
                     type="date"
-                    className="input input-bordered w-full"
+                    className="input input-bordered input-sm sm:input-md w-full"
                     value={newUnavailableRange.endDate}
                     onChange={(e) => setNewUnavailableRange(prev => ({ ...prev, endDate: e.target.value }))}
                   />
@@ -1059,11 +1070,11 @@ const EmployeeAvailability: React.FC = () => {
               
               <div>
                 <label className="label">
-                  <span className="label-text">Reason</span>
+                  <span className="label-text text-sm">Reason</span>
                 </label>
                 <input
                   type="text"
-                  className="input input-bordered w-full"
+                  className="input input-bordered input-sm sm:input-md w-full"
                   placeholder="e.g., Vacation, Sick Leave, Conference"
                   value={newUnavailableRange.reason}
                   onChange={(e) => setNewUnavailableRange(prev => ({ ...prev, reason: e.target.value }))}
@@ -1071,16 +1082,16 @@ const EmployeeAvailability: React.FC = () => {
               </div>
             </div>
             
-            <div className="flex gap-3 mt-6">
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 mt-4 sm:mt-6">
               <button
-                className="btn btn-primary flex-1"
+                className="btn btn-primary btn-sm sm:btn-md flex-1"
                 onClick={saveUnavailableRange}
                 disabled={loading}
               >
                 {loading ? 'Saving...' : 'Save Range'}
               </button>
               <button
-                className="btn btn-ghost"
+                className="btn btn-ghost btn-sm sm:btn-md"
                 onClick={() => setShowAddRangeModal(false)}
               >
                 Cancel

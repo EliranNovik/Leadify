@@ -305,7 +305,6 @@ const CalendarPage: React.FC = () => {
     const normalizedCurrency = currency?.toUpperCase().trim();
     const rate = currencyRates[normalizedCurrency as keyof typeof currencyRates] || 1;
     
-    console.log(`💰 Calendar: Converting ${amount} ${currency} to NIS (rate: ${rate}) = ${amount * rate}`);
     return amount * rate;
   };
 
@@ -411,13 +410,10 @@ const CalendarPage: React.FC = () => {
 
   // Helper function to get category name from ID or name with main category
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
-    console.log('🔍 Calendar getCategoryName called with categoryId:', categoryId, 'type:', typeof categoryId, 'fallbackCategory:', fallbackCategory);
     
     if (!categoryId || categoryId === '---' || categoryId === '--') {
-      console.log('🔍 Calendar getCategoryName: categoryId is null/undefined/---, checking fallback');
       // If no category_id but we have a fallback category, try to find it in the loaded categories
       if (fallbackCategory && String(fallbackCategory).trim() !== '') {
-        console.log('🔍 Calendar getCategoryName: Looking for fallback category in loaded categories:', fallbackCategory);
         
         // Try to find the fallback category in the loaded categories
         // First try by ID if fallbackCategory is a number
@@ -436,7 +432,6 @@ const CalendarPage: React.FC = () => {
         }
         
         if (foundCategory) {
-          console.log('🔍 Calendar getCategoryName: Found fallback category in loaded categories:', foundCategory);
           // Return category name with main category in parentheses
           if (foundCategory.misc_maincategory?.name) {
             return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
@@ -444,39 +439,21 @@ const CalendarPage: React.FC = () => {
             return foundCategory.name; // Fallback if no main category
           }
         } else {
-          console.log('🔍 Calendar getCategoryName: Fallback category not found in loaded categories, using as-is:', fallbackCategory);
           return String(fallbackCategory); // Use as-is if not found in loaded categories
         }
       }
-      console.log('🔍 Calendar getCategoryName: No fallback category, returning --');
       return '--';
     }
     
     // If allCategories is not loaded yet, return the original value
     if (!allCategories || allCategories.length === 0) {
-      console.log('🔍 Calendar getCategoryName: Categories not loaded yet, returning original value');
       return String(categoryId);
     }
     
-    console.log('🔍 Calendar getCategoryName processing valid categoryId:', { 
-      categoryId, 
-      allCategoriesLength: allCategories.length,
-      allCategories: allCategories.map(cat => ({ 
-        id: cat.id, 
-        name: cat.name, 
-        parent_id: cat.parent_id,
-        mainCategory: cat.misc_maincategory?.name 
-      }))
-    });
     
     // First try to find by ID
     const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (categoryById) {
-      console.log('🔍 Calendar Found category by ID:', { 
-        id: categoryById.id, 
-        name: categoryById.name, 
-        mainCategory: categoryById.misc_maincategory?.name 
-      });
       
       // Return category name with main category in parentheses
       if (categoryById.misc_maincategory?.name) {
@@ -489,11 +466,6 @@ const CalendarPage: React.FC = () => {
     // If not found by ID, try to find by name (in case it's already a name)
     const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
     if (categoryByName) {
-      console.log('🔍 Calendar Found category by name:', { 
-        id: categoryByName.id, 
-        name: categoryByName.name, 
-        mainCategory: categoryByName.misc_maincategory?.name 
-      });
       
       // Return category name with main category in parentheses
       if (categoryByName.misc_maincategory?.name) {
@@ -503,7 +475,6 @@ const CalendarPage: React.FC = () => {
       }
     }
     
-    console.log('🔍 Calendar Category not found, returning original value for categoryId:', categoryId);
     return String(categoryId); // Fallback to original value if not found
   };
 
@@ -534,7 +505,6 @@ const CalendarPage: React.FC = () => {
   // Function to load legacy meetings for a specific date
   // Fetch staff meetings from shared-staffcalendar@lawoffice.org.il
   const fetchStaffMeetings = async (targetDate: string) => {
-    console.log('🔄 Fetching staff meetings for date:', targetDate);
     setIsStaffMeetingsLoading(true);
     
     try {
@@ -562,7 +532,6 @@ const CalendarPage: React.FC = () => {
 
       const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events?$filter=start/dateTime ge '${startDate.toISOString()}' and start/dateTime le '${endDate.toISOString()}'&$orderby=start/dateTime`;
 
-      console.log('🔍 Staff meetings URL:', url);
 
       const response = await fetch(url, {
         headers: {
@@ -577,8 +546,6 @@ const CalendarPage: React.FC = () => {
       }
 
       const data = await response.json();
-      console.log('📅 Staff meetings fetched:', data.value?.length || 0);
-      console.log('📅 Raw staff meetings data:', data.value);
 
       if (data.value) {
         const formattedStaffMeetings = data.value.map((event: any) => ({
@@ -621,7 +588,6 @@ const CalendarPage: React.FC = () => {
         }));
 
         setStaffMeetings(formattedStaffMeetings);
-        console.log('📅 Formatted staff meetings:', formattedStaffMeetings);
       }
     } catch (error) {
       console.error('Error fetching staff meetings:', error);
@@ -633,26 +599,34 @@ const CalendarPage: React.FC = () => {
   const loadLegacyForDate = async (targetDate: string) => {
     if (!targetDate || legacyLoadingDisabled) return;
     
-    console.log('🔄 Loading legacy meetings for date:', targetDate);
     setIsLegacyLoading(true);
     
     try {
       const { data: legacyData, error: legacyError } = await supabase
         .from('leads_lead')
-        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id')
+        .select(`
+          id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
+          meeting_manager_id, meeting_lawyer_id, total, meeting_total_currency_id, expert_id, 
+          probability, phone, email, mobile, meeting_location_id,
+          misc_category!category_id(
+            id, name, parent_id,
+            misc_maincategory!parent_id(
+              id, name, department_id,
+              tenant_departement!department_id(id, name)
+            )
+          )
+        `)
         .eq('meeting_date', targetDate)
         .not('meeting_date', 'is', null)
         .not('name', 'is', null)
         .limit(20);
 
       if (legacyError) {
-        console.log('⚠️ Legacy query failed:', legacyError.message);
         // Don't return, just continue with empty data
         return;
       }
 
       if (legacyData && legacyData.length > 0) {
-        console.log('✅ Found', legacyData.length, 'legacy meetings for', targetDate);
         
         // Get unique location IDs from legacy data
         const locationIds = [...new Set(legacyData
@@ -674,12 +648,9 @@ const CalendarPage: React.FC = () => {
                 acc[loc.id] = loc.name;
                 return acc;
               }, {});
-              console.log('✅ Loaded location names:', locationMap);
             } else {
-              console.log('⚠️ Failed to load location names:', locationError?.message);
             }
           } catch (error) {
-            console.log('⚠️ Error fetching location names:', error);
           }
         }
         
@@ -707,30 +678,33 @@ const CalendarPage: React.FC = () => {
             meeting_confirmation: false,
             meeting_scheduling_notes: '',
             status: null,
-            lead: {
-              id: `legacy_${legacyLead.id}`,
-              lead_number: legacyLead.lead_number || legacyLead.id?.toString() || 'Unknown',
-              name: legacyLead.name || 'Legacy Lead',
-              email: legacyLead.email || '',
-              phone: legacyLead.phone || '',
-              mobile: legacyLead.mobile || '',
-              topic: '',
-              stage: legacyLead.stage || 'Unknown',
-              manager: legacyLead.meeting_manager_id,
-              helper: legacyLead.meeting_lawyer_id,
-              balance: parseFloat(legacyLead.total || '0'),
-              balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
-              expert: legacyLead.expert_id,
-              probability: parseFloat(legacyLead.probability || '0'),
-              category: legacyLead.category || legacyLead.category_id,
-              language: null,
-              onedrive_folder_link: '',
-              expert_notes: '',
-              manual_interactions: [],
-              lead_type: 'legacy' as const
-            }
+              lead: {
+                id: `legacy_${legacyLead.id}`,
+                lead_number: legacyLead.lead_number || legacyLead.id?.toString() || 'Unknown',
+                name: legacyLead.name || 'Legacy Lead',
+                email: legacyLead.email || '',
+                phone: legacyLead.phone || '',
+                mobile: legacyLead.mobile || '',
+                topic: '',
+                stage: legacyLead.stage || 'Unknown',
+                manager: legacyLead.meeting_manager_id,
+                helper: legacyLead.meeting_lawyer_id,
+                balance: parseFloat(legacyLead.total || '0'),
+                balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                                 legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                                 legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+                expert: legacyLead.expert_id,
+                probability: parseFloat(legacyLead.probability || '0'),
+                category: legacyLead.category || legacyLead.category_id,
+                language: null,
+                onedrive_folder_link: '',
+                expert_notes: '',
+                manual_interactions: [],
+                lead_type: 'legacy' as const,
+                // Add department info from JOINs
+                department_name: legacyLead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
+                department_id: legacyLead.misc_category?.misc_maincategory?.department_id
+              }
           };
           return meeting;
         });
@@ -745,22 +719,14 @@ const CalendarPage: React.FC = () => {
           // Add new legacy meetings
           const allMeetings = [...filteredMeetings, ...processedLegacyMeetings];
           
-          console.log('✅ Updated meetings with legacy data for', targetDate, ':', {
-            previousCount: prevMeetings.length,
-            legacyCount: processedLegacyMeetings.length,
-            totalCount: allMeetings.length
-          });
           
           return allMeetings;
         });
       } else {
-        console.log('ℹ️ No legacy meetings found for', targetDate);
       }
     } catch (error) {
-      console.log('⚠️ Error loading legacy meetings:', error);
       // Disable legacy loading after multiple failures to prevent repeated timeouts
       if (error instanceof Error && error.message.includes('timeout')) {
-        console.log('🚫 Disabling legacy loading due to repeated timeouts');
         setLegacyLoadingDisabled(true);
       }
     } finally {
@@ -799,17 +765,11 @@ const CalendarPage: React.FC = () => {
         
         if (!categoriesError && categoriesData) {
           setAllCategories(categoriesData);
-          console.log('✅ Categories loaded:', categoriesData.length, 'categories');
         }
 
 
         // Initialize stage names cache
-        console.log('🔍 Initializing stage names cache...');
-        await fetchStageNames().then(stageNames => {
-          console.log('✅ Stage names initialized:', stageNames);
-        }).catch(error => {
-          console.error('❌ Error initializing stage names:', error);
-        });
+        await fetchStageNames();
 
         // Create a helper function to get category name using the loaded data
         const getCategoryNameFromData = (categoryId: string | number | null | undefined) => {
@@ -827,10 +787,8 @@ const CalendarPage: React.FC = () => {
 
         // First, load today's meetings for immediate display - MINIMAL DATA ONLY
         const today = new Date().toISOString().split('T')[0];
-        console.log('🚀 Loading today\'s meetings first (minimal data):', today);
         
-        // Load today's meetings - prioritize regular meetings, legacy as optional
-        console.log('🚀 Loading regular meetings first...');
+        // Load today's meetings with department JOINs - prioritize regular meetings, legacy as optional
         const { data: todayMeetingsData, error: todayMeetingsError } = await supabase
           .from('meetings')
           .select(`
@@ -839,11 +797,25 @@ const CalendarPage: React.FC = () => {
             attendance_probability, complexity, car_number, calendar_type,
             lead:leads!client_id(
               id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
-              expert, probability, phone, email, number_of_applicants_meeting
+              expert, probability, phone, email, number_of_applicants_meeting,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement!department_id(id, name)
+                )
+              )
             ),
             legacy_lead:leads_lead!legacy_lead_id(
               id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants
+              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement!department_id(id, name)
+                )
+              )
             )
           `)
           .eq('meeting_date', today)
@@ -853,13 +825,12 @@ const CalendarPage: React.FC = () => {
         // DISABLED: Today's legacy loading removed to prevent timeouts
         let todayLegacyMeetingsData = [];
         let todayLegacyMeetingsError = null;
-        console.log('🚫 Today\'s legacy loading disabled - only date filter legacy loading enabled');
 
         // Process today's meetings immediately - SIMPLIFIED FOR SPEED
         if (!todayMeetingsError) {
           const startTime = performance.now();
           
-          // Quick processing for today's meetings
+          // Quick processing for today's meetings with department data
           const todayProcessedMeetings = (todayMeetingsData || []).map((meeting: any) => ({
             ...meeting,
             lead: meeting.legacy_lead ? {
@@ -872,10 +843,16 @@ const CalendarPage: React.FC = () => {
                 expert: meeting.legacy_lead.expert_id,
                 category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
                 lead_number: meeting.legacy_lead.id?.toString(),
-                manual_interactions: []
+                manual_interactions: [],
+                // Add department info from JOINs
+                department_name: meeting.legacy_lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
+                department_id: meeting.legacy_lead.misc_category?.misc_maincategory?.department_id
             } : meeting.lead ? {
               ...meeting.lead,
-              lead_type: 'new'
+              lead_type: 'new',
+              // Add department info from JOINs
+              department_name: meeting.lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
+              department_id: meeting.lead.misc_category?.misc_maincategory?.department_id
             } : null
           }));
 
@@ -885,11 +862,6 @@ const CalendarPage: React.FC = () => {
           const todayAllMeetings = [...todayProcessedMeetings, ...todayProcessedLegacyMeetings];
           const loadTime = performance.now() - startTime;
           
-          console.log(`⚡ Today's meetings loaded in ${loadTime.toFixed(0)}ms:`, {
-            count: todayAllMeetings.length,
-            regular: todayProcessedMeetings.length,
-            legacy: todayProcessedLegacyMeetings.length
-          });
           
           setMeetings(todayAllMeetings);
           setIsLoading(false);
@@ -904,11 +876,9 @@ const CalendarPage: React.FC = () => {
         }
 
         // Now load all other meetings in the background - OPTIMIZED
-        console.log('🔄 Loading all other meetings in background...');
         setIsBackgroundLoading(true);
         
-        // Load all regular meetings only - NO LEGACY JOINS to prevent duplicates
-        console.log('🔄 Loading all regular meetings...');
+        // Load all regular meetings with department JOINs - NO LEGACY JOINS to prevent duplicates
         const { data: meetingsData, error: meetingsError } = await supabase
           .from('meetings')
           .select(`
@@ -918,14 +888,20 @@ const CalendarPage: React.FC = () => {
             lead:leads!client_id(
               id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
               balance, balance_currency, expert_notes, expert, probability, phone, email, 
-              manual_interactions, number_of_applicants_meeting
+              manual_interactions, number_of_applicants_meeting,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement!department_id(id, name)
+                )
+              )
             )
           `)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_date', { ascending: false });
 
         // DISABLED: Background legacy loading removed to prevent timeouts
-        console.log('🚫 Background legacy loading disabled - only date filter legacy loading enabled');
 
         // For now, set empty legacy data so we don't block the main flow
         let legacyMeetingsData = [];
@@ -940,28 +916,29 @@ const CalendarPage: React.FC = () => {
             .filter((meeting: any) => {
               // Filter out meetings with invalid or null dates
               if (!meeting.meeting_date) {
-                console.log('🔍 Calendar: Skipping regular meeting with null date:', meeting.id);
                 return false;
               }
               
               // Validate date format
               const date = new Date(meeting.meeting_date);
               if (isNaN(date.getTime())) {
-                console.log('🔍 Calendar: Skipping regular meeting with invalid date:', meeting.id, meeting.meeting_date);
                 return false;
               }
               
               return true;
             })
             .map((meeting: any) => {
-              // Only process regular meetings - legacy meetings are handled separately
+              // Only process regular meetings with department data - legacy meetings are handled separately
               let leadData = null;
               
               if (meeting.lead) {
-              // Use new lead data (leads table doesn't have lead_type, so we set it to 'new')
+              // Use new lead data with department info from JOINs
               leadData = {
                 ...meeting.lead,
-                lead_type: 'new'
+                lead_type: 'new',
+                // Add department info from JOINs
+                department_name: meeting.lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
+                department_id: meeting.lead.misc_category?.misc_maincategory?.department_id
               };
             }
             
@@ -974,28 +951,8 @@ const CalendarPage: React.FC = () => {
           // Count regular meetings only
           const newCount = processedMeetings.filter(m => m.lead?.lead_type === 'new').length;
           
-          console.log('🔍 Calendar: Processed regular meetings summary:', {
-            total: processedMeetings.length,
-            new: newCount
-          });
           
-          // Debug: Check sample regular meeting data
-          if (processedMeetings.length > 0) {
-            const sampleMeeting = processedMeetings[0];
-            console.log('🔍 Calendar: Sample regular meeting data:', {
-              id: sampleMeeting.id,
-              meeting_amount: sampleMeeting.meeting_amount,
-              meeting_currency: sampleMeeting.meeting_currency,
-              lead_balance: sampleMeeting.lead?.balance,
-              lead_balance_currency: sampleMeeting.lead?.balance_currency,
-              lead_type: sampleMeeting.lead?.lead_type
-            });
-          }
           
-          console.log('✅ Regular meetings loaded in background:', {
-            total: processedMeetings.length,
-            allMeetingDates: [...new Set(processedMeetings.map(m => m.meeting_date))].sort()
-          });
           
           // Update meetings state with regular meetings only
           setMeetings(processedMeetings);
@@ -1017,10 +974,6 @@ const CalendarPage: React.FC = () => {
           setStaff([]);
         } else {
           const allStaffNames = allStaffData?.map(employee => employee.display_name).filter(Boolean) || [];
-          console.log('🔍 Calendar staff loaded:', {
-            count: allStaffNames.length,
-            sample: allStaffNames.slice(0, 5)
-          });
           setStaff(allStaffNames);
         }
       } catch (error) {
@@ -1037,14 +990,12 @@ const CalendarPage: React.FC = () => {
     
     // DISABLED: Meeting counts query removed to prevent timeouts
     // fetchMeetingCountsAndPreviousManagers().catch(error => {
-    //   console.log('⚠️ Meeting counts query failed, continuing without flame icons:', error.message);
     // });
   }, []);
 
   // Re-render when categories are loaded to update category names
   useEffect(() => {
     if (allCategories.length > 0) {
-      console.log('🔄 Categories loaded, re-rendering to update category names');
       // Force a re-render by updating a dummy state or just let React handle it
     }
   }, [allCategories]);
@@ -1097,7 +1048,6 @@ const CalendarPage: React.FC = () => {
   // Load legacy meetings and staff meetings when selected date changes
   useEffect(() => {
     if (selectedDate) {
-      console.log('🔄 Selected date changed to:', selectedDate, '- loading meetings');
       // Reset loading state when date changes
       setIsLegacyLoading(true);
       loadLegacyForDate(selectedDate);
@@ -1111,30 +1061,10 @@ const CalendarPage: React.FC = () => {
     const allMeetings = [...meetings, ...staffMeetings];
     let filtered = allMeetings;
 
-    console.log('🔍 Calendar: Starting filtering with:', {
-      totalMeetings: meetings.length,
-      staffMeetings: staffMeetings.length,
-      allMeetings: allMeetings.length,
-      selectedDate,
-      selectedStaff,
-      selectedMeetingType,
-      sampleMeetings: allMeetings.slice(0, 3).map(m => ({
-        id: m.id,
-        date: m.meeting_date,
-        time: m.meeting_time,
-        lead_name: m.lead?.name,
-        calendar_type: m.calendar_type
-      }))
-    });
 
     if (selectedDate) {
       const beforeFilter = filtered.length;
       filtered = filtered.filter(m => m.meeting_date === selectedDate);
-      console.log('🔍 Calendar: After date filter:', {
-        before: beforeFilter,
-        after: filtered.length,
-        selectedDate
-      });
     }
 
     if (selectedStaff) {
@@ -1150,20 +1080,6 @@ const CalendarPage: React.FC = () => {
           lead.expert === selectedStaff
         );
         return matches;
-      });
-      console.log('🔍 Calendar: After staff filter:', {
-        before: beforeFilter,
-        after: filtered.length,
-        selectedStaff,
-        filteredMeetings: filtered.map(m => ({
-          id: m.id,
-          manager: m.meeting_manager,
-          helper: m.helper,
-          expert: m.expert,
-          leadManager: m.lead?.manager,
-          leadHelper: m.lead?.helper,
-          leadExpert: m.lead?.expert
-        }))
       });
     }
 
@@ -1181,16 +1097,6 @@ const CalendarPage: React.FC = () => {
           return false;
         }
         return true;
-      });
-      console.log('🔍 Calendar: After meeting type filter:', {
-        before: beforeFilter,
-        after: filtered.length,
-        selectedMeetingType,
-        filteredMeetings: filtered.map(m => ({
-          id: m.id,
-          calendar_type: m.calendar_type,
-          lead_name: m.lead?.name
-        }))
       });
     }
 
@@ -1241,19 +1147,6 @@ const CalendarPage: React.FC = () => {
         source = 'staff_meeting';
       }
       
-      // Debug logging for first few meetings
-      if (filtered.indexOf(meeting) < 3) {
-        console.log('💰 Calendar Balance debug for meeting', meeting.id, ':', {
-          leadBalance: lead.balance,
-          leadBalanceCurrency: lead.balance_currency,
-          meetingAmount: meeting.meeting_amount,
-          meetingCurrency: meeting.meeting_currency,
-          selectedAmount: amount,
-          selectedCurrency: currency,
-          source: source,
-          leadType: lead.lead_type
-        });
-      }
       
       // Convert to NIS and add to total
       const amountInNIS = convertToNIS(amount, currency);
@@ -1262,8 +1155,6 @@ const CalendarPage: React.FC = () => {
     
     setTotalAmount(totalAmountInNIS);
     
-    // Log total amount for debugging
-    console.log('💰 Calendar: Total amount in NIS:', totalAmountInNIS);
 
   }, [selectedDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
 
@@ -1370,12 +1261,6 @@ const CalendarPage: React.FC = () => {
   // Helper function to handle Email button click
   const handleEmailClick = (lead: any, meeting: any) => {
     // Debug: Log the lead data to ensure it's correct
-    console.log('Email button clicked for:', {
-      lead,
-      meetingId: meeting.id,
-      leadNumber: lead.lead_number,
-      meetingLeadNumber: meeting.lead_number
-    });
     
     // Set the selected lead for email and open the modal
     setSelectedLeadForEmail(lead);
@@ -1385,14 +1270,6 @@ const CalendarPage: React.FC = () => {
   // Helper function to handle WhatsApp button click
   const handleWhatsAppClick = (lead: any, meeting: any) => {
     // Debug: Log the lead data to ensure it's correct
-    console.log('WhatsApp button clicked for:', {
-      lead,
-      meetingId: meeting.id,
-      leadNumber: lead.lead_number,
-      meetingLeadNumber: meeting.lead_number,
-      leadId: lead.id,
-      meetingLeadId: meeting.lead_id
-    });
     
     // Set the selected lead for WhatsApp and open the modal
     setSelectedLeadForWhatsApp(lead);
@@ -1783,37 +1660,18 @@ const CalendarPage: React.FC = () => {
       if (meetingsError) throw meetingsError;
       if (legacyMeetingsError) throw legacyMeetingsError;
 
-      console.log('📅 Assign Staff Modal - Fetched meetings:', {
-        dateRange: `${sevenDaysAgo} to ${thirtyDaysFromNow}`,
-        regularMeetings: meetingsData?.length || 0,
-        legacyMeetings: legacyMeetingsData?.length || 0,
-        regularMeetingsList: meetingsData?.map(m => ({
-          id: m.id,
-          date: m.meeting_date,
-          time: m.meeting_time,
-          lead_number: m.lead?.lead_number || m.legacy_lead?.lead_number
-        })),
-        legacyMeetingsList: legacyMeetingsData?.map(m => ({
-          id: m.id,
-          date: m.meeting_date,
-          time: m.meeting_time,
-          lead_number: m.lead_number
-        }))
-      });
 
       // Process the regular meetings to combine lead data from both tables
       const processedMeetings = (meetingsData || [])
         .filter(meeting => {
           // Filter out meetings with invalid or null dates
           if (!meeting.meeting_date) {
-            console.log('🔍 Assign Staff: Skipping regular meeting with null date:', meeting.id);
             return false;
           }
           
           // Validate date format
           const date = new Date(meeting.meeting_date);
           if (isNaN(date.getTime())) {
-            console.log('🔍 Assign Staff: Skipping regular meeting with invalid date:', meeting.id, meeting.meeting_date);
             return false;
           }
           
@@ -1862,14 +1720,12 @@ const CalendarPage: React.FC = () => {
         .filter(legacyLead => {
           // Filter out meetings with invalid or null dates
           if (!legacyLead.meeting_date) {
-            console.log('🔍 Assign Staff: Skipping legacy meeting with null date:', legacyLead.id);
             return false;
           }
           
           // Validate date format
           const date = new Date(legacyLead.meeting_date);
           if (isNaN(date.getTime())) {
-            console.log('🔍 Assign Staff: Skipping legacy meeting with invalid date:', legacyLead.id, legacyLead.meeting_date);
             return false;
           }
           
@@ -1956,12 +1812,6 @@ const CalendarPage: React.FC = () => {
       const allStaffNames = allStaffData?.map(employee => employee.display_name).filter(Boolean) || [];
       const uniqueStaffNames = [...new Set([...staffNames, ...allStaffNames])];
 
-      console.log('🔍 Staff loading debug:', {
-        staffFromMeetings: staffNames.length,
-        staffFromTenants: allStaffNames.length,
-        uniqueStaff: uniqueStaffNames.length,
-        sampleStaff: uniqueStaffNames.slice(0, 5)
-      });
 
       setAssignStaffMeetings(allMeetings);
       setAvailableStaff(uniqueStaffNames);
@@ -1988,7 +1838,6 @@ const CalendarPage: React.FC = () => {
       });
 
       setMeetingLocations(locationsMap);
-      console.log('📍 Meeting locations loaded:', locationsMap);
     } catch (error) {
       console.error('Error fetching meeting locations:', error);
     }
@@ -2079,18 +1928,6 @@ const CalendarPage: React.FC = () => {
         }
       });
 
-      console.log('📊 Meeting counts and previous managers:', {
-        totalMeetings: allMeetingsCombined.length,
-        regularMeetings: allMeetings?.length,
-        legacyMeetings: legacyMeetings?.length,
-        counts: counts,
-        prevManagers: prevManagers,
-        sampleMeetings: allMeetings?.slice(0, 3).map((m: any) => ({
-          id: m.id,
-          clientId: m.client_id || (m.legacy_lead as any)?.id || (m.lead as any)?.id,
-          leadNumber: (m.lead as any)?.lead_number || (m.legacy_lead as any)?.lead_number
-        }))
-      });
 
       setMeetingCounts(counts);
       setPreviousManagers(prevManagers);
@@ -2180,14 +2017,6 @@ const CalendarPage: React.FC = () => {
       setEmployeeAvailability(availabilityMap);
       setUnavailableEmployees(unavailableMap);
       
-      console.log('🔍 Employee availability loaded:', {
-        totalEmployees: employeesData?.length || 0,
-        availabilityDates: Object.keys(availabilityMap).length,
-        sampleAvailability: Object.keys(availabilityMap).slice(0, 3).map(date => ({
-          date,
-          unavailable: unavailableMap[date]?.length || 0
-        }))
-      });
     } catch (error) {
       console.error('Error fetching employee availability:', error);
     }
@@ -2220,14 +2049,6 @@ const CalendarPage: React.FC = () => {
       if (unavailable.employeeName === staffName) {
         // If it's a range (all-day unavailable), always return true
         if (unavailable.isRange || unavailable.startTime === 'All Day') {
-          console.log('🔍 Range unavailability detected:', {
-            staffName,
-            date,
-            time,
-            isRange: unavailable.isRange,
-            startTime: unavailable.startTime,
-            reason: unavailable.reason
-          });
           return true;
         }
         
@@ -2237,14 +2058,6 @@ const CalendarPage: React.FC = () => {
         const isTimeConflict = time >= unavailableStart && time <= unavailableEnd;
         
         if (isTimeConflict) {
-          console.log('🔍 Time slot unavailability detected:', {
-            staffName,
-            date,
-            time,
-            startTime: unavailableStart,
-            endTime: unavailableEnd,
-            reason: unavailable.reason
-          });
         }
         
         return isTimeConflict;
@@ -2261,13 +2074,6 @@ const CalendarPage: React.FC = () => {
     if (typeof meeting.id === 'string' && meeting.id.startsWith('legacy_')) {
       const isLegacyStage55 = meeting.lead?.stage === 55;
       
-      // Debug logging for legacy meetings
-      console.log('🔥 Flame icon check (legacy):', {
-        meetingId: meeting.id,
-        leadNumber: meeting.lead?.lead_number || meeting.lead_number,
-        stage: meeting.lead?.stage,
-        isLegacyStage55: isLegacyStage55
-      });
       
       return isLegacyStage55;
     }
@@ -2279,15 +2085,6 @@ const CalendarPage: React.FC = () => {
     if (Object.keys(meetingCounts).length > 0) {
       const isNotFirst = clientId && meetingCounts[clientId] > 1;
       
-      // Debug logging for regular meetings
-      console.log('🔥 Flame icon check (regular):', {
-        meetingId: meeting.id,
-        leadNumber: meeting.lead?.lead_number || meeting.lead_number,
-        clientId: clientId,
-        meetingCount: meetingCounts[clientId],
-        isNotFirst: isNotFirst,
-        allMeetingCounts: meetingCounts
-      });
       
       return isNotFirst;
     }
@@ -2297,13 +2094,6 @@ const CalendarPage: React.FC = () => {
     const today = new Date().toISOString().split('T')[0];
     const isPastMeeting = meeting.meeting_date && meeting.meeting_date < today;
     
-    console.log('🔥 Flame icon check (fallback):', {
-      meetingId: meeting.id,
-      leadNumber: meeting.lead?.lead_number || meeting.lead_number,
-      meetingDate: meeting.meeting_date,
-      today: today,
-      isPastMeeting: isPastMeeting
-    });
     
     return isPastMeeting;
   };
@@ -2343,13 +2133,11 @@ const CalendarPage: React.FC = () => {
 
   const getLegacyMeetingLocation = (locationId?: number | string) => {
     if (!locationId) {
-      console.log('🔍 getLegacyMeetingLocation: No locationId provided');
       return 'N/A';
     }
     // Convert to number if it's a string
     const numericId = typeof locationId === 'string' ? parseInt(locationId, 10) : locationId;
     const location = meetingLocations[numericId];
-    console.log('🔍 getLegacyMeetingLocation:', { locationId, numericId, location, allLocations: meetingLocations });
     return location || 'N/A';
   };
 
@@ -2495,24 +2283,9 @@ const CalendarPage: React.FC = () => {
 
   // Helper function to filter meetings by date and staff (for assign staff modal)
   const getFilteredMeetings = () => {
-    console.log('🔍 Filtering meetings:', {
-      modalSelectedDate,
-      totalMeetings: assignStaffMeetings.length,
-      allMeetingDates: [...new Set(assignStaffMeetings.map(m => m.meeting_date))].sort()
-    });
     
     let filtered = assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate);
     
-    console.log('📅 Meetings for selected date:', {
-      selectedDate: modalSelectedDate,
-      filteredCount: filtered.length,
-      meetings: filtered.map(m => ({
-        id: m.id,
-        date: m.meeting_date,
-        time: m.meeting_time,
-        lead_number: m.lead?.lead_number || m.legacy_lead?.lead_number
-      }))
-    });
     
     if (selectedStaffFilter) {
       const beforeCount = filtered.length;
@@ -2529,30 +2302,6 @@ const CalendarPage: React.FC = () => {
         return matches;
       });
       
-      console.log('🔍 Staff filtering debug:', {
-        selectedStaffFilter,
-        beforeCount,
-        afterCount: filtered.length,
-        filteredMeetings: filtered.map(m => ({
-          id: m.id,
-          manager: m.meeting_manager,
-          helper: m.helper,
-          expert: m.expert,
-          leadManager: m.lead?.manager,
-          leadHelper: m.lead?.helper,
-          leadExpert: m.lead?.expert
-        })),
-        allMeetingsForDebug: assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate).map(m => ({
-          id: m.id,
-          expert: m.expert,
-          leadExpert: m.lead?.expert,
-          meeting_manager: m.meeting_manager,
-          helper: m.helper,
-          leadManager: m.lead?.manager,
-          leadHelper: m.lead?.helper
-        })),
-        availableStaffList: availableStaff
-      });
     }
     
     return filtered;
@@ -2959,21 +2708,6 @@ const CalendarPage: React.FC = () => {
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
     else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
     
-    // Debug: Log meeting data for troubleshooting
-    console.log('🔍 Meeting data:', {
-      id: meeting.id,
-      leadNumber: lead.lead_number || meeting.lead_number,
-      clientId: meeting.client_id || (meeting.legacy_lead as any)?.id || (meeting.lead as any)?.id,
-      attendance_probability: meeting.attendance_probability,
-      complexity: meeting.complexity,
-      car_number: meeting.car_number,
-      location: meeting.location || meeting.meeting_location,
-      meeting_location_id: meeting.meeting_location_id,
-      meeting_location_old: meeting.meeting_location_old,
-      probability: probability,
-      probabilityNumber: probabilityNumber,
-      isNotFirst: isNotFirstMeeting(meeting)
-    });
     
     return (
       <React.Fragment key={meeting.id}>
@@ -3210,6 +2944,17 @@ const CalendarPage: React.FC = () => {
 
   return (
     <div className="p-4 md:p-6 lg:p-8 text-base">
+      <style>
+        {`
+          .hide-scrollbar {
+            -ms-overflow-style: none;  /* Internet Explorer 10+ */
+            scrollbar-width: none;  /* Firefox */
+          }
+          .hide-scrollbar::-webkit-scrollbar { 
+            display: none;  /* Safari and Chrome */
+          }
+        `}
+      </style>
       {/* Date Navigation */}
       <div className="mb-6 flex items-center justify-center gap-4">
         <button
@@ -3248,21 +2993,21 @@ const CalendarPage: React.FC = () => {
       </div>
 
       <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
-        <div className="flex items-center gap-4">
-          <h1 className="text-3xl font-bold flex items-center gap-3">
-            <CalendarIcon className="w-8 h-8 text-primary" />
-            <span className="text-3xl">Calendar</span>
+        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
+          <h1 className="text-2xl sm:text-3xl font-bold flex items-center gap-2 sm:gap-3">
+            <CalendarIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
+            <span className="text-2xl sm:text-3xl">Calendar</span>
           </h1>
-          <div className="btn btn-lg flex items-center gap-2 bg-base-200 border-base-300 hover:bg-base-300">
-            <span className="text-sm font-medium text-base-content/70">Total Meetings:</span>
-            <span className="text-lg font-bold text-primary">{filteredMeetings.length}</span>
+          <div className="btn btn-sm sm:btn-lg flex items-center gap-2 bg-base-200 border-base-300 hover:bg-base-300">
+            <span className="text-xs sm:text-sm font-medium text-base-content/70">Total Meetings:</span>
+            <span className="text-sm sm:text-lg font-bold text-primary">{filteredMeetings.length}</span>
           </div>
           <button
-            className="btn btn-primary btn-lg flex items-center gap-2"
+            className="btn btn-primary btn-sm sm:btn-lg flex items-center gap-2 w-full sm:w-auto"
             onClick={openAssignStaffModal}
           >
-            <UserGroupIcon className="w-5 h-5" />
-            Assign Staff
+            <UserGroupIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+            <span className="text-sm sm:text-base">Assign Staff</span>
           </button>
         </div>
 
@@ -3381,9 +3126,33 @@ const CalendarPage: React.FC = () => {
                 <p className="mt-4 text-base-content/60">Loading meetings...</p>
               </div>
             ) : filteredMeetings.length > 0 ? (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6 p-6">
-                {filteredMeetings.map(renderMeetingCard)}
-              </div>
+              <>
+                {/* Mobile: Horizontal Scrolling */}
+                <div className="md:hidden">
+                  <div className="flex gap-4 p-4 overflow-x-auto snap-x snap-mandatory hide-scrollbar">
+                    {filteredMeetings.map((meeting) => (
+                      <div key={meeting.id} className="flex-shrink-0 w-80 snap-start">
+                        {renderMeetingCard(meeting)}
+                      </div>
+                    ))}
+                  </div>
+                  {/* Scroll indicator */}
+                  {filteredMeetings.length > 1 && (
+                    <div className="flex justify-center mt-2 gap-1">
+                      <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
+                        Swipe to see more cards ({filteredMeetings.length} total)
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                {/* Desktop: Grid Layout */}
+                <div className="hidden md:block">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6 p-6">
+                    {filteredMeetings.map(renderMeetingCard)}
+                  </div>
+                </div>
+              </>
             ) : (
               <div className="text-center p-8">
                 <div className="text-base-content/60">
@@ -3511,7 +3280,6 @@ const CalendarPage: React.FC = () => {
                                   caption: message.caption
                                 })}
                                 onError={(e) => {
-                                  console.log('Failed to load image:', message.media_url);
                                   e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
                                   e.currentTarget.style.border = '1px solid #e5e7eb';
                                   e.currentTarget.style.borderRadius = '0.5rem';
@@ -3553,7 +3321,6 @@ const CalendarPage: React.FC = () => {
                                 caption: message.caption
                               })}
                               onError={(e) => {
-                                console.log('Failed to load video:', message.media_url);
                                 e.currentTarget.style.display = 'none';
                                 const errorDiv = document.createElement('div');
                                 errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';

@@ -27,6 +27,7 @@ import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
+import EmployeeModal from './EmployeeModal';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -127,6 +128,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
+  const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
+  const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
 
   const unreadCount = notifications.filter(n => !n.read).length;
 
@@ -164,16 +168,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       path: '/teams',
       icon: UserGroupIcon,
     },
-    {
-      label: 'WhatsApp',
-      path: '/whatsapp',
-      icon: FaWhatsapp,
-    },
-    {
-      label: 'Email Chat',
-      action: 'email-thread',
-      icon: EnvelopeIcon,
-    },
+    
+    
   ];
 
   useEffect(() => {
@@ -422,10 +418,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [instance]);
 
   useEffect(() => {
-    // Fetch the current user's name from Supabase users table
-    const fetchUserName = async () => {
+    // Fetch the current user's name and employee data from Supabase
+    const fetchUserData = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user && user.email) {
+        // Fetch user name
         const { data, error } = await supabase
           .from('users')
           .select('first_name, last_name, full_name')
@@ -461,9 +458,70 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             setUserFullName(user.email);
           }
         }
+
+        // Fetch current user's employee data
+        try {
+          // First get all employees for the modal
+          const { data: employeesData, error: employeesError } = await supabase
+            .from('tenants_employee')
+            .select(`
+              id,
+              display_name,
+              bonuses_role,
+              department_id,
+              user_id,
+              photo_url,
+              photo,
+              phone,
+              mobile,
+              phone_ext
+            `);
+
+          if (!employeesError && employeesData) {
+            setAllEmployees(employeesData);
+
+            // Find current user's employee record by email match
+            const currentEmployee = employeesData.find(emp => 
+              emp.display_name && user.email && 
+              emp.display_name.toLowerCase().includes(user.email.split('@')[0].toLowerCase())
+            );
+
+            if (currentEmployee) {
+              // Get department name
+              const { data: departmentData } = await supabase
+                .from('tenant_departement')
+                .select('name')
+                .eq('id', currentEmployee.department_id)
+                .single();
+
+              // Get auth user data
+              const { data: authUserData } = await supabase
+                .from('auth_user')
+                .select('email, is_active')
+                .eq('id', currentEmployee.user_id)
+                .single();
+
+              setCurrentUserEmployee({
+                ...currentEmployee,
+                department: departmentData?.name || 'General',
+                email: authUserData?.email || user.email,
+                is_active: authUserData?.is_active || true,
+                performance_metrics: {
+                  total_meetings: 0,
+                  completed_meetings: 0,
+                  total_revenue: 0,
+                  average_rating: 0,
+                  last_activity: 'No activity'
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching employee data:', error);
+        }
       }
     };
-    fetchUserName();
+    fetchUserData();
   }, []);
 
   useEffect(() => {
@@ -644,6 +702,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   right: '8px'
                 }}
               >
+                {/* My Profile Option */}
+                <button
+                  onClick={() => {
+                    setShowMobileQuickActionsDropdown(false);
+                    if (currentUserEmployee) {
+                      setIsEmployeeModalOpen(true);
+                    } else {
+                      toast.error('Unable to load your profile data');
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100"
+                >
+                  <UserIcon className="w-5 h-5 text-gray-500" />
+                  <span className="text-sm font-medium">My Profile</span>
+                </button>
+                
                 {navTabs.map(tab => {
                   const Icon = tab.icon;
                   if (tab.action === 'email-thread') {
@@ -724,6 +798,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
                 }}
               >
+                {/* My Profile Option */}
+                <button
+                  onClick={() => {
+                    setShowQuickActionsDropdown(false);
+                    if (currentUserEmployee) {
+                      setIsEmployeeModalOpen(true);
+                    } else {
+                      toast.error('Unable to load your profile data');
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100"
+                >
+                  <UserIcon className="w-5 h-5 text-gray-500" />
+                  <span className="text-sm font-medium">My Profile</span>
+                </button>
+                
                 {navTabs.map(tab => {
                   const Icon = tab.icon;
                   if (tab.action === 'email-thread') {
@@ -1486,6 +1576,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       {/* Spacer to prevent content from being hidden behind the fixed header */}
       <div className="h-16 w-full" />
+      
+      {/* Employee Modal for My Profile */}
+      <EmployeeModal 
+        employee={currentUserEmployee} 
+        allEmployees={allEmployees}
+        isOpen={isEmployeeModalOpen} 
+        onClose={() => setIsEmployeeModalOpen(false)} 
+      />
+      
       <style>{`
         .glassy-notification-box {
           background: rgba(255,255,255,0.60);

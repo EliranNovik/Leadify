@@ -98,7 +98,8 @@ const getInitials = (displayName: string): string => {
       'SE': 'Secretary',
       'B': 'Book keeper',
       'Partners': 'Partners',
-      'd': 'Diverse'
+      'd': 'Diverse',
+      'f': 'Finance'
     };
     
     return roleMap[roleCode] || roleCode || 'No role';
@@ -203,6 +204,7 @@ const EmployeePerformancePage: React.FC = () => {
             department_id,
             user_id,
             photo_url,
+            photo,
             phone,
             mobile,
             phone_ext
@@ -286,6 +288,7 @@ const EmployeePerformancePage: React.FC = () => {
                   email: 'N/A',
                   is_active: false,
                   photo_url: employee.photo_url,
+                  photo: employee.photo,
                   phone: employee.phone,
                   mobile: employee.mobile,
                   phone_ext: employee.phone_ext
@@ -300,6 +303,7 @@ const EmployeePerformancePage: React.FC = () => {
                 email: authUserData?.email || 'N/A',
                 is_active: authUserData?.is_active || false,
                 photo_url: employee.photo_url,
+                photo: employee.photo,
                 phone: employee.phone,
                 mobile: employee.mobile,
                 phone_ext: employee.phone_ext
@@ -314,6 +318,7 @@ const EmployeePerformancePage: React.FC = () => {
                 email: 'N/A',
                 is_active: false,
                 photo_url: employee.photo_url,
+                photo: employee.photo,
                 phone: employee.phone,
                 mobile: employee.mobile,
                 phone_ext: employee.phone_ext
@@ -846,14 +851,14 @@ const EmployeePerformancePage: React.FC = () => {
   }
 
   return (
-    <div className="p-6">
+    <div className="p-3 sm:p-6">
       {/* Header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-3 mb-4">
-          <ChartBarIcon className="w-8 h-8 text-primary" />
-          <h1 className="text-3xl font-bold">Employee Performance</h1>
+      <div className="mb-4 sm:mb-6">
+        <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4">
+          <ChartBarIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
+          <h1 className="text-xl sm:text-3xl font-bold">Employee Performance</h1>
         </div>
-        <p className="text-gray-600">Track and analyze employee performance across departments and roles</p>
+        <p className="text-sm sm:text-base text-gray-600">Track and analyze employee performance across departments and roles</p>
       </div>
 
       {/* Summary Cards */}
@@ -943,19 +948,19 @@ const EmployeePerformancePage: React.FC = () => {
       </div>
 
       {/* View Mode Toggle */}
-      <div className="card bg-base-100 shadow-sm mb-6">
-        <div className="card-body">
-          <div className="flex items-center justify-between">
-            <h3 className="text-lg font-semibold">View Mode</h3>
-            <div className="flex gap-2">
+      <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+        <div className="card-body p-3 sm:p-6">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
+            <h3 className="text-base sm:text-lg font-semibold">View Mode</h3>
+            <div className="flex gap-2 w-full sm:w-auto">
               <button
-                className={`btn ${viewMode === 'department' ? 'btn-primary' : 'btn-outline'}`}
+                className={`btn btn-sm sm:btn-md flex-1 sm:flex-none ${viewMode === 'department' ? 'btn-primary' : 'btn-outline'}`}
                 onClick={() => setViewMode('department')}
               >
                 Departments
               </button>
               <button
-                className={`btn ${viewMode === 'subdepartment' ? 'btn-primary' : 'btn-outline'}`}
+                className={`btn btn-sm sm:btn-md flex-1 sm:flex-none ${viewMode === 'subdepartment' ? 'btn-primary' : 'btn-outline'}`}
                 onClick={() => setViewMode('subdepartment')}
               >
                 Roles
@@ -966,17 +971,17 @@ const EmployeePerformancePage: React.FC = () => {
       </div>
 
       {/* Filters */}
-      <div className="card bg-base-100 shadow-sm mb-6">
-        <div className="card-body">
-          <div className="flex flex-col md:flex-row gap-4">
+      <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+        <div className="card-body p-3 sm:p-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4">
             <div className="form-control">
               <label className="label">
-                <span className="label-text font-semibold">
+                <span className="label-text font-semibold text-xs sm:text-sm">
                   {viewMode === 'department' ? 'Department' : 'Subdepartment'}
                 </span>
               </label>
               <select
-                className="select select-bordered"
+                className="select select-bordered select-sm sm:select-md"
                 value={viewMode === 'department' ? selectedDepartment : selectedSubdepartment}
                 onChange={(e) => {
                   if (viewMode === 'department') {
@@ -1005,10 +1010,10 @@ const EmployeePerformancePage: React.FC = () => {
 
             <div className="form-control">
               <label className="label">
-                <span className="label-text font-semibold">Role</span>
+                <span className="label-text font-semibold text-xs sm:text-sm">Role</span>
               </label>
               <select
-                className="select select-bordered"
+                className="select select-bordered select-sm sm:select-md"
                 value={selectedRole}
                 onChange={(e) => setSelectedRole(e.target.value)}
               >
@@ -1019,15 +1024,15 @@ const EmployeePerformancePage: React.FC = () => {
               </select>
             </div>
 
-            <div className="form-control flex-1">
+            <div className="form-control sm:col-span-2 lg:col-span-1">
               <label className="label">
-                <span className="label-text font-semibold">Search Employee</span>
+                <span className="label-text font-semibold text-xs sm:text-sm">Search Employee</span>
               </label>
               <div className="relative">
                 <input
                   type="text"
                   placeholder="Search by name or email..."
-                  className="input input-bordered w-full pr-10"
+                  className="input input-bordered input-sm sm:input-md w-full pr-10"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -1043,7 +1048,7 @@ const EmployeePerformancePage: React.FC = () => {
                       </svg>
                     </button>
                   )}
-                  <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <svg className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                   </svg>
                 </div>
@@ -1052,11 +1057,11 @@ const EmployeePerformancePage: React.FC = () => {
 
             <div className="form-control">
               <label className="label">
-                <span className="label-text font-semibold">Date From</span>
+                <span className="label-text font-semibold text-xs sm:text-sm">Date From</span>
               </label>
               <input
                 type="date"
-                className="input input-bordered"
+                className="input input-bordered input-sm sm:input-md"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
               />
@@ -1064,45 +1069,60 @@ const EmployeePerformancePage: React.FC = () => {
 
             <div className="form-control">
               <label className="label">
-                <span className="label-text font-semibold">Date To</span>
+                <span className="label-text font-semibold text-xs sm:text-sm">Date To</span>
               </label>
               <input
                 type="date"
-                className="input input-bordered"
+                className="input input-bordered input-sm sm:input-md"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
               />
             </div>
 
-            <div className="form-control">
+            <div className="form-control sm:col-span-2 lg:col-span-1">
               <label className="label">
-                <span className="label-text font-semibold">Monthly Bonus Pool</span>
+                <span className="label-text font-semibold text-xs sm:text-sm">Monthly Bonus Pool</span>
               </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  placeholder="Enter total bonus pool amount..."
-                  className="input input-bordered w-full pr-8 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                  value={bonusAmount}
-                  onChange={(e) => setBonusAmount(e.target.value)}
-                  min="0"
-                  step="0.01"
-                />
-                <div className="absolute inset-y-0 right-0 flex items-center pr-3">
-                  <span className="text-gray-400 text-sm">$</span>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type="number"
+                    placeholder="Enter total bonus pool amount..."
+                    className="input input-bordered input-sm sm:input-md w-full pr-8 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                    value={bonusAmount}
+                    onChange={(e) => setBonusAmount(e.target.value)}
+                    min="0"
+                    step="0.01"
+                  />
+                  <div className="absolute inset-y-0 right-0 flex items-center pr-3">
+                    <span className="text-gray-400 text-xs sm:text-sm">$</span>
+                  </div>
                 </div>
+                <button
+                  className="btn btn-outline btn-xs sm:btn-sm hidden sm:flex"
+                  onClick={() => {
+                    setSelectedDepartment('all');
+                    setSelectedSubdepartment('all');
+                    setSelectedRole('all');
+                    setSearchQuery('');
+                    setDateFrom('');
+                    setDateTo('');
+                    setBonusAmount('');
+                  }}
+                  title="Clear all filters"
+                >
+                  Clear All
+                </button>
               </div>
               <div className="label">
-                <span className="label-text-alt text-gray-500">Total bonus amount for all employees</span>
+                <span className="label-text-alt text-gray-500 text-xs">Total bonus amount for all employees</span>
               </div>
             </div>
 
-            <div className="form-control">
-              <label className="label">
-                <span className="label-text font-semibold">&nbsp;</span>
-              </label>
+            {/* Mobile Clear All Button */}
+            <div className="form-control flex items-end sm:hidden">
               <button
-                className="btn btn-outline btn-sm"
+                className="btn btn-outline btn-sm w-full"
                 onClick={() => {
                   setSelectedDepartment('all');
                   setSelectedSubdepartment('all');
@@ -1179,36 +1199,51 @@ const EmployeePerformancePage: React.FC = () => {
         }
 
         return (
-          <div key={groupData.name} className="card shadow-sm mb-6">
-            <div className="card-header">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xl font-bold flex items-center gap-3">
-                  {groupData.name}
-                  {isSubdepartment && (
-                    <span className="badge badge-secondary">
-                      {(groupData as SubdepartmentGroup).bonus_percentage}% Bonus
-                    </span>
-                  )}
-                  <span className="badge badge-primary">{filteredEmployees.length} employees</span>
-                </h3>
-                <div className="text-sm text-gray-600">
-                  {groupData.total_meetings} meetings • {formatCurrency(groupData.total_revenue)} revenue
+          <div key={groupData.name} className="card shadow-sm mb-4 sm:mb-6">
+            <div className="card-header p-3 sm:p-6">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+                  <h3 className="text-lg sm:text-xl font-bold">{groupData.name}</h3>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {isSubdepartment && (
+                      <span className="badge badge-secondary text-xs">
+                        {(groupData as SubdepartmentGroup).bonus_percentage}% Bonus
+                      </span>
+                    )}
+                    <span className="badge badge-primary text-xs">{filteredEmployees.length} employees</span>
+                  </div>
+                </div>
+                <div className="text-xs sm:text-sm text-gray-600">
+                  <span className="hidden sm:inline">{groupData.total_meetings} meetings • {formatCurrency(groupData.total_revenue)} revenue</span>
+                  <span className="sm:hidden">{groupData.total_meetings} meetings</span>
                 </div>
               </div>
             </div>
             <div className="card-body p-0">
               <div className="overflow-x-auto">
-                <table className="table w-full">
+                <table className="table w-full text-xs sm:text-sm">
                   <thead>
                     <tr>
-                      <th className="w-1/4">Employee</th>
-                      <th className="w-1/12">Role</th>
-                      <th className="w-1/12">Total Meetings</th>
-                      <th className="w-1/12">Completed</th>
-                      <th className="w-1/12">Revenue</th>
-                      <th className="w-1/12">Last Activity</th>
-                      <th className="w-1/12">Bonus</th>
-                      <th className="w-1/12">Performance</th>
+                      <th className="w-1/4 text-xs sm:text-sm">Employee</th>
+                      <th className="w-1/12 text-xs sm:text-sm">Role</th>
+                      <th className="w-1/12 text-xs sm:text-sm">
+                        <span className="hidden sm:inline">Total Meetings</span>
+                        <span className="sm:hidden">Total</span>
+                      </th>
+                      <th className="w-1/12 text-xs sm:text-sm">
+                        <span className="hidden sm:inline">Completed</span>
+                        <span className="sm:hidden">Done</span>
+                      </th>
+                      <th className="w-1/12 text-xs sm:text-sm">Revenue</th>
+                      <th className="w-1/12 text-xs sm:text-sm">
+                        <span className="hidden sm:inline">Last Activity</span>
+                        <span className="sm:hidden">Activity</span>
+                      </th>
+                      <th className="w-1/12 text-xs sm:text-sm">Bonus</th>
+                      <th className="w-1/12 text-xs sm:text-sm">
+                        <span className="hidden sm:inline">Performance</span>
+                        <span className="sm:hidden">Perf</span>
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1219,10 +1254,10 @@ const EmployeePerformancePage: React.FC = () => {
                     onClick={() => handleEmployeeClick(employee)}
                   >
                     <td className="w-1/4">
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2 sm:gap-3">
                         <div className="avatar">
                           {employee.photo_url ? (
-                            <div className="rounded-full w-10">
+                            <div className="rounded-full w-8 sm:w-12">
                               <img 
                                 src={employee.photo_url} 
                                 alt={employee.display_name}
@@ -1234,8 +1269,8 @@ const EmployeePerformancePage: React.FC = () => {
                                   const parent = target.parentElement;
                                   if (parent) {
                                     parent.innerHTML = `
-                                      <div class="bg-primary text-primary-content rounded-full w-10 h-10 flex items-center justify-center">
-                                        <span class="text-sm font-bold">${getInitials(employee.display_name)}</span>
+                                      <div class="bg-primary text-primary-content rounded-full w-8 sm:w-12 h-8 sm:h-12 flex items-center justify-center">
+                                        <span class="text-xs sm:text-base font-bold">${getInitials(employee.display_name)}</span>
                                       </div>
                                     `;
                                   }
@@ -1244,51 +1279,60 @@ const EmployeePerformancePage: React.FC = () => {
                             </div>
                           ) : (
                             <div className="placeholder">
-                              <div className="bg-primary text-primary-content rounded-full w-10 h-10 flex items-center justify-center">
-                                <span className="text-sm font-bold">
+                              <div className="bg-primary text-primary-content rounded-full w-8 sm:w-12 h-8 sm:h-12 flex items-center justify-center">
+                                <span className="text-xs sm:text-base font-bold">
                                   {getInitials(employee.display_name)}
                                 </span>
                               </div>
                             </div>
                           )}
                         </div>
-                        <div>
-                          <div className="font-semibold">{employee.display_name}</div>
-                          <div className="text-sm text-gray-500">{employee.email}</div>
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-xs sm:text-sm truncate">{employee.display_name}</div>
+                          <div className="text-xs sm:text-sm text-gray-500 truncate">{employee.email}</div>
                         </div>
                       </div>
                     </td>
                     <td className="w-1/12">
-                      <span className="text-xs max-w-full truncate inline-block px-3 py-1 rounded-full text-white font-medium bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 shadow-sm">
-                        {getRoleDisplayName(employee.bonuses_role)}
+                      <span className="text-xs sm:text-sm max-w-full truncate inline-block px-2 sm:px-3 py-1 rounded-full text-white font-medium bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 shadow-sm">
+                        <span className="hidden sm:inline">{getRoleDisplayName(employee.bonuses_role)}</span>
+                        <span className="sm:hidden">{employee.bonuses_role}</span>
                       </span>
                     </td>
-                    <td className="w-1/12 font-semibold">
+                    <td className="w-1/12 font-semibold text-xs sm:text-sm">
                       {employee.performance_metrics?.total_meetings || 0}
                     </td>
-                    <td className="w-1/12 font-semibold text-success">
+                    <td className="w-1/12 font-semibold text-success text-xs sm:text-sm">
                       {employee.performance_metrics?.completed_meetings || 0}
                     </td>
-                    <td className="w-1/12 font-semibold">
-                      {formatCurrency(employee.performance_metrics?.total_revenue || 0)}
+                    <td className="w-1/12 font-semibold text-xs sm:text-sm">
+                      <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.total_revenue || 0)}</span>
+                      <span className="sm:hidden">₪{(employee.performance_metrics?.total_revenue || 0).toLocaleString()}</span>
                     </td>
-                    <td className="w-1/12 text-sm">
-                      {formatDate(employee.performance_metrics?.last_activity || 'No activity')}
+                    <td className="w-1/12 text-xs sm:text-sm">
+                      <span className="hidden sm:inline">{formatDate(employee.performance_metrics?.last_activity || 'No activity')}</span>
+                      <span className="sm:hidden">
+                        {employee.performance_metrics?.last_activity && employee.performance_metrics.last_activity !== 'No activity' 
+                          ? new Date(employee.performance_metrics.last_activity).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                          : 'N/A'
+                        }
+                      </span>
                     </td>
-                    <td className="w-1/12 font-semibold text-warning">
-                      {formatCurrency(employee.performance_metrics?.total_bonus || 0)}
+                    <td className="w-1/12 font-semibold text-warning text-xs sm:text-sm">
+                      <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.total_bonus || 0)}</span>
+                      <span className="sm:hidden">₪{(employee.performance_metrics?.total_bonus || 0).toLocaleString()}</span>
                     </td>
                     <td className="w-1/12">
-                      <div className="flex items-center gap-2">
-                        <div className="w-16 bg-gray-200 rounded-full h-2">
+                      <div className="flex items-center gap-1 sm:gap-2">
+                        <div className="w-8 sm:w-16 bg-gray-200 rounded-full h-1.5 sm:h-2">
                           <div 
-                            className="bg-primary h-2 rounded-full" 
+                            className="bg-primary h-1.5 sm:h-2 rounded-full" 
                             style={{ 
                               width: `${Math.min(100, ((employee.performance_metrics?.completed_meetings || 0) / Math.max(1, employee.performance_metrics?.total_meetings || 1)) * 100)}%` 
                             }}
                           ></div>
                         </div>
-                        <span className="text-sm font-medium">
+                        <span className="text-xs sm:text-sm font-medium">
                           {Math.round(((employee.performance_metrics?.completed_meetings || 0) / Math.max(1, employee.performance_metrics?.total_meetings || 1)) * 100)}%
                         </span>
                       </div>

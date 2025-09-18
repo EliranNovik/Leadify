@@ -334,22 +334,22 @@ const OutlookSignature: React.FC = () => {
   }, []);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-primary/10 rounded-lg">
-            <EnvelopeIcon className="w-6 h-6 text-primary" />
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <div className="p-1.5 sm:p-2 bg-primary/10 rounded-lg">
+            <EnvelopeIcon className="w-5 h-5 sm:w-6 sm:h-6 text-primary" />
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-base-content">Email Signature</h3>
-            <p className="text-sm text-base-content/70">Manage your email signature for Outlook</p>
+            <h3 className="text-base sm:text-lg font-semibold text-base-content">Email Signature</h3>
+            <p className="text-xs sm:text-sm text-base-content/70">Manage your email signature for Outlook</p>
           </div>
         </div>
         
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 w-full sm:w-auto">
           <button
-            className="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-xs sm:btn-sm w-full sm:w-auto"
             onClick={() => setPreviewMode(!previewMode)}
             title={previewMode ? 'Hide Preview' : 'Show Preview'}
           >
@@ -358,81 +358,84 @@ const OutlookSignature: React.FC = () => {
             ) : (
               <EyeIcon className="w-4 h-4" />
             )}
-            <span className="hidden sm:inline">{previewMode ? 'Hide Preview' : 'Preview'}</span>
+            <span className="text-xs sm:text-sm">{previewMode ? 'Hide Preview' : 'Preview'}</span>
           </button>
         </div>
       </div>
 
       {/* Signature Editor */}
-      <div className="bg-base-100 rounded-xl border border-base-300 p-6">
+      <div className="bg-base-100 rounded-xl border border-base-300 p-3 sm:p-6">
         {isEditing ? (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h4 className="font-medium text-base-content">Edit Signature</h4>
-              <div className="flex gap-2">
+          <div className="space-y-3 sm:space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
+              <h4 className="font-medium text-base-content text-sm sm:text-base">Edit Signature</h4>
+              <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                 <button
-                  className="btn btn-outline btn-sm"
+                  className="btn btn-outline btn-xs sm:btn-sm w-full sm:w-auto"
                   onClick={resetToDefault}
                 >
-                  Reset to Default
+                  <span className="text-xs sm:text-sm">Reset to Default</span>
                 </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={cancelEditing}
-                >
-                  <XMarkIcon className="w-4 h-4" />
-                </button>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={saveSignature}
-                  disabled={loading}
-                >
-                  {loading ? (
-                    <span className="loading loading-spinner loading-xs"></span>
-                  ) : (
-                    <CheckIcon className="w-4 h-4" />
-                  )}
-                  Save
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    className="btn btn-ghost btn-xs sm:btn-sm flex-1 sm:flex-none"
+                    onClick={cancelEditing}
+                  >
+                    <XMarkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                    <span className="sm:hidden text-xs">Cancel</span>
+                  </button>
+                  <button
+                    className="btn btn-primary btn-xs sm:btn-sm flex-1 sm:flex-none"
+                    onClick={saveSignature}
+                    disabled={loading}
+                  >
+                    {loading ? (
+                      <span className="loading loading-spinner loading-xs"></span>
+                    ) : (
+                      <CheckIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                    )}
+                    <span className="text-xs sm:text-sm">Save</span>
+                  </button>
+                </div>
               </div>
             </div>
             
             <div>
               <label className="label">
-                <span className="label-text font-medium">Email Signature</span>
-                <span className="label-text-alt text-base-content/60">Rich text signature with images</span>
+                <span className="label-text font-medium text-sm">Email Signature</span>
+                <span className="label-text-alt text-base-content/60 text-xs">Rich text signature with images</span>
               </label>
               
               {/* Formatting Toolbar */}
-              <div className="flex flex-wrap gap-2 p-3 bg-base-200 rounded-t-lg border border-base-300 border-b-0">
+              <div className="flex flex-wrap gap-1 sm:gap-2 p-2 sm:p-3 bg-base-200 rounded-t-lg border border-base-300 border-b-0">
                 <button
                   type="button"
-                  className="btn btn-ghost btn-sm"
+                  className="btn btn-ghost btn-xs sm:btn-sm"
                   onClick={() => formatText('bold')}
                   title="Bold"
                 >
-                  <BoldIcon className="w-4 h-4" />
+                  <BoldIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
                 <button
                   type="button"
-                  className="btn btn-ghost btn-sm"
+                  className="btn btn-ghost btn-xs sm:btn-sm"
                   onClick={() => formatText('italic')}
                   title="Italic"
                 >
-                  <ItalicIcon className="w-4 h-4" />
+                  <ItalicIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
                 <button
                   type="button"
-                  className="btn btn-ghost btn-sm"
+                  className="btn btn-ghost btn-xs sm:btn-sm"
                   onClick={insertLink}
                   title="Insert Link"
                 >
-                  <LinkIcon className="w-4 h-4" />
+                  <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
-                <div className="divider divider-horizontal"></div>
+                <div className="divider divider-horizontal hidden sm:flex"></div>
                 <button
                   type="button"
-                  className="btn btn-ghost btn-sm"
+                  className="btn btn-ghost btn-xs sm:btn-sm"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={uploadingImage}
                   title="Insert Image"
@@ -440,12 +443,12 @@ const OutlookSignature: React.FC = () => {
                   {uploadingImage ? (
                     <span className="loading loading-spinner loading-xs"></span>
                   ) : (
-                    <PhotoIcon className="w-4 h-4" />
+                    <PhotoIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                   )}
                 </button>
                 <button
                   type="button"
-                  className="btn btn-ghost btn-sm"
+                  className="btn btn-ghost btn-xs sm:btn-sm"
                   onClick={() => {
                     const cleaned = cleanOutlookSignature(tempSignature);
                     setTempSignature(cleaned);
@@ -456,7 +459,7 @@ const OutlookSignature: React.FC = () => {
                   }}
                   title="Clean Outlook Signature"
                 >
-                  <TrashIcon className="w-4 h-4" />
+                  <TrashIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
                 <input
                   ref={fileInputRef}
@@ -470,14 +473,14 @@ const OutlookSignature: React.FC = () => {
               {/* Rich Text Editor */}
               <div
                 ref={editorRef}
-                className="textarea textarea-bordered w-full h-64 text-sm rounded-t-none resize-none overflow-auto"
+                className="textarea textarea-bordered w-full h-48 sm:h-64 text-sm rounded-t-none resize-none overflow-auto"
                 contentEditable
                 suppressContentEditableWarning
                 onInput={(e) => setTempSignature(e.currentTarget.innerHTML)}
                 onPaste={handlePaste}
                 dangerouslySetInnerHTML={{ __html: tempSignature }}
                 style={{ 
-                  minHeight: '200px',
+                  minHeight: '150px',
                   fontFamily: 'Arial, sans-serif',
                   fontSize: '12px',
                   lineHeight: '1.4'
@@ -487,38 +490,38 @@ const OutlookSignature: React.FC = () => {
             
             <div className="text-xs text-base-content/60">
               <p><strong>Tips:</strong></p>
-              <ul className="list-disc list-inside space-y-1 ml-4">
+              <ul className="list-disc list-inside space-y-1 ml-2 sm:ml-4 text-xs">
                 <li>Use the formatting toolbar to style your text (bold, italic, links)</li>
-                <li>Click the image icon to upload and insert photos/logos</li>
-                <li>Paste signatures from Outlook - they'll be automatically cleaned</li>
-                <li>Use the trash icon to clean messy Outlook HTML</li>
+                <li className="hidden sm:list-item">Click the image icon to upload and insert photos/logos</li>
+                <li className="hidden sm:list-item">Paste signatures from Outlook - they'll be automatically cleaned</li>
+                <li className="hidden sm:list-item">Use the trash icon to clean messy Outlook HTML</li>
                 <li>Include your name, title, and contact information</li>
-                <li>Keep it professional and concise</li>
-                <li>This signature will be automatically added to all your emails</li>
+                <li className="hidden sm:list-item">Keep it professional and concise</li>
+                <li className="hidden sm:list-item">This signature will be automatically added to all your emails</li>
               </ul>
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <h4 className="font-medium text-base-content">Current Signature</h4>
+          <div className="space-y-3 sm:space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0">
+              <h4 className="font-medium text-base-content text-sm sm:text-base">Current Signature</h4>
               <button
-                className="btn btn-outline btn-sm"
+                className="btn btn-outline btn-xs sm:btn-sm w-full sm:w-auto"
                 onClick={startEditing}
               >
-                <PencilIcon className="w-4 h-4" />
-                Edit
+                <PencilIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="text-xs sm:text-sm">Edit</span>
               </button>
             </div>
             
-            <div className="bg-base-200 rounded-lg p-4 min-h-[100px]">
+            <div className="bg-base-200 rounded-lg p-3 sm:p-4 min-h-[80px] sm:min-h-[100px]">
               {signature ? (
                 <div 
-                  className="prose prose-sm max-w-none"
+                  className="prose prose-sm max-w-none text-xs sm:text-sm"
                   dangerouslySetInnerHTML={{ __html: signature }}
                 />
               ) : (
-                <p className="text-base-content/60 italic">No signature set. Click Edit to create one.</p>
+                <p className="text-base-content/60 italic text-xs sm:text-sm">No signature set. Click Edit to create one.</p>
               )}
             </div>
           </div>
@@ -527,14 +530,14 @@ const OutlookSignature: React.FC = () => {
 
       {/* Preview Panel */}
       {previewMode && (
-        <div className="bg-base-100 rounded-xl border border-base-300 p-6">
-          <h4 className="font-medium text-base-content mb-4">Preview</h4>
-          <div className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
-            <div className="border-b border-gray-200 pb-4 mb-4">
-              <p className="text-sm text-gray-600">Sample email content...</p>
+        <div className="bg-base-100 rounded-xl border border-base-300 p-3 sm:p-6">
+          <h4 className="font-medium text-base-content mb-3 sm:mb-4 text-sm sm:text-base">Preview</h4>
+          <div className="bg-white border border-gray-200 rounded-lg p-3 sm:p-4 shadow-sm">
+            <div className="border-b border-gray-200 pb-3 sm:pb-4 mb-3 sm:mb-4">
+              <p className="text-xs sm:text-sm text-gray-600">Sample email content...</p>
             </div>
             <div 
-              className="prose prose-sm max-w-none"
+              className="prose prose-sm max-w-none text-xs sm:text-sm"
               dangerouslySetInnerHTML={{ __html: isEditing ? tempSignature : signature }}
             />
           </div>
@@ -542,14 +545,14 @@ const OutlookSignature: React.FC = () => {
       )}
 
       {/* Help Section */}
-      <div className="bg-info/10 border border-info/20 rounded-lg p-4">
-        <h4 className="font-medium text-info mb-2">💡 Signature Tips</h4>
-        <ul className="text-sm text-info space-y-1">
+      <div className="bg-info/10 border border-info/20 rounded-lg p-3 sm:p-4">
+        <h4 className="font-medium text-info mb-2 text-sm sm:text-base">💡 Signature Tips</h4>
+        <ul className="text-xs sm:text-sm text-info space-y-1">
           <li>• Use the formatting toolbar for bold, italic, and links</li>
-          <li>• Upload company logos or professional photos (max 5MB)</li>
+          <li className="hidden sm:list-item">• Upload company logos or professional photos (max 5MB)</li>
           <li>• Keep your signature under 4-5 lines for best compatibility</li>
           <li>• Include your name, title, and primary contact method</li>
-          <li>• Test your signature across different email clients</li>
+          <li className="hidden sm:list-item">• Test your signature across different email clients</li>
         </ul>
       </div>
     </div>
