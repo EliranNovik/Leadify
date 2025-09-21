@@ -22,12 +22,14 @@ import {
   FunnelIcon,
   ChevronDownIcon,
   BoltIcon,
+  ChatBubbleLeftRightIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
 import EmployeeModal from './EmployeeModal';
+import RMQMessagesPage from '../pages/RMQMessagesPage';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -39,6 +41,7 @@ interface HeaderProps {
   isMenuOpen?: boolean;
   onOpenEmailThread?: () => void;
   onOpenWhatsApp?: () => void;
+  onOpenMessaging?: () => void;
 }
 
 interface Notification {
@@ -49,38 +52,31 @@ interface Notification {
   read: boolean;
 }
 
-const mockNotifications: Notification[] = [
-  {
-    id: '1',
-    type: 'action',
-    message: 'Sarah assigned you as Expert for client David Cohen',
-    time: '2 hours ago',
-    read: false
-  },
-  {
-    id: '2',
-    type: 'info',
-    message: 'Michael updated the meeting notes for Rachel Levy',
-    time: '5 hours ago',
-    read: false
-  },
-  {
-    id: '3',
-    type: 'action',
-    message: 'Contract approval needed for Daniel Mizrahi',
-    time: '1 day ago',
-    read: true
-  },
-  {
-    id: '4',
-    type: 'info',
-    message: 'Jonathan shared new documents in the case file',
-    time: '2 days ago',
-    read: true
-  }
-];
+interface RMQMessage {
+  id: number;
+  conversation_id: number;
+  sender_id: string;
+  content: string;
+  message_type: 'text' | 'file' | 'image' | 'system';
+  sent_at: string;
+  sender: {
+    ids: string;
+    full_name: string;
+    tenants_employee?: {
+      display_name: string;
+      photo_url?: string;
+    };
+  };
+  conversation: {
+    id: number;
+    type: 'direct' | 'group' | 'announcement';
+    title?: string;
+  };
+}
 
-const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp }) => {
+// Mock notifications removed - now using only RMQ messages
+
+const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging }) => {
   const location = useLocation();
   const navigate = useNavigate();
   const [isSearchActive, setIsSearchActive] = useState(false);
@@ -88,7 +84,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
-  const [notifications, setNotifications] = useState<Notification[]>(mockNotifications);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const notificationsRef = useRef<HTMLDivElement>(null);
@@ -131,8 +127,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  
+  // RMQ Messages state
+  const [rmqMessages, setRmqMessages] = useState<RMQMessage[]>([]);
+  const [rmqUnreadCount, setRmqUnreadCount] = useState(0);
+  const [isRmqModalOpen, setIsRmqModalOpen] = useState(false);
+  const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
+  const [currentUser, setCurrentUser] = useState<any>(null);
 
-  const unreadCount = notifications.filter(n => !n.read).length;
+  const unreadCount = rmqUnreadCount;
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
@@ -492,9 +495,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           if (!userError && userData && userData.tenants_employee) {
             const empData = userData.tenants_employee;
             
+            // Set current user for RMQ messages
+            setCurrentUser(userData);
+            
             setCurrentUserEmployee({
               ...empData,
-              department: empData.tenant_departement?.name || 'General',
+              department: (empData as any).tenant_departement?.name || 'General',
               email: userData.email,
               is_active: true,
               performance_metrics: {
@@ -549,6 +555,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               }));
               setAllEmployees(processedEmployees);
             }
+          } else {
+            // Set current user even if no employee data
+            setCurrentUser(userData);
           }
         } catch (error) {
           console.error('Error fetching employee data:', error);
@@ -557,6 +566,144 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
     fetchUserData();
   }, []);
+
+  // Fetch RMQ messages for notifications
+  const fetchRmqMessages = async () => {
+    if (!currentUser) {
+      console.log('🔔 No current user for RMQ messages');
+      return;
+    }
+
+    console.log('🔔 Fetching RMQ messages for user:', currentUser.ids);
+
+    try {
+      // Get conversations where the current user participates
+      const { data: userConversations, error: convError } = await supabase
+        .from('conversation_participants')
+        .select('conversation_id')
+        .eq('user_id', currentUser.ids)
+        .eq('is_active', true);
+
+      if (convError) {
+        console.error('Error fetching user conversations:', convError);
+        return;
+      }
+
+      const conversationIds = userConversations?.map(c => c.conversation_id) || [];
+      
+      if (conversationIds.length === 0) {
+        setRmqMessages([]);
+        setRmqUnreadCount(0);
+        return;
+      }
+
+      // First, get user's last_read_at for each conversation
+      const { data: userParticipants, error: participantsError } = await supabase
+        .from('conversation_participants')
+        .select('conversation_id, last_read_at')
+        .eq('user_id', currentUser.ids)
+        .in('conversation_id', conversationIds);
+
+      if (participantsError) {
+        console.error('Error fetching user participants:', participantsError);
+        return;
+      }
+
+      // Create a map of conversation_id -> last_read_at
+      const lastReadMap = new Map();
+      userParticipants?.forEach(participant => {
+        lastReadMap.set(participant.conversation_id, participant.last_read_at);
+      });
+
+      // Get messages that are actually unread (sent after last_read_at)
+      const unreadMessagesPromises = conversationIds.map(async (convId) => {
+        const lastReadAt = lastReadMap.get(convId);
+        
+        let query = supabase
+          .from('messages')
+          .select(`
+            id,
+            conversation_id,
+            sender_id,
+            content,
+            message_type,
+            sent_at,
+            sender:users!sender_id(
+              ids,
+              full_name,
+              tenants_employee!left(
+                display_name,
+                photo_url
+              )
+            )
+          `)
+          .eq('conversation_id', convId)
+          .eq('is_deleted', false)
+          .neq('sender_id', currentUser.ids); // Exclude user's own messages
+
+        // Only get messages sent after the user's last read timestamp
+        if (lastReadAt) {
+          query = query.gt('sent_at', lastReadAt);
+        }
+
+        const { data, error } = await query
+          .order('sent_at', { ascending: false })
+          .limit(5); // Limit per conversation to avoid too many messages
+
+        if (error) {
+          console.error(`Error fetching unread messages for conversation ${convId}:`, error);
+          return [];
+        }
+
+        return data || [];
+      });
+
+      const unreadMessagesArrays = await Promise.all(unreadMessagesPromises);
+      const messagesData = unreadMessagesArrays.flat();
+
+      // Get conversation details for each message
+      const messagesWithConversations = await Promise.all(
+        (messagesData || []).map(async (message: any) => {
+          const { data: conversationData } = await supabase
+            .from('conversations')
+            .select('id, type, title')
+            .eq('id', message.conversation_id)
+            .single();
+
+          return {
+            ...message,
+            conversation: conversationData || { id: message.conversation_id, type: 'direct' }
+          };
+        })
+      );
+
+      console.log('🔔 RMQ Messages fetched:', messagesWithConversations.length);
+      console.log('🔔 Last read timestamps:', Object.fromEntries(lastReadMap));
+      console.log('🔔 Messages data:', messagesWithConversations.map(m => ({
+        id: m.id,
+        convId: m.conversation_id,
+        sentAt: m.sent_at,
+        sender: m.sender?.tenants_employee?.display_name || m.sender?.full_name
+      })));
+      
+      setRmqMessages(messagesWithConversations);
+
+      // Calculate unread count based on actual messages fetched
+      setRmqUnreadCount(messagesWithConversations.length);
+    } catch (error) {
+      console.error('Error in fetchRmqMessages:', error);
+    }
+  };
+
+  // Fetch RMQ messages when user is loaded
+  useEffect(() => {
+    if (currentUser) {
+      fetchRmqMessages();
+      // Refresh messages every 60 seconds
+      const interval = setInterval(fetchRmqMessages, 60000);
+      return () => clearInterval(interval);
+    }
+  }, [currentUser]);
 
   useEffect(() => {
     if (isSearchActive && searchContainerRef.current) {
@@ -613,11 +760,51 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
 
   const handleNotificationClick = () => {
-    setShowNotifications(!showNotifications);
+    const newShowState = !showNotifications;
+    setShowNotifications(newShowState);
+    
+    // Fetch RMQ messages when opening notifications
+    if (newShowState && currentUser) {
+      fetchRmqMessages();
+    }
   };
 
-  const markAllAsRead = () => {
-    setNotifications(notifications.map(n => ({ ...n, read: true })));
+  const markAllAsRead = async () => {
+    if (!currentUser) return;
+
+    try {
+      // Get all conversations where the user participates
+      const { data: userConversations, error: convError } = await supabase
+        .from('conversation_participants')
+        .select('conversation_id')
+        .eq('user_id', currentUser.ids)
+        .eq('is_active', true);
+
+      if (convError) {
+        console.error('Error fetching user conversations for mark all as read:', convError);
+        return;
+      }
+
+      const conversationIds = userConversations?.map(c => c.conversation_id) || [];
+
+      // Mark all conversations as read by updating last_read_at to current timestamp
+      const currentTime = new Date().toISOString();
+      
+      for (const convId of conversationIds) {
+        await supabase.rpc('mark_conversation_as_read', {
+          conv_id: convId,
+          user_uuid: currentUser.ids
+        });
+      }
+
+      // Clear all RMQ messages from notifications
+      setRmqMessages([]);
+      setRmqUnreadCount(0);
+      
+      console.log('✅ Marked all conversations as read');
+    } catch (error) {
+      console.error('Error marking all conversations as read:', error);
+    }
   };
 
   const handleAIClick = () => {
@@ -702,6 +889,97 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const tagOptions = ["VIP", "Urgent", "Family", "Business", "Other"];
   const statusOptions = ["new", "in_progress", "qualified", "not_qualified"];
 
+  // Helper functions for RMQ messages
+  const formatMessageTime = (timestamp: string): string => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
+    
+    if (diffInMinutes < 1) return 'Just now';
+    if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+    if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h ago`;
+    return `${Math.floor(diffInMinutes / 1440)}d ago`;
+  };
+
+  const getConversationTitle = (message: RMQMessage): string => {
+    if (message.conversation.title) return message.conversation.title;
+    
+    if (message.conversation.type === 'direct') {
+      return message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
+    }
+    
+    return 'Group Chat';
+  };
+
+  const getConversationIcon = (message: RMQMessage): JSX.Element => {
+    if (message.conversation.type === 'group') {
+      return (
+        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white text-sm font-bold">
+          <UserGroupIcon className="w-4 h-4" />
+        </div>
+      );
+    }
+    
+    // For direct messages, show sender's photo or initials
+    const senderName = message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
+    const photoUrl = message.sender.tenants_employee?.photo_url;
+    
+    if (photoUrl && photoUrl.trim() !== '') {
+      return (
+        <img
+          src={photoUrl}
+          alt={senderName}
+          className="w-8 h-8 rounded-full object-cover"
+        />
+      );
+    }
+    
+    return (
+      <div className="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center text-white text-sm font-bold">
+        {senderName.charAt(0).toUpperCase()}
+      </div>
+    );
+  };
+
+  const getMessageDisplayText = (message: RMQMessage): string => {
+    if (message.conversation.type === 'group') {
+      const senderName = message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
+      return `${senderName}: ${message.content}`;
+    }
+    
+    // For direct messages, just show the content without sender name
+    return message.content;
+  };
+
+  const handleRmqMessageClick = async (message: RMQMessage) => {
+    // Close notifications dropdown
+    setShowNotifications(false);
+    // Set the conversation ID to open
+    setSelectedConversationId(message.conversation_id);
+    // Open RMQ messages modal with the specific conversation selected
+    setIsRmqModalOpen(true);
+    
+    // Mark this conversation as read in the database
+    if (currentUser) {
+      try {
+        await supabase.rpc('mark_conversation_as_read', {
+          conv_id: message.conversation_id,
+          user_uuid: currentUser.ids
+        });
+        console.log('✅ Marked conversation', message.conversation_id, 'as read');
+      } catch (error) {
+        console.error('Error marking conversation as read:', error);
+      }
+    }
+    
+    // Remove all messages from this conversation from the notifications
+    setRmqMessages(prev => prev.filter(m => m.conversation_id !== message.conversation_id));
+    setRmqUnreadCount(prev => {
+      const messagesFromThisConv = rmqMessages.filter(m => m.conversation_id === message.conversation_id);
+      return Math.max(0, prev - messagesFromThisConv.length);
+    });
+  };
+
   return (
     <>
       <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
@@ -736,6 +1014,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   right: '8px'
                 }}
               >
+                {/* RMQ Messages Option */}
+                <button
+                  onClick={() => {
+                    setShowMobileQuickActionsDropdown(false);
+                    if (onOpenMessaging) {
+                      onOpenMessaging();
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
+                >
+                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
+                  <span className="text-sm font-medium">RMQ Messages</span>
+                </button>
+
                 {/* My Profile Option */}
                 <button
                   onClick={() => {
@@ -754,7 +1046,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 
                 {navTabs.map(tab => {
                   const Icon = tab.icon;
-                  if (tab.action === 'email-thread') {
+                  if (false) { // Removed action check
                     return (
                       <button
                         key={tab.label}
@@ -832,6 +1124,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
                 }}
               >
+                {/* RMQ Messages Option */}
+                <button
+                  onClick={() => {
+                    setShowQuickActionsDropdown(false);
+                    if (onOpenMessaging) {
+                      onOpenMessaging();
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
+                >
+                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
+                  <span className="text-sm font-medium">RMQ Messages</span>
+                </button>
+
                 {/* My Profile Option */}
                 <button
                   onClick={() => {
@@ -850,7 +1156,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 
                 {navTabs.map(tab => {
                   const Icon = tab.icon;
-                  if (tab.action === 'email-thread') {
+                  if (false) { // Removed action check
                     return (
                       <button
                         key={tab.label}
@@ -1481,6 +1787,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           >
             <FaWhatsapp className="w-7 h-7 text-green-600" />
           </button>
+          
+          <button
+            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
+            title="Open RMQ Messages"
+            onClick={onOpenMessaging}
+          >
+            <ChatBubbleLeftRightIcon className="w-7 h-7 text-purple-600" />
+          </button>
 
           {/* Email Thread Button */}
           <button
@@ -1538,7 +1852,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               <div className="absolute right-0 mt-2 w-80 glassy-notification-box shadow-xl rounded-xl overflow-hidden z-50">
                 <div className="p-4 border-b border-base-200">
                   <div className="flex justify-between items-center">
-                    <h3 className="font-semibold">Notifications</h3>
+                    <h3 className="font-semibold">Messages</h3>
                     <button 
                       className="btn btn-ghost btn-xs"
                       onClick={markAllAsRead}
@@ -1548,20 +1862,53 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   </div>
                 </div>
                 <div className="max-h-96 overflow-y-auto">
-                  {notifications.map((notification) => (
-                    <div 
-                      key={notification.id}
-                      className={`p-4 border-b border-base-200 hover:bg-base-200/50 ${!notification.read ? 'bg-base-200/20' : ''}`}
-                    >
-                      <div className="flex gap-3">
-                        <div className={`w-2 h-2 rounded-full mt-2 ${notification.type === 'action' ? 'bg-primary' : 'bg-info'}`} />
-                        <div className="flex-1">
-                          <p className="text-sm">{notification.message}</p>
-                          <p className="text-xs text-base-content/70 mt-1">{notification.time}</p>
+                  {/* RMQ Messages Section */}
+                  {currentUser && (
+                    <div className="border-b border-base-200">
+                      {rmqMessages.length > 0 ? (
+                        rmqMessages.map((message) => (
+                          <button
+                            key={message.id}
+                            onClick={() => handleRmqMessageClick(message)}
+                            className="w-full p-4 text-left hover:bg-purple-50 transition-colors duration-200 border-b border-purple-100"
+                          >
+                            <div className="flex gap-3">
+                              <div className="flex-shrink-0">
+                                {getConversationIcon(message)}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-sm font-semibold text-gray-900 truncate">
+                                    {getConversationTitle(message)}
+                                  </p>
+                                  <p className="text-xs text-gray-500 ml-2">
+                                    {formatMessageTime(message.sent_at)}
+                                  </p>
+                                </div>
+                                <p className="text-xs text-gray-600 mt-1 truncate">
+                                  {getMessageDisplayText(message)}
+                                </p>
+                              </div>
+                            </div>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="p-4 text-center text-gray-500">
+                          <ChatBubbleLeftRightIcon className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                          <p className="text-sm">No recent messages</p>
                         </div>
-                      </div>
+                      )}
                     </div>
-                  ))}
+                  )}
+                  
+                  {/* Empty state - only show if no messages at all */}
+                  {rmqMessages.length === 0 && !currentUser && (
+                    <div className="p-8 text-center text-gray-500">
+                      <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                      <p className="font-medium">No new messages</p>
+                      <p className="text-sm">You're all caught up!</p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1617,6 +1964,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         allEmployees={allEmployees}
         isOpen={isEmployeeModalOpen} 
         onClose={() => setIsEmployeeModalOpen(false)} 
+      />
+
+      {/* RMQ Messages Modal */}
+      <RMQMessagesPage 
+        isOpen={isRmqModalOpen} 
+        initialConversationId={selectedConversationId}
+        onClose={() => {
+          setIsRmqModalOpen(false);
+          setSelectedConversationId(undefined);
+          // Refresh messages when closing modal
+          fetchRmqMessages();
+        }} 
       />
       
       <style>{`

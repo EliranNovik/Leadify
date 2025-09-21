@@ -49,6 +49,7 @@ import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
 import SimpleTestPage from './pages/SimpleTestPage';
 import DebugTestPage from './pages/DebugTestPage';
 import EmployeePerformancePage from './pages/EmployeePerformancePage';
+import RMQMessagesPage from './pages/RMQMessagesPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -64,6 +65,7 @@ const AppContentInner: React.FC = () => {
   const [isAiChatFullPage, setIsAiChatFullPage] = useState(false);
   const [isEmailThreadOpen, setIsEmailThreadOpen] = useState(false);
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
+  const [isMessagingOpen, setIsMessagingOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [appJustLoggedIn, setAppJustLoggedIn] = useState(false);
   const prevUser = useRef<any>(null);
@@ -229,6 +231,7 @@ const AppContentInner: React.FC = () => {
                   onOpenAIChat={() => setIsAiChatOpen(true)}
                   onOpenEmailThread={() => setIsEmailThreadOpen(true)}
                   onOpenWhatsApp={() => setIsWhatsAppOpen(true)}
+                  onOpenMessaging={() => setIsMessagingOpen(true)}
                   isMenuOpen={isSidebarOpen}
                 />
                 <main className="flex-1 overflow-x-hidden overflow-y-auto">
@@ -280,6 +283,10 @@ const AppContentInner: React.FC = () => {
               <WhatsAppModal 
                 isOpen={isWhatsAppOpen} 
                 onClose={() => setIsWhatsAppOpen(false)} 
+              />
+              <RMQMessagesPage 
+                isOpen={isMessagingOpen} 
+                onClose={() => setIsMessagingOpen(false)} 
               />
             </div>
           </ProtectedRoute>

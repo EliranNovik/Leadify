@@ -1,0 +1,2759 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { supabase } from '../lib/supabase';
+import { toast } from 'react-hot-toast';
+import websocketService, { MessageData, TypingData } from '../lib/websocket';
+import EmojiPicker from 'emoji-picker-react';
+import {
+  ChatBubbleLeftRightIcon,
+  PaperAirplaneIcon,
+  UserGroupIcon,
+  PlusIcon,
+  MagnifyingGlassIcon,
+  EllipsisVerticalIcon,
+  UserIcon,
+  XMarkIcon,
+  PaperClipIcon,
+  FaceSmileIcon,
+  ArrowLeftIcon,
+  CheckIcon,
+  ExclamationTriangleIcon,
+  InformationCircleIcon
+} from '@heroicons/react/24/outline';
+import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
+
+interface User {
+  ids: string;
+  full_name: string;
+  email: string;
+  employee_id?: number;
+  tenants_employee?: {
+    display_name: string;
+    bonuses_role: string;
+    department_id: number;
+    photo_url?: string;
+    tenant_departement?: {
+      name: string;
+    };
+  };
+}
+
+interface Conversation {
+  id: number;
+  title?: string;
+  type: 'direct' | 'group' | 'announcement';
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  last_message_at: string;
+  last_message_preview?: string;
+  is_active: boolean;
+  description?: string;
+  participants: ConversationParticipant[];
+  unread_count?: number;
+}
+
+interface ConversationParticipant {
+  id: number;
+  user_id: string;
+  joined_at: string;
+  last_read_at: string;
+  is_active: boolean;
+  role: 'admin' | 'member' | 'moderator';
+  user: User;
+}
+
+interface Message {
+  id: number;
+  conversation_id: number;
+  sender_id: string;
+  content: string;
+  message_type: 'text' | 'file' | 'image' | 'system';
+  sent_at: string;
+  edited_at?: string;
+  is_deleted: boolean;
+  attachment_url?: string;
+  attachment_name?: string;
+  attachment_type?: string;
+  attachment_size?: number;
+  reply_to_message_id?: number;
+  reactions: any[];
+  sender: User;
+  reply_to_message?: Message;
+}
+
+interface MessagingModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  initialConversationId?: number;
+}
+
+const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initialConversationId }) => {
+  // State management
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSending, setIsSending] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [allUsers, setAllUsers] = useState<User[]>([]);
+  const [activeTab, setActiveTab] = useState<'chats' | 'contacts'>('chats');
+  const [showMobileConversations, setShowMobileConversations] = useState(true);
+  const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
+  const [newGroupTitle, setNewGroupTitle] = useState('');
+  const [newGroupDescription, setNewGroupDescription] = useState('');
+  
+  // File attachment state
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  
+  // Media gallery state
+  const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
+  const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
+  const [conversationMedia, setConversationMedia] = useState<Message[]>([]);
+  
+  // Emoji picker state
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
+  
+  // Typing indicators removed - causing too many issues
+  
+  // Refs
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageInputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  
+  // Auto-scroll state
+  const [isUserScrolling, setIsUserScrolling] = useState(false);
+  const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+
+  // Helper functions
+  const getRoleDisplayName = (role: string): string => {
+    const roleMap: { [key: string]: string } = {
+      'pm': 'Project Manager',
+      'se': 'Software Engineer', 
+      'dv': 'Developer',
+      'dm': 'Department Manager',
+      'b': 'Business',
+      'f': 'Finance'
+    };
+    return roleMap[role?.toLowerCase()] || role || 'User';
+  };
+
+  const getInitials = (name: string | null | undefined): string => {
+    if (!name || name.trim() === '') return 'U';
+    return name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+  };
+
+  // Helper function to detect if message contains only emojis
+  const isEmojiOnly = (text: string): boolean => {
+    // Simple approach: check if the text length is very short and contains emoji-like characters
+    const cleanText = text.trim();
+    if (cleanText.length === 0) return false;
+    
+    // Check if the message is very short (likely emoji-only) and contains non-ASCII characters
+    const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
+    const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
+    
+    // Debug logging
+    console.log('🎭 Emoji detection:', { text, cleanText, hasNonAscii, isShort, result: hasNonAscii && isShort });
+    
+    return hasNonAscii && isShort;
+  };
+
+  const formatMessageTime = (timestamp: string): string => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffInDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (isToday(date)) {
+      return format(date, 'HH:mm');
+    } else if (isYesterday(date)) {
+      // Show actual time instead of "Yesterday"
+      return format(date, 'HH:mm');
+    } else if (diffInDays <= 7) {
+      // Show day of week for messages within the last week
+      return format(date, 'EEEE HH:mm');
+    } else {
+      // Show date and time for older messages
+      return format(date, 'MMM d, yyyy HH:mm');
+    }
+  };
+
+  // Helper function to check if two dates are on the same day
+  const isSameDay = (date1: Date, date2: Date): boolean => {
+    return date1.getFullYear() === date2.getFullYear() &&
+           date1.getMonth() === date2.getMonth() &&
+           date1.getDate() === date2.getDate();
+  };
+
+  // Helper function to format date separator
+  const formatDateSeparator = (timestamp: string): string => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffInDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    
+    if (isToday(date)) {
+      return 'Today';
+    } else if (isYesterday(date)) {
+      return 'Yesterday';
+    } else if (diffInDays <= 7) {
+      // Show day of week for messages within the last week
+      return format(date, 'EEEE');
+    } else {
+      // Show full date for older messages
+      return format(date, 'MMMM d, yyyy');
+    }
+  };
+
+  // Media gallery functions
+  const getConversationMedia = (): Message[] => {
+    if (!selectedConversation) return [];
+    return messages.filter(message => 
+      message.attachment_url && 
+      (message.message_type === 'image' || message.message_type === 'file')
+    );
+  };
+
+  const openMediaModal = (message: Message) => {
+    const media = getConversationMedia();
+    const index = media.findIndex(m => m.id === message.id);
+    setConversationMedia(media);
+    setSelectedMediaIndex(index >= 0 ? index : 0);
+    setIsMediaModalOpen(true);
+  };
+
+  const closeMediaModal = () => {
+    setIsMediaModalOpen(false);
+    setSelectedMediaIndex(0);
+    setConversationMedia([]);
+  };
+
+  const navigateMedia = (direction: 'prev' | 'next') => {
+    const newIndex = direction === 'next' 
+      ? (selectedMediaIndex + 1) % conversationMedia.length
+      : (selectedMediaIndex - 1 + conversationMedia.length) % conversationMedia.length;
+    setSelectedMediaIndex(newIndex);
+  };
+
+  const getConversationTitle = (conversation: Conversation): string => {
+    // If it has a custom title, use it
+    if (conversation.title && conversation.title.trim() !== '') {
+      return conversation.title;
+    }
+    
+    // For direct conversations (exactly 2 participants)
+    if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
+      const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.ids);
+      if (otherParticipant?.user) {
+        const name = otherParticipant.user.tenants_employee?.display_name || 
+                     otherParticipant.user.full_name || 
+                     'Unknown User';
+        return name;
+      }
+    }
+    
+    // For group conversations or if direct chat logic fails
+    const participantCount = conversation.participants?.length || 0;
+    return `Group Chat (${participantCount} members)`;
+  };
+
+  const getConversationAvatar = (conversation: Conversation): JSX.Element => {
+    // For direct conversations with exactly 2 participants
+    if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
+      const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.ids);
+      
+      if (otherParticipant?.user) {
+        const name = otherParticipant.user.tenants_employee?.display_name || 
+                     otherParticipant.user.full_name || 
+                   'Unknown User';
+        const photoUrl = otherParticipant.user.tenants_employee?.photo_url;
+      
+        // Show photo if available, otherwise show colored circle with initials
+      if (photoUrl && photoUrl.trim() !== '') {
+        return (
+          <img 
+            src={photoUrl} 
+            alt={name}
+            className="w-12 h-12 rounded-full object-cover border-2 border-white shadow-md"
+            onError={(e) => {
+              // If image fails to load, replace with colored circle
+              const target = e.target as HTMLImageElement;
+              const parent = target.parentElement;
+              if (parent) {
+                parent.innerHTML = `
+                  <div class="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-white shadow-md">
+                    ${getInitials(name)}
+                  </div>
+                `;
+              }
+            }}
+          />
+        );
+      }
+      
+        // Default: colored circle with initials for direct chat
+      return (
+        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-white shadow-md">
+          {getInitials(name)}
+        </div>
+      );
+      }
+    }
+    
+    // Group chat avatar or fallback
+      return (
+        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md">
+          <UserGroupIcon className="w-6 h-6" />
+        </div>
+      );
+  };
+
+  // Initialize and load data first, then connect WebSocket
+  useEffect(() => {
+    const initializeMessaging = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+
+        const { data: userData, error } = await supabase
+          .from('users')
+          .select(`
+            ids,
+            full_name,
+            email,
+            employee_id,
+            tenants_employee!left(
+              display_name,
+              bonuses_role,
+              department_id,
+              photo_url,
+              tenant_departement!left(
+                name
+              )
+            )
+          `)
+          .eq('auth_id', user.id)
+          .single();
+
+        if (error) {
+          console.error('Error fetching user data:', error);
+          return;
+        }
+
+        setCurrentUser(userData as unknown as User);
+        
+        // Wait for data to be loaded before connecting WebSocket
+        console.log('✅ User data loaded, initializing WebSocket connection...');
+        
+        // Initialize WebSocket connection after user data is set
+        if (userData && isOpen) {
+          websocketService.connect(userData.ids);
+          
+          // Set up WebSocket event handlers
+          websocketService.onMessage((message: MessageData) => {
+            console.log('📨 WebSocket message received:', message);
+            console.log('📨 Current selected conversation:', selectedConversation?.id);
+            console.log('📨 Message is for conversation:', message.conversation_id);
+            
+            // Add message if it's for the currently selected conversation
+            if (selectedConversation && message.conversation_id === selectedConversation.id) {
+              console.log('📨 Adding message to current conversation');
+              setMessages(prev => {
+                // Check if message already exists to avoid duplicates
+                const exists = prev.some(m => m.id === message.id || 
+                  (m.conversation_id === message.conversation_id && 
+                   m.sender_id === message.sender_id && 
+                   m.content === message.content && 
+                   Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 1000));
+                if (exists) {
+                  console.log('📨 Message already exists, skipping');
+                  return prev;
+                }
+                
+                // Enhance WebSocket message with real user data from conversation participants
+                const enhancedMessage = { ...message } as Message;
+                
+                // Find the sender in the conversation participants to get real user data
+                const senderParticipant = selectedConversation.participants.find(p => p.user_id === message.sender_id);
+                if (senderParticipant && senderParticipant.user) {
+                  enhancedMessage.sender = senderParticipant.user;
+                }
+                
+                // Ensure attachment fields are properly set
+                if (message.attachment_url && !enhancedMessage.attachment_url) {
+                  enhancedMessage.attachment_url = message.attachment_url;
+                  enhancedMessage.attachment_name = message.attachment_name;
+                  enhancedMessage.attachment_type = message.attachment_type;
+                  enhancedMessage.attachment_size = message.attachment_size;
+                }
+                
+                console.log('📨 Adding enhanced message:', enhancedMessage);
+                return [...prev, enhancedMessage];
+              });
+            } else {
+              console.log('📨 Message not for current conversation, updating conversation list only');
+            }
+            
+            // Update conversation preview for all conversations
+            setConversations(prev => 
+              prev.map(conv => 
+                conv.id === message.conversation_id
+                  ? {
+                      ...conv,
+                      last_message_at: message.sent_at,
+                      last_message_preview: message.content.substring(0, 100),
+                      unread_count: conv.id === selectedConversation?.id ? 0 : (conv.unread_count || 0) + 1
+                    }
+                  : conv
+              ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
+            );
+          });
+
+          websocketService.onConnect(() => {
+            console.log('🔌 WebSocket connected');
+          });
+
+          websocketService.onDisconnect(() => {
+            console.log('🔌 WebSocket disconnected');
+          });
+        }
+      } catch (error) {
+        console.error('Error in initializeMessaging:', error);
+      }
+    };
+
+    if (isOpen) {
+      initializeMessaging();
+    }
+
+    // Cleanup WebSocket on unmount or close
+    return () => {
+      if (!isOpen) {
+        websocketService.disconnect();
+      }
+    };
+  }, [isOpen, selectedConversation?.id]);
+
+  // Helper function to get updated conversations without setting state
+  const getUpdatedConversations = async (): Promise<Conversation[]> => {
+    if (!currentUser) return [];
+
+    try {
+      // First, get conversations where the current user participates
+      const { data: userConversations, error: convError } = await supabase
+        .from('conversation_participants')
+        .select('conversation_id')
+        .eq('user_id', currentUser.ids)
+        .eq('is_active', true);
+
+      if (convError) {
+        console.error('Error fetching user conversations:', convError);
+        return [];
+      }
+
+      const conversationIds = userConversations?.map(c => c.conversation_id) || [];
+      
+      if (conversationIds.length === 0) {
+        return [];
+      }
+
+      // Then, get full conversation data with ALL participants
+      const { data: conversationsData, error } = await supabase
+        .from('conversations')
+        .select(`
+          id,
+          title,
+          type,
+          created_by,
+          created_at,
+          updated_at,
+          last_message_at,
+          last_message_preview,
+          is_active,
+          description,
+          conversation_participants(
+            id,
+            user_id,
+            joined_at,
+            last_read_at,
+            is_active,
+            role,
+            user:users!user_id(
+              ids,
+              full_name,
+              email,
+              employee_id,
+              tenants_employee!left(
+                display_name,
+                bonuses_role,
+                department_id,
+                photo_url,
+                tenant_departement!left(
+                  name
+                )
+              )
+            )
+          )
+        `)
+        .in('id', conversationIds)
+        .eq('is_active', true)
+        .order('last_message_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching conversations:', error);
+        return [];
+      }
+
+      // Process conversations and calculate unread counts
+      const processedConversations = await Promise.all(
+        (conversationsData || []).map(async (conv: any) => {
+          // Get unread count for this conversation
+          const userParticipant = conv.conversation_participants.find(
+            (p: ConversationParticipant) => p.user_id === currentUser.ids
+          );
+          
+          let unreadCount = 0;
+          if (userParticipant) {
+            const { data: unreadMessages } = await supabase
+              .from('messages')
+              .select('id')
+              .eq('conversation_id', conv.id)
+              .gt('sent_at', userParticipant.last_read_at)
+              .neq('sender_id', currentUser.ids)
+              .eq('is_deleted', false);
+            
+            unreadCount = unreadMessages?.length || 0;
+          }
+
+          // Remove duplicate participants and filter only active ones
+          const uniqueParticipants = conv.conversation_participants
+            .filter((participant: any) => participant.is_active)
+            .filter(
+              (participant: any, index: number, self: any[]) => 
+                index === self.findIndex(p => p.user_id === participant.user_id)
+            );
+
+          return {
+            ...conv,
+            participants: uniqueParticipants,
+            unread_count: unreadCount
+          };
+        })
+      );
+
+      return processedConversations;
+    } catch (error) {
+      console.error('Error in getUpdatedConversations:', error);
+      return [];
+    }
+  };
+
+  // Fetch conversations
+  const fetchConversations = useCallback(async () => {
+    if (!currentUser) return;
+
+    try {
+      // First, get conversations where the current user participates
+      const { data: userConversations, error: convError } = await supabase
+        .from('conversation_participants')
+        .select('conversation_id')
+        .eq('user_id', currentUser.ids)
+        .eq('is_active', true);
+
+      if (convError) {
+        console.error('Error fetching user conversations:', convError);
+        toast.error('Failed to load conversations');
+        return;
+      }
+
+      const conversationIds = userConversations?.map(c => c.conversation_id) || [];
+      
+      if (conversationIds.length === 0) {
+        setConversations([]);
+        return;
+      }
+
+      // Then, get full conversation data with ALL participants
+      const { data: conversationsData, error } = await supabase
+        .from('conversations')
+        .select(`
+          id,
+          title,
+          type,
+          created_by,
+          created_at,
+          updated_at,
+          last_message_at,
+          last_message_preview,
+          is_active,
+          description,
+          conversation_participants(
+            id,
+            user_id,
+            joined_at,
+            last_read_at,
+            is_active,
+            role,
+            user:users!user_id(
+              ids,
+              full_name,
+              email,
+              employee_id,
+              tenants_employee!left(
+                display_name,
+                bonuses_role,
+                department_id,
+                photo_url,
+                tenant_departement!left(
+                  name
+                )
+              )
+            )
+          )
+        `)
+        .in('id', conversationIds)
+        .eq('is_active', true)
+        .order('last_message_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching conversations:', error);
+        toast.error('Failed to load conversations');
+        return;
+      }
+
+      // Process conversations and calculate unread counts
+      const processedConversations = await Promise.all(
+        (conversationsData || []).map(async (conv: any) => {
+          console.log('🔍 Processing conversation:', {
+            id: conv.id,
+            type: conv.type,
+            participantCount: conv.conversation_participants?.length,
+            participants: conv.conversation_participants?.map((p: ConversationParticipant) => ({
+              user_id: p.user_id,
+              name: p.user?.tenants_employee?.display_name || p.user?.full_name
+            }))
+          });
+          
+          // Get unread count for this conversation
+          const userParticipant = conv.conversation_participants.find(
+            (p: ConversationParticipant) => p.user_id === currentUser.ids
+          );
+          
+          let unreadCount = 0;
+          if (userParticipant) {
+            const { data: unreadMessages } = await supabase
+              .from('messages')
+              .select('id')
+              .eq('conversation_id', conv.id)
+              .gt('sent_at', userParticipant.last_read_at)
+              .neq('sender_id', currentUser.ids)
+              .eq('is_deleted', false);
+            
+            unreadCount = unreadMessages?.length || 0;
+          }
+
+          // Remove duplicate participants and filter only active ones
+          const uniqueParticipants = conv.conversation_participants
+            .filter((participant: any) => participant.is_active)
+            .filter(
+              (participant: any, index: number, self: any[]) => 
+                index === self.findIndex(p => p.user_id === participant.user_id)
+            );
+
+          const processedConv = {
+            ...conv,
+            participants: uniqueParticipants,
+            unread_count: unreadCount
+          };
+          
+          console.log('🔍 Processed conversation:', {
+            id: processedConv.id,
+            type: processedConv.type,
+            participantCount: processedConv.participants?.length,
+            isDirect: processedConv.type === 'direct' && processedConv.participants?.length === 2,
+            participantIds: processedConv.participants?.map((p: ConversationParticipant) => p.user_id)
+          });
+
+          return processedConv;
+        })
+      );
+
+      setConversations(processedConversations);
+    } catch (error) {
+      console.error('Error in fetchConversations:', error);
+      toast.error('Failed to load conversations');
+    }
+  }, [currentUser]);
+
+  // Fetch messages for selected conversation
+  const fetchMessages = useCallback(async (conversationId: number) => {
+    try {
+      const { data: messagesData, error } = await supabase
+        .from('messages')
+        .select(`
+          id,
+          conversation_id,
+          sender_id,
+          content,
+          message_type,
+          sent_at,
+          edited_at,
+          is_deleted,
+          attachment_url,
+          attachment_name,
+          attachment_type,
+          attachment_size,
+          reply_to_message_id,
+          reactions,
+          sender:users!sender_id(
+            ids,
+            full_name,
+            email,
+            employee_id,
+            tenants_employee!left(
+              display_name,
+              bonuses_role,
+              photo_url
+            )
+          ),
+          reply_to_message:messages!reply_to_message_id(
+            id,
+            content,
+            sender:users!sender_id(
+              full_name,
+              tenants_employee!left(display_name)
+            )
+          )
+        `)
+        .eq('conversation_id', conversationId)
+        .eq('is_deleted', false)
+        .order('sent_at', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching messages:', error);
+        toast.error('Failed to load messages');
+        return;
+      }
+
+      setMessages((messagesData || []) as unknown as Message[]);
+      
+      // Mark conversation as read
+      if (currentUser) {
+        await supabase.rpc('mark_conversation_as_read', {
+          conv_id: conversationId,
+          user_uuid: currentUser.ids
+        });
+        
+        // Update local unread count
+        setConversations(prev => 
+          prev.map(conv => 
+            conv.id === conversationId 
+              ? { ...conv, unread_count: 0 }
+              : conv
+          )
+        );
+      }
+    } catch (error) {
+      console.error('Error in fetchMessages:', error);
+      toast.error('Failed to load messages');
+    }
+  }, [currentUser]);
+
+  // Fetch all users for contacts
+  const fetchAllUsers = useCallback(async () => {
+    if (!currentUser) return;
+    
+    try {
+      const { data: usersData, error } = await supabase
+        .from('users')
+        .select(`
+          ids,
+          full_name,
+          email,
+          employee_id,
+          tenants_employee!left(
+            display_name,
+            bonuses_role,
+            department_id,
+            photo_url,
+            tenant_departement!left(
+              name
+            )
+          )
+        `)
+        .eq('is_active', true)
+        .neq('ids', currentUser.ids)
+        .order('full_name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching users:', error);
+        toast.error('Failed to load contacts');
+        return;
+      }
+
+      // Remove duplicates and filter out users without basic info
+      const uniqueUsers = (usersData || []).filter((user, index, self) => 
+        user.ids && 
+        user.full_name && 
+        index === self.findIndex(u => u.ids === user.ids)
+      );
+
+      setAllUsers(uniqueUsers as unknown as User[]);
+    } catch (error) {
+      console.error('Error in fetchAllUsers:', error);
+      toast.error('Failed to load contacts');
+    }
+  }, [currentUser]);
+
+  // File upload functionality
+  const uploadFile = async (file: File): Promise<string | null> => {
+    try {
+      setIsUploadingFile(true);
+      setUploadProgress(0);
+      
+      // Validate file size (max 16MB)
+      if (file.size > 16 * 1024 * 1024) {
+        toast.error('File size must be less than 16MB');
+        return null;
+      }
+      
+      // Validate file type
+      const allowedTypes = [
+        'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+        'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'text/plain', 'application/zip', 'application/x-rar-compressed'
+      ];
+      
+      if (!allowedTypes.includes(file.type)) {
+        toast.error('File type not supported. Please upload images, documents, or text files.');
+        return null;
+      }
+      
+      // Generate unique filename
+      const fileExt = file.name.split('.').pop();
+      const fileName = `rmq_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+      
+      // Upload to Supabase storage
+      const { data, error } = await supabase.storage
+        .from('RMQ-MESSAGES')
+        .upload(fileName, file);
+      
+      if (error) {
+        console.error('Error uploading file:', error);
+        toast.error('Failed to upload file');
+        return null;
+      }
+      
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('RMQ-MESSAGES')
+        .getPublicUrl(fileName);
+      
+      setUploadProgress(100);
+      toast.success('File uploaded successfully');
+      return publicUrl;
+      
+    } catch (error) {
+      console.error('Error uploading file:', error);
+      toast.error('Failed to upload file');
+      return null;
+    } finally {
+      setIsUploadingFile(false);
+      setUploadProgress(0);
+    }
+  };
+
+  // Handle file input change
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const fileUrl = await uploadFile(file);
+    if (fileUrl) {
+      // Send message with attachment
+      await sendMessageWithAttachment(file, fileUrl);
+    }
+    
+    // Reset file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Send message with attachment
+  const sendMessageWithAttachment = async (file: File, fileUrl: string) => {
+    if (!selectedConversation || !currentUser) return;
+    
+    setIsSending(true);
+    try {
+      // Determine message type based on file type
+      let messageType: 'text' | 'file' | 'image' | 'system' = 'file';
+      if (file.type.startsWith('image/')) {
+        messageType = 'image';
+      }
+      
+      // Send via WebSocket for real-time delivery
+      if (websocketService.isSocketConnected()) {
+        console.log('📤 Sending attachment via WebSocket to conversation:', selectedConversation.id);
+        
+        websocketService.sendMessage(
+          selectedConversation.id, 
+          file.name, 
+          messageType, 
+          fileUrl, 
+          file.type, 
+          file.size
+        );
+      }
+      
+      // Save to database with attachment
+      const { data: messageData, error } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: selectedConversation.id,
+          sender_id: currentUser.ids,
+          content: file.name,
+          message_type: messageType,
+          attachment_url: fileUrl,
+          attachment_name: file.name,
+          attachment_type: file.type,
+          attachment_size: file.size
+        })
+        .select(`
+          id,
+          conversation_id,
+          sender_id,
+          content,
+          message_type,
+          sent_at,
+          attachment_url,
+          attachment_name,
+          attachment_type,
+          attachment_size,
+          sender:users!sender_id(
+            ids,
+            full_name,
+            email,
+            employee_id,
+            tenants_employee!left(
+              display_name,
+              bonuses_role,
+              photo_url
+            )
+          )
+        `)
+        .single();
+      
+      if (error) throw error;
+      
+      // Only add message to local state if WebSocket is NOT connected
+      if (!websocketService.isSocketConnected()) {
+        setMessages(prev => [...prev, messageData as unknown as Message]);
+      }
+      
+      // Always scroll to bottom when user sends a message
+      setTimeout(() => scrollToBottom('smooth'), 100);
+      
+      // Only update conversation list if WebSocket is NOT connected
+      if (!websocketService.isSocketConnected()) {
+        setConversations(prev => 
+          prev.map(conv => 
+            conv.id === selectedConversation.id
+              ? {
+                  ...conv,
+                  last_message_at: messageData.sent_at,
+                  last_message_preview: `📎 ${file.name}`
+                }
+              : conv
+          ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
+        );
+      }
+      
+    } catch (error) {
+      console.error('Error sending attachment:', error);
+      toast.error('Failed to send attachment');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // Send message
+  const sendMessage = async () => {
+    if (!selectedConversation || !currentUser || !newMessage.trim()) return;
+    
+    setIsSending(true);
+    try {
+      // Send via WebSocket for real-time delivery
+      if (websocketService.isSocketConnected()) {
+        console.log('📤 Sending message via WebSocket to conversation:', selectedConversation.id);
+        console.log('📤 Message content:', newMessage.trim());
+        
+        websocketService.sendMessage(selectedConversation.id, newMessage.trim(), 'text');
+      } else {
+        console.log('⚠️ WebSocket not connected, message will only be saved to database');
+      }
+
+      // Also save to database
+      const { data: messageData, error } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: selectedConversation.id,
+          sender_id: currentUser.ids,
+          content: newMessage.trim(),
+          message_type: 'text'
+        })
+        .select(`
+          id,
+          conversation_id,
+          sender_id,
+          content,
+          message_type,
+          sent_at,
+          sender:users!sender_id(
+            ids,
+            full_name,
+            email,
+            employee_id,
+            tenants_employee!left(
+              display_name,
+              bonuses_role,
+              photo_url
+            )
+          )
+        `)
+        .single();
+
+      if (error) throw error;
+
+      // Only add message to local state if WebSocket is NOT connected
+      // If WebSocket is connected, the message will come through the WebSocket handler
+      if (!websocketService.isSocketConnected()) {
+        setMessages(prev => [...prev, messageData as unknown as Message]);
+      }
+      
+      setNewMessage('');
+      
+      // Always scroll to bottom when user sends a message
+      setTimeout(() => scrollToBottom('smooth'), 100);
+      
+      // Only update conversation list if WebSocket is NOT connected
+      // If WebSocket is connected, the conversation update will come through the WebSocket handler
+      if (!websocketService.isSocketConnected()) {
+      setConversations(prev => 
+        prev.map(conv => 
+          conv.id === selectedConversation.id
+            ? {
+                ...conv,
+                last_message_at: messageData.sent_at,
+                last_message_preview: messageData.content.substring(0, 100)
+              }
+            : conv
+        ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
+      );
+      }
+
+    } catch (error) {
+      console.error('Error sending message:', error);
+      toast.error('Failed to send message');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  // Start direct conversation with a user
+  const startDirectConversation = async (userId: string) => {
+    if (!currentUser) return;
+    
+    try {
+      console.log('🔍 Starting direct conversation with userId:', userId);
+      
+      // First check if a direct conversation already exists
+      const existingConv = conversations.find(c => 
+        c.type === 'direct' && 
+        c.participants?.length === 2 &&
+        c.participants.some(p => p.user_id === userId) &&
+        c.participants.some(p => p.user_id === currentUser.ids)
+      );
+      
+      if (existingConv) {
+        console.log('🔍 Found existing direct conversation:', existingConv.id);
+        setSelectedConversation(existingConv);
+        fetchMessages(existingConv.id);
+        setShowMobileConversations(false);
+        setActiveTab('chats');
+        return;
+      }
+      
+      // Create new direct conversation
+      const { data: conversationId, error } = await supabase.rpc(
+        'create_direct_conversation',
+        {
+          user1_uuid: currentUser.ids,
+          user2_uuid: userId
+        }
+      );
+
+      if (error) {
+        console.error('Error creating direct conversation:', error);
+        throw error;
+      }
+      
+      console.log('🔍 Created new conversation with ID:', conversationId);
+
+      // Wait a bit for the database to be consistent, then refresh conversations
+      setTimeout(async () => {
+      await fetchConversations();
+      
+        // Find the newly created conversation
+          const newConv = conversations.find(c => c.id === conversationId);
+        console.log('🔍 Looking for new conversation with ID:', conversationId);
+        console.log('🔍 Available conversations:', conversations.map(c => ({ id: c.id, type: c.type, participants: c.participants?.length || 0 })));
+          
+          if (newConv) {
+          console.log('🔍 Found new conversation:', newConv);
+            setSelectedConversation(newConv);
+            fetchMessages(newConv.id);
+            setShowMobileConversations(false);
+            setActiveTab('chats');
+          toast.success('Direct conversation started');
+          } else {
+          console.error('🔍 Could not find created conversation, trying again...');
+          // Try one more time after a longer delay
+          setTimeout(async () => {
+            await fetchConversations();
+            const retryConv = conversations.find(c => c.id === conversationId);
+            if (retryConv) {
+              setSelectedConversation(retryConv);
+              fetchMessages(retryConv.id);
+              setShowMobileConversations(false);
+              setActiveTab('chats');
+            } else {
+              toast.error('Failed to find the created conversation');
+            }
+          }, 1000);
+        }
+      }, 500);
+      
+    } catch (error) {
+      console.error('Error creating conversation:', error);
+      toast.error('Failed to start conversation');
+    }
+  };
+
+  // Delete all group chats (for cleanup)
+  const deleteAllGroupChats = async () => {
+    if (!currentUser) return;
+    
+    try {
+      // Get all conversations that are not working properly (showing as group chats with 1 member)
+      const conversationsToDelete = conversations.filter(conv => 
+        (conv.type === 'group' && (conv.participants?.length || 0) <= 2) || 
+        (conv.type === 'direct' && (conv.participants?.length || 0) !== 2)
+      );
+      
+      console.log('🗑️ Deleting problematic conversations:', conversationsToDelete.map(c => ({ id: c.id, type: c.type, participants: c.participants?.length || 0 })));
+      
+      for (const conv of conversationsToDelete) {
+        // Delete conversation (cascade will handle participants and messages)
+        const { error } = await supabase
+          .from('conversations')
+          .delete()
+          .eq('id', conv.id);
+          
+        if (error) {
+          console.error('Error deleting conversation:', conv.id, error);
+        } else {
+          console.log('✅ Deleted conversation:', conv.id);
+        }
+      }
+      
+      // Refresh conversations list
+      await fetchConversations();
+      setSelectedConversation(null);
+      
+      toast.success(`Deleted ${conversationsToDelete.length} problematic conversations`);
+      
+    } catch (error) {
+      console.error('Error deleting conversations:', error);
+      toast.error('Failed to delete conversations');
+    }
+  };
+
+  // Create group conversation
+  const createGroupConversation = async () => {
+    if (!currentUser || selectedUsers.length < 1 || !newGroupTitle.trim()) {
+      toast.error('Please select users and enter a group title');
+      return;
+    }
+
+    try {
+      // Create group conversation
+      const { data: conversationData, error: convError } = await supabase
+        .from('conversations')
+        .insert({
+          title: newGroupTitle.trim(),
+          type: 'group',
+          created_by: currentUser.ids,
+          description: newGroupDescription.trim() || null
+        })
+        .select()
+        .single();
+
+      if (convError) throw convError;
+
+      // Add participants (including creator)
+      const participantsToAdd = [
+        { conversation_id: conversationData.id, user_id: currentUser.ids, role: 'admin' },
+        ...selectedUsers.map(userId => ({
+          conversation_id: conversationData.id,
+          user_id: userId,
+          role: 'member' as const
+        }))
+      ];
+
+      const { error: participantsError } = await supabase
+        .from('conversation_participants')
+        .insert(participantsToAdd);
+
+      if (participantsError) throw participantsError;
+
+      // Refresh conversations and wait for the state to update
+      await fetchConversations();
+      
+      // Wait a moment for the conversations state to update, then find the new conversation
+      setTimeout(async () => {
+        await fetchConversations(); // Fetch again to get the updated state
+        const updatedConversations = await getUpdatedConversations();
+        const newConversation = updatedConversations.find(c => c.id === conversationData.id);
+        
+        if (newConversation && newConversation.participants) {
+          setSelectedConversation(newConversation);
+          fetchMessages(newConversation.id);
+        } else {
+          // Fallback: create a temporary conversation object with participants
+          const tempConversation = {
+            ...conversationData,
+            participants: [
+              { user_id: currentUser.ids, user: currentUser },
+              ...selectedUsers.map(userId => ({ user_id: userId }))
+            ]
+          };
+          setSelectedConversation(tempConversation);
+        }
+        
+      setShowMobileConversations(false);
+      setActiveTab('chats');
+      }, 100);
+
+      // Reset form
+      setShowCreateGroupModal(false);
+      setSelectedUsers([]);
+      setNewGroupTitle('');
+      setNewGroupDescription('');
+      
+      toast.success('Group chat created successfully!');
+      
+    } catch (error) {
+      console.error('Error creating group conversation:', error);
+      toast.error('Failed to create group conversation');
+    }
+  };
+
+  // Smart auto-scroll logic
+  const scrollToBottom = (behavior: 'smooth' | 'instant' = 'smooth') => {
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior });
+    }
+  };
+
+  // Check if user is near bottom of messages
+  const isNearBottom = () => {
+    if (!messagesContainerRef.current) return true;
+    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+    const threshold = 100; // 100px from bottom
+    return scrollHeight - scrollTop - clientHeight < threshold;
+  };
+
+  // Handle scroll events to detect user scrolling
+  const handleScroll = useCallback(() => {
+    if (!messagesContainerRef.current) return;
+    
+    const nearBottom = isNearBottom();
+    
+    // If user scrolls to bottom, enable auto-scroll
+    if (nearBottom) {
+      setShouldAutoScroll(true);
+      setIsUserScrolling(false);
+    } else {
+      // If user scrolls up, disable auto-scroll temporarily
+      setShouldAutoScroll(false);
+      setIsUserScrolling(true);
+    }
+  }, []);
+
+  // Auto-scroll to bottom when new messages arrive (only if should auto-scroll)
+  useEffect(() => {
+    if (shouldAutoScroll && messages.length > 0) {
+      scrollToBottom('smooth');
+    }
+  }, [messages, shouldAutoScroll]);
+
+  // Scroll to bottom when conversation is first selected
+  useEffect(() => {
+    if (selectedConversation && messages.length > 0) {
+      // Reset auto-scroll state when conversation changes
+      setShouldAutoScroll(true);
+      setIsUserScrolling(false);
+      // Scroll to bottom after a short delay to ensure messages are rendered
+      setTimeout(() => scrollToBottom('instant'), 100);
+    }
+  }, [selectedConversation?.id]);
+
+  // Fetch conversations and users when user is loaded
+  useEffect(() => {
+    const loadData = async () => {
+    if (currentUser) {
+        console.log('📊 Loading conversations and users data...');
+        await fetchConversations();
+        await fetchAllUsers();
+        console.log('✅ All data loaded successfully');
+      }
+    };
+    
+    loadData();
+  }, [currentUser, fetchConversations, fetchAllUsers]);
+
+  // Select initial conversation when modal opens
+  useEffect(() => {
+    if (isOpen && initialConversationId && conversations.length > 0) {
+      const conversation = conversations.find(c => c.id === initialConversationId);
+      if (conversation) {
+        setSelectedConversation(conversation);
+        fetchMessages(conversation.id);
+        setShowMobileConversations(false);
+        setActiveTab('chats');
+      }
+    }
+  }, [isOpen, initialConversationId, conversations, fetchMessages]);
+
+  // Initial loading
+  useEffect(() => {
+    const timer = setTimeout(() => setIsLoading(false), 1000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  // Handle Enter key for sending messages
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  // Handle message input change
+  const handleMessageInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    setNewMessage(value);
+  };
+
+  // Handle emoji selection
+  const handleEmojiClick = (emojiObject: any) => {
+    const emoji = emojiObject.emoji;
+    console.log('🎭 Adding emoji to message:', emoji);
+    
+    // Add emoji to message
+    setNewMessage(prev => prev + emoji);
+    
+    // Close picker after a small delay to ensure emoji is added first
+    setTimeout(() => {
+      setIsEmojiPickerOpen(false);
+      
+      // Focus back on the message input
+      if (messageInputRef.current) {
+        messageInputRef.current.focus();
+      }
+    }, 50);
+  };
+
+  // Close emoji picker when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (isEmojiPickerOpen) {
+        const target = event.target as Element;
+        
+        // Check if click is inside emoji picker or emoji button
+        const isInsideEmojiPicker = target.closest('[class*="EmojiPicker"]') || 
+                                   target.closest('[class*="epr-"]') ||
+                                   target.closest('button[title="Add emoji"]');
+        
+        if (!isInsideEmojiPicker) {
+          setIsEmojiPickerOpen(false);
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isEmojiPickerOpen]);
+
+  // Join conversation room when conversation is selected
+  useEffect(() => {
+    if (selectedConversation && currentUser) {
+      console.log('🔌 Joining conversation room:', selectedConversation.id);
+      websocketService.joinConversation(selectedConversation.id);
+      websocketService.markAsRead(selectedConversation.id, currentUser.ids);
+    }
+    
+    return () => {
+      if (selectedConversation && currentUser) {
+        console.log('🔌 Leaving conversation room:', selectedConversation.id);
+        websocketService.leaveConversation(selectedConversation.id);
+      }
+    };
+  }, [selectedConversation?.id, currentUser?.ids]); // Only depend on IDs to prevent constant re-joining
+
+  // Typing indicators removed - no cleanup needed
+
+  // Filter conversations and users based on search and active tab
+  const filteredConversations = conversations.filter(conv => {
+    const title = getConversationTitle(conv).toLowerCase();
+    const preview = conv.last_message_preview?.toLowerCase() || '';
+    const query = searchQuery.toLowerCase();
+    return title.includes(query) || preview.includes(query);
+  });
+
+  const filteredUsers = allUsers.filter(user => {
+    const userName = (user.tenants_employee?.display_name || user.full_name || '').toLowerCase();
+    const userRole = (user.tenants_employee?.bonuses_role || '').toLowerCase();
+    const userDept = (user.tenants_employee?.tenant_departement?.name || '').toLowerCase();
+    const query = searchQuery.toLowerCase();
+    return userName.includes(query) || userRole.includes(query) || userDept.includes(query);
+  });
+
+  // Don't render if not open
+  if (!isOpen) return null;
+
+  if (isLoading) {
+    return (
+      <div className="fixed inset-0 z-50 bg-gradient-to-br from-purple-50 to-blue-50">
+        <div className="flex items-center justify-center h-full">
+        <div className="text-center">
+          <div className="loading loading-spinner loading-lg text-primary mb-4"></div>
+          <p className="text-gray-600 font-medium">Loading RMQ Messages...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-gradient-to-br from-purple-50 to-blue-50 flex overflow-hidden">
+      {/* Sidebar - Desktop */}
+      <div className="hidden lg:flex w-80 bg-white border-r border-gray-200 flex-col shadow-lg">
+        {/* Header */}
+        <div className="p-6 border-b border-gray-200 bg-white">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                <ChatBubbleLeftRightIcon className="w-6 h-6 text-purple-600" />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
+                <p className="text-gray-500 text-sm">Internal Communications</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {activeTab === 'contacts' && (
+                <button
+                  onClick={() => setShowCreateGroupModal(true)}
+                  className="btn btn-sm bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-200 gap-2"
+                >
+                  <UserGroupIcon className="w-4 h-4" />
+                  Create Group
+                </button>
+              )}
+                <button
+                onClick={onClose}
+                className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                title="Close Messages"
+              >
+                <XMarkIcon className="w-5 h-5" />
+                </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Tabs - WhatsApp Style */}
+        <div className="flex border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('chats')}
+            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+              activeTab === 'chats'
+                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            Chats
+            {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0) > 0 && (
+              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
+                {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0)}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('contacts')}
+            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+              activeTab === 'contacts'
+                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            Contacts
+            <span className="ml-2 text-xs text-gray-400">
+              {allUsers.length}
+            </span>
+          </button>
+        </div>
+
+        {/* Search */}
+        <div className="p-4 border-b border-gray-100">
+          <div className="relative">
+            <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder={activeTab === 'chats' ? 'Search conversations...' : 'Search contacts...'}
+              className="input input-bordered w-full pl-10 input-sm"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Content Area */}
+        <div className="flex-1 overflow-y-auto">
+          {activeTab === 'chats' ? (
+            // Conversations List
+            filteredConversations.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">
+                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No conversations yet</p>
+                <p className="text-sm">Click on a contact to start chatting</p>
+              </div>
+            ) : (
+              filteredConversations.map((conversation) => (
+                <div
+                  key={conversation.id}
+                  onClick={() => {
+                    setSelectedConversation(conversation);
+                    fetchMessages(conversation.id);
+                    setShowMobileConversations(false);
+                  }}
+                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                    selectedConversation?.id === conversation.id ? 'bg-purple-50 border-l-4 border-purple-500' : ''
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    {getConversationAvatar(conversation)}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold text-gray-900 truncate">
+                          {getConversationTitle(conversation)}
+                        </h3>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">
+                            {formatMessageTime(conversation.last_message_at)}
+                          </span>
+                          {(conversation.unread_count || 0) > 0 && (
+                            <div className="w-5 h-5 bg-purple-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                              {conversation.unread_count}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-sm text-gray-600 truncate mt-1">
+                        {conversation.last_message_preview || 'No messages yet'}
+                      </p>
+                      {conversation.type === 'group' && (
+                        <p className="text-xs text-gray-400 mt-1">
+                          {conversation.participants?.length || 0} members
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )
+          ) : (
+            // Contacts List
+            filteredUsers.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">
+                <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No contacts found</p>
+                <p className="text-sm">Try adjusting your search</p>
+              </div>
+            ) : (
+              filteredUsers.map((user) => {
+                const userName = user.tenants_employee?.display_name || user.full_name || 'Unknown User';
+                const userRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
+                const userDept = user.tenants_employee?.tenant_departement?.name;
+                const userPhoto = user.tenants_employee?.photo_url;
+                const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
+
+                return (
+                  <div
+                    key={user.ids}
+                    onClick={() => startDirectConversation(user.ids)}
+                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      {userPhoto && userPhoto.trim() !== '' ? (
+                        <img
+                          src={userPhoto}
+                          alt={userName}
+                          className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
+                          onError={(e) => {
+                            // Replace with colored circle if image fails to load
+                            const target = e.target as HTMLImageElement;
+                            const parent = target.parentElement;
+                            if (parent) {
+                              parent.innerHTML = `
+                                <div class="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
+                                  ${getInitials(userName)}
+                                </div>
+                              `;
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
+                          {getInitials(userName)}
+                        </div>
+                      )}
+                      
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-900 truncate">
+                          {userName}
+                          {!hasCompleteInfo && (
+                            <span className="ml-2 text-xs text-orange-500 bg-orange-100 px-2 py-1 rounded-full">
+                              Incomplete Profile
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm text-gray-500 truncate">
+                          {userRole} {userDept && `• ${userDept}`}
+                          {!hasCompleteInfo && !userRole && !userDept && (
+                            <span className="text-orange-500">Profile setup needed</span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="text-gray-400">
+                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )
+          )}
+        </div>
+      </div>
+
+      {/* Mobile Sidebar */}
+      <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-white flex flex-col`}>
+        {/* Mobile Header */}
+        <div className="p-4 border-b border-gray-200 bg-white">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
+                <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-gray-900">Messages</h1>
+                <p className="text-gray-500 text-xs">Internal Communications</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              {activeTab === 'contacts' && (
+                <button
+                  onClick={() => setShowCreateGroupModal(true)}
+                  className="btn btn-sm bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-200"
+                  title="Create Group"
+                >
+                  <UserGroupIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile Tabs */}
+        <div className="flex border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('chats')}
+            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+              activeTab === 'chats'
+                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            Chats
+            {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0) > 0 && (
+              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
+                {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0)}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('contacts')}
+            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+              activeTab === 'contacts'
+                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+            }`}
+          >
+            Contacts
+            <span className="ml-2 text-xs text-gray-400">
+              {allUsers.length}
+            </span>
+          </button>
+        </div>
+
+        {/* Mobile Search */}
+        <div className="p-4 border-b border-gray-100">
+          <div className="relative">
+            <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              placeholder={activeTab === 'chats' ? 'Search conversations...' : 'Search contacts...'}
+              className="input input-bordered w-full pl-9 input-sm"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          </div>
+        </div>
+
+        {/* Mobile Content */}
+        <div className="flex-1 overflow-y-auto">
+          {activeTab === 'chats' ? (
+            // Mobile Conversations
+            filteredConversations.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">
+                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No conversations yet</p>
+                <p className="text-sm">Click on a contact to start chatting</p>
+              </div>
+            ) : (
+              filteredConversations.map((conversation) => (
+                <div
+                  key={conversation.id}
+                  onClick={() => {
+                    setSelectedConversation(conversation);
+                    fetchMessages(conversation.id);
+                    setShowMobileConversations(false);
+                  }}
+                  className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100"
+                >
+                  <div className="flex items-center gap-3">
+                    {getConversationAvatar(conversation)}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold text-gray-900 truncate">
+                          {getConversationTitle(conversation)}
+                        </h3>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-gray-500">
+                            {formatMessageTime(conversation.last_message_at)}
+                          </span>
+                          {(conversation.unread_count || 0) > 0 && (
+                            <div className="w-5 h-5 bg-purple-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                              {conversation.unread_count}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-sm text-gray-600 truncate mt-1">
+                        {conversation.last_message_preview || 'No messages yet'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )
+          ) : (
+            // Mobile Contacts
+            filteredUsers.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">
+                <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No contacts found</p>
+                <p className="text-sm">Try adjusting your search</p>
+              </div>
+            ) : (
+              filteredUsers.map((user) => {
+                const userName = user.tenants_employee?.display_name || user.full_name || 'Unknown User';
+                const userRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
+                const userDept = user.tenants_employee?.tenant_departement?.name;
+                const userPhoto = user.tenants_employee?.photo_url;
+                const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
+
+                return (
+                  <div
+                    key={user.ids}
+                    onClick={() => startDirectConversation(user.ids)}
+                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100"
+                  >
+                    <div className="flex items-center gap-3">
+                      {userPhoto && userPhoto.trim() !== '' ? (
+                        <img
+                          src={userPhoto}
+                          alt={userName}
+                          className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
+                          onError={(e) => {
+                            // Replace with colored circle if image fails to load
+                            const target = e.target as HTMLImageElement;
+                            const parent = target.parentElement;
+                            if (parent) {
+                              parent.innerHTML = `
+                                <div class="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
+                                  ${getInitials(userName)}
+                                </div>
+                              `;
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
+                          {getInitials(userName)}
+                        </div>
+                      )}
+                      
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-900 truncate">
+                          {userName}
+                          {!hasCompleteInfo && (
+                            <span className="ml-1 text-xs text-orange-500 bg-orange-100 px-1 py-0.5 rounded">
+                              Incomplete
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm text-gray-500 truncate">
+                          {userRole} {userDept && `• ${userDept}`}
+                          {!hasCompleteInfo && !userRole && !userDept && (
+                            <span className="text-orange-500">Setup needed</span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="text-gray-400">
+                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )
+          )}
+        </div>
+      </div>
+
+      {/* Chat Area - Desktop Only */}
+      <div className="hidden lg:flex flex-1 flex-col bg-white">
+        {selectedConversation ? (
+          <>
+            {/* Chat Header */}
+            <div className="p-4 border-b border-gray-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setShowMobileConversations(true)}
+                    className="lg:hidden btn btn-ghost btn-sm btn-circle"
+                  >
+                    <ArrowLeftIcon className="w-5 h-5" />
+                  </button>
+                  {getConversationAvatar(selectedConversation)}
+                  <div>
+                    <h2 className="font-semibold text-gray-900">
+                      {getConversationTitle(selectedConversation)}
+                    </h2>
+                    <p className="text-sm text-gray-500">
+                      {selectedConversation.type === 'direct' ? (
+                        (() => {
+                          const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.ids);
+                          if (otherParticipant?.user?.tenants_employee) {
+                            const role = getRoleDisplayName(otherParticipant.user.tenants_employee.bonuses_role || '');
+                            const department = otherParticipant.user.tenants_employee.tenant_departement?.name || '';
+                            return `${role}${department ? ` • ${department}` : ''}`;
+                          }
+                          return 'Direct message';
+                        })()
+                      ) : (
+                        `${selectedConversation.participants?.length || 0} members`
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <button 
+                  onClick={onClose}
+                  className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                  title="Close Messages"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Messages Area */}
+            <div 
+              ref={messagesContainerRef}
+              onScroll={handleScroll}
+              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
+            >
+              {messages.length === 0 ? (
+                <div className="text-center py-12">
+                  <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto text-gray-300 mb-4" />
+                  <p className="text-gray-500 font-medium">No messages yet</p>
+                  <p className="text-gray-400 text-sm">Start the conversation!</p>
+                </div>
+              ) : (
+                messages.map((message, index) => {
+                  const isOwn = message.sender_id === currentUser?.ids;
+                  const senderName = message.sender?.tenants_employee?.display_name || 
+                                   message.sender?.full_name || 
+                                   'Unknown User';
+                  const senderPhoto = message.sender?.tenants_employee?.photo_url;
+
+                  // Check if we need to show a date separator
+                  const showDateSeparator = index === 0 || 
+                    !isSameDay(new Date(message.sent_at), new Date(messages[index - 1].sent_at));
+
+                  return (
+                    <div key={message.id}>
+                      {/* Date Separator */}
+                      {showDateSeparator && (
+                        <div className="flex items-center justify-center my-4">
+                          <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-sm font-medium border-b border-gray-300">
+                            {formatDateSeparator(message.sent_at)}
+                          </div>
+                        </div>
+                      )}
+                      
+                      <div
+                        className={`flex gap-3 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                      >
+                      
+                      <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                        {!isOwn && selectedConversation.type !== 'direct' && (
+                          <span className="text-xs text-gray-500 mb-1 px-3">
+                            {senderName}
+                          </span>
+                        )}
+                        
+                        <div
+                          className={`px-4 py-2 rounded-2xl shadow-sm ${
+                            isOwn
+                              ? 'text-white rounded-br-md'
+                              : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
+                          }`}
+                          style={isOwn ? { backgroundColor: '#3e2bcd' } : {}}
+                        >
+                          {/* Message content */}
+                          {message.content && (
+                            <p className="break-words">
+                              <span 
+                                className="emoji-message" 
+                                style={{ 
+                                  fontSize: isEmojiOnly(message.content) ? '4em' : '1em',
+                                  lineHeight: isEmojiOnly(message.content) ? '1.2' : 'normal'
+                                }}
+                              >
+                                {message.content}
+                              </span>
+                            </p>
+                          )}
+                          
+                          {/* File attachment */}
+                          {message.attachment_url && (
+                            <div className={`mt-2 rounded-lg border ${
+                              isOwn 
+                                ? 'bg-white/10 border-white/20' 
+                                : 'bg-gray-50 border-gray-200'
+                            }`}>
+                              {message.message_type === 'image' ? (
+                                // Image preview
+                                <div className="space-y-2">
+                                  <div 
+                                    className="relative cursor-pointer group"
+                                    onClick={() => openMediaModal(message)}
+                                  >
+                                    <img
+                                      src={message.attachment_url}
+                                      alt={message.attachment_name}
+                                      className="max-w-full max-h-80 rounded-lg object-cover w-full transition-transform group-hover:scale-105"
+                                    />
+                                    <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                      <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                      </svg>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className="truncate">{message.attachment_name}</span>
+                                      <span>({Math.round((message.attachment_size || 0) / 1024)} KB)</span>
+                                    </div>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        const link = document.createElement('a');
+                                        link.href = message.attachment_url!;
+                                        link.download = message.attachment_name || 'download';
+                                        link.click();
+                                      }}
+                                      className="p-1 hover:bg-white/20 rounded transition-colors"
+                                      title="Download image"
+                                    >
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                      </svg>
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                // File attachment
+                                <div className="flex items-center gap-3 p-3">
+                                  <div className={`p-3 rounded-lg ${
+                                    isOwn ? 'bg-white/20' : 'bg-gray-200'
+                                  }`}>
+                                    <PaperClipIcon className={`w-5 h-5 ${
+                                      isOwn ? 'text-white' : 'text-gray-600'
+                                    }`} />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <button
+                                      onClick={() => window.open(message.attachment_url, '_blank')}
+                                      className="text-sm font-medium hover:underline truncate block"
+                                    >
+                                      {message.attachment_name}
+                                    </button>
+                                    <p className="text-xs opacity-75">
+                                      {Math.round((message.attachment_size || 0) / 1024)} KB • 
+                                      {message.attachment_type?.split('/')[1]?.toUpperCase() || 'FILE'}
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        <span className={`text-xs text-gray-400 mt-1 px-2 ${isOwn ? 'text-right' : 'text-left'}`}>
+                          {formatMessageTime(message.sent_at)}
+                        </span>
+                      </div>
+                    </div>
+                    </div>
+                  );
+                })
+              )}
+              
+              {/* Typing indicators removed */}
+              
+              {/* New messages indicator when user is scrolled up */}
+              {isUserScrolling && !shouldAutoScroll && (
+                <div className="fixed bottom-20 right-4 z-10">
+                  <button
+                    onClick={() => {
+                      setShouldAutoScroll(true);
+                      scrollToBottom('smooth');
+                    }}
+                    className="bg-blue-500 hover:bg-blue-600 text-white rounded-full p-3 shadow-lg transition-colors"
+                    title="New messages - click to scroll down"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+              
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Message Input - Desktop Only */}
+            <div className="hidden lg:block p-4 border-t border-gray-200 bg-white">
+              <div className="flex items-end gap-3 relative">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploadingFile || isSending}
+                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-purple-600 disabled:opacity-50"
+                  title={isUploadingFile ? 'Uploading file...' : 'Attach file'}
+                >
+                  {isUploadingFile ? (
+                    <div className="loading loading-spinner loading-sm"></div>
+                  ) : (
+                    <PaperClipIcon className="w-5 h-5" />
+                  )}
+                </button>
+                
+                <div className="relative">
+                  <button
+                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                    disabled={isSending}
+                    className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-purple-600 disabled:opacity-50"
+                    title="Add emoji"
+                  >
+                    <FaceSmileIcon className="w-5 h-5" />
+                  </button>
+                  
+                  
+                  {/* Emoji Picker */}
+                  {isEmojiPickerOpen && (
+                    <div className="absolute bottom-12 left-0 z-50">
+                      <EmojiPicker
+                        onEmojiClick={handleEmojiClick}
+                        width={350}
+                        height={400}
+                        skinTonesDisabled={false}
+                        searchDisabled={false}
+                        previewConfig={{
+                          showPreview: true,
+                          defaultEmoji: '1f60a',
+                          defaultCaption: 'Choose your emoji!'
+                        }}
+                        lazyLoadEmojis={false}
+                      />
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex-1">
+                  <textarea
+                    ref={messageInputRef}
+                    value={newMessage}
+                    onChange={handleMessageInputChange}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Type a message..."
+                    className="textarea textarea-bordered w-full resize-none min-h-[44px] max-h-32"
+                    rows={1}
+                    disabled={isSending}
+                  />
+                </div>
+                
+                <button
+                  onClick={sendMessage}
+                  disabled={!newMessage.trim() || isSending}
+                  className="btn btn-primary btn-circle"
+                >
+                  {isSending ? (
+                    <div className="loading loading-spinner loading-sm"></div>
+                  ) : (
+                    <PaperAirplaneIcon className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center bg-white">
+            <div className="text-center">
+              <div className="w-24 h-24 bg-gradient-to-br from-purple-100 to-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                <ChatBubbleLeftRightIcon className="w-12 h-12 text-purple-500" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
+              <p className="text-gray-600 mb-6 max-w-md">
+                Click on the <span className="font-semibold text-purple-600">Contacts</span> tab to view all employees and start a conversation, or select an existing chat from your conversations.
+              </p>
+              <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
+                  <span>Chats: {conversations.length}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
+                  <span>Contacts: {allUsers.length}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Mobile Full Screen Chat */}
+      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white`}>
+        {selectedConversation && (
+          <>
+            {/* Mobile Chat Header */}
+            <div className="p-4 border-b border-gray-200 bg-white">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setShowMobileConversations(true)}
+                  className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                >
+                  <ArrowLeftIcon className="w-5 h-5" />
+                </button>
+                {getConversationAvatar(selectedConversation)}
+                <div className="flex-1 min-w-0">
+                  <h2 className="font-semibold text-gray-900 truncate">
+                    {getConversationTitle(selectedConversation)}
+                  </h2>
+                  <p className="text-sm text-gray-500">
+                    {selectedConversation.type === 'direct' ? (
+                      (() => {
+                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.ids);
+                        if (otherParticipant?.user?.tenants_employee) {
+                          const role = getRoleDisplayName(otherParticipant.user.tenants_employee.bonuses_role || '');
+                          const department = otherParticipant.user.tenants_employee.tenant_departement?.name || '';
+                          return `${role}${department ? ` • ${department}` : ''}`;
+                        }
+                        return 'Direct message';
+                      })()
+                    ) : (
+                      `${selectedConversation.participants?.length || 0} members`
+                    )}
+                  </p>
+                </div>
+                <button 
+                  onClick={onClose}
+                  className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                  title="Close Messages"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Mobile Messages */}
+            <div 
+              ref={messagesContainerRef}
+              onScroll={handleScroll}
+              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
+            >
+              {messages.map((message, index) => {
+                  const isOwn = message.sender_id === currentUser?.ids;
+                  const senderName = message.sender?.tenants_employee?.display_name || 
+                                   message.sender?.full_name || 
+                                   'Unknown User';
+
+                  // Check if we need to show a date separator
+                  const showDateSeparator = index === 0 || 
+                    !isSameDay(new Date(message.sent_at), new Date(messages[index - 1].sent_at));
+
+                return (
+                  <div key={message.id}>
+                    {/* Date Separator */}
+                    {showDateSeparator && (
+                      <div className="flex items-center justify-center my-4">
+                        <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-sm font-medium border-b border-gray-300">
+                          {formatDateSeparator(message.sent_at)}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div
+                      className={`flex gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                    >
+                    
+                    <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                      <div
+                        className={`px-3 py-2 rounded-2xl text-sm ${
+                          isOwn
+                            ? 'text-white rounded-br-md'
+                            : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
+                        }`}
+                        style={isOwn ? { backgroundColor: '#3e2bcd' } : {}}
+                      >
+                        {/* Message content */}
+                        {message.content && (
+                          <p className="break-words">
+                            <span 
+                              className="emoji-message" 
+                                style={{ 
+                                  fontSize: isEmojiOnly(message.content) ? '3.5em' : '1em',
+                                  lineHeight: isEmojiOnly(message.content) ? '1.2' : 'normal'
+                                }}
+                            >
+                              {message.content}
+                            </span>
+                          </p>
+                        )}
+                        
+                        {/* File attachment */}
+                        {message.attachment_url && (
+                          <div className={`mt-2 rounded-lg border ${
+                            isOwn 
+                              ? 'bg-white/10 border-white/20' 
+                              : 'bg-gray-50 border-gray-200'
+                          }`}>
+                            {message.message_type === 'image' ? (
+                              // Image preview
+                              <div className="space-y-2">
+                                <div 
+                                  className="relative cursor-pointer group"
+                                  onClick={() => openMediaModal(message)}
+                                >
+                                  <img
+                                    src={message.attachment_url}
+                                    alt={message.attachment_name}
+                                    className="max-w-full max-h-64 rounded-lg object-cover w-full transition-transform group-hover:scale-105"
+                                  />
+                                  <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                    </svg>
+                                  </div>
+                                </div>
+                                <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2">
+                                  <div className="flex items-center gap-2">
+                                    <span className="truncate">{message.attachment_name}</span>
+                                    <span>({Math.round((message.attachment_size || 0) / 1024)} KB)</span>
+                                  </div>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const link = document.createElement('a');
+                                      link.href = message.attachment_url!;
+                                      link.download = message.attachment_name || 'download';
+                                      link.click();
+                                    }}
+                                    className="p-1 hover:bg-white/20 rounded transition-colors"
+                                    title="Download image"
+                                  >
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              // File attachment
+                              <div className="flex items-center gap-2 p-3">
+                                <div className={`p-2 rounded ${
+                                  isOwn ? 'bg-white/20' : 'bg-gray-200'
+                                }`}>
+                                  <PaperClipIcon className={`w-4 h-4 ${
+                                    isOwn ? 'text-white' : 'text-gray-600'
+                                  }`} />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <button
+                                    onClick={() => window.open(message.attachment_url, '_blank')}
+                                    className="text-xs font-medium hover:underline truncate block"
+                                  >
+                                    {message.attachment_name}
+                                  </button>
+                                  <p className="text-xs opacity-75">
+                                    {Math.round((message.attachment_size || 0) / 1024)} KB
+                                  </p>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-xs text-gray-400 mt-1 px-2">
+                        {formatMessageTime(message.sent_at)}
+                      </span>
+                    </div>
+                    </div>
+                  </div>
+                );
+              })}
+              
+              {/* Mobile Typing indicators removed */}
+              
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Mobile Message Input - Mobile Only */}
+            <div className="lg:hidden p-4 border-t border-gray-200 bg-white">
+              <div className="flex items-end gap-2 relative">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isUploadingFile || isSending}
+                  className="btn btn-ghost btn-circle btn-sm text-gray-500 disabled:opacity-50"
+                  title={isUploadingFile ? 'Uploading file...' : 'Attach file'}
+                >
+                  {isUploadingFile ? (
+                    <div className="loading loading-spinner loading-sm"></div>
+                  ) : (
+                    <PaperClipIcon className="w-4 h-4" />
+                  )}
+                </button>
+                
+                <div className="relative">
+                  <button
+                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                    disabled={isSending}
+                    className="btn btn-ghost btn-circle btn-sm text-gray-500 disabled:opacity-50"
+                    title="Add emoji"
+                  >
+                    <FaceSmileIcon className="w-4 h-4" />
+                  </button>
+                  
+                  
+                  {/* Mobile Emoji Picker */}
+                  {isEmojiPickerOpen && (
+                    <div className="absolute bottom-12 left-0 z-50">
+                      <EmojiPicker
+                        onEmojiClick={handleEmojiClick}
+                        width={300}
+                        height={350}
+                        skinTonesDisabled={false}
+                        searchDisabled={false}
+                        previewConfig={{
+                          showPreview: true,
+                          defaultEmoji: '1f60a',
+                          defaultCaption: 'Choose your emoji!'
+                        }}
+                        lazyLoadEmojis={false}
+                      />
+                    </div>
+                  )}
+                </div>
+                
+                <div className="flex-1">
+                  <textarea
+                    value={newMessage}
+                    onChange={handleMessageInputChange}
+                    onKeyPress={handleKeyPress}
+                    placeholder="Type a message..."
+                    className="textarea textarea-bordered w-full resize-none text-sm"
+                    rows={1}
+                    disabled={isSending}
+                  />
+                </div>
+                
+                <button
+                  onClick={sendMessage}
+                  disabled={!newMessage.trim() || isSending}
+                  className="btn btn-primary btn-circle btn-sm"
+                >
+                  <PaperAirplaneIcon className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+
+      {/* Create Group Modal */}
+      {showCreateGroupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xl font-bold text-gray-900">Create Group Chat</h3>
+                <button
+                  onClick={() => {
+                    setShowCreateGroupModal(false);
+                    setSelectedUsers([]);
+                    setNewGroupTitle('');
+                    setNewGroupDescription('');
+                  }}
+                  className="btn btn-ghost btn-sm btn-circle"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {/* Group Title */}
+              <div className="mb-4">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Group Name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="Enter group name..."
+                  className="input input-bordered w-full"
+                  value={newGroupTitle}
+                  onChange={(e) => setNewGroupTitle(e.target.value)}
+                />
+              </div>
+
+              {/* Group Description */}
+              <div className="mb-6">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Description (Optional)</label>
+                <textarea
+                  placeholder="Describe the group purpose..."
+                  className="textarea textarea-bordered w-full resize-none"
+                  rows={2}
+                  value={newGroupDescription}
+                  onChange={(e) => setNewGroupDescription(e.target.value)}
+                />
+              </div>
+
+              {/* User Selection */}
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-3">
+                  Add Members <span className="text-red-500">*</span>
+                </label>
+                
+                <div className="space-y-2 max-h-60 overflow-y-auto border border-gray-200 rounded-lg p-3">
+                  {allUsers.map((user) => {
+                    const isSelected = selectedUsers.includes(user.ids);
+                    const userName = user.tenants_employee?.display_name || user.full_name || 'Unknown User';
+                    const userRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
+                    const userDept = user.tenants_employee?.tenant_departement?.name;
+                    const userPhoto = user.tenants_employee?.photo_url;
+
+                    return (
+                      <div
+                        key={user.ids}
+                        onClick={() => {
+                          setSelectedUsers(prev => 
+                            isSelected 
+                              ? prev.filter(id => id !== user.ids)
+                              : [...prev, user.ids]
+                          );
+                        }}
+                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all ${
+                          isSelected 
+                            ? 'bg-purple-50 border-2 border-purple-200' 
+                            : 'hover:bg-gray-50 border-2 border-transparent'
+                        }`}
+                      >
+                        <div className="relative">
+                          {userPhoto && userPhoto.trim() !== '' ? (
+                            <img
+                              src={userPhoto}
+                              alt={userName}
+                              className="w-10 h-10 rounded-full object-cover"
+                              onError={(e) => {
+                                // Replace with colored circle if image fails to load
+                                const target = e.target as HTMLImageElement;
+                                const parent = target.parentElement;
+                                if (parent) {
+                                  parent.innerHTML = `
+                                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
+                                      ${getInitials(userName)}
+                                    </div>
+                                  `;
+                                }
+                              }}
+                            />
+                          ) : (
+                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
+                              {getInitials(userName)}
+                            </div>
+                          )}
+                          {isSelected && (
+                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-purple-500 rounded-full flex items-center justify-center">
+                              <CheckIcon className="w-3 h-3 text-white" />
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="flex-1 min-w-0">
+                          <div className="font-semibold text-gray-900 truncate">
+                            {userName}
+                          </div>
+                          <div className="text-sm text-gray-500 truncate">
+                            {userRole} {userDept && `• ${userDept}`}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                
+                {selectedUsers.length > 0 && (
+                  <div className="mt-3 text-sm text-gray-600">
+                    {selectedUsers.length} member{selectedUsers.length !== 1 ? 's' : ''} selected
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t border-gray-200">
+              <div className="flex gap-3 justify-end">
+                <button
+                  onClick={() => {
+                    setShowCreateGroupModal(false);
+                    setSelectedUsers([]);
+                    setNewGroupTitle('');
+                    setNewGroupDescription('');
+                  }}
+                  className="btn btn-outline"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={createGroupConversation}
+                  disabled={selectedUsers.length === 0 || !newGroupTitle.trim()}
+                  className="btn btn-primary"
+                >
+                  Create Group
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hidden file input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        className="hidden"
+        accept="image/*,.pdf,.doc,.docx,.txt,.zip,.rar"
+        onChange={handleFileInputChange}
+      />
+
+      {/* WhatsApp-style Media Modal */}
+      {isMediaModalOpen && conversationMedia.length > 0 && (
+        <div className="fixed inset-0 z-[60] bg-black bg-opacity-95 flex flex-col">
+          {/* Header */}
+          <div className="flex items-center justify-between p-4 bg-black/50 text-white">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={closeMediaModal}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+              <div>
+                <h3 className="font-semibold">
+                  {conversationMedia[selectedMediaIndex]?.attachment_name}
+                </h3>
+                <p className="text-sm text-gray-300">
+                  {selectedMediaIndex + 1} of {conversationMedia.length}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const link = document.createElement('a');
+                  link.href = conversationMedia[selectedMediaIndex]?.attachment_url || '';
+                  link.download = conversationMedia[selectedMediaIndex]?.attachment_name || 'download';
+                  link.click();
+                }}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                title="Download file"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </button>
+              <button
+                onClick={() => window.open(conversationMedia[selectedMediaIndex]?.attachment_url, '_blank')}
+                className="p-2 hover:bg-white/10 rounded-full transition-colors"
+                title="Open in new tab"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          {/* Main Media Display */}
+          <div className="flex-1 flex items-center justify-center relative">
+            {conversationMedia[selectedMediaIndex]?.message_type === 'image' ? (
+              <img
+                src={conversationMedia[selectedMediaIndex]?.attachment_url}
+                alt={conversationMedia[selectedMediaIndex]?.attachment_name}
+                className="max-w-full max-h-full object-contain"
+              />
+            ) : (
+              <div className="text-center text-white">
+                <div className="w-32 h-32 mx-auto mb-4 bg-white/10 rounded-full flex items-center justify-center">
+                  <PaperClipIcon className="w-16 h-16" />
+                </div>
+                <h3 className="text-xl font-semibold mb-2">
+                  {conversationMedia[selectedMediaIndex]?.attachment_name}
+                </h3>
+                <p className="text-gray-300 mb-4">
+                  {Math.round((conversationMedia[selectedMediaIndex]?.attachment_size || 0) / 1024)} KB
+                </p>
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => {
+                      const link = document.createElement('a');
+                      link.href = conversationMedia[selectedMediaIndex]?.attachment_url || '';
+                      link.download = conversationMedia[selectedMediaIndex]?.attachment_name || 'download';
+                      link.click();
+                    }}
+                    className="px-6 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+                  >
+                    Download File
+                  </button>
+                  <button
+                    onClick={() => window.open(conversationMedia[selectedMediaIndex]?.attachment_url, '_blank')}
+                    className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+                  >
+                    Open in New Tab
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Navigation Arrows */}
+            {conversationMedia.length > 1 && (
+              <>
+                <button
+                  onClick={() => navigateMedia('prev')}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white transition-colors"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </button>
+                <button
+                  onClick={() => navigateMedia('next')}
+                  className="absolute right-4 top-1/2 -translate-y-1/2 p-3 bg-black/50 hover:bg-black/70 rounded-full text-white transition-colors"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Bottom Media Thumbnails Panel */}
+          <div className="bg-black/50 p-4">
+            <div className="flex gap-2 overflow-x-auto">
+              {conversationMedia.map((media, index) => (
+                <div
+                  key={media.id}
+                  onClick={() => setSelectedMediaIndex(index)}
+                  className={`flex-shrink-0 w-16 h-16 rounded-lg overflow-hidden cursor-pointer border-2 transition-all ${
+                    index === selectedMediaIndex 
+                      ? 'border-blue-500 scale-110' 
+                      : 'border-transparent hover:border-white/30'
+                  }`}
+                >
+                  {media.message_type === 'image' ? (
+                    <img
+                      src={media.attachment_url}
+                      alt={media.attachment_name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full bg-white/10 flex items-center justify-center">
+                      <PaperClipIcon className="w-6 h-6 text-white" />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default RMQMessagesPage;

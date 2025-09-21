@@ -23,6 +23,7 @@ import {
   ArrowRightOnRectangleIcon,
   ExclamationTriangleIcon,
   ShieldCheckIcon,
+  ChatBubbleLeftRightIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 

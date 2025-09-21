@@ -3625,6 +3625,67 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
+      {/* Team Availability Section */}
+      <div className="w-full mt-12">
+        <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
+          <div className="p-6">
+            <div className="flex items-center gap-3 mb-6">
+              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600">
+                <UserGroupIcon className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Team Availability</h2>
+                <p className="text-gray-500 text-sm">Employees unavailable today</p>
+              </div>
+            </div>
+              
+              {/* Detailed Table */}
+              {unavailableEmployeesLoading ? (
+                <div className="flex justify-center items-center py-8">
+                  <div className="loading loading-spinner loading-lg text-gray-600"></div>
+                </div>
+              ) : unavailableEmployeesData.length > 0 ? (
+                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
+                  <div className="overflow-x-auto">
+                    <table className="table w-full">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-gray-700 font-medium">Employee</th>
+                          <th className="text-gray-700 font-medium">Date</th>
+                          <th className="text-gray-700 font-medium">Time</th>
+                          <th className="text-gray-700 font-medium">Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {unavailableEmployeesData.map((item) => (
+                          <tr key={item.id} className="hover:bg-gray-50 border-b border-gray-100">
+                            <td className="font-medium text-gray-900 py-3">{item.employeeName}</td>
+                            <td className="text-gray-700 py-3">{item.date}</td>
+                            <td className="text-gray-700 py-3">{item.time}</td>
+                            <td className="text-gray-700 py-3">{item.reason}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-gray-50 rounded-lg p-8 border border-gray-200 text-center">
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="p-3 bg-green-100 rounded-full">
+                      <CheckCircleIcon className="w-8 h-8 text-green-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
+                      <p className="text-gray-600">No employees are unavailable today. Great job team!</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+          </div>
+        </div>
+      </div>
+
       {/* 4. My Performance Graph (Full Width) */}
       <div className="w-full mt-12">
         <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-white via-white to-white">
@@ -3856,105 +3917,6 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Unavailable Employees Section */}
-      <div className="w-full mt-12">
-        <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-          <div className="p-6">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600">
-                <UserGroupIcon className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h2 className="text-xl font-semibold text-gray-900">Team Availability</h2>
-                <p className="text-gray-500 text-sm">Employees unavailable today</p>
-              </div>
-            </div>
-              
-              {/* Summary Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                <div className="bg-white rounded-lg p-4 shadow-md border border-gray-200">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-green-100 rounded-lg">
-                      <CheckCircleIcon className="w-5 h-5 text-green-600" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-600">Total Unavailable</p>
-                      <p className="text-2xl font-bold text-green-600">{unavailableEmployeesCount}</p>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="bg-white rounded-lg p-4 shadow-md border border-gray-200">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-orange-100 rounded-lg">
-                      <ClockIcon className="w-5 h-5 text-orange-600" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-600">Scheduled Time Off</p>
-                      <p className="text-2xl font-bold text-orange-600">{scheduledTimeOffCount}</p>
-                    </div>
-                  </div>
-                </div>
-                
-                <div className="bg-white rounded-lg p-4 shadow-md border border-gray-200">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-red-100 rounded-lg">
-                      <ExclamationTriangleIcon className="w-5 h-5 text-red-600" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-medium text-gray-600">Currently Unavailable</p>
-                      <p className="text-2xl font-bold text-red-600">{currentlyUnavailableCount}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Detailed Table */}
-              {unavailableEmployeesLoading ? (
-                <div className="flex justify-center items-center py-8">
-                  <div className="loading loading-spinner loading-lg text-gray-600"></div>
-                </div>
-              ) : unavailableEmployeesData.length > 0 ? (
-                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="table w-full">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="text-gray-700 font-medium">Employee</th>
-                          <th className="text-gray-700 font-medium">Date</th>
-                          <th className="text-gray-700 font-medium">Time</th>
-                          <th className="text-gray-700 font-medium">Reason</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {unavailableEmployeesData.map((item) => (
-                          <tr key={item.id} className="hover:bg-gray-50 border-b border-gray-100">
-                            <td className="font-medium text-gray-900 py-3">{item.employeeName}</td>
-                            <td className="text-gray-700 py-3">{item.date}</td>
-                            <td className="text-gray-700 py-3">{item.time}</td>
-                            <td className="text-gray-700 py-3">{item.reason}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-gray-50 rounded-lg p-8 border border-gray-200 text-center">
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="p-3 bg-green-100 rounded-full">
-                      <CheckCircleIcon className="w-8 h-8 text-green-600" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
-                      <p className="text-gray-600">No employees are unavailable today. Great job team!</p>
-                    </div>
-                  </div>
-                </div>
-              )}
-          </div>
-        </div>
-      </div>
 
       {/* Floating button to reopen AI container */}
       {aiContainerCollapsed && (
