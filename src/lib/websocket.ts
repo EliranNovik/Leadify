@@ -62,10 +62,12 @@ class WebSocketService {
       return;
     }
 
+    this.userId = userId; // Set the userId for use in sendMessage
     console.log('🔌 Connecting to WebSocket...');
     
-    // For now, we'll use a local WebSocket server
-    // In production, you'll need to set up a proper WebSocket server
+    // Connect to the backend WebSocket server
+    // In development: localhost:3001 (backend server)
+    // In production: your backend server URL
     const serverUrl = import.meta.env.VITE_WEBSOCKET_URL || 'http://localhost:3001';
     
     this.socket = io(serverUrl, {
@@ -196,14 +198,21 @@ class WebSocketService {
       return;
     }
 
-    console.log('📤 Sending WebSocket message:', { conversation_id: conversationId, content, message_type: messageType });
+    console.log('📤 Sending WebSocket message:', { conversation_id: conversationId, sender_id: this.userId, content, message_type: messageType });
     console.log('📤 Socket connected:', this.socket.connected);
     console.log('📤 Socket ID:', this.socket.id);
+    console.log('📤 User ID:', this.userId);
     
     this.socket.emit('send_message', {
       conversation_id: conversationId,
+      sender_id: this.userId,
       content: content,
-      message_type: messageType
+      message_type: messageType,
+      sent_at: new Date().toISOString(),
+      attachment_url: attachmentUrl,
+      attachment_name: content, // Use content as attachment name for now
+      attachment_type: attachmentType,
+      attachment_size: attachmentSize,
     });
     
     console.log('📤 Message emitted successfully');

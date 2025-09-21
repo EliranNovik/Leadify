@@ -157,9 +157,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
     const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
     
-    // Debug logging
-    console.log('🎭 Emoji detection:', { text, cleanText, hasNonAscii, isShort, result: hasNonAscii && isShort });
-    
     return hasNonAscii && isShort;
   };
 
@@ -351,66 +348,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Initialize WebSocket connection after user data is set
         if (userData && isOpen) {
           websocketService.connect(userData.ids);
-          
-          // Set up WebSocket event handlers
-          websocketService.onMessage((message: MessageData) => {
-            console.log('📨 WebSocket message received:', message);
-            console.log('📨 Current selected conversation:', selectedConversation?.id);
-            console.log('📨 Message is for conversation:', message.conversation_id);
-            
-            // Add message if it's for the currently selected conversation
-            if (selectedConversation && message.conversation_id === selectedConversation.id) {
-              console.log('📨 Adding message to current conversation');
-              setMessages(prev => {
-                // Check if message already exists to avoid duplicates
-                const exists = prev.some(m => m.id === message.id || 
-                  (m.conversation_id === message.conversation_id && 
-                   m.sender_id === message.sender_id && 
-                   m.content === message.content && 
-                   Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 1000));
-                if (exists) {
-                  console.log('📨 Message already exists, skipping');
-                  return prev;
-                }
-                
-                // Enhance WebSocket message with real user data from conversation participants
-                const enhancedMessage = { ...message } as Message;
-                
-                // Find the sender in the conversation participants to get real user data
-                const senderParticipant = selectedConversation.participants.find(p => p.user_id === message.sender_id);
-                if (senderParticipant && senderParticipant.user) {
-                  enhancedMessage.sender = senderParticipant.user;
-                }
-                
-                // Ensure attachment fields are properly set
-                if (message.attachment_url && !enhancedMessage.attachment_url) {
-                  enhancedMessage.attachment_url = message.attachment_url;
-                  enhancedMessage.attachment_name = message.attachment_name;
-                  enhancedMessage.attachment_type = message.attachment_type;
-                  enhancedMessage.attachment_size = message.attachment_size;
-                }
-                
-                console.log('📨 Adding enhanced message:', enhancedMessage);
-                return [...prev, enhancedMessage];
-              });
-            } else {
-              console.log('📨 Message not for current conversation, updating conversation list only');
-            }
-            
-            // Update conversation preview for all conversations
-            setConversations(prev => 
-              prev.map(conv => 
-                conv.id === message.conversation_id
-                  ? {
-                      ...conv,
-                      last_message_at: message.sent_at,
-                      last_message_preview: message.content.substring(0, 100),
-                      unread_count: conv.id === selectedConversation?.id ? 0 : (conv.unread_count || 0) + 1
-                    }
-                  : conv
-              ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
-            );
-          });
 
           websocketService.onConnect(() => {
             console.log('🔌 WebSocket connected');
@@ -1400,6 +1337,79 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [isEmojiPickerOpen]);
+
+  // WebSocket message handler - separate from initialization
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const handleWebSocketMessage = (message: MessageData) => {
+      console.log('📨 WebSocket message received:', message);
+      console.log('📨 Current selected conversation:', selectedConversation?.id);
+      console.log('📨 Message is for conversation:', message.conversation_id);
+      console.log('📨 Message sender:', message.sender_id);
+      
+      // Add message if it's for the currently selected conversation
+      if (selectedConversation && message.conversation_id === selectedConversation.id) {
+        console.log('📨 Adding message to current conversation');
+        setMessages(prev => {
+          // Check if message already exists to avoid duplicates
+          const exists = prev.some(m => m.id === message.id || 
+            (m.conversation_id === message.conversation_id && 
+             m.sender_id === message.sender_id && 
+             m.content === message.content && 
+             Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 1000));
+          if (exists) {
+            console.log('📨 Message already exists, skipping');
+            return prev;
+          }
+          
+          // Enhance WebSocket message with real user data from conversation participants
+          const enhancedMessage = { ...message } as Message;
+          
+          // Find the sender in the conversation participants to get real user data
+          const senderParticipant = selectedConversation.participants.find(p => p.user_id === message.sender_id);
+          if (senderParticipant && senderParticipant.user) {
+            enhancedMessage.sender = senderParticipant.user;
+          }
+          
+          // Ensure attachment fields are properly set
+          if (message.attachment_url && !enhancedMessage.attachment_url) {
+            enhancedMessage.attachment_url = message.attachment_url;
+            enhancedMessage.attachment_name = message.attachment_name;
+            enhancedMessage.attachment_type = message.attachment_type;
+            enhancedMessage.attachment_size = message.attachment_size;
+          }
+          
+          console.log('📨 Adding enhanced message:', enhancedMessage);
+          return [...prev, enhancedMessage];
+        });
+      } else {
+        console.log('📨 Message not for current conversation, updating conversation list only');
+      }
+      
+      // Update conversation preview for all conversations
+      setConversations(prev => 
+        prev.map(conv => 
+          conv.id === message.conversation_id
+            ? {
+                ...conv,
+                last_message_at: message.sent_at,
+                last_message_preview: message.content.substring(0, 100),
+                unread_count: conv.id === selectedConversation?.id ? 0 : (conv.unread_count || 0) + 1
+              }
+            : conv
+        ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
+      );
+    };
+
+    websocketService.onMessage(handleWebSocketMessage);
+
+    // Cleanup
+    return () => {
+      // Note: websocketService doesn't have an offMessage method, so we can't clean up
+      // This is fine as the handler will be replaced on next render
+    };
+  }, [selectedConversation, currentUser]);
 
   // Join conversation room when conversation is selected
   useEffect(() => {
