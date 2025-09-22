@@ -22,7 +22,11 @@ const PORT = process.env.PORT || 3002;
 // WebSocket setup
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
+    origin: [
+      process.env.FRONTEND_URL || "http://localhost:5173",
+      "https://leadify-crm.onrender.com",
+      "http://localhost:5173"
+    ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["*"],
     credentials: true
@@ -160,6 +164,118 @@ app.get('/health', (req, res) => {
       enabled: true
     }
   });
+});
+
+// Call recording proxy endpoint
+app.get('/api/call-recording/:callId', async (req, res) => {
+  try {
+    const { callId } = req.params;
+    const { tenant } = req.query;
+    
+    console.log('🎵 Proxying call recording request for call ID:', callId, 'tenant:', tenant);
+    
+    // Get 1com API configuration
+    const onecomApiKey = process.env.ONECOM_API_KEY;
+    const onecomTenant = tenant || process.env.ONECOM_TENANT || 'decker';
+    
+    if (!onecomApiKey) {
+      console.error('🎵 1com API key not configured');
+      return res.status(500).json({ error: 'API key not configured' });
+    }
+    
+        // Try both API parameters as per documentation
+        // Documentation shows: info=recording
+        // But some examples use: info=playrecording
+        // Let's try the documented version first
+        const onecomUrl = `https://pbx6webserver.1com.co.il/pbx/proxyapi.php?key=${onecomApiKey}&reqtype=INFO&info=recording&id=${callId}&tenant=${onecomTenant}`;
+        const onecomUrlPlay = `https://pbx6webserver.1com.co.il/pbx/proxyapi.php?key=${onecomApiKey}&reqtype=INFO&info=playrecording&id=${callId}&tenant=${onecomTenant}`;
+    
+    console.log('🎵 Constructed 1com URL (recording):', onecomUrl.replace(onecomApiKey, '***'));
+    console.log('🎵 Constructed 1com URL (playrecording):', onecomUrlPlay.replace(onecomApiKey, '***'));
+    
+    // Make request to 1com API - try both parameters
+    console.log('🎵 Making request to 1com API with info=recording...');
+    let response = await fetch(onecomUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Leadify-CRM/1.0',
+        'Accept': 'audio/*,*/*'
+      }
+    });
+    
+    console.log('🎵 1com API response status (recording):', response.status);
+    console.log('🎵 1com API response headers (recording):', Object.fromEntries(response.headers.entries()));
+    
+    // If the first request returns HTML (error), try the alternative parameter
+    const contentType = response.headers.get('content-type') || '';
+    if (response.ok && contentType.includes('text/html')) {
+      console.log('🎵 First request returned HTML, trying info=playrecording...');
+      response = await fetch(onecomUrlPlay, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Leadify-CRM/1.0',
+          'Accept': 'audio/*,*/*'
+        }
+      });
+      console.log('🎵 1com API response status (playrecording):', response.status);
+      console.log('🎵 1com API response headers (playrecording):', Object.fromEntries(response.headers.entries()));
+    }
+    
+    if (!response.ok) {
+      console.error('🎵 Recording request failed:', response.status, response.statusText);
+      const errorText = await response.text();
+      console.error('🎵 Error response:', errorText);
+      return res.status(response.status).json({ error: 'Recording not available' });
+    }
+    
+        // Get content type (already retrieved above)
+        const finalContentType = response.headers.get('content-type') || 'audio/mpeg';
+        console.log('🎵 Final content type:', finalContentType);
+        
+        // Get the response data as buffer
+        const responseBuffer = await response.arrayBuffer();
+        console.log('🎵 Response size:', responseBuffer.byteLength, 'bytes');
+        
+        // Check if the response is HTML (error page) instead of audio
+        if (finalContentType.includes('text/html')) {
+          console.error('🎵 1com API returned HTML instead of audio. This usually means:');
+          console.error('🎵 1. The recording does not exist or has been archived');
+          console.error('🎵 2. The API key does not have permission to access recordings');
+          console.error('🎵 3. The recording ID is invalid or from an older period');
+          console.error('🎵 4. The recording might be from 2024 and no longer accessible');
+          
+          // Try to get the HTML content to see what error message 1com returned
+          const htmlContent = Buffer.from(responseBuffer).toString('utf-8');
+          console.error('🎵 1com HTML response:', htmlContent.substring(0, 500));
+          
+          // Check if it's a 2024 recording (pbx24-*)
+          const isOldRecording = callId.startsWith('pbx24-');
+          
+          return res.status(404).json({ 
+            error: 'Recording not available',
+            details: isOldRecording 
+              ? 'This recording appears to be from 2024 and may no longer be accessible. 1com typically archives older recordings.'
+              : 'The recording could not be found or accessed. This may be due to insufficient permissions or the recording not existing.',
+            contentType: finalContentType,
+            isOldRecording: isOldRecording
+          });
+        }
+        
+        // Set appropriate headers for audio
+        res.set({
+          'Content-Type': finalContentType,
+          'Content-Length': responseBuffer.byteLength.toString(),
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=3600'
+        });
+        
+        // Send the audio data
+        res.send(Buffer.from(responseBuffer));
+    
+  } catch (error) {
+    console.error('🎵 Recording proxy error:', error);
+    res.status(500).json({ error: 'Failed to fetch recording' });
+  }
 });
 
 // Configure multer for file uploads

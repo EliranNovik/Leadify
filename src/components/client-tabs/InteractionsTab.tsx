@@ -16,6 +16,9 @@ import {
   ChevronDownIcon,
   SparklesIcon,
   ExclamationTriangleIcon,
+  PlayIcon,
+  StopIcon,
+  SpeakerWaveIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useMsal } from '@azure/msal-react';
@@ -42,6 +45,26 @@ interface Attachment {
   contentUrl?: string; // For download
 }
 
+interface CallLog {
+  id: number;
+  cdate: string;
+  udate?: string;
+  direction?: string;
+  date?: string;
+  time?: string;
+  source?: string;
+  incomingdid?: string;
+  destination?: string;
+  status?: string;
+  url?: string;
+  call_id?: string;
+  action?: string;
+  duration?: number;
+  lead_id?: number;
+  lead_interaction_id?: number;
+  employee_id?: number;
+}
+
 interface Interaction {
   id: string | number;
   date: string;
@@ -57,12 +80,16 @@ interface Interaction {
   status?: string;
   subject?: string;
   error_message?: string; // Add error message field for WhatsApp failures
+  call_log?: CallLog; // Add call log data for call interactions
+  recording_url?: string; // Add recording URL for call interactions
+  call_duration?: number; // Add call duration for call interactions
 }
 
 const contactMethods = [
   { value: 'email', label: 'E-mail' },
   { value: 'whatsapp', label: 'WhatsApp' },
   { value: 'call', label: 'Call' },
+  { value: 'call_log', label: 'Call Log' },
   { value: 'sms', label: 'SMS' },
   { value: 'office', label: 'In Office' },
 ];
@@ -501,6 +528,128 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const navigate = useNavigate();
   // 1. Add state for WhatsApp messages from DB
   const [whatsAppMessages, setWhatsAppMessages] = useState<any[]>([]);
+  
+  // Audio playback state for call recordings
+  const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
+  const [audioRef, setAudioRef] = useState<HTMLAudioElement | null>(null);
+
+  // Audio playback functions
+  const handlePlayRecording = async (recordingUrl: string, callId: string) => {
+    try {
+      console.log('🎵 Raw recording URL from database:', recordingUrl);
+      console.log('🎵 URL length:', recordingUrl.length);
+      console.log('🎵 URL starts with http:', recordingUrl.startsWith('http'));
+      console.log('🎵 URL contains 1com:', recordingUrl.includes('1com'));
+      
+      // Stop current audio if playing
+      if (audioRef && !audioRef.paused) {
+        audioRef.pause();
+        audioRef.currentTime = 0;
+      }
+
+      // Validate and clean the recording URL
+      let cleanUrl = recordingUrl;
+      
+      // Check if URL is absolute (handle both encoded and unencoded URLs)
+      let decodedUrl = recordingUrl;
+      try {
+        // Try to decode the URL first
+        decodedUrl = decodeURIComponent(recordingUrl);
+        console.log('🎵 Decoded URL:', decodedUrl);
+      } catch (error) {
+        // If decoding fails, use the original URL
+        console.log('🎵 URL decoding failed, using original:', error);
+        decodedUrl = recordingUrl;
+      }
+      
+      console.log('🎵 Final URL to process:', decodedUrl);
+      const isAbsolute = decodedUrl.startsWith('http://') || decodedUrl.startsWith('https://');
+      
+      if (!isAbsolute) {
+        console.error('Invalid recording URL:', recordingUrl);
+        toast.error('Invalid recording URL');
+        return;
+      }
+
+      // For 1com URLs, extract call ID and use our proxy endpoint
+      if (decodedUrl.includes('pbx6webserver.1com.co.il')) {
+        console.log('1com recording URL detected:', decodedUrl);
+        
+        try {
+          // Extract call ID from the URL
+          // URL format: https://pbx6webserver.1com.co.il/pbx/proxyapi.php?reqtype=INFO&info=playrecording&id=pbx24-1740917387.14030184&key=...&tenant=...
+          const urlParams = new URL(decodedUrl).searchParams;
+          const callId = urlParams.get('id');
+          const tenant = urlParams.get('tenant');
+          
+          if (!callId) {
+            console.error('Could not extract call ID from URL:', decodedUrl);
+            toast.error('Invalid recording URL format');
+            return;
+          }
+          
+          console.log('Extracted call ID:', callId, 'tenant:', tenant);
+          
+          // Use our backend proxy to avoid CORS issues
+          const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+          cleanUrl = `${backendUrl}/api/call-recording/${callId}${tenant ? `?tenant=${tenant}` : ''}`;
+          
+          console.log('Proxied URL:', cleanUrl);
+        } catch (error) {
+          console.error('Error parsing 1com URL:', error);
+          toast.error('Failed to parse recording URL');
+          return;
+        }
+      }
+
+      // Create new audio element
+      const audio = new Audio(cleanUrl);
+      setAudioRef(audio);
+      setPlayingAudioId(callId);
+
+      audio.onended = () => {
+        setPlayingAudioId(null);
+        setAudioRef(null);
+      };
+
+      audio.onerror = (error) => {
+        console.error('Audio playback error:', error);
+        console.error('Failed URL:', cleanUrl);
+        // Check if it's an old recording from 2024
+        const isOldRecording = recordingUrl.includes('pbx24-');
+        const errorMessage = isOldRecording 
+          ? 'Recording not available - may be archived (2024 recordings)'
+          : 'Recording not available or format not supported';
+        toast.error(errorMessage);
+        setPlayingAudioId(null);
+        setAudioRef(null);
+      };
+
+      audio.onloadstart = () => {
+        console.log('Audio loading started for:', cleanUrl);
+      };
+
+      audio.oncanplay = () => {
+        console.log('Audio can play:', cleanUrl);
+      };
+
+      await audio.play();
+    } catch (error) {
+      console.error('Error playing recording:', error);
+      toast.error('Failed to play recording');
+      setPlayingAudioId(null);
+      setAudioRef(null);
+    }
+  };
+
+  const handleStopRecording = () => {
+    if (audioRef && !audioRef.paused) {
+      audioRef.pause();
+      audioRef.currentTime = 0;
+    }
+    setPlayingAudioId(null);
+    setAudioRef(null);
+  };
   // Add state for WhatsApp error messages
   const [whatsAppError, setWhatsAppError] = useState<string | null>(null);
   
@@ -989,7 +1138,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   useEffect(() => {
     let isMounted = true;
     async function fetchAndCombineInteractions() {
-      console.log('🔄 fetchAndCombineInteractions called with client:', client.id, 'emails:', client.emails?.length || 0);
+      // Reduced logging for performance
       setInteractionsLoading(true);
       try {
         // Ensure currentUserFullName is set before mapping emails
@@ -1011,6 +1160,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             }
           }
         }
+
+        // Prepare parallel queries for better performance
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
       // 1. Manual interactions (excluding WhatsApp)
       const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp').map((i: any) => ({
         ...i,
@@ -1040,8 +1193,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               
               let body = e.body_preview || e.bodyPreview || '';
               
-              // Only process body if it exists and is not too long (performance optimization)
-              if (body && body.length > 0 && body.length < 1000) {
+              // Process body if it exists (removed length restriction)
+              if (body && body.length > 0) {
                 body = stripSignatureAndQuotedTextPreserveHtml(body);
               }
               
@@ -1101,30 +1254,151 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         }
       }
       
-      // 4. Legacy interactions for legacy leads
+      // 4. Call logs from call_logs table with employee JOIN
+      let callLogInteractions: any[] = [];
+      if (client?.id) {
+        try {
+          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+          
+          // Use JOIN query to get employee information
+          let query = supabase
+            .from('call_logs')
+            .select(`
+              *,
+              tenants_employee!call_logs_employee_id_fkey (
+                id,
+                display_name,
+                official_name,
+                mobile,
+                phone,
+                bonuses_role,
+                department_id
+              )
+            `);
+          
+          if (isLegacyLead) {
+            const legacyId = parseInt(client.id.replace('legacy_', ''));
+            query = query.eq('lead_id', legacyId);
+          } else {
+            query = query.eq('lead_id', client.id);
+          }
+          
+          const { data: callLogs, error } = await query.order('cdate', { ascending: false });
+          if (error) {
+            console.error('🔍 Call logs query error:', error);
+          } else {
+            console.log('🔍 Raw call logs from database:', callLogs?.map(cl => ({
+              id: cl.id,
+              cdate: cl.cdate,
+              time: cl.time,
+              source: cl.source,
+              destination: cl.destination,
+              status: cl.status,
+              duration: cl.duration,
+              url: cl.url
+            })));
+          }
+          if (!error && callLogs) {
+            // First, deduplicate at the database level by removing exact duplicates
+            const uniqueCallLogs = callLogs.filter((callLog: any, index: number, self: any[]) => {
+              return index === self.findIndex((cl: any) => 
+                cl.cdate === callLog.cdate &&
+                cl.time === callLog.time &&
+                cl.source === callLog.source &&
+                cl.destination === callLog.destination &&
+                cl.status === callLog.status
+              );
+            });
+            
+            console.log('🔍 After database-level deduplication:', {
+              original: callLogs.length,
+              unique: uniqueCallLogs.length,
+              removed: callLogs.length - uniqueCallLogs.length
+            });
+            
+            callLogInteractions = uniqueCallLogs.map((callLog: any) => {
+              const callDate = new Date(callLog.cdate);
+              const callTime = callLog.time || '00:00';
+              
+              // Determine direction
+              const direction = callLog.direction?.toLowerCase().includes('incoming') ? 'in' : 'out';
+              
+              // Get employee name from JOIN or fallback
+              let employeeName = client.name; // Default for incoming calls
+              if (direction === 'out' && callLog.tenants_employee) {
+                employeeName = callLog.tenants_employee.display_name || callLog.tenants_employee.official_name || userFullName || 'You';
+              } else if (direction === 'out' && !callLog.tenants_employee) {
+                employeeName = userFullName || 'You';
+              }
+              
+              // Removed debug logging for performance
+              
+              // Format duration
+              const duration = callLog.duration ? `${Math.floor(callLog.duration / 60)}:${(callLog.duration % 60).toString().padStart(2, '0')}` : '0:00';
+              
+              // Create content based on call details (status is shown in badge)
+              let content = '';
+              if (callLog.source && callLog.destination) {
+                content = `From: ${callLog.source}, To: ${callLog.destination}`;
+              } else if (callLog.source) {
+                content = `From: ${callLog.source}`;
+              } else if (callLog.destination) {
+                content = `To: ${callLog.destination}`;
+              } else {
+                content = 'Call logged';
+              }
+              
+              return {
+                id: `call_${callLog.id}`,
+                date: callDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+                time: callTime,
+                raw_date: callLog.cdate,
+                employee: employeeName,
+                direction: direction,
+                kind: 'call',
+                length: duration,
+                content: content,
+                observation: '',
+                editable: false,
+                status: callLog.status,
+                call_log: callLog,
+                recording_url: callLog.url,
+                call_duration: callLog.duration,
+                employee_data: callLog.tenants_employee // Store employee data for potential future use
+              };
+            });
+          }
+        } catch (error) {
+          console.error('Error fetching call logs:', error);
+        }
+      }
+
+      // 5. Legacy interactions for legacy leads (excluding call logs - we use call_logs table instead)
       let legacyInteractions: any[] = [];
-      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       if (isLegacyLead && client?.id) {
         try {
-          legacyInteractions = await fetchLegacyInteractions(client.id, client.name);
+          const allLegacyInteractions = await fetchLegacyInteractions(client.id, client.name);
+          // Filter out call logs - we get those from call_logs table instead
+          legacyInteractions = allLegacyInteractions.filter((interaction: any) => interaction.kind !== 'call');
+          console.log('🔍 Legacy interactions filtered:', {
+            total: allLegacyInteractions.length,
+            afterFiltering: legacyInteractions.length,
+            callLogsRemoved: allLegacyInteractions.length - legacyInteractions.length
+          });
         } catch (error) {
           console.error('Error fetching legacy interactions:', error);
         }
       }
       
-        // Combine all
-        const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...legacyInteractions];
+        // Combine all interactions
+        const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...callLogInteractions, ...legacyInteractions];
         
-        // Deduplicate interactions by id
+        // Simple deduplication by ID (no need for complex call log deduplication anymore)
         const uniqueInteractions = combined.filter((interaction: any, index: number, self: any[]) => 
           index === self.findIndex((i: any) => i.id === interaction.id)
         );
         
-        console.log('📧 Final interactions deduplication:', {
-          totalInteractions: combined.length,
-          uniqueInteractions: uniqueInteractions.length,
-          removedDuplicates: combined.length - uniqueInteractions.length
-        });
+        // Removed debug logging for performance
         
         const sorted = uniqueInteractions.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
         if (isMounted) {
@@ -1518,22 +1792,63 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     // --- End Optimistic Update ---
 
     try {
-      const existingInteractions = client.manual_interactions || [];
-      const updatedInteractions = [...existingInteractions, newInteraction];
+      if (newContact.method === 'call_log') {
+        // Get current user's employee ID for the call log
+        let employeeId = null;
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (user?.id) {
+            const { data: userData } = await supabase
+              .from('users')
+              .select('employee_id')
+              .eq('auth_id', user.id)
+              .single();
+            if (userData?.employee_id) {
+              employeeId = userData.employee_id;
+            }
+          }
+        } catch (error) {
+          console.log('Could not fetch employee_id for call log:', error);
+        }
 
-      // Update manual_interactions and latest_interaction timestamp
-      const { error: updateError } = await supabase
-        .from('leads')
-        .update({ 
-          manual_interactions: updatedInteractions,
-          latest_interaction: now.toISOString()
-        })
-        .eq('id', client.id);
+        // Save to call_logs table
+        const { error: callLogError } = await supabase
+          .from('call_logs')
+          .insert({
+            cdate: now.toISOString().split('T')[0],
+            direction: 'Manual Entry',
+            date: newContact.date ? new Date(newContact.date).toISOString().split('T')[0] : now.toISOString().split('T')[0],
+            time: newContact.time || now.toTimeString().split(' ')[0].substring(0, 5),
+            status: 'ANSWERED', // Default for manual entries
+            duration: newContact.length ? parseInt(newContact.length) * 60 : 0, // Convert minutes to seconds
+            lead_id: client.id,
+            employee_id: employeeId, // Include employee_id for JOIN queries
+            action: ''
+          });
 
-      if (updateError) throw updateError;
-      
-      toast.success('Interaction saved!');
-      if (onClientUpdate) await onClientUpdate(); // Silently refresh data
+        if (callLogError) throw callLogError;
+        
+        toast.success('Call log saved!');
+        if (onClientUpdate) await onClientUpdate(); // Silently refresh data
+      } else {
+        // Save to manual_interactions
+        const existingInteractions = client.manual_interactions || [];
+        const updatedInteractions = [...existingInteractions, newInteraction];
+
+        // Update manual_interactions and latest_interaction timestamp
+        const { error: updateError } = await supabase
+          .from('leads')
+          .update({ 
+            manual_interactions: updatedInteractions,
+            latest_interaction: now.toISOString()
+          })
+          .eq('id', client.id);
+
+        if (updateError) throw updateError;
+        
+        toast.success('Interaction saved!');
+        if (onClientUpdate) await onClientUpdate(); // Silently refresh data
+      }
 
     } catch (error) {
       toast.error('Save failed. Reverting changes.');
@@ -1603,7 +1918,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   }, [isWhatsAppOpen, activeWhatsAppId]);
 
   return (
-    <div className="p-3 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-4 md:gap-6 lg:gap-8 items-start min-h-screen">
+    <div className="p-4 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen max-w-7xl mx-auto">
       <div className="relative w-full flex-1 min-w-0">
         {/* Loading indicator */}
         {interactionsLoading ? (
@@ -1614,72 +1929,70 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         ) : (
           <>
             {/* Header with Contact Client Dropdown and AI Smart Recap */}
-        <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-3 mb-6 md:mb-8">
-          <div className="dropdown">
-            <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center">
-              <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
-            </label>
-            <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
-              <li>
-                <button className="flex gap-2 items-center" onClick={() => { setIsEmailModalOpen(true); }}>
-                  <EnvelopeIcon className="w-5 h-5" /> Email
+            <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-8 md:mb-12">
+              <div className="dropdown">
+                <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center">
+                  <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
+                </label>
+                <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
+                  <li>
+                    <button className="flex gap-2 items-center" onClick={() => { setIsEmailModalOpen(true); }}>
+                      <EnvelopeIcon className="w-5 h-5" /> Email
+                    </button>
+                  </li>
+                  <li>
+                    <button className="flex gap-2 items-center" onClick={() => setIsWhatsAppOpen(true)}>
+                      <FaWhatsapp className="w-5 h-5" /> WhatsApp
+                    </button>
+                  </li>
+                  <li>
+                    <button className="flex gap-2 items-center" onClick={openContactDrawer}>
+                      <ChatBubbleLeftRightIcon className="w-5 h-5" /> Contact
+                    </button>
+                  </li>
+                </ul>
+              </div>
+              
+              {/* AI Smart Recap Button */}
+              <button 
+                className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto justify-center"
+                onClick={() => {
+                  // Toggle AI summary panel on mobile, or show/hide it on desktop
+                  if (window.innerWidth < 1024) {
+                    // Mobile: show drawer with AI summary
+                    setAiDrawerOpen(true);
+                  } else {
+                    // Desktop: toggle AI panel visibility
+                    setShowAiSummary(!showAiSummary);
+                  }
+                }}
+              >
+                <SparklesIcon className="w-5 h-5" />
+                AI Smart Recap
+              </button>
+              
+              {/* Legacy Interactions Test Button - only show for legacy leads */}
+              {(client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_')) && (
+                <button 
+                  className="btn btn-outline btn-warning text-xs"
+                  onClick={async () => {
+                    console.log('🧪 Testing legacy interactions access...');
+                    await testLegacyInteractionsAccess();
+                    toast.success('Check console for legacy interactions test results');
+                  }}
+                  title="Test legacy interactions database access"
+                >
+                  Test Legacy
                 </button>
-              </li>
-              <li>
-                <button className="flex gap-2 items-center" onClick={() => setIsWhatsAppOpen(true)}>
-                  <FaWhatsapp className="w-5 h-5" /> WhatsApp
-                </button>
-              </li>
-              <li>
-                <button className="flex gap-2 items-center" onClick={openContactDrawer}>
-                  <ChatBubbleLeftRightIcon className="w-5 h-5" /> Contact
-                </button>
-              </li>
-            </ul>
-          </div>
-          
-          {/* AI Smart Recap Button */}
-          <button 
-            className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto justify-center"
-            onClick={() => {
-              // Toggle AI summary panel on mobile, or show/hide it on desktop
-              if (window.innerWidth < 1024) {
-                // Mobile: show drawer with AI summary
-                setAiDrawerOpen(true);
-              } else {
-                // Desktop: toggle AI panel visibility
-                setShowAiSummary(!showAiSummary);
-              }
-            }}
-          >
-            <SparklesIcon className="w-5 h-5" />
-            AI Smart Recap
-          </button>
-          
-          {/* Legacy Interactions Test Button - only show for legacy leads */}
-          {(client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_')) && (
-            <button 
-              className="btn btn-outline btn-warning text-xs"
-              onClick={async () => {
-                console.log('🧪 Testing legacy interactions access...');
-                await testLegacyInteractionsAccess();
-                toast.success('Check console for legacy interactions test results');
-              }}
-              title="Test legacy interactions database access"
-            >
-              Test Legacy
-            </button>
-          )}
-          
-
-        </div>
-        
-        {/* Timeline container with proper mobile layout */}
-        <div className="relative">
-          {/* Timeline line */}
-          <div className="absolute left-4 sm:left-6 md:left-8 top-0 bottom-0 w-0.5 md:w-1 bg-gradient-to-b from-primary via-accent to-secondary" style={{ zIndex: 0 }} />
-          
-          <div className="space-y-6 md:space-y-8 lg:space-y-12">
+              )}
+            </div>
+            
+            {/* Timeline container with improved spacing */}
+            <div className="relative max-w-5xl">
+              {/* Timeline line */}
+              <div className="absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-accent to-secondary shadow-lg" style={{ zIndex: 0 }} />
+              
+              <div className="space-y-8 md:space-y-10 lg:space-y-12">
             {sortedInteractions.map((row, idx) => {
               // Date formatting
               const dateObj = new Date(row.raw_date);
@@ -1701,8 +2014,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 text-green-700" />;
                   iconBg = 'bg-green-100';
                 } else if (row.kind === 'email') {
-                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 text-blue-700" />;
-                  iconBg = 'bg-blue-100';
+                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 text-purple-700" />;
+                  iconBg = 'bg-purple-100';
                 } else if (row.kind === 'office') {
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-orange-700" />;
                   iconBg = 'bg-orange-100';
@@ -1746,106 +2059,182 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 <div
                   key={row.id}
                   ref={idx === lastEmailIdx ? lastEmailRef : null}
-                  className="relative pl-12 sm:pl-16 md:pl-20 cursor-pointer group"
+                  className="relative pl-16 sm:pl-20 md:pl-24 cursor-pointer group"
                   onClick={() => handleInteractionClick(row, idx)}
                 >
                   {/* Timeline dot and icon, large, left-aligned */}
-                  <div className="absolute -left-4 sm:-left-6 md:-left-8 top-0" style={{ zIndex: 2 }}>
-                    <div className={`w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center shadow-lg ring-2 ring-white ${iconBg}`}>
-                      {React.cloneElement(icon, { className: 'w-4 h-4 sm:w-6 sm:h-6 md:w-8 md:h-8' })}
+                  <div className="absolute -left-6 sm:-left-8 md:-left-10 top-0" style={{ zIndex: 2 }}>
+                    <div className={`w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center shadow-xl ring-4 ring-white ${iconBg}`}>
+                      {React.cloneElement(icon, { className: 'w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8' })}
                     </div>
                   </div>
-                  {/* Timestamp above the card */}
-                  <div className="mb-2">
-                    <div className="text-xs md:text-sm font-semibold text-gray-600">{day} {month}, {time}</div>
-                  </div>
-                  {/* Card - Mobile optimized */}
-                  <div className="w-full pr-2 sm:pr-3 md:pr-6">
-                    <div className={`p-[1px] rounded-xl ${cardBg} shadow-xl hover:shadow-2xl transition-all duration-200`}>
-                      <div className="bg-white rounded-xl p-3 sm:p-4">
-                        <div className="flex items-center gap-2 sm:gap-3 mb-2">
-                          <div className={`w-6 h-6 sm:w-8 sm:h-8 rounded-full flex items-center justify-center font-bold ${avatarBg} text-xs sm:text-sm`}>
-                            {initials}
-                          </div>
-                          <div className={`font-semibold text-xs sm:text-sm md:text-base ${textGradient} truncate`}>
-                            {row.employee}
-                          </div>
-                        </div>
-                        
-                        <div className="flex flex-wrap gap-1 text-xs mb-2">
-                          {/* Only show status badge for WhatsApp interactions */}
-                          {row.kind === 'whatsapp' && row.status && (
-                            <span className={`px-2 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>
-                              {row.status}
-                            </span>
-                          )}
-                          {row.length && row.length !== 'm' && (
-                            <span className={`px-2 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white`}>
-                              {row.length}
-                            </span>
-                          )}
-
-                          {/* WhatsApp status indicator */}
-                          {row.kind === 'whatsapp' && row.status && (
-                            <div className="flex items-center gap-1">
-                              {renderMessageStatus(row.status, (row as any).error_message)}
-                              {row.status === 'failed' && (
-                                <span className="px-2 py-1 rounded-full font-medium shadow-sm bg-red-100 text-red-700 text-xs">
-                                  Failed
+                  
+                  {/* Main content container with better spacing */}
+                  <div className="flex flex-col lg:flex-row lg:items-start gap-4 lg:gap-6">
+                    {/* Timestamp and metadata */}
+                    <div className="flex-shrink-0 lg:w-32">
+                      <div className="text-sm md:text-base font-semibold text-gray-700 mb-1">{day} {month}</div>
+                      <div className="text-xs md:text-sm text-gray-500">{time}</div>
+                      {row.length && row.length !== 'm' && (
+                        <div className="text-xs text-gray-400 mt-1">{row.length}</div>
+                      )}
+                    </div>
+                    
+                    {/* Main content card */}
+                    <div className="flex-1 min-w-0">
+                      <div className={`p-[2px] rounded-2xl ${cardBg} shadow-xl hover:shadow-2xl transition-all duration-300 group-hover:scale-[1.02]`}>
+                        <div className="bg-white rounded-2xl p-4 sm:p-5 md:p-6">
+                          {/* Header section with employee info and status */}
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+                            <div className="flex items-center gap-3">
+                              <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold ${avatarBg} text-sm sm:text-base`}>
+                                {initials}
+                              </div>
+                              <div className={`font-semibold text-sm sm:text-base md:text-lg ${textGradient}`}>
+                                {row.employee}
+                              </div>
+                            </div>
+                            
+                            {/* Status badges */}
+                            <div className="flex flex-wrap gap-2">
+                              {/* Show status badge for WhatsApp and Call interactions */}
+                              {row.kind === 'whatsapp' && row.status && (
+                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white text-xs ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>
+                                  {row.status}
                                 </span>
+                              )}
+                              {/* Call status badge - always show for calls */}
+                              {row.kind === 'call' && (
+                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-xs ${
+                                  row.status && row.status.toLowerCase() === 'answered' ? 'bg-green-500 text-white' :
+                                  row.status && (row.status.toLowerCase() === 'no+answer' || row.status.toLowerCase() === 'no answer') ? 'bg-red-500 text-white' :
+                                  row.status && row.status.toLowerCase() === 'failed' ? 'bg-red-500 text-white' :
+                                  row.status && row.status.toLowerCase() === 'busy' ? 'bg-yellow-500 text-white' :
+                                  'bg-gray-600 text-white'
+                                }`}>
+                                  {row.status === 'NO+ANSWER' ? 'NO ANSWER' : (row.status === 'unread' ? 'UNKNOWN' : (row.status || 'UNKNOWN'))}
+                                </span>
+                              )}
+                              {row.length && row.length !== 'm' && (
+                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white text-xs`}>
+                                  {row.length}
+                                </span>
+                              )}
+
+                              {/* WhatsApp status indicator */}
+                              {row.kind === 'whatsapp' && row.status && (
+                                <div className="flex items-center gap-1">
+                                  {renderMessageStatus(row.status, (row as any).error_message)}
+                                  {row.status === 'failed' && (
+                                    <span className="px-2 py-1 rounded-full font-medium shadow-sm bg-red-100 text-red-700 text-xs">
+                                      Failed
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        
+                          {/* Content section - hide content for calls since status is shown in badge */}
+                          {row.content && row.kind !== 'call' && (
+                            <div className="text-sm sm:text-base text-gray-700 break-words mb-4">
+                              {/* Subject in bold with colon, then body with spacing */}
+                              {row.subject ? (
+                                <>
+                                  <div className="font-bold text-base sm:text-lg mb-2 text-gray-900">{row.subject}</div>
+                                  <div 
+                                    className="max-w-none whitespace-pre-wrap overflow-visible"
+                                    style={{ lineHeight: '1.6', maxHeight: 'none' }}
+                                    dangerouslySetInnerHTML={{ 
+                                      __html: sanitizeEmailHtml(
+                                        stripSignatureAndQuotedTextPreserveHtml(
+                                          typeof row.content === 'string'
+                                            ? row.content.replace(new RegExp(`^${row.subject}\s*:?[\s\-]*`, 'i'), '').trim()
+                                            : row.content
+                                        )
+                                      )
+                                    }} 
+                                  />
+                                </>
+                              ) : (
+                                <div 
+                                  className="max-w-none whitespace-pre-wrap overflow-visible"
+                                  style={{ lineHeight: '1.6', maxHeight: 'none' }}
+                                  dangerouslySetInnerHTML={{ 
+                                    __html: sanitizeEmailHtml(
+                                      stripSignatureAndQuotedTextPreserveHtml(row.content)
+                                    ) 
+                                  }} 
+                                />
                               )}
                             </div>
                           )}
+                          
+                          {/* Call recording playback controls */}
+                          {row.kind === 'call' && (
+                            <div className="flex items-center justify-between bg-gray-50 rounded-lg p-3 mb-4">
+                              <div className="flex items-center gap-2">
+                                <SpeakerWaveIcon className="w-5 h-5 text-gray-500" />
+                                <span className="text-sm font-medium text-gray-700">
+                                  {row.recording_url ? 'Call Recording' : 'Recording not available'}
+                                </span>
+                              </div>
+                              {row.recording_url && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (playingAudioId === row.id) {
+                                      handleStopRecording();
+                                    } else {
+                                      handlePlayRecording(row.recording_url!, row.id.toString());
+                                    }
+                                  }}
+                                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                                    playingAudioId === row.id
+                                      ? 'bg-red-500 text-white hover:bg-red-600 shadow-md'
+                                      : 'bg-purple-500 text-white hover:bg-purple-600 shadow-md'
+                                  }`}
+                                >
+                                  {playingAudioId === row.id ? (
+                                    <>
+                                      <StopIcon className="w-4 h-4" />
+                                      Stop
+                                    </>
+                                  ) : (
+                                    <>
+                                      <PlayIcon className="w-4 h-4" />
+                                      Play
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Observation/Notes */}
+                          {row.observation && row.observation !== 'call-ended' && (
+                            <div className="bg-purple-50 border-l-4 border-purple-400 p-3 rounded-r-lg">
+                              <div className="flex items-start gap-2">
+                                <div className="w-2 h-2 bg-purple-400 rounded-full mt-2 flex-shrink-0"></div>
+                                <div>
+                                  <div className="text-sm font-medium text-purple-900 mb-1">Note</div>
+                                  <div className="text-sm text-purple-800 break-words">{row.observation}</div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        
-                        {row.content && (
-                          <div className="text-xs sm:text-sm text-gray-700 break-words overflow-visible">
-                            {/* Subject in bold with colon, then body with spacing */}
-                            {row.subject ? (
-                              <>
-                                <span className="font-bold mr-1">{row.subject}:</span>
-                                <br />
-                                <div 
-                                  className="ml-1"
-                                  dangerouslySetInnerHTML={{ 
-                                    __html: sanitizeEmailHtml(
-                                      stripSignatureAndQuotedTextPreserveHtml(
-                                        typeof row.content === 'string'
-                                          ? row.content.replace(new RegExp(`^${row.subject}\s*:?[\s\-]*`, 'i'), '').trim()
-                                          : row.content
-                                      )
-                                    )
-                                  }} 
-                                />
-                              </>
-                            ) : (
-                              <div 
-                                dangerouslySetInnerHTML={{ 
-                                  __html: sanitizeEmailHtml(
-                                    stripSignatureAndQuotedTextPreserveHtml(row.content)
-                                  ) 
-                                }} 
-                              />
-                            )}
-                          </div>
-                        )}
-                        
-                        {row.observation && (
-                          <div className="mt-2 text-xs text-gray-500 break-words overflow-hidden">
-                            <span className="font-medium">Note:</span> <span className="line-clamp-2 sm:line-clamp-1">{row.observation}</span>
-                          </div>
-                        )}
                       </div>
                     </div>
                   </div>
                 </div>
               );
             })}
-          </div>
-        </div>
-        
+              </div>
+            </div>
+            
             {/* Timeline and History Buttons at bottom */}
-            <div className="mt-6 md:mt-8 pt-4 md:pt-6 border-t border-base-200">
+            <div className="mt-8 md:mt-12 pt-6 md:pt-8 border-t border-base-200">
               <TimelineHistoryButtons client={client} />
             </div>
           </>
@@ -1853,8 +2242,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       </div>
       {/* Right-side AI summary panel (hidden on mobile, conditional on desktop) */}
       {showAiSummary && (
-        <div className="hidden xl:block w-full max-w-sm ai-summary-panel">
-          <AISummaryPanel messages={aiSummaryMessages} />
+        <div className="hidden xl:block w-full max-w-md ai-summary-panel">
+          <div className="sticky top-8">
+            <AISummaryPanel messages={aiSummaryMessages} />
+          </div>
         </div>
       )}
       {/* Email Thread Modal */}
@@ -1884,7 +2275,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             <div className="flex-1 overflow-y-auto p-3 md:p-6">
               {emailsLoading ? (
                 <div className="flex items-center justify-center h-full">
-                  <div className="loading loading-spinner loading-lg text-blue-500"></div>
+                  <div className="loading loading-spinner loading-lg text-purple-500"></div>
                 </div>
               ) : emails.length === 0 ? (
                 <div className="flex items-center justify-center h-full text-gray-500">
@@ -1911,7 +2302,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         {/* Message Label */}
                         <div className={`mb-2 px-3 py-1 rounded-full text-xs font-semibold ${
                           message.direction === 'outgoing'
-                            ? 'bg-gradient-to-r from-blue-500 via-purple-500 to-purple-600 text-white'
+                            ? 'bg-gradient-to-r from-purple-500 via-pink-500 to-purple-600 text-white'
                             : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
                         }`}>
                           {message.direction === 'outgoing' ? 'Team' : 'Client'}
@@ -1987,13 +2378,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     placeholder="Subject"
                     value={composeSubject}
                     onChange={(e) => setComposeSubject(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
                   <textarea
                     placeholder="Type your message..."
                     value={composeBody}
                     onChange={(e) => setComposeBody(e.target.value)}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
                     rows={4}
                   />
                   

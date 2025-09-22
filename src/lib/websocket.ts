@@ -65,10 +65,10 @@ class WebSocketService {
     this.userId = userId; // Set the userId for use in sendMessage
     console.log('🔌 Connecting to WebSocket...');
     
-    // Connect to the backend WebSocket server
-    // In development: localhost:3001 (backend server)
-    // In production: your backend server URL
-    const serverUrl = import.meta.env.VITE_WEBSOCKET_URL || 'http://localhost:3001';
+      // Connect to the backend WebSocket server
+      // In development: localhost:3001 (backend server)
+      // In production: your backend server URL
+      const serverUrl = import.meta.env.VITE_WEBSOCKET_URL || 'http://localhost:3001';
     
     this.socket = io(serverUrl, {
       auth: {

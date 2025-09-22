@@ -735,7 +735,9 @@ const CalendarPage: React.FC = () => {
   };
 
   useEffect(() => {
+    console.log('🔍 CalendarPage useEffect: useEffect triggered');
     const fetchMeetingsAndStaff = async () => {
+      console.log('🔍 CalendarPage useEffect: fetchMeetingsAndStaff started');
       setIsLoading(true);
       
       try {
@@ -787,8 +789,10 @@ const CalendarPage: React.FC = () => {
 
         // First, load today's meetings for immediate display - MINIMAL DATA ONLY
         const today = new Date().toISOString().split('T')[0];
+        console.log('🔍 CalendarPage: Starting fetchMeetingsAndStaff for date:', today);
         
         // Load today's meetings with department JOINs - prioritize regular meetings, legacy as optional
+        console.log('🔍 Executing JOIN query for meetings on date:', today);
         const { data: todayMeetingsData, error: todayMeetingsError } = await supabase
           .from('meetings')
           .select(`
@@ -821,6 +825,32 @@ const CalendarPage: React.FC = () => {
           .eq('meeting_date', today)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_time', { ascending: true });
+          
+        console.log('🔍 JOIN query result:', { 
+          dataCount: todayMeetingsData?.length, 
+          error: todayMeetingsError,
+          sampleData: todayMeetingsData?.slice(0, 2)
+        });
+        
+        // Debug: Check legacy_lead_id values
+        if (todayMeetingsData && todayMeetingsData.length > 0) {
+          const legacyLeadIds = todayMeetingsData
+            .filter(m => m.legacy_lead_id)
+            .map(m => ({ id: m.id, legacy_lead_id: m.legacy_lead_id, type: typeof m.legacy_lead_id }));
+          console.log('🔍 Legacy lead IDs found:', legacyLeadIds);
+        }
+        
+        // Debug: Check if there are any meetings with legacy_lead_id but no legacy_lead data
+        if (todayMeetingsData && todayMeetingsData.length > 0) {
+          const meetingsWithLegacyId = todayMeetingsData.filter(m => m.legacy_lead_id && !m.legacy_lead);
+          if (meetingsWithLegacyId.length > 0) {
+            console.log('🔍 Meetings with legacy_lead_id but no legacy_lead data:', meetingsWithLegacyId.map(m => ({
+              id: m.id,
+              legacy_lead_id: m.legacy_lead_id,
+              calendar_type: m.calendar_type
+            })));
+          }
+        }
 
         // DISABLED: Today's legacy loading removed to prevent timeouts
         let todayLegacyMeetingsData = [];
@@ -828,6 +858,41 @@ const CalendarPage: React.FC = () => {
 
         // Process today's meetings immediately - SIMPLIFIED FOR SPEED
         if (!todayMeetingsError) {
+          // Debug: Log raw meeting data to understand JOIN issues
+          console.log('🔍 Raw meetings from database:', todayMeetingsData?.map((m: any) => ({
+            id: m.id,
+            calendar_type: m.calendar_type,
+            legacy_lead_id: m.legacy_lead_id,
+            client_id: m.client_id,
+            hasLegacyLead: !!m.legacy_lead,
+            hasLead: !!m.lead,
+              legacyLeadName: (m.legacy_lead as any)?.name,
+            legacyLeadCategory: m.legacy_lead?.category,
+            legacyLeadCategoryId: m.legacy_lead?.category_id
+          })));
+          
+          // Debug: Check specific meetings that are causing issues
+          const problematicMeetings = todayMeetingsData?.filter(m => m.calendar_type === 'potential_client' && !m.legacy_lead);
+          if (problematicMeetings && problematicMeetings.length > 0) {
+            console.log('🔍 Problematic meetings (potential_client without legacy_lead):', problematicMeetings.map(m => ({
+              id: m.id,
+              legacy_lead_id: m.legacy_lead_id,
+              client_id: m.client_id
+            })));
+          }
+          
+          // Debug: Check all potential_client meetings
+          const potentialClientMeetings = todayMeetingsData?.filter(m => m.calendar_type === 'potential_client');
+          if (potentialClientMeetings && potentialClientMeetings.length > 0) {
+            console.log('🔍 All potential_client meetings:', potentialClientMeetings.map(m => ({
+              id: m.id,
+              legacy_lead_id: m.legacy_lead_id,
+              client_id: m.client_id,
+              hasLegacyLead: !!m.legacy_lead,
+              legacyLeadName: (m.legacy_lead as any)?.name
+            })));
+          }
+          
           const startTime = performance.now();
           
           // Quick processing for today's meetings with department data
@@ -878,7 +943,7 @@ const CalendarPage: React.FC = () => {
         // Now load all other meetings in the background - OPTIMIZED
         setIsBackgroundLoading(true);
         
-        // Load all regular meetings with department JOINs - NO LEGACY JOINS to prevent duplicates
+        // Load all regular meetings with department JOINs - INCLUDING LEGACY JOINS
         const { data: meetingsData, error: meetingsError } = await supabase
           .from('meetings')
           .select(`
@@ -889,6 +954,17 @@ const CalendarPage: React.FC = () => {
               id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
               balance, balance_currency, expert_notes, expert, probability, phone, email, 
               manual_interactions, number_of_applicants_meeting,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement!department_id(id, name)
+                )
+              )
+            ),
+            legacy_lead:leads_lead!legacy_lead_id(
+              id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -928,28 +1004,45 @@ const CalendarPage: React.FC = () => {
               return true;
             })
             .map((meeting: any) => {
-              // Only process regular meetings with department data - legacy meetings are handled separately
+              // Process both regular and legacy meetings with department data
               let leadData = null;
               
-              if (meeting.lead) {
-              // Use new lead data with department info from JOINs
-              leadData = {
-                ...meeting.lead,
-                lead_type: 'new',
-                // Add department info from JOINs
-                department_name: meeting.lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
-                department_id: meeting.lead.misc_category?.misc_maincategory?.department_id
+              if (meeting.legacy_lead) {
+                // Use legacy lead data with department info from JOINs
+                leadData = {
+                  ...meeting.legacy_lead,
+                  lead_type: 'legacy',
+                  manager: meeting.legacy_lead.meeting_manager_id,
+                  helper: meeting.legacy_lead.meeting_lawyer_id,
+                  balance: meeting.legacy_lead.total,
+                  balance_currency: meeting.legacy_lead.meeting_total_currency_id,
+                  expert: meeting.legacy_lead.expert_id,
+                  category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
+                  lead_number: meeting.legacy_lead.id?.toString(),
+                  // Add department info from JOINs
+                  department_name: meeting.legacy_lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
+                  department_id: meeting.legacy_lead.misc_category?.misc_maincategory?.department_id
+                };
+              } else if (meeting.lead) {
+                // Use new lead data with department info from JOINs
+                leadData = {
+                  ...meeting.lead,
+                  lead_type: 'new',
+                  // Add department info from JOINs
+                  department_name: meeting.lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
+                  department_id: meeting.lead.misc_category?.misc_maincategory?.department_id
+                };
+              }
+              
+              return {
+                ...meeting,
+                lead: leadData
               };
-            }
-            
-            return {
-              ...meeting,
-              lead: leadData
-            };
-          });
+            });
           
-          // Count regular meetings only
+          // Count both regular and legacy meetings
           const newCount = processedMeetings.filter(m => m.lead?.lead_type === 'new').length;
+          const legacyCount = processedMeetings.filter(m => m.lead?.lead_type === 'legacy').length;
           
           
           
