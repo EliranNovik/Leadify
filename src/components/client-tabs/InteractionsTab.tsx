@@ -535,6 +535,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
 
   // Audio playback functions
   const handlePlayRecording = async (recordingUrl: string, callId: string) => {
+    let hasShownError = false; // Flag to prevent duplicate toast notifications
+    
     try {
       console.log('🎵 Raw recording URL from database:', recordingUrl);
       console.log('🎵 URL length:', recordingUrl.length);
@@ -615,12 +617,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       audio.onerror = (error) => {
         console.error('Audio playback error:', error);
         console.error('Failed URL:', cleanUrl);
-        // Check if it's an old recording from 2024
-        const isOldRecording = recordingUrl.includes('pbx24-');
-        const errorMessage = isOldRecording 
-          ? 'Recording not available - may be archived (2024 recordings)'
-          : 'Recording not available or format not supported';
-        toast.error(errorMessage);
+        if (!hasShownError) {
+          hasShownError = true;
+          toast.error('Recording is not available');
+        }
         setPlayingAudioId(null);
         setAudioRef(null);
       };
@@ -636,7 +636,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       await audio.play();
     } catch (error) {
       console.error('Error playing recording:', error);
-      toast.error('Failed to play recording');
+      if (!hasShownError) {
+        hasShownError = true;
+        toast.error('Recording is not available');
+      }
       setPlayingAudioId(null);
       setAudioRef(null);
     }
@@ -2005,23 +2008,35 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               if (row.direction === 'out') {
                 // Employee (Outgoing)
                 if (row.kind === 'sms') {
-                  icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 text-white" />;
-                  iconBg = 'bg-purple-300';
+                  icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-purple-600 drop-shadow-sm" style={{color: '#9333ea'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-purple-200';
                 } else if (row.kind === 'call') {
-                  icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 text-yellow-700" />;
-                  iconBg = 'bg-yellow-100';
+                  // Different colors based on call status
+                  if (row.status === 'ANSWERED') {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-emerald-600 drop-shadow-sm" style={{color: '#059669'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-emerald-200';
+                  } else if (row.status === 'NO+ANSWER' || row.status === 'NO ANSWER') {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-red-600 drop-shadow-sm" style={{color: '#dc2626'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-red-200';
+                  } else if (row.status === 'MISSED') {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-orange-600 drop-shadow-sm" style={{color: '#ea580c'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-orange-200';
+                  } else {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-blue-200';
+                  }
                 } else if (row.kind === 'whatsapp') {
-                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 text-green-700" />;
-                  iconBg = 'bg-green-100';
+                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
                 } else if (row.kind === 'email') {
-                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 text-purple-700" />;
-                  iconBg = 'bg-purple-100';
+                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
                 } else if (row.kind === 'office') {
-                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-orange-700" />;
-                  iconBg = 'bg-orange-100';
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-orange-600 drop-shadow-sm" style={{color: '#ea580c'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-orange-200';
                 } else {
-                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-gray-500" />;
-                  iconBg = 'bg-gray-200';
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-gray-600 drop-shadow-sm" style={{color: '#4b5563'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-gray-200';
                 }
                 cardBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600';
                 textGradient = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 bg-clip-text text-transparent';
@@ -2029,23 +2044,35 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               } else {
                 // Client (Ingoing)
                 if (row.kind === 'sms') {
-                  icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 text-white" />;
-                  iconBg = 'bg-purple-300';
+                  icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-indigo-600 drop-shadow-sm" style={{color: '#4f46e5'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-indigo-200';
                 } else if (row.kind === 'call') {
-                  icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 text-yellow-700" />;
-                  iconBg = 'bg-yellow-100';
+                  // Different colors based on call status
+                  if (row.status === 'ANSWERED') {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-teal-600 drop-shadow-sm" style={{color: '#0d9488'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-teal-200';
+                  } else if (row.status === 'NO+ANSWER' || row.status === 'NO ANSWER') {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-rose-600 drop-shadow-sm" style={{color: '#e11d48'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-rose-200';
+                  } else if (row.status === 'MISSED') {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-amber-600 drop-shadow-sm" style={{color: '#d97706'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-amber-200';
+                  } else {
+                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-cyan-600 drop-shadow-sm" style={{color: '#0891b2'}} />;
+                    iconBg = 'bg-white shadow-lg border-2 border-cyan-200';
+                  }
                 } else if (row.kind === 'whatsapp') {
-                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 text-green-700" />;
-                  iconBg = 'bg-green-100';
+                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
                 } else if (row.kind === 'email') {
-                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 text-blue-700" />;
-                  iconBg = 'bg-blue-100';
+                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-cyan-600 drop-shadow-sm" style={{color: '#0891b2'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-cyan-200';
                 } else if (row.kind === 'office') {
-                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-orange-700" />;
-                  iconBg = 'bg-orange-100';
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-amber-600 drop-shadow-sm" style={{color: '#d97706'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-amber-200';
                 } else {
-                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 text-gray-500" />;
-                  iconBg = 'bg-gray-200';
+                  icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-slate-600 drop-shadow-sm" style={{color: '#475569'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-slate-200';
                 }
                 cardBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400';
                 textGradient = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 bg-clip-text text-transparent';

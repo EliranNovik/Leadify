@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { UserGroupIcon, ChartBarIcon, AcademicCapIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/outline';
 import EmployeeModal from '../components/EmployeeModal';
+import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
 
 interface Employee {
   id: string;
@@ -21,6 +22,9 @@ interface Employee {
     total_bonus: number;
     average_rating: number;
     last_activity: string;
+    performance_percentage?: number;
+    role_metrics?: { [key: string]: { signed: number; revenue: number } };
+    team_average?: { avgSigned: number; avgRevenue: number; totalEmployees: number; totalSigned: number; totalRevenue: number };
     // Role-specific metrics
     expert_opinions_completed?: number;
     feasibility_no_check?: number;
@@ -109,6 +113,7 @@ const EmployeePerformancePage: React.FC = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [departmentGroups, setDepartmentGroups] = useState<DepartmentGroup[]>([]);
   const [subdepartmentGroups, setSubdepartmentGroups] = useState<SubdepartmentGroup[]>([]);
+  const [correctedTotalRevenue, setCorrectedTotalRevenue] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
@@ -122,79 +127,210 @@ const EmployeePerformancePage: React.FC = () => {
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
+  // Fetch comprehensive performance data for employees
+  const fetchComprehensivePerformanceData = async (dateFrom?: string, dateTo?: string) => {
+    try {
+      // Calculate date range - default to last 30 days if no dates provided
+      const today = new Date();
+      const defaultFromDate = new Date(today);
+      defaultFromDate.setDate(today.getDate() - 30);
+      
+      const fromDateValue = dateFrom || defaultFromDate.toISOString().split('T')[0];
+      const toDateValue = dateTo || today.toISOString().split('T')[0];
+      
+      console.log('📊 Fetching comprehensive performance data from', fromDateValue, 'to', toDateValue);
+
+      // Fetch signed stages (stage 60 - agreement signed) for the date range
+      const { data: signedStages, error: stagesError } = await supabase
+        .from('leads_leadstage')
+        .select(`
+          id,
+          lead_id,
+          stage,
+          cdate
+        `)
+        .eq('stage', 60)
+        .gte('cdate', fromDateValue)
+        .lte('cdate', toDateValue);
+      
+      if (stagesError) {
+        console.error('Error fetching lead stages:', stagesError);
+        throw stagesError;
+      }
+      
+      console.log('📊 Signed stages found:', signedStages?.length || 0);
+      
+      // Fetch leads data for the signed stages
+      let signedLeads: any[] = [];
+      if (signedStages && signedStages.length > 0) {
+        const leadIds = [...new Set(signedStages.map(stage => stage.lead_id).filter(id => id !== null))];
+        console.log('📋 Fetching leads data for', leadIds.length, 'unique signed leads...');
+        
+        const { data: leadsData, error: leadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            name,
+            case_handler_id,
+            closer_id,
+            expert_id,
+            meeting_scheduler_id,
+            meeting_manager_id,
+            meeting_lawyer_id,
+            total,
+            currency_id,
+            cdate,
+            no_of_applicants
+          `)
+          .in('id', leadIds);
+        
+        if (leadsError) {
+          console.error('Error fetching leads data:', leadsError);
+          throw leadsError;
+        }
+        
+        signedLeads = leadsData || [];
+        console.log('📊 Signed leads fetched:', signedLeads.length);
+      }
+
+      // Fetch proforma invoices for the signed leads in the date range
+      const { data: allInvoices, error: invoicesError } = await supabase
+        .from('proformainvoice')
+        .select(`
+          id,
+          lead_id,
+          total,
+          currency_id,
+          cdate
+        `)
+        .gte('cdate', fromDateValue)
+        .lte('cdate', toDateValue);
+      
+      if (invoicesError) {
+        console.error('Error fetching proforma invoices:', invoicesError);
+        throw invoicesError;
+      }
+      
+      console.log('📊 All proforma invoices found:', allInvoices?.length || 0);
+      
+      // Filter invoices to only include those for signed leads
+      const signedLeadIds = new Set(signedLeads.map(lead => lead.id));
+      const proformaInvoices = allInvoices?.filter(invoice => signedLeadIds.has(invoice.lead_id)) || [];
+      
+      console.log('📊 Proforma invoices for signed leads:', proformaInvoices.length);
+
+      return {
+        signedLeads,
+        proformaInvoices,
+        dateRange: { from: fromDateValue, to: toDateValue }
+      };
+    } catch (error) {
+      console.error('Error fetching comprehensive performance data:', error);
+      throw error;
+    }
+  };
+
+  // Calculate team averages for performance benchmarking
+  const calculateTeamAverages = (employees: Employee[], signedLeads: any[], proformaInvoices: any[]) => {
+    const roleAverages: { [key: string]: any } = {};
+    
+    // Group employees by role
+    const employeesByRole = employees.reduce((acc, emp) => {
+      const role = emp.bonuses_role?.toLowerCase();
+      if (!acc[role]) acc[role] = [];
+      acc[role].push(emp);
+      return acc;
+    }, {} as { [key: string]: Employee[] });
+
+    // Calculate averages for each role
+    Object.entries(employeesByRole).forEach(([role, roleEmployees]) => {
+      const roleMetrics = roleEmployees.map(emp => {
+        const employeeIdStr = String(emp.id);
+        
+        // Count signed contracts for this employee in this role
+        let signedCount = 0;
+        let totalRevenue = 0;
+        
+        signedLeads.forEach(lead => {
+          let isEmployeeInRole = false;
+          
+          switch (role) {
+            case 'h':
+              isEmployeeInRole = lead.case_handler_id === employeeIdStr;
+              break;
+            case 'c':
+              isEmployeeInRole = lead.closer_id === employeeIdStr;
+              break;
+            case 'e':
+              isEmployeeInRole = lead.expert_id === employeeIdStr;
+              break;
+            case 's':
+              isEmployeeInRole = lead.meeting_scheduler_id === employeeIdStr;
+              break;
+            case 'z':
+            case 'Z':
+              isEmployeeInRole = lead.meeting_manager_id === employeeIdStr;
+              break;
+            case 'helper-closer':
+              isEmployeeInRole = lead.meeting_lawyer_id === employeeIdStr;
+              break;
+          }
+          
+          if (isEmployeeInRole) {
+            signedCount++;
+            const leadAmount = parseFloat(lead.total) || 0;
+            const leadAmountInNIS = convertToNIS(leadAmount, lead.currency_id);
+            totalRevenue += leadAmountInNIS;
+            
+            // Debug currency conversion
+            console.log(`🔍 EmployeePerformancePage Team Averages - Lead ${lead.id}:`, {
+              originalAmount: leadAmount,
+              currencyId: lead.currency_id,
+              convertedAmount: leadAmountInNIS,
+              conversionRate: leadAmount > 0 ? leadAmountInNIS / leadAmount : 1
+            });
+          }
+        });
+        
+        return {
+          signed: signedCount,
+          revenue: totalRevenue
+        };
+      });
+      
+      const totalSigned = roleMetrics.reduce((sum, m) => sum + m.signed, 0);
+      const totalRevenue = roleMetrics.reduce((sum, m) => sum + m.revenue, 0);
+      const avgSigned = roleEmployees.length > 0 ? totalSigned / roleEmployees.length : 0;
+      const avgRevenue = roleEmployees.length > 0 ? totalRevenue / roleEmployees.length : 0;
+      
+      roleAverages[role] = {
+        avgSigned,
+        avgRevenue,
+        totalEmployees: roleEmployees.length,
+        totalSigned,
+        totalRevenue
+      };
+    });
+    
+    return roleAverages;
+  };
+
   // Fetch employees and their performance data
   useEffect(() => {
     const fetchEmployeePerformance = async () => {
+      // Only fetch if both dates are selected, or if no dates are selected (use default)
+      const shouldFetch = (!dateFrom && !dateTo) || (dateFrom && dateTo);
+      
+      if (!shouldFetch) {
+        console.log('📅 Skipping fetch - waiting for both dates to be selected');
+        return;
+      }
+
       setIsLoading(true);
       setError(null);
 
       try {
-        // First, let's check what data we have in tenants_employee
-        console.log('🔍 Debug: Checking tenants_employee data...');
-        console.log('🔍 Debug: Supabase client:', supabase);
-        
-        // Let's first check what columns actually exist in tenants_employee
-        const { data: sampleEmployee, error: sampleError } = await supabase
-          .from('tenants_employee')
-          .select('*')
-          .limit(1);
-        
-        console.log('🔍 Debug: Sample employee with all fields:', {
-          error: sampleError,
-          data: sampleEmployee,
-          availableFields: sampleEmployee?.[0] ? Object.keys(sampleEmployee[0]) : []
-        });
-        
-        // Check current user session
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-        console.log('🔍 Debug: Current user:', {
-          user: user,
-          error: userError
-        });
-
-        // If no user session, try to get session instead
-        if (!user) {
-          const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-          console.log('🔍 Debug: Current session:', {
-            session: session,
-            error: sessionError
-          });
-        }
-        
-        // Try a simple count query first
-        const { count: employeeCount, error: countError } = await supabase
-          .from('tenants_employee')
-          .select('*', { count: 'exact', head: true });
-        
-        console.log('🔍 Debug: Employee count:', {
-          count: employeeCount,
-          error: countError
-        });
-        
-        const { data: sampleEmployees, error: sampleEmployeesError } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name, user_id, bonuses_role, department_id')
-          .limit(5);
-
-        console.log('🔍 Debug: Sample employees (first 5):', {
-          error: sampleEmployeesError,
-          data: sampleEmployees
-        });
-
-        // Check if auth_user table exists and has data
-        console.log('🔍 Debug: Checking auth_user data...');
-        const { data: authUsers, error: authUsersError } = await supabase
-          .from('auth_user')
-          .select('id, email, is_active')
-          .limit(5);
-
-        console.log('🔍 Debug: Auth users (first 5):', {
-          error: authUsersError,
-          data: authUsers
-        });
-
-        // Try a simpler approach - get employees first, then check their auth status
-        // Let's get ALL employees first to see what we have
+        // Get basic employee data
         const { data: allEmployeesData, error: allEmployeesDataError } = await supabase
           .from('tenants_employee')
           .select(`
@@ -210,44 +346,15 @@ const EmployeePerformancePage: React.FC = () => {
             phone_ext
           `);
 
-        console.log('🔍 Debug: ALL employees:', {
-          count: allEmployeesData?.length || 0,
-          sample: allEmployeesData?.slice(0, 5)
-        });
-
-        // Debug phone data specifically
-        console.log('🔍 Debug: Phone data sample:', allEmployeesData?.slice(0, 3).map(emp => ({
-          name: emp.display_name,
-          phone: emp.phone,
-          mobile: emp.mobile,
-          phone_ext: emp.phone_ext
-        })));
-        
-        // Debug all phone fields to see if they exist
-        console.log('🔍 Debug: All phone fields check:', allEmployeesData?.slice(0, 5).map(emp => ({
-          name: emp.display_name,
-          hasPhone: !!emp.phone,
-          hasMobile: !!emp.mobile,
-          hasPhoneExt: !!emp.phone_ext,
-          phoneValue: emp.phone,
-          mobileValue: emp.mobile,
-          phoneExtValue: emp.phone_ext
-        })));
-
         if (allEmployeesDataError) {
           console.error('Error fetching all employees:', allEmployeesDataError);
           throw allEmployeesDataError;
         }
 
-        // Filter to only those with user_id for now
+        // Filter to only those with user_id
         const employeesData = allEmployeesData?.filter(emp => emp.user_id) || [];
 
-        console.log('🔍 Debug: Employees with user_id:', {
-          count: employeesData?.length || 0,
-          sample: employeesData?.slice(0, 3)
-        });
-
-        // Fetch departments for mapping department_id to department name
+        // Fetch departments for mapping
         const { data: departmentsData, error: departmentsError } = await supabase
           .from('tenant_departement')
           .select('id, name');
@@ -256,22 +363,16 @@ const EmployeePerformancePage: React.FC = () => {
           console.error('Error fetching departments:', departmentsError);
         }
 
-        console.log('🔍 Debug: Departments:', {
-          count: departmentsData?.length || 0,
-          data: departmentsData
-        });
-
         // Create department mapping
         const departmentMap = new Map();
         departmentsData?.forEach(dept => {
           departmentMap.set(dept.id, dept.name);
         });
 
-        // Now let's try to get the auth user data for each employee
+        // Get auth user data for each employee
         const activeEmployees = await Promise.all(
           employeesData.map(async (employee) => {
             try {
-              // Get auth user data for this employee
               const { data: authUserData, error: authUserError } = await supabase
                 .from('auth_user')
                 .select('id, email, is_active')
@@ -279,7 +380,6 @@ const EmployeePerformancePage: React.FC = () => {
                 .single();
 
               if (authUserError) {
-                console.log(`🔍 Debug: No auth user found for employee ${employee.display_name}:`, authUserError.message);
                 return {
                   id: employee.id,
                   display_name: employee.display_name,
@@ -333,290 +433,103 @@ const EmployeePerformancePage: React.FC = () => {
           emp.is_active && !excludedEmployees.includes(emp.display_name)
         );
 
-        // Debug: Log excluded employees
-        const excludedFound = activeEmployees.filter(emp => 
-          emp.is_active && excludedEmployees.includes(emp.display_name)
-        );
-        if (excludedFound.length > 0) {
-          console.log('🚫 Excluded employees:', excludedFound.map(emp => ({
-            name: emp.display_name,
-            role: emp.bonuses_role,
-            department: emp.department
-          })));
-        }
-
         console.log('🔍 Employee Performance - Active employees loaded:', {
           totalEmployees: employeesData?.length || 0,
-          allEmployees: activeEmployees.length,
           activeEmployees: filteredActiveEmployees.length,
-          departmentsFound: departmentsData?.length || 0,
-          sample: filteredActiveEmployees.slice(0, 3).map(emp => ({
-            name: emp.display_name,
-            email: emp.email,
-            role: emp.bonuses_role,
-            department: emp.department
-          }))
+          departmentsFound: departmentsData?.length || 0
         });
 
-        // Debug phone data in final filtered employees
-        console.log('🔍 Debug: Final filtered employees phone data:', filteredActiveEmployees.slice(0, 3).map(emp => ({
-          name: emp.display_name,
-          hasPhone: !!emp.phone,
-          hasMobile: !!emp.mobile,
-          hasPhoneExt: !!emp.phone_ext,
-          phoneValue: emp.phone,
-          mobileValue: emp.mobile,
-          phoneExtValue: emp.phone_ext
-        })));
+        // Fetch comprehensive performance data
+        const performanceData = await fetchComprehensivePerformanceData(dateFrom, dateTo);
+        
+        // Calculate team averages
+        const teamAverages = calculateTeamAverages(
+          filteredActiveEmployees, 
+          performanceData.signedLeads, 
+          performanceData.proformaInvoices
+        );
 
-        // Fetch performance metrics for each employee
-        const employeesWithMetrics = await Promise.all(
-          filteredActiveEmployees.map(async (employee) => {
-            try {
+        // Process performance metrics for each employee (include ALL employees, even those without data)
+        const employeesWithMetrics = filteredActiveEmployees.map((employee) => {
+          const employeeIdStr = String(employee.id);
               const role = employee.bonuses_role?.toLowerCase();
               
-              // Fetch meetings data for this employee
-              const { data: meetingsData, error: meetingsError } = await supabase
-                .from('meetings')
-                .select(`
-                  id,
-                  meeting_date,
-                  meeting_time,
-                  meeting_manager,
-                  helper,
-                  meeting_amount,
-                  meeting_currency,
-                  status,
-                  lead:leads!client_id(
-                    id,
-                    balance,
-                    balance_currency
-                  ),
-                  legacy_lead:leads_lead!legacy_lead_id(
-                    id,
-                    total,
-                    meeting_total_currency_id
-                  )
-                `)
-                .or(`meeting_manager.eq.${employee.id},helper.eq.${employee.id}`)
-                .order('meeting_date', { ascending: false });
-
-              if (meetingsError) {
-                console.error(`Error fetching meetings for ${employee.display_name}:`, meetingsError);
-              }
-
-              // Calculate basic performance metrics
-              const meetings = meetingsData || [];
-              const completedMeetings = meetings.filter(m => m.status !== 'canceled').length;
-              const totalRevenue = meetings.reduce((sum, meeting) => {
-                const lead = meeting.lead || meeting.legacy_lead;
-                if (lead) {
-                  const amount = (lead as any).balance || (lead as any).total || meeting.meeting_amount || 0;
-                  return sum + (typeof amount === 'number' ? amount : 0);
+          // Initialize metrics - all employees start with 0 values
+          let totalMeetings = 0;
+          let completedMeetings = 0;
+          let totalRevenue = 0;
+          let lastActivity: string | null = null;
+          
+          // Count signed contracts across all roles
+          const roleMetrics: { [key: string]: { signed: number; revenue: number } } = {};
+          
+          // Only process if there are signed leads for the period
+          if (performanceData.signedLeads && performanceData.signedLeads.length > 0) {
+            performanceData.signedLeads.forEach(lead => {
+              const leadTotal = parseFloat(lead.total) || 0;
+              const leadTotalInNIS = convertToNIS(leadTotal, lead.currency_id);
+              
+              // Debug currency conversion
+              console.log(`🔍 EmployeePerformancePage Employee Metrics - Lead ${lead.id}:`, {
+                originalAmount: leadTotal,
+                currencyId: lead.currency_id,
+                convertedAmount: leadTotalInNIS,
+                conversionRate: leadTotal > 0 ? leadTotalInNIS / leadTotal : 1
+              });
+              const leadDate = lead.cdate;
+              
+              // Check each role
+              const roles = [
+                { key: 'h', id: lead.case_handler_id },
+                { key: 'c', id: lead.closer_id },
+                { key: 'e', id: lead.expert_id },
+                { key: 's', id: lead.meeting_scheduler_id },
+                { key: 'z', id: lead.meeting_manager_id },
+                { key: 'helper-closer', id: lead.meeting_lawyer_id }
+              ];
+              
+              roles.forEach(({ key, id }) => {
+                if (id === employeeIdStr) {
+                  if (!roleMetrics[key]) {
+                    roleMetrics[key] = { signed: 0, revenue: 0 };
+                  }
+                  roleMetrics[key].signed++;
+                  roleMetrics[key].revenue += leadTotalInNIS; // Use NIS amount
+                  
+                  totalMeetings++;
+                  completedMeetings++; // Signed contracts are considered completed
+                  totalRevenue += leadTotalInNIS; // Use NIS amount
+                  
+                  if (!lastActivity || new Date(leadDate) > new Date(lastActivity)) {
+                    lastActivity = leadDate;
+                  }
                 }
-                return sum;
-              }, 0);
+              });
+            });
+          }
+          
+          // Calculate performance percentage based on team average (capped at 100%)
+          const teamAvg = teamAverages[role];
+          const employeeSigned = roleMetrics[role]?.signed || 0;
+          const performancePercentage = teamAvg && teamAvg.avgSigned > 0 
+            ? Math.min(100, Math.round((employeeSigned / teamAvg.avgSigned) * 100))
+            : 0;
 
-              // Get last activity date
-              const lastActivity = meetings.length > 0 
-                ? meetings[0].meeting_date 
-                : null;
-
-              // Role-specific data fetching
-              let roleSpecificMetrics = {};
-
-              switch (role) {
-                case 'h': // Handler
-                  // Fetch cases handled and applicants processed
-                  const { data: leadsData, error: leadsError } = await supabase
-                    .from('leads')
-                    .select(`
-                      id,
-                      balance,
-                      balance_currency,
-                      handler_id,
-                      stage_id,
-                      leads_lead:leads_lead!legacy_lead_id(
-                        id,
-                        total,
-                        meeting_total_currency_id
-                      )
-                    `)
-                    .eq('handler_id', employee.id);
-
-                  if (!leadsError && leadsData) {
-                    const casesHandled = leadsData.length;
-                    const applicantsProcessed = leadsData.filter(lead => 
-                      lead.stage_id && lead.stage_id !== 'new'
-                    ).length;
-                    const totalInvoiced = leadsData.reduce((sum, lead) => {
-                      const amount = (lead as any).balance || (lead as any).leads_lead?.total || 0;
-                      return sum + (typeof amount === 'number' ? amount : 0);
-                    }, 0);
-
-                    roleSpecificMetrics = {
-                      cases_handled: casesHandled,
-                      applicants_processed: applicantsProcessed,
-                      total_invoiced_amount: totalInvoiced
-                    };
-                  }
-                  break;
-
-                case 'c': // Closer
-                  // Fetch signed contracts and agreements
-                  const { data: contractsData, error: contractsError } = await supabase
-                    .from('contracts')
-                    .select(`
-                      id,
-                      total_amount,
-                      currency_id,
-                      status,
-                      created_by
-                    `)
-                    .eq('created_by', employee.id)
-                    .eq('status', 'signed');
-
-                  if (!contractsError && contractsData) {
-                    const signedContracts = contractsData.length;
-                    const signedTotal = contractsData.reduce((sum, contract) => 
-                      sum + (contract.total_amount || 0), 0);
-                    const totalDue = contractsData.reduce((sum, contract) => 
-                      sum + (contract.total_amount || 0), 0); // Assuming all signed contracts are due
-
-                    roleSpecificMetrics = {
-                      signed_agreements: signedContracts,
-                      total_agreement_amount: signedTotal,
-                      total_due: totalDue
-                    };
-                  }
-                  break;
-
-                case 'e': // Expert
-                  // Fetch expert examinations (this would need to be implemented based on your data structure)
-                  const { data: expertData, error: expertError } = await supabase
-                    .from('meetings')
-                    .select('id, expert_opinion, feasibility_check')
-                    .eq('expert', employee.id);
-
-                  if (!expertError && expertData) {
-                    const expertExaminations = expertData.length;
-                    const totalExpertRevenue = expertData.reduce((sum, meeting) => 
-                      sum + ((meeting as any).meeting_amount || 0), 0);
-
-                    roleSpecificMetrics = {
-                      expert_examinations: expertExaminations,
-                      expert_total: totalExpertRevenue
-                    };
-                  }
-                  break;
-
-                case 's': // Scheduler
-                  // Fetch scheduled meetings and their outcomes
-                  const { data: scheduledData, error: scheduledError } = await supabase
-                    .from('meetings')
-                    .select(`
-                      id,
-                      meeting_date,
-                      status,
-                      meeting_amount,
-                      meeting_currency,
-                      lead:leads!client_id(
-                        id,
-                        balance,
-                        balance_currency
-                      )
-                    `)
-                    .eq('meeting_manager', employee.id);
-
-                  if (!scheduledError && scheduledData) {
-                    const meetingsTotal = scheduledData.length;
-                    const signedTotal = scheduledData.filter(m => m.status === 'completed').length;
-                    const dueTotal = scheduledData.reduce((sum, meeting) => {
-                      const lead = meeting.lead;
-                      if (lead) {
-                        const amount = (lead as any).balance || meeting.meeting_amount || 0;
-                        return sum + (typeof amount === 'number' ? amount : 0);
-                      }
-                      return sum;
-                    }, 0);
-
-                    roleSpecificMetrics = {
-                      meetings_scheduled: meetingsTotal,
-                      signed_meetings: signedTotal,
-                      due_total: dueTotal
-                    };
-                  }
-                  break;
-
-                case 'z': // Manager
-                case 'Z': // Manager
-                  // Fetch successful meetings and contracts managed
-                  const { data: managerData, error: managerError } = await supabase
-                    .from('meetings')
-                    .select(`
-                      id,
-                      status,
-                      meeting_amount,
-                      meeting_currency,
-                      lead:leads!client_id(
-                        id,
-                        balance,
-                        balance_currency
-                      )
-                    `)
-                    .eq('meeting_manager', employee.id);
-
-                  if (!managerError && managerData) {
-                    const successfulMeetings = managerData.filter(m => m.status === 'completed').length;
-                    const contractsManaged = managerData.filter(m => m.status === 'completed').length;
-                    const signedTotal = managerData.filter(m => m.status === 'completed').reduce((sum, meeting) => {
-                      const lead = meeting.lead;
-                      if (lead) {
-                        const amount = (lead as any).balance || meeting.meeting_amount || 0;
-                        return sum + (typeof amount === 'number' ? amount : 0);
-                      }
-                      return sum;
-                    }, 0);
-                    const dueTotal = signedTotal; // Assuming all completed meetings have due amounts
-
-                    roleSpecificMetrics = {
-                      successful_meetings: successfulMeetings,
-                      contracts_managed: contractsManaged,
-                      signed_total: signedTotal,
-                      due_total: dueTotal
-                    };
-                  }
-                  break;
-              }
-
-              return {
-                ...employee,
-                performance_metrics: {
-                  total_meetings: meetings.length,
-                  completed_meetings: completedMeetings,
-                  total_revenue: totalRevenue,
-                  total_bonus: 0,
-                  average_rating: 0,
-                  last_activity: lastActivity || 'No activity',
-                  ...roleSpecificMetrics
-                }
-              };
-            } catch (error) {
-              console.error(`Error processing metrics for ${employee.display_name}:`, error);
-              return {
-                ...employee,
-                performance_metrics: {
-                  total_meetings: 0,
-                  completed_meetings: 0,
-                  total_revenue: 0,
-                  total_bonus: 0,
-                  average_rating: 0,
-                  last_activity: 'No activity'
-                }
-              };
+          return {
+            ...employee,
+            performance_metrics: {
+              total_meetings: totalMeetings,
+              completed_meetings: completedMeetings,
+              total_revenue: totalRevenue,
+              total_bonus: 0,
+              average_rating: 0,
+              last_activity: lastActivity || 'No activity',
+              performance_percentage: performancePercentage,
+              role_metrics: roleMetrics,
+              team_average: teamAvg
             }
-          })
-        );
+          };
+        });
 
         setEmployees(employeesWithMetrics);
 
@@ -630,13 +543,226 @@ const EmployeePerformancePage: React.FC = () => {
           return groups;
         }, {} as Record<string, Employee[]>);
 
+        // Calculate department revenue using Dashboard's agreement signed logic
+        // IMPORTANT: This calculation is COMPLETELY INDEPENDENT of employee data
+        // It only uses leads_leadstage (signed contracts) and leads_lead (with department mappings)
+        const calculateDepartmentRevenue = async (dateFrom?: string, dateTo?: string) => {
+          try {
+            // Calculate date range - default to last 30 days if no dates provided
+            const today = new Date();
+            const defaultFromDate = new Date(today);
+            defaultFromDate.setDate(today.getDate() - 30);
+            
+            const fromDateValue = dateFrom || defaultFromDate.toISOString().split('T')[0];
+            const toDateValue = dateTo || today.toISOString().split('T')[0];
+            
+            console.log('📊 Calculating department revenue using Dashboard logic from', fromDateValue, 'to', toDateValue);
+            console.log('📊 NOTE: Revenue calculation is COMPLETELY INDEPENDENT of employee data');
+
+            // First, get ALL departments from tenant_departement to create a mapping
+            // Employee Performance page needs ALL departments, not just important ones like Dashboard
+            const { data: allDepartments, error: departmentsError } = await supabase
+              .from('tenant_departement')
+              .select('id, name, important')
+              .order('id');
+            
+            if (departmentsError) {
+              console.error('Error fetching departments for revenue calculation:', departmentsError);
+              return {};
+            }
+            
+            // Create department ID to name mapping
+            const departmentMap: { [key: number]: string } = {};
+            allDepartments?.forEach(dept => {
+              departmentMap[dept.id] = dept.name;
+            });
+            
+            console.log('📊 All departments fetched:', allDepartments?.map(d => `${d.id}: ${d.name} (important: ${d.important})`));
+            console.log('📊 Department mapping created:', departmentMap);
+            
+            // Specifically check for Marketing department
+            const marketingDept = allDepartments?.find(d => d.name.toLowerCase() === 'marketing');
+            if (marketingDept) {
+              console.log('📊 Marketing department found:', marketingDept);
+            } else {
+              console.log('⚠️ Marketing department NOT found in tenant_departement table');
+            }
+
+            // Fetch signed stages (stage 60 - agreement signed) for the date range
+            const { data: signedStages, error: stagesError } = await supabase
+              .from('leads_leadstage')
+              .select('id, date, lead_id')
+              .eq('stage', 60)
+              .gte('date', fromDateValue)
+              .lte('date', toDateValue);
+            
+            if (stagesError) {
+              console.error('Error fetching lead stages for department revenue:', stagesError);
+              return {};
+            }
+            
+            console.log('📊 Signed stages found for department revenue:', signedStages?.length || 0);
+            
+            // Fetch leads data for the signed stages
+            let departmentRevenue: { [key: string]: number } = {};
+            if (signedStages && signedStages.length > 0) {
+              const leadIds = [...new Set(signedStages.map(stage => stage.lead_id).filter(id => id !== null))];
+              console.log('📋 Fetching leads data for department revenue calculation for', leadIds.length, 'unique signed leads...');
+              
+                const { data: leadsData, error: leadsError } = await supabase
+                  .from('leads_lead')
+                  .select(`
+                    id, total, currency_id,
+                    misc_category(
+                      id, name, parent_id,
+                      misc_maincategory(
+                        id, name, department_id,
+                        tenant_departement(id, name)
+                      )
+                    )
+                  `)
+                  .in('id', leadIds);
+              
+              if (leadsError) {
+                console.error('Error fetching leads data for department revenue:', leadsError);
+                return {};
+              }
+              
+              console.log('📊 Leads data fetched for department revenue:', leadsData?.length || 0);
+              
+              // Debug: Check the structure of the first few leads
+              if (leadsData && leadsData.length > 0) {
+                console.log('📊 Sample lead data structure:', leadsData[0]);
+                console.log('📊 Sample lead misc_category:', leadsData[0]?.misc_category);
+                const sampleLead = leadsData[0] as any;
+                if (sampleLead?.misc_category) {
+                  console.log('📊 Sample category structure:', sampleLead.misc_category);
+                  if (sampleLead.misc_category?.misc_maincategory) {
+                    console.log('📊 Sample maincategory structure:', sampleLead.misc_category.misc_maincategory);
+                    console.log('📊 Sample department_id:', sampleLead.misc_category.misc_maincategory.department_id);
+                  }
+                }
+              }
+              
+              // Join the data and calculate revenue by department
+              const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
+              signedStages.forEach(stageRecord => {
+                const lead = leadsMap.get(stageRecord.lead_id);
+                      if (lead) {
+                  const amount = parseFloat(lead.total) || 0;
+                  const amountInNIS = convertToNIS(amount, lead.currency_id);
+                  
+                  // Debug currency conversion
+                  console.log(`🔍 EmployeePerformancePage Department Revenue - Lead ${lead.id}:`, {
+                    originalAmount: amount,
+                    currencyId: lead.currency_id,
+                    convertedAmount: amountInNIS,
+                    conversionRate: amount > 0 ? amountInNIS / amount : 1
+                  });
+                  
+                  // Get department ID from the JOIN (same as Dashboard logic)
+                  let departmentId = null;
+                  // Dashboard treats misc_category and misc_maincategory as single objects, not arrays
+                  const leadData = lead as any;
+                  if (leadData.misc_category?.misc_maincategory?.department_id) {
+                    departmentId = leadData.misc_category.misc_maincategory.department_id;
+                  }
+                  
+                  // Get department name from the mapping
+                  const departmentName = departmentId ? departmentMap[departmentId] || 'Unknown' : 'General';
+                  
+                  console.log(`📊 Processing lead ${lead.id}: departmentId=${departmentId}, departmentName=${departmentName}, amount=${amount}, amountInNIS=${amountInNIS}`);
+                  console.log(`📊 Available department mappings:`, departmentMap);
+                  
+                  if (!departmentRevenue[departmentName]) {
+                    departmentRevenue[departmentName] = 0;
+                  }
+                  departmentRevenue[departmentName] += amountInNIS; // Use NIS amount
+                  
+                  console.log(`📊 Updated revenue for ${departmentName}: ${departmentRevenue[departmentName]}`);
+                  
+                  // Special debugging for Marketing department
+                  if (departmentName.toLowerCase() === 'marketing') {
+                    console.log(`🎯 MARKETING LEAD FOUND: Lead ${lead.id}, Amount: ${amount}, AmountInNIS: ${amountInNIS}, Total Marketing Revenue: ${departmentRevenue[departmentName]}`);
+                  }
+                }
+              });
+            }
+            
+            console.log('📊 Department revenue calculated:', departmentRevenue);
+            
+            // Special debugging for Marketing department
+            if (departmentRevenue['Marketing']) {
+              console.log(`🎯 FINAL MARKETING REVENUE: ₪${departmentRevenue['Marketing']}`);
+            } else {
+              console.log('⚠️ NO MARKETING REVENUE FOUND in final calculation');
+            }
+            
+            return departmentRevenue;
+            } catch (error) {
+            console.error('Error calculating department revenue:', error);
+            return {};
+          }
+        };
+
+        // Calculate department revenue using Dashboard logic
+        const departmentRevenueData = await calculateDepartmentRevenue(dateFrom, dateTo);
+        
+        console.log('📊 Department revenue data received:', departmentRevenueData);
+        console.log('📊 Available departments in groupedByDepartment:', Object.keys(groupedByDepartment));
+        console.log('📊 Revenue calculation department names:', Object.keys(departmentRevenueData));
+        console.log('📊 Employee department names:', Object.keys(groupedByDepartment));
+        
+        // Check for department name mismatches
+        const revenueDepts = Object.keys(departmentRevenueData);
+        const employeeDepts = Object.keys(groupedByDepartment);
+        const missingInRevenue = employeeDepts.filter(dept => !revenueDepts.includes(dept));
+        const missingInEmployees = revenueDepts.filter(dept => !employeeDepts.includes(dept));
+        
+        if (missingInRevenue.length > 0) {
+          console.log('⚠️ Departments in employee data but not in revenue calculation:', missingInRevenue);
+        }
+        if (missingInEmployees.length > 0) {
+          console.log('⚠️ Departments in revenue calculation but not in employee data:', missingInEmployees);
+        }
+
         // Create department groups with aggregated metrics
         const departmentGroups: DepartmentGroup[] = Object.entries(groupedByDepartment).map(([deptName, deptEmployees]) => {
           const totalMeetings = deptEmployees.reduce((sum, emp) => sum + (emp.performance_metrics?.total_meetings || 0), 0);
-          const totalRevenue = deptEmployees.reduce((sum, emp) => sum + (emp.performance_metrics?.total_revenue || 0), 0);
+          
+          // Try to find revenue for this department with case-insensitive matching
+          let totalRevenue = departmentRevenueData[deptName] || 0;
+          
+          // If no exact match, try case-insensitive matching
+          if (totalRevenue === 0) {
+            const revenueDeptNames = Object.keys(departmentRevenueData);
+            const matchingDept = revenueDeptNames.find(revDept => 
+              revDept.toLowerCase() === deptName.toLowerCase()
+            );
+            if (matchingDept) {
+              totalRevenue = departmentRevenueData[matchingDept];
+              console.log(`📊 Found case-insensitive match: ${deptName} -> ${matchingDept} (${totalRevenue})`);
+            }
+          }
+          
+          // If still no match, try partial matching
+          if (totalRevenue === 0) {
+            const revenueDeptNames = Object.keys(departmentRevenueData);
+            const matchingDept = revenueDeptNames.find(revDept => 
+              revDept.toLowerCase().includes(deptName.toLowerCase()) || 
+              deptName.toLowerCase().includes(revDept.toLowerCase())
+            );
+            if (matchingDept) {
+              totalRevenue = departmentRevenueData[matchingDept];
+              console.log(`📊 Found partial match: ${deptName} -> ${matchingDept} (${totalRevenue})`);
+            }
+          }
+          
           const averagePerformance = deptEmployees.length > 0 
             ? deptEmployees.reduce((sum, emp) => sum + (emp.performance_metrics?.completed_meetings || 0), 0) / deptEmployees.length
             : 0;
+
+          console.log(`📊 Department ${deptName}: ${deptEmployees.length} employees, ${totalMeetings} meetings, ${totalRevenue} revenue`);
 
           return {
             name: deptName,
@@ -650,6 +776,58 @@ const EmployeePerformancePage: React.FC = () => {
         // Sort departments by total revenue
         departmentGroups.sort((a, b) => b.total_revenue - a.total_revenue);
 
+        // Calculate total revenue from all departments (no double counting)
+        // Check for departments that might share revenue (like Austria and Germany variants)
+        console.log('📊 All department groups before total calculation:', departmentGroups.map(dept => ({
+          name: dept.name,
+          revenue: dept.total_revenue,
+          employeeCount: dept.employees.length
+        })));
+        
+        // Identify departments that might share revenue (same base name)
+        const departmentRevenueMap = new Map<string, number>();
+        const sharedDepartments = new Set<string>();
+        
+        departmentGroups.forEach(dept => {
+          const baseName = dept.name.split(' - ')[0]; // Get base name (e.g., "Austria and Germany" from "Austria and Germany - Sales")
+          
+          if (departmentRevenueMap.has(baseName)) {
+            // This base name already exists, mark as shared
+            sharedDepartments.add(baseName);
+            console.log(`⚠️ Found shared department: "${dept.name}" shares revenue with base "${baseName}"`);
+          } else {
+            departmentRevenueMap.set(baseName, dept.total_revenue);
+          }
+        });
+        
+        // Calculate total revenue avoiding double counting for shared departments
+        let totalRevenueFromDepartments = 0;
+        const processedBaseNames = new Set<string>();
+        
+        departmentGroups.forEach(dept => {
+          const baseName = dept.name.split(' - ')[0];
+          
+          if (sharedDepartments.has(baseName)) {
+            // Only count once for shared departments (use the first occurrence)
+            if (!processedBaseNames.has(baseName)) {
+              totalRevenueFromDepartments += dept.total_revenue;
+              processedBaseNames.add(baseName);
+              console.log(`📊 Added shared department revenue: "${dept.name}" (base: "${baseName}") = ₪${dept.total_revenue}`);
+            } else {
+              console.log(`📊 Skipped duplicate shared department: "${dept.name}" (base: "${baseName}") = ₪${dept.total_revenue}`);
+            }
+          } else {
+            // Non-shared department, count normally
+            totalRevenueFromDepartments += dept.total_revenue;
+            console.log(`📊 Added unique department revenue: "${dept.name}" = ₪${dept.total_revenue}`);
+          }
+        });
+        
+        console.log('📊 Total revenue from all departments (avoiding double counting):', totalRevenueFromDepartments);
+        console.log('📊 Shared departments detected:', Array.from(sharedDepartments));
+
+        // Store the corrected total revenue
+        setCorrectedTotalRevenue(totalRevenueFromDepartments);
         setDepartmentGroups(departmentGroups);
 
         // Create subdepartment groups
@@ -707,10 +885,22 @@ const EmployeePerformancePage: React.FC = () => {
           }
         ].map(subdept => {
           const totalMeetings = subdept.employees.reduce((sum, emp) => sum + (emp.performance_metrics?.total_meetings || 0), 0);
-          const totalRevenue = subdept.employees.reduce((sum, emp) => sum + (emp.performance_metrics?.total_revenue || 0), 0);
+          // Calculate subdepartment revenue by summing up department revenues for employees in this subdepartment
+          // But we need to be careful not to double-count revenue if multiple employees are in the same department
+          const departmentRevenues = new Set<string>();
+          const totalRevenue = subdept.employees.reduce((sum, emp) => {
+            const deptRevenue = departmentRevenueData[emp.department] || 0;
+            if (!departmentRevenues.has(emp.department)) {
+              departmentRevenues.add(emp.department);
+              return sum + deptRevenue;
+            }
+            return sum; // Don't double-count the same department
+          }, 0);
           const averagePerformance = subdept.employees.length > 0 
             ? subdept.employees.reduce((sum, emp) => sum + (emp.performance_metrics?.completed_meetings || 0), 0) / subdept.employees.length
             : 0;
+
+          console.log(`📊 Subdepartment ${subdept.name}: ${subdept.employees.length} employees, ${totalMeetings} meetings, ${totalRevenue} revenue`);
 
           return {
             ...subdept,
@@ -722,25 +912,11 @@ const EmployeePerformancePage: React.FC = () => {
 
         setSubdepartmentGroups(subdepartmentGroups);
 
-        // Debug: Log subdepartment groups
-        console.log('🏢 Subdepartment groups created:', subdepartmentGroups.map(subdept => ({
-          name: subdept.name,
-          employeeCount: subdept.employees.length,
-          employees: subdept.employees.map(emp => ({ name: emp.display_name, role: emp.bonuses_role }))
-        })));
-
-        // Debug: Log all unique roles found
-        const allRoles = [...new Set(employeesWithMetrics.map(emp => emp.bonuses_role))];
-        console.log('🔍 All roles found in data:', allRoles);
-        
-        // Debug: Log Partners & Co employees
-        const partnersEmployees = employeesWithMetrics.filter(emp => 
-          ['p', 'm', 'dm', 'pm', 'se', 'b', 'partners', 'dv'].includes(emp.bonuses_role)
-        );
-        console.log('🤝 Partners & Co employees:', partnersEmployees.map(emp => ({
-          name: emp.display_name,
-          role: emp.bonuses_role
-        })));
+        console.log('📊 Performance data loaded successfully:', {
+          employees: employeesWithMetrics.length,
+          dateRange: performanceData.dateRange,
+          teamAverages: Object.keys(teamAverages).length
+        });
 
       } catch (error) {
         console.error('Error fetching employee performance:', error);
@@ -751,7 +927,7 @@ const EmployeePerformancePage: React.FC = () => {
     };
 
     fetchEmployeePerformance();
-  }, []);
+  }, [dateFrom, dateTo]); // Add dateFrom and dateTo as dependencies
 
 
   // Filter employees based on selected department, role, search query, and date range
@@ -802,7 +978,8 @@ const EmployeePerformancePage: React.FC = () => {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'ILS',
-      minimumFractionDigits: 0
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
     }).format(amount);
   };
 
@@ -918,7 +1095,7 @@ const EmployeePerformancePage: React.FC = () => {
             </div>
             <div>
               <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
-                {formatCurrency(employees.reduce((sum, emp) => sum + (emp.performance_metrics?.total_revenue || 0), 0))}
+                {formatCurrency(correctedTotalRevenue)}
               </div>
               <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Total Revenue</div>
             </div>
@@ -1076,12 +1253,33 @@ const EmployeePerformancePage: React.FC = () => {
               <label className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">Date To</span>
               </label>
+              <div className="flex gap-2">
               <input
                 type="date"
-                className="input input-bordered input-sm sm:input-md"
+                  className="input input-bordered input-sm sm:input-md flex-1"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
               />
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  title="Clear date filters (reset to last 30 days)"
+                >
+                  Clear
+                </button>
+              </div>
+              {/* Show message when only one date is selected */}
+              {(dateFrom && !dateTo) || (!dateFrom && dateTo) ? (
+                <div className="text-xs text-warning mt-1 flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  Select both dates to filter data
+                </div>
+              ) : null}
             </div>
 
             {/* Monthly Bonus Pool with Clear All */}
@@ -1121,7 +1319,6 @@ const EmployeePerformancePage: React.FC = () => {
                 </button>
               </div>
               <div className="label">
-                <span className="label-text-alt text-gray-500 text-xs">Total bonus amount for all employees</span>
               </div>
             </div>
           </div>
@@ -1208,26 +1405,25 @@ const EmployeePerformancePage: React.FC = () => {
             </div>
             <div className="card-body p-0">
               <div className="overflow-x-auto">
-                <table className="table w-full text-xs sm:text-sm">
+                <table className="table w-full text-sm sm:text-base">
                   <thead>
                     <tr>
-                      <th className="w-1/4 text-xs sm:text-sm">Employee</th>
-                      <th className="w-1/12 text-xs sm:text-sm">Role</th>
-                      <th className="w-1/12 text-xs sm:text-sm">
+                      <th className="w-1/3 text-sm sm:text-base">Employee</th>
+                      <th className="w-1/12 text-sm sm:text-base">
                         <span className="hidden sm:inline">Total Meetings</span>
                         <span className="sm:hidden">Total</span>
                       </th>
-                      <th className="w-1/12 text-xs sm:text-sm">
+                      <th className="w-1/12 text-sm sm:text-base">
                         <span className="hidden sm:inline">Completed</span>
                         <span className="sm:hidden">Done</span>
                       </th>
-                      <th className="w-1/12 text-xs sm:text-sm">Revenue</th>
-                      <th className="w-1/12 text-xs sm:text-sm">
+                      <th className="w-1/12 text-sm sm:text-base">Revenue</th>
+                      <th className="w-1/12 text-sm sm:text-base">
                         <span className="hidden sm:inline">Last Activity</span>
                         <span className="sm:hidden">Activity</span>
                       </th>
-                      <th className="w-1/12 text-xs sm:text-sm">Bonus</th>
-                      <th className="w-1/12 text-xs sm:text-sm">
+                      <th className="w-1/12 text-sm sm:text-base">Bonus</th>
+                      <th className="w-1/12 text-sm sm:text-base">
                         <span className="hidden sm:inline">Performance</span>
                         <span className="sm:hidden">Perf</span>
                       </th>
@@ -1240,7 +1436,7 @@ const EmployeePerformancePage: React.FC = () => {
                     className="hover:bg-base-200 cursor-pointer"
                     onClick={() => handleEmployeeClick(employee)}
                   >
-                    <td className="w-1/4">
+                    <td className="w-1/3">
                       <div className="flex items-center gap-2 sm:gap-3">
                         <div className="avatar">
                           {employee.photo_url ? (
@@ -1275,28 +1471,27 @@ const EmployeePerformancePage: React.FC = () => {
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="font-semibold text-xs sm:text-sm truncate">{employee.display_name}</div>
-                          <div className="text-xs sm:text-sm text-gray-500 truncate">{employee.email}</div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="font-semibold text-sm sm:text-base truncate">{employee.display_name}</div>
+                            <span className="text-xs max-w-full truncate inline-block px-1.5 sm:px-2 py-0.5 rounded-full text-white font-medium bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 shadow-sm flex-shrink-0">
+                              {getRoleDisplayName(employee.bonuses_role)}
+                            </span>
+                          </div>
+                          <div className="text-sm sm:text-base text-gray-500 truncate">{employee.email}</div>
                         </div>
                       </div>
                     </td>
-                    <td className="w-1/12">
-                      <span className="text-xs sm:text-sm max-w-full truncate inline-block px-2 sm:px-3 py-1 rounded-full text-white font-medium bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 shadow-sm">
-                        <span className="hidden sm:inline">{getRoleDisplayName(employee.bonuses_role)}</span>
-                        <span className="sm:hidden">{employee.bonuses_role}</span>
-                      </span>
-                    </td>
-                    <td className="w-1/12 font-semibold text-xs sm:text-sm">
+                    <td className="w-1/12 font-semibold text-sm sm:text-base">
                       {employee.performance_metrics?.total_meetings || 0}
                     </td>
-                    <td className="w-1/12 font-semibold text-success text-xs sm:text-sm">
+                    <td className="w-1/12 font-semibold text-success text-sm sm:text-base">
                       {employee.performance_metrics?.completed_meetings || 0}
                     </td>
-                    <td className="w-1/12 font-semibold text-xs sm:text-sm">
+                    <td className="w-1/12 font-semibold text-sm sm:text-base">
                       <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.total_revenue || 0)}</span>
-                      <span className="sm:hidden">₪{(employee.performance_metrics?.total_revenue || 0).toLocaleString()}</span>
+                      <span className="sm:hidden">₪{(employee.performance_metrics?.total_revenue || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
                     </td>
-                    <td className="w-1/12 text-xs sm:text-sm">
+                    <td className="w-1/12 text-sm sm:text-base">
                       <span className="hidden sm:inline">{formatDate(employee.performance_metrics?.last_activity || 'No activity')}</span>
                       <span className="sm:hidden">
                         {employee.performance_metrics?.last_activity && employee.performance_metrics.last_activity !== 'No activity' 
@@ -1305,24 +1500,34 @@ const EmployeePerformancePage: React.FC = () => {
                         }
                       </span>
                     </td>
-                    <td className="w-1/12 font-semibold text-warning text-xs sm:text-sm">
+                    <td className="w-1/12 font-semibold text-warning text-sm sm:text-base">
                       <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.total_bonus || 0)}</span>
-                      <span className="sm:hidden">₪{(employee.performance_metrics?.total_bonus || 0).toLocaleString()}</span>
+                      <span className="sm:hidden">₪{(employee.performance_metrics?.total_bonus || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
                     </td>
                     <td className="w-1/12">
+                      {employee.performance_metrics?.performance_percentage !== undefined ? (
                       <div className="flex items-center gap-1 sm:gap-2">
                         <div className="w-8 sm:w-16 bg-gray-200 rounded-full h-1.5 sm:h-2">
                           <div 
-                            className="bg-primary h-1.5 sm:h-2 rounded-full" 
+                              className={`h-1.5 sm:h-2 rounded-full ${
+                                (employee.performance_metrics?.performance_percentage || 0) >= 100 
+                                  ? 'bg-success' 
+                                  : (employee.performance_metrics?.performance_percentage || 0) >= 75 
+                                  ? 'bg-warning' 
+                                  : 'bg-error'
+                              }`}
                             style={{ 
-                              width: `${Math.min(100, ((employee.performance_metrics?.completed_meetings || 0) / Math.max(1, employee.performance_metrics?.total_meetings || 1)) * 100)}%` 
+                                width: `${Math.min(100, Math.max(0, employee.performance_metrics?.performance_percentage || 0))}%` 
                             }}
                           ></div>
                         </div>
-                        <span className="text-xs sm:text-sm font-medium">
-                          {Math.round(((employee.performance_metrics?.completed_meetings || 0) / Math.max(1, employee.performance_metrics?.total_meetings || 1)) * 100)}%
+                          <span className="text-sm sm:text-base font-medium">
+                            {employee.performance_metrics?.performance_percentage || 0}%
                         </span>
                       </div>
+                      ) : (
+                        <span className="text-sm sm:text-base text-gray-500">N/A</span>
+                      )}
                     </td>
                   </tr>
                     ))}

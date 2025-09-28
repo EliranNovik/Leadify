@@ -6,6 +6,7 @@ import OverdueFollowups from './OverdueFollowups';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
+import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
 import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
@@ -993,77 +994,82 @@ const Dashboard: React.FC = () => {
         console.log('📅 Selected month index:', selectedMonthIndex);
         console.log('📅 Selected month name for display:', selectedMonthName);
         
-        // Define department IDs for fetching agreement data (counts and amounts)
-        const departmentIds = [6, 7, 15, 14, 12];
-        console.log('📊 Department IDs to fetch agreement data:', departmentIds);
-        
-        // Define old department IDs for fetching targets (min_income) only
-        const targetDepartmentIds = [20, 7, 5, 4, 2];
-        console.log('🎯 Old department IDs for fetching targets:', targetDepartmentIds);
-        
-        // Fetch department targets (min_income) from tenant_departement using old IDs
-        console.log('🎯 Fetching department targets from tenant_departement...');
-        const { data: departmentTargets, error: targetsError } = await supabase
+        // Fetch only important departments from tenant_departement
+        console.log('🎯 Fetching important departments from tenant_departement...');
+        const { data: allDepartments, error: departmentsError } = await supabase
           .from('tenant_departement')
-          .select('id, min_income')
-          .in('id', targetDepartmentIds);
+          .select('id, name, min_income, important')
+          .eq('important', 't')
+          .order('id');
         
-        if (targetsError) {
-          console.error('❌ Error fetching department targets:', targetsError);
-          throw targetsError;
+        if (departmentsError) {
+          console.error('❌ Error fetching departments:', departmentsError);
+          throw departmentsError;
         }
         
-        console.log('✅ Department targets fetched:', departmentTargets);
+        // Extract department IDs and create target mapping
+        const departmentIds = allDepartments?.map(dept => dept.id) || [];
+        const departmentTargets = allDepartments || [];
         
-        // Create a map of old department ID to target
-        const targetMap = new Map();
+        console.log('📊 All department IDs found:', departmentIds);
+        console.log('🎯 All department targets:', departmentTargets);
+        
+        // Log which departments are important
+        const importantDepts = departmentTargets.filter(dept => dept.important === 't');
+        console.log('⭐ Important departments:', importantDepts.map(dept => `${dept.id}: ${dept.name} (important: ${dept.important})`));
+        
+        // Debug: Log each department with its index
+        console.log('🔍 Department mapping debug:');
+        departmentTargets.forEach((dept, index) => {
+          console.log(`  Index ${index}: ID ${dept.id} -> "${dept.name}" (important: ${dept.important})`);
+        });
+        
+        // Set department names for UI display
+        const names = departmentTargets.map(dept => dept.name);
+        setDepartmentNames(names);
+        console.log('📝 All department names set:', names);
+        
+        // Debug: Show the exact mapping of ID -> Name -> Target
+        console.log('🎯 Department mapping for UI:');
+        departmentTargets.forEach((dept, index) => {
+          console.log(`  UI Index ${index}: ID ${dept.id} -> "${dept.name}" -> Target: ₪${dept.min_income}`);
+        });
+        
+        // Create target map (department ID -> min_income)
+        const targetMap: { [key: number]: number } = {};
         departmentTargets?.forEach(dept => {
-          targetMap.set(dept.id, parseInt(dept.min_income) || 0);
+          targetMap[dept.id] = parseFloat(dept.min_income || '0');
         });
         
-        console.log('🎯 Target map created (old IDs):', Object.fromEntries(targetMap));
+        console.log('🎯 Target map created:', targetMap);
         
-        // Create a mapping from new department IDs to their corresponding old department targets
-        // This maps the agreement data departments to their target departments
-        const newToOldTargetMap = new Map();
-        newToOldTargetMap.set(6, targetMap.get(20) || 0);   // Commercial & Civil: new ID 6 -> old ID 20
-        newToOldTargetMap.set(7, targetMap.get(7) || 0);    // Small cases: new ID 7 -> old ID 7 (same)
-        newToOldTargetMap.set(15, targetMap.get(5) || 0);   // USA - Immigration: new ID 15 -> old ID 5
-        newToOldTargetMap.set(14, targetMap.get(4) || 0);   // Immigration to Israel: new ID 14 -> old ID 4
-        newToOldTargetMap.set(12, targetMap.get(2) || 0);   // Austria and Germany: new ID 12 -> old ID 2
-        
-        console.log('🎯 New to old target mapping:');
-        newToOldTargetMap.forEach((target, newDeptId) => {
-          console.log(`  New Dept ${newDeptId} -> Old Dept Target: ₪${target.toLocaleString()}`);
-        });
-        
-        // Initialize data structure with correct array lengths for the 5 specified departments
+        // Initialize data structure dynamically based on actual departments
         const newAgreementData = {
           Today: [
             { count: 0, amount: 0, expected: 0 }, // General (index 0)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
-            { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+            ...departmentTargets.map(dept => ({ 
+              count: 0, 
+              amount: 0, 
+              expected: parseFloat(dept.min_income || '0') 
+            })), // Actual departments
+            { count: 0, amount: 0, expected: 0 }, // Total (last index)
           ],
           "Last 30d": [
             { count: 0, amount: 0, expected: 0 }, // General (index 0)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
-            { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+            ...departmentTargets.map(dept => ({ 
+              count: 0, 
+              amount: 0, 
+              expected: parseFloat(dept.min_income || '0') 
+            })), // Actual departments
+            { count: 0, amount: 0, expected: 0 }, // Total (last index)
           ],
           [selectedMonthName]: [
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 0)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 1)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 2)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 3)
-            { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 4)
-            { count: 0, amount: 0, expected: 0 }, // Total (index 5)
+            ...departmentTargets.map(dept => ({ 
+              count: 0, 
+              amount: 0, 
+              expected: parseFloat(dept.min_income || '0') 
+            })), // Actual departments (no General column for month view)
+            { count: 0, amount: 0, expected: 0 }, // Total (last index)
           ],
         };
         
@@ -1109,8 +1115,9 @@ const Dashboard: React.FC = () => {
         console.log('  - Current month:', now.getMonth() + 1);
         console.log('  - Days in current month:', new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
         
-        // NEW APPROACH: Fetch stage 60 records separately, then fetch leads_lead data
-        console.log('📋 Fetching stage 60 records...');
+        // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
+        // Fetch data for Today and Last 30d (always current date range)
+        console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for Today and Last 30d...');
         const { data: stageRecords, error: stageError } = await supabase
           .from('leads_leadstage')
           .select('id, date, lead_id')
@@ -1124,22 +1131,46 @@ const Dashboard: React.FC = () => {
         }
         
         console.log('✅ Stage records fetched:', stageRecords?.length || 0, 'records');
-        if (stageRecords && stageRecords.length > 0) {
-          console.log('📝 Sample stage record:', stageRecords[0]);
+        
+        // Debug: Check if there are any stage records at all (without date filter)
+        if (stageRecords?.length === 0) {
+          console.log('🔍 No stage records found for date range. Checking all stage 60 records...');
+          const { data: allStageRecords, error: allStageError } = await supabase
+            .from('leads_leadstage')
+            .select('id, date, lead_id')
+            .eq('stage', 60)
+            .order('date', { ascending: false })
+            .limit(10);
+          
+          if (allStageError) {
+            console.error('❌ Error fetching all stage records:', allStageError);
+          } else {
+            console.log('📊 Recent stage 60 records (last 10):', allStageRecords?.map(record => ({
+              id: record.id,
+              date: record.date,
+              lead_id: record.lead_id
+            })));
+          }
         }
         
+        // Fetch leads data separately if we have stage records
+        let agreementRecords: any[] = [];
         if (stageRecords && stageRecords.length > 0) {
-          // Collect unique lead IDs for batch fetching
-          const leadIds = [...new Set(stageRecords.map(r => r.lead_id).filter(Boolean))];
+          const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
+          console.log('📋 Fetching leads data for', leadIds.length, 'unique leads...');
           
-          console.log('📄 Unique lead IDs:', leadIds.length);
-          console.log('📄 Sample lead IDs:', leadIds.slice(0, 5));
-          
-          // Fetch leads_lead data to get closer_id and total
-          console.log('🔄 Fetching leads_lead data for closer information...');
           const { data: leadsData, error: leadsError } = await supabase
             .from('leads_lead')
-            .select('id, total, closer_id')
+            .select(`
+              id, total, currency_id,
+              misc_category(
+                id, name, parent_id,
+                misc_maincategory(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
             .in('id', leadIds);
           
           if (leadsError) {
@@ -1149,85 +1180,86 @@ const Dashboard: React.FC = () => {
           
           console.log('✅ Leads data fetched:', leadsData?.length || 0, 'records');
           
-          // Create lookup map for lead_id to closer_id and total
-          const leadToCloserMap = new Map();
-          if (leadsData) {
-            leadsData.forEach(lead => {
-              leadToCloserMap.set(lead.id, {
-                closer_id: lead.closer_id,
-                total: lead.total
-              });
-            });
+          // Join the data
+          const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
+          agreementRecords = stageRecords.map(stageRecord => {
+            const lead = leadsMap.get(stageRecord.lead_id);
+            return {
+              ...stageRecord,
+              leads_lead: lead || null
+            };
+          }).filter(record => record.leads_lead !== null);
+          
+          console.log('✅ Joined agreement records created:', agreementRecords.length, 'records');
+        }
+        
+        console.log('✅ Agreement records processed:', agreementRecords?.length || 0, 'records');
+        if (agreementRecords && agreementRecords.length > 0) {
+          console.log('📝 Sample agreement record:', agreementRecords[0]);
+        }
+        
+        // Fetch data for selected month (separate query)
+        console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for selected month:', selectedMonthName, selectedYear);
+        const { data: monthStageRecords, error: monthStageError } = await supabase
+          .from('leads_leadstage')
+          .select('id, date, lead_id')
+          .eq('stage', 60)
+          .gte('date', startOfMonthStr)
+          .lte('date', new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0]);
+        
+        if (monthStageError) {
+          console.error('❌ Error fetching month stage records:', monthStageError);
+          throw monthStageError;
+        }
+        
+        console.log('✅ Month stage records fetched:', monthStageRecords?.length || 0, 'records');
+        
+        // Fetch leads data separately for month if we have stage records
+        let monthAgreementRecords: any[] = [];
+        if (monthStageRecords && monthStageRecords.length > 0) {
+          const monthLeadIds = [...new Set(monthStageRecords.map(record => record.lead_id).filter(id => id !== null))];
+          console.log('📋 Fetching month leads data for', monthLeadIds.length, 'unique leads...');
+          
+          const { data: monthLeadsData, error: monthLeadsError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id, total, currency_id,
+              misc_category(
+                id, name, parent_id,
+                misc_maincategory(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+            .in('id', monthLeadIds);
+          
+          if (monthLeadsError) {
+            console.error('❌ Error fetching month leads data:', monthLeadsError);
+            throw monthLeadsError;
           }
           
-          console.log('🗺️ Lead to closer map size:', leadToCloserMap.size);
-          console.log('🔍 Sample lead mappings:', Array.from(leadToCloserMap.entries()).slice(0, 5));
+          console.log('✅ Month leads data fetched:', monthLeadsData?.length || 0, 'records');
           
-          // Collect unique closer IDs for batch fetching
-          const closerIds = [...new Set(leadsData?.map(lead => lead.closer_id).filter(Boolean) || [])];
+          // Join the data
+          const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
+          monthAgreementRecords = monthStageRecords.map(stageRecord => {
+            const lead = monthLeadsMap.get(stageRecord.lead_id);
+            return {
+              ...stageRecord,
+              leads_lead: lead || null
+            };
+          }).filter(record => record.leads_lead !== null);
           
-          console.log('👥 Unique closer IDs:', closerIds.length);
-          console.log('👥 Sample closer IDs:', closerIds.slice(0, 5));
-          
-          // Fetch employee data for the closers
-          console.log('🔄 Fetching employee data for closers...');
-          const { data: employeeData, error: employeeError } = await supabase
-            .from('tenants_employee')
-            .select('id, department_id')
-            .in('id', closerIds);
-          
-          if (employeeError) {
-            console.error('❌ Error fetching employees:', employeeError);
-            throw employeeError;
-          }
-          
-          console.log('✅ Employee data fetched:', employeeData?.length || 0, 'records');
-          
-          // Debug: Check the actual employee data structure
-          console.log('🔍 Raw employee data sample:', employeeData?.slice(0, 3));
-          console.log('🔍 Employee data types - first employee:', employeeData?.[0] ? {
-            id: employeeData[0].id,
-            idType: typeof employeeData[0].id,
-            department_id: employeeData[0].department_id,
-            deptType: typeof employeeData[0].department_id
-          } : 'No employees');
-          
-          // Create lookup map for closer_id to department_id
-          const closerToDeptMap = new Map();
-          if (employeeData) {
-            employeeData.forEach(emp => {
-              // Convert both to strings to ensure consistent matching
-              const empIdStr = String(emp.id);
-              const deptId = emp.department_id;
-              closerToDeptMap.set(empIdStr, deptId);
-              // Also store the original ID type as a backup
-              closerToDeptMap.set(emp.id, deptId);
-            });
-          }
-          
-          console.log('🗺️ Closer to department map size:', closerToDeptMap.size);
-          console.log('🔍 Sample closer mappings:', Array.from(closerToDeptMap.entries()).slice(0, 5));
-          
-          // Debug: Check if the closer IDs we're looking for exist in the map
-          console.log('🔍 Checking closer ID mapping...');
-          const sampleCloserIds = closerIds.slice(0, 5);
-          sampleCloserIds.forEach(closerId => {
-            const deptId = closerToDeptMap.get(closerId);
-            const deptIdStr = closerToDeptMap.get(String(closerId));
-            const deptIdNum = closerToDeptMap.get(Number(closerId));
-            console.log(`  Closer ID ${closerId} (type: ${typeof closerId}) -> Department ID: ${deptId} (string: ${deptIdStr}, number: ${deptIdNum})`);
-          });
-          
-          // Debug: Show what's actually in the employee data
-          console.log('🔍 Employee data structure:');
-          if (employeeData && employeeData.length > 0) {
-            const firstEmp = employeeData[0];
-            console.log('  First employee:', firstEmp);
-            console.log('  Employee ID type:', typeof firstEmp.id);
-            console.log('  Department ID type:', typeof firstEmp.department_id);
-            console.log('  Sample employee IDs:', employeeData.slice(0, 5).map(emp => ({ id: emp.id, dept: emp.department_id })));
-          }
-          
+          console.log('✅ Joined month agreement records created:', monthAgreementRecords.length, 'records');
+        }
+        
+        console.log('✅ Month agreement records processed:', monthAgreementRecords?.length || 0, 'records');
+        if (monthAgreementRecords && monthAgreementRecords.length > 0) {
+          console.log('📝 Sample month agreement record:', monthAgreementRecords[0]);
+        }
+        
+        if (agreementRecords && agreementRecords.length > 0) {
           // Process all records efficiently
           let processedCount = 0;
           let skippedCount = 0;
@@ -1235,23 +1267,53 @@ const Dashboard: React.FC = () => {
           // Track processed records to prevent duplicates
           const processedRecordIds = new Set();
           
-          stageRecords.forEach(record => {
+          agreementRecords.forEach(record => {
             // Skip if already processed
-            if (processedRecordIds.has(record.lead_id)) {
-              console.log(`⚠️ Skipping duplicate record: leadId=${record.lead_id}`);
+            if (processedRecordIds.has(record.id)) {
+              console.log(`⚠️ Skipping duplicate record: leadId=${record.id}`);
               return;
             }
-            processedRecordIds.add(record.lead_id);
+            processedRecordIds.add(record.id);
             
-            const leadData = leadToCloserMap.get(record.lead_id);
-            const closerId = leadData?.closer_id;
-            const departmentId = closerToDeptMap.get(closerId);
-            const amount = parseFloat(leadData?.total) || 0;
+            const lead = record.leads_lead as any;
+            if (!lead) {
+              console.log(`⚠️ No lead data for record: leadId=${record.lead_id}`);
+              return;
+            }
+            
+            const amount = parseFloat(lead.total) || 0;
+            const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
             
-            console.log(`📊 Processing record: leadId=${record.lead_id}, closerId=${closerId}, departmentId=${departmentId}, amount=${amount}, date=${recordDate}`);
+            // Debug currency conversion
+            console.log(`🔍 Dashboard Agreement Signed - Lead ${record.lead_id}:`, {
+              originalAmount: amount,
+              currencyId: lead.currency_id,
+              convertedAmount: amountInNIS,
+              conversionRate: amount > 0 ? amountInNIS / amount : 1
+            });
             
-            if (closerId && departmentId && departmentIds.includes(departmentId)) {
+            // Log non-NIS currencies for verification
+            if (lead.currency_id && lead.currency_id !== 1) {
+              console.log(`🌍 Non-NIS Currency Found - Lead ${record.lead_id}:`, {
+                currencyId: lead.currency_id,
+                originalAmount: amount,
+                convertedAmount: amountInNIS,
+                currencyType: lead.currency_id === 2 ? 'USD' : 
+                             lead.currency_id === 3 ? 'EUR' : 
+                             lead.currency_id === 4 ? 'GBP' : 'Unknown'
+              });
+            }
+            
+            // Get department ID from the JOIN
+            let departmentId = null;
+            if (lead.misc_category?.misc_maincategory?.department_id) {
+              departmentId = lead.misc_category.misc_maincategory.department_id;
+            }
+            
+            console.log(`📊 Processing record: leadId=${record.lead_id}, departmentId=${departmentId}, amount=${amount}, amountInNIS=${amountInNIS}, date=${recordDate}`);
+            
+            if (departmentId && departmentIds.includes(departmentId)) {
               processedCount++;
               
               // For Today and Last 30d, use the department index + 1 (to skip General)
@@ -1261,7 +1323,7 @@ const Dashboard: React.FC = () => {
               const monthDeptIndex = departmentIds.indexOf(departmentId);
               
               console.log(`📍 Department mapping: deptId=${departmentId}, deptIndex=${deptIndex}, monthDeptIndex=${monthDeptIndex}`);
-              console.log(`📍 Department names: deptId=${departmentId} -> ${scoreboardCategories[deptIndex]} (Last 30d), ${scoreboardCategories[monthDeptIndex + 1]} (August)`);
+              console.log(`📍 Department names: deptId=${departmentId} -> ${scoreboardCategories[deptIndex]} (Last 30d), ${scoreboardCategories[monthDeptIndex + 1]} (${selectedMonthName})`);
               
               // Extract date part for comparison
               const recordDateOnly = extractDateFromRecord(recordDate);
@@ -1270,9 +1332,9 @@ const Dashboard: React.FC = () => {
               if (recordDateOnly === todayStr) {
                 console.log(`✅ Today match: ${recordDateOnly} === ${todayStr}`);
                 newAgreementData.Today[deptIndex].count++;
-                newAgreementData.Today[deptIndex].amount += amount;
+                newAgreementData.Today[deptIndex].amount += amountInNIS; // Use NIS amount
                 newAgreementData.Today[0].count++; // General
-                newAgreementData.Today[0].amount += amount;
+                newAgreementData.Today[0].amount += amountInNIS; // Use NIS amount
               }
               
               // Check if it's in last 30 days (or entire month if at end of month)
@@ -1280,32 +1342,91 @@ const Dashboard: React.FC = () => {
                 console.log(`✅ Last 30d match: ${recordDateOnly} >= ${effectiveThirtyDaysAgo}`);
                 console.log(`  📊 Before: Last 30d[${deptIndex}] = count:${newAgreementData["Last 30d"][deptIndex].count}, amount:${newAgreementData["Last 30d"][deptIndex].amount}`);
                 newAgreementData["Last 30d"][deptIndex].count++;
-                newAgreementData["Last 30d"][deptIndex].amount += amount;
+                newAgreementData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
                 console.log(`  📊 After: Last 30d[${deptIndex}] = count:${newAgreementData["Last 30d"][deptIndex].count}, amount:${newAgreementData["Last 30d"][deptIndex].amount}`);
                 newAgreementData["Last 30d"][0].count++; // General
-                newAgreementData["Last 30d"][0].amount += amount;
+                newAgreementData["Last 30d"][0].amount += amountInNIS; // Use NIS amount
               }
               
-              // Check if it's in current month
-              if (recordDateOnly >= startOfMonthStr) {
-                console.log(`✅ Current month match: ${recordDateOnly} >= ${startOfMonthStr}`);
-                console.log(`  📊 Before: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
-                newAgreementData[selectedMonthName][monthDeptIndex].count++;
-                newAgreementData[selectedMonthName][monthDeptIndex].amount += amount;
-                console.log(`  📊 After: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
-              }
+              // Note: Month data will be processed separately from monthStageRecords
               
               // Debug: Show why dates might be different
               console.log(`🔍 Date comparison debug: recordDate=${recordDateOnly}, effectiveThirtyDaysAgo=${effectiveThirtyDaysAgo}, startOfMonth=${startOfMonthStr}`);
               console.log(`🔍 Last 30d condition: ${recordDateOnly} >= ${effectiveThirtyDaysAgo} = ${recordDateOnly >= effectiveThirtyDaysAgo}`);
-              console.log(`🔍 Current month condition: ${recordDateOnly} >= ${startOfMonthStr} = ${recordDateOnly >= startOfMonthStr}`);
+              console.log(`🔍 Selected month condition: ${recordDateOnly} >= ${startOfMonthStr} = ${recordDateOnly >= startOfMonthStr}`);
             } else {
               skippedCount++;
-              console.log(`⏭️ Skipped record: leadId=${record.lead_id}, closerId=${closerId}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
+              console.log(`⏭️ Skipped record: leadId=${record.lead_id}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
             }
           });
           
           console.log(`📈 Processing summary: ${processedCount} processed, ${skippedCount} skipped`);
+        }
+        
+        // Process month data separately
+        if (monthAgreementRecords && monthAgreementRecords.length > 0) {
+          let monthProcessedCount = 0;
+          let monthSkippedCount = 0;
+          
+          // Track processed records to prevent duplicates
+          const processedMonthRecordIds = new Set();
+          
+          monthAgreementRecords.forEach(record => {
+            // Skip if already processed
+            if (processedMonthRecordIds.has(record.id)) {
+              console.log(`⚠️ Skipping duplicate month record: leadId=${record.id}`);
+              return;
+            }
+            processedMonthRecordIds.add(record.id);
+            
+            const lead = record.leads_lead as any;
+            if (!lead) {
+              console.log(`⚠️ No lead data for month record: leadId=${record.lead_id}`);
+              return;
+            }
+            
+            const amount = parseFloat(lead.total) || 0;
+            const amountInNIS = convertToNIS(amount, lead.currency_id);
+            const recordDate = record.date;
+            
+            // Get department ID from the JOIN
+            let departmentId = null;
+            if (lead.misc_category?.misc_maincategory?.department_id) {
+              departmentId = lead.misc_category.misc_maincategory.department_id;
+            }
+            
+            console.log(`📊 Processing month record: leadId=${record.lead_id}, departmentId=${departmentId}, amount=${amount}, amountInNIS=${amountInNIS}, date=${recordDate}`);
+            console.log(`🔍 Department ID ${departmentId} in departmentIds? ${departmentIds.includes(departmentId)}`);
+            console.log(`🔍 Available department IDs: [${departmentIds.join(', ')}]`);
+            
+            if (departmentId && departmentIds.includes(departmentId)) {
+              monthProcessedCount++;
+              
+              // For current month, use the department index directly (no General column)
+              const monthDeptIndex = departmentIds.indexOf(departmentId);
+              
+              console.log(`📍 Month department mapping: deptId=${departmentId}, monthDeptIndex=${monthDeptIndex}`);
+              console.log(`📍 Month department name: deptId=${departmentId} -> ${scoreboardCategories[monthDeptIndex + 1]} (${selectedMonthName})`);
+              console.log(`📍 Available scoreboardCategories: [${scoreboardCategories.join(', ')}]`);
+              
+              // Extract date part for comparison
+              const recordDateOnly = extractDateFromRecord(recordDate);
+              
+              // Check if it's in selected month
+              if (recordDateOnly >= startOfMonthStr) {
+                console.log(`✅ Selected month match: ${recordDateOnly} >= ${startOfMonthStr}`);
+                console.log(`  📊 Before: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
+                newAgreementData[selectedMonthName][monthDeptIndex].count++;
+                newAgreementData[selectedMonthName][monthDeptIndex].amount += amountInNIS; // Use NIS amount
+                console.log(`  📊 After: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
+              }
+            } else {
+              monthSkippedCount++;
+              console.log(`⏭️ Skipped month record: leadId=${record.lead_id}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
+            }
+          });
+          
+          console.log(`📈 Month processing summary: ${monthProcessedCount} processed, ${monthSkippedCount} skipped`);
         }
         
         // Calculate totals for each time period
@@ -1317,10 +1438,17 @@ const Dashboard: React.FC = () => {
         console.log('  Last 30d:', newAgreementData["Last 30d"].map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
         console.log(`  ${selectedMonthName}:`, newAgreementData[selectedMonthName].map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
         
-        // Today totals (sum of departments 1-5, excluding General and Total)
-        const todayTotalCount = newAgreementData.Today.slice(1, 6).reduce((sum, item) => sum + item.count, 0);
-        const todayTotalAmount = newAgreementData.Today.slice(1, 6).reduce((sum, item) => sum + item.amount, 0);
-        newAgreementData.Today[6] = {
+        // Calculate dynamic totals based on actual number of departments
+        const numDepartments = departmentTargets.length;
+        const totalIndexToday = numDepartments + 1; // General + departments + Total
+        const totalIndexMonth = numDepartments; // departments + Total (no General for month)
+        
+        console.log(`🧮 Total calculation: ${numDepartments} departments, totalIndexToday=${totalIndexToday}, totalIndexMonth=${totalIndexMonth}`);
+        
+        // Today totals (sum of departments, excluding General and Total)
+        const todayTotalCount = newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+        const todayTotalAmount = Math.ceil(newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+        newAgreementData.Today[totalIndexToday] = {
           count: todayTotalCount,
           amount: todayTotalAmount,
           expected: 0
@@ -1328,18 +1456,17 @@ const Dashboard: React.FC = () => {
         
         // Last 30d totals - use the General row [0] which already contains the total
         const last30TotalCount = newAgreementData["Last 30d"][0].count;
-        const last30TotalAmount = newAgreementData["Last 30d"][0].amount;
-        newAgreementData["Last 30d"][6] = {
+        const last30TotalAmount = Math.ceil(newAgreementData["Last 30d"][0].amount);
+        newAgreementData["Last 30d"][totalIndexToday] = {
           count: last30TotalCount,
           amount: last30TotalAmount,
           expected: 0
         };
         
         // Current month totals - calculate by summing the individual department values
-        // This ensures the total matches the sum of the displayed department values
-        const monthTotalCount = newAgreementData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.count, 0);
-        const monthTotalAmount = newAgreementData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.amount, 0);
-        newAgreementData[selectedMonthName][5] = {
+        const monthTotalCount = newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
+        const monthTotalAmount = Math.ceil(newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
+        newAgreementData[selectedMonthName][totalIndexMonth] = {
           count: monthTotalCount,
           amount: monthTotalAmount,
           expected: 0
@@ -1352,6 +1479,63 @@ const Dashboard: React.FC = () => {
         console.log(`  ${selectedMonthName} Total:`, { count: monthTotalCount, amount: monthTotalAmount });
         
         console.log('📊 Final agreement data:', newAgreementData);
+        
+        // Log currency distribution summary
+        const currencyDistribution = {
+          NIS: 0,
+          USD: 0,
+          EUR: 0,
+          GBP: 0,
+          Unknown: 0
+        };
+        
+        console.log('🔍 Debugging Agreement Records for Currency Distribution:');
+        console.log('📊 Total agreement records:', agreementRecords.length);
+        console.log('📊 Total month agreement records:', monthAgreementRecords?.length || 0);
+        
+        // Combine all records that were processed
+        const allProcessedRecords = [...(agreementRecords || []), ...(monthAgreementRecords || [])];
+        console.log('📊 Total all processed records:', allProcessedRecords.length);
+        
+        if (allProcessedRecords.length > 0) {
+          console.log('📊 Sample processed record structure:', allProcessedRecords[0]);
+          console.log('📊 Sample lead structure:', allProcessedRecords[0]?.leads_lead);
+          console.log('📊 Sample currency_id:', allProcessedRecords[0]?.leads_lead?.currency_id);
+          
+          // Check first 5 records for currency data
+          for (let i = 0; i < Math.min(5, allProcessedRecords.length); i++) {
+            const record = allProcessedRecords[i];
+            const lead = record.leads_lead;
+            console.log(`🔍 Record ${i} currency check:`, {
+              leadId: lead?.id,
+              hasLead: !!lead,
+              currencyId: lead?.currency_id,
+              total: lead?.total,
+              allLeadFields: lead ? Object.keys(lead) : 'no lead'
+            });
+          }
+        }
+        
+        allProcessedRecords.forEach((record, index) => {
+          const lead = record.leads_lead;
+          if (lead && lead.currency_id) {
+            switch (lead.currency_id) {
+              case 1: currencyDistribution.NIS++; break;
+              case 2: currencyDistribution.USD++; break;
+              case 3: currencyDistribution.EUR++; break;
+              case 4: currencyDistribution.GBP++; break;
+              default: currencyDistribution.Unknown++; break;
+            }
+          } else if (index < 5) { // Log first 5 records that don't have currency
+            console.log(`🔍 Record ${index} missing currency:`, {
+              hasLead: !!lead,
+              currencyId: lead?.currency_id,
+              leadId: lead?.id
+            });
+          }
+        });
+        
+        console.log('🌍 Currency Distribution in Agreement Signed Data:', currencyDistribution);
         setAgreementData(newAgreementData);
         
       } catch (error) {
@@ -1380,47 +1564,33 @@ const Dashboard: React.FC = () => {
       
       console.log('📅 Fetching invoiced data for:', selectedMonth, selectedYear);
       
-      // Define department IDs for fetching invoiced data (same as agreement data)
-      const departmentIds = [6, 7, 15, 14, 12];
+        // Fetch only important departments (same as agreement data)
+        console.log('🎯 Fetching important departments for invoiced data...');
+        const { data: allDepartments, error: departmentsError } = await supabase
+          .from('tenant_departement')
+          .select('id, name, min_income, important')
+          .eq('important', 't')
+          .order('id');
       
-      // Define old department IDs for fetching targets (same as agreement data)
-      const targetDepartmentIds = [20, 7, 5, 4, 2];
-      
-      // Use the same target mapping logic as agreement data for consistency
-      console.log('🎯 Using same target mapping as agreement data for consistency...');
-      
-      // Fetch department targets (min_income) from tenant_departement using old IDs
-      const { data: departmentTargets, error: targetsError } = await supabase
-        .from('tenant_departement')
-        .select('id, min_income')
-        .in('id', targetDepartmentIds);
-      
-      if (targetsError) {
-        console.error('❌ Error fetching department targets for invoiced data:', targetsError);
-        throw targetsError;
+      if (departmentsError) {
+        console.error('❌ Error fetching departments for invoiced data:', departmentsError);
+        throw departmentsError;
       }
       
-      // Create a map of old department ID to target (same as agreement data)
-      const targetMap = new Map();
-      if (departmentTargets) {
-        departmentTargets.forEach((dept: any) => {
-          targetMap.set(dept.id, parseInt(dept.min_income) || 0);
-        });
-      }
+      // Extract department IDs and create target mapping
+      const departmentIds = allDepartments?.map(dept => dept.id) || [];
+      const departmentTargets = allDepartments || [];
       
-      // Create mapping from new department IDs to their corresponding old department targets (same as agreement data)
-      const newToOldTargetMap = new Map();
-      newToOldTargetMap.set(6, targetMap.get(20) || 0);   // Commercial & Civil: new ID 6 -> old ID 20
-      newToOldTargetMap.set(7, targetMap.get(7) || 0);    // Small cases: new ID 7 -> old ID 7 (same)
-      newToOldTargetMap.set(15, targetMap.get(5) || 0);   // USA - Immigration: new ID 15 -> old ID 5
-      newToOldTargetMap.set(14, targetMap.get(4) || 0);   // Immigration to Israel: new ID 14 -> old ID 4
-      newToOldTargetMap.set(12, targetMap.get(2) || 0);   // Austria and Germany: new ID 12 -> old ID 2
+      console.log('📊 Important department IDs for invoiced data:', departmentIds);
+      console.log('🎯 Using same departments as agreement data for consistency...');
       
-      console.log('🎯 Target map created (invoiced):', Object.fromEntries(targetMap));
-      console.log('🎯 New to old target mapping (invoiced):');
-      newToOldTargetMap.forEach((target, newDeptId) => {
-        console.log(`  New Dept ${newDeptId} -> Old Dept Target: ₪${target.toLocaleString()}`);
+      // Create target map (department ID -> min_income)
+      const targetMap: { [key: number]: number } = {};
+      departmentTargets?.forEach(dept => {
+        targetMap[dept.id] = parseFloat(dept.min_income || '0');
       });
+      
+      console.log('🎯 Target map created (invoiced):', targetMap);
       
       // Calculate date ranges
       const todayStr = today.toISOString().split('T')[0];
@@ -1437,45 +1607,75 @@ const Dashboard: React.FC = () => {
       console.log('  - Today:', todayStr);
       console.log('  - 30 days ago:', thirtyDaysAgoStr);
       console.log('  - Start of month:', startOfMonthStr);
+      console.log('  - Current date object:', new Date());
+      console.log('  - Selected month/year:', selectedMonthIndex, selectedYear);
+      console.log('  - Effective 30 days ago:', effectiveThirtyDaysAgo);
       
       // Initialize invoiced data structure
       const newInvoicedData = {
         Today: [
           { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
-          { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+          ...departmentTargets.map(dept => ({ 
+            count: 0, 
+            amount: 0, 
+            expected: parseFloat(dept.min_income || '0') 
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
         "Last 30d": [
           { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 1)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 2)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 3)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 4)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 5)
-          { count: 0, amount: 0, expected: 0 }, // Total (index 6)
+          ...departmentTargets.map(dept => ({ 
+            count: 0, 
+            amount: 0, 
+            expected: parseFloat(dept.min_income || '0') 
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
         [selectedMonthName]: [
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(6) || 0 }, // Commercial & Civil (index 0)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(7) || 0 }, // Small cases (index 1)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(15) || 0 }, // USA - Immigration (index 2)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(14) || 0 }, // Immigration to Israel (index 3)
-          { count: 0, amount: 0, expected: newToOldTargetMap.get(12) || 0 }, // Austria and Germany (index 4)
-          { count: 0, amount: 0, expected: 0 }, // Total (index 5)
+          ...departmentTargets.map(dept => ({ 
+            count: 0, 
+            amount: 0, 
+            expected: parseFloat(dept.min_income || '0') 
+          })), // Actual departments (no General for month)
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
       };
       
-      // Fetch proformainvoice records
-      console.log('📋 Fetching proformainvoice records...');
+      // FIXED APPROACH: Use correct table - proformainvoice
+      // Fetch invoice records first
+      console.log('📋 Fetching proformainvoice records for Today and Last 30d...');
       console.log('🔍 Query parameters: cdate >=', thirtyDaysAgoStr, ', cdate <=', todayStr);
+      console.log('🔍 Available department IDs for invoiced data: [', departmentIds.join(', '), ']');
+      
+      // First, let's test without date filters to see if we get any records
+      console.log('🧪 Testing invoice query without date filters...');
+      const { data: testRecords, error: testError } = await supabase
+        .from('proformainvoice')
+        .select('id, lead_id, sub_total, cdate, currency_id')
+        .limit(5);
+      
+      if (testError) {
+        console.error('❌ Error in test query:', testError);
+      } else {
+        console.log('🧪 Test query results (no date filter):', testRecords?.length || 0, 'records');
+        if (testRecords && testRecords.length > 0) {
+          console.log('🧪 Sample test record:', testRecords[0]);
+          console.log('🧪 All test record dates:', testRecords.map(r => r.cdate));
+        } else {
+          console.log('🧪 No test records found - this might be the issue!');
+        }
+      }
+      
+      // NOTE: We fetch all invoice data, but filter it properly:
+      // Today = actual today, Last 30d = actual last 30 days (like agreement signed table), Month = selected month
+      const expandedStartDate = '2025-04-01'; // Start from April 2025 where data exists
+      console.log('🔧 Using expanded date range to fetch all invoice data:', expandedStartDate, 'to', todayStr);
+      console.log('📝 Note: Today=actual today, Last 30d=actual last 30 days, Month=selected month');
       
       const { data: invoiceRecords, error: invoiceError } = await supabase
         .from('proformainvoice')
-        .select('id, lead_id, total, cdate')
-        .gte('cdate', thirtyDaysAgoStr)
+        .select('id, lead_id, sub_total, cdate, currency_id')
+        .gte('cdate', expandedStartDate)
         .lte('cdate', todayStr);
       
       if (invoiceError) {
@@ -1485,95 +1685,329 @@ const Dashboard: React.FC = () => {
       
       console.log('✅ Invoice records fetched:', invoiceRecords?.length || 0, 'records');
       if (invoiceRecords && invoiceRecords.length > 0) {
-        console.log('📝 Sample invoice record:', invoiceRecords[0]);
-        console.log('🔍 Sample invoice data structure:', {
-          id: invoiceRecords[0].id,
-          lead_id: invoiceRecords[0].lead_id,
-          total: invoiceRecords[0].total,
-          cdate: invoiceRecords[0].cdate,
-          cdateType: typeof invoiceRecords[0].cdate
-        });
+        const dates = invoiceRecords.map(r => r.cdate).sort();
+        console.log('📅 Invoice record date range:', dates[0], 'to', dates[dates.length - 1]);
+        console.log('📅 Sample invoice dates:', dates.slice(0, 5));
       }
       
-      if (invoiceRecords && invoiceRecords.length > 0) {
-        // Collect unique lead IDs for batch fetching
-        const leadIds = [...new Set(invoiceRecords.map(r => r.lead_id).filter(Boolean))];
+      // Debug: Check if there are any invoice records at all (without date filter)
+      if (invoiceRecords?.length === 0) {
+        console.log('🔍 No invoice records found for date range. Checking all invoice records...');
+        const { data: allInvoiceRecords, error: allInvoiceError } = await supabase
+          .from('proformainvoice')
+          .select('id, lead_id, sub_total, cdate, currency_id')
+          .order('cdate', { ascending: false })
+          .limit(10);
         
-        // Fetch leads_lead data to get closer_id
-        console.log('🔄 Fetching leads_lead data for closer information...');
+        if (allInvoiceError) {
+          console.error('❌ Error fetching all invoice records:', allInvoiceError);
+        } else {
+          console.log('📊 Recent invoice records (last 10):', allInvoiceRecords?.map(record => ({
+            id: record.id,
+            lead_id: record.lead_id,
+            sub_total: record.sub_total,
+            cdate: record.cdate
+          })));
+          console.log('🔍 Date range we\'re querying for:', {
+            thirtyDaysAgo: thirtyDaysAgoStr,
+            today: todayStr,
+            startOfMonth: startOfMonthStr,
+            currentDate: new Date().toISOString().split('T')[0],
+            selectedMonth: selectedMonthName,
+            selectedYear: selectedYear
+          });
+        }
+      }
+      
+      // Fetch leads data separately if we have invoice records
+      let processedInvoiceRecords: any[] = [];
+      if (invoiceRecords && invoiceRecords.length > 0) {
+        console.log('🚀 ENTERING invoice records processing block with', invoiceRecords.length, 'records');
+        const leadIds = [...new Set(invoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
+        console.log('📋 Fetching leads data for', leadIds.length, 'unique leads...');
+        
         const { data: leadsData, error: leadsError } = await supabase
           .from('leads_lead')
-          .select('id, closer_id')
+          .select(`
+            id,
+            misc_category(
+              id, name, parent_id,
+              misc_maincategory(
+                id, name, department_id,
+                tenant_departement(id, name)
+              )
+            )
+          `)
           .in('id', leadIds);
         
         if (leadsError) {
-          console.error('❌ Error fetching leads data for invoiced:', leadsError);
+          console.error('❌ Error fetching leads data for invoices:', leadsError);
           throw leadsError;
         }
         
-        // Create lookup map for lead_id to closer_id
-        const leadToCloserMap = new Map();
-        if (leadsData) {
-          leadsData.forEach(lead => {
-            leadToCloserMap.set(lead.id, lead.closer_id);
+        console.log('✅ Leads data fetched for invoices:', leadsData?.length || 0, 'records');
+        
+        // Join the data
+        const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
+        const allJoinedRecords = invoiceRecords.map(invoiceRecord => {
+          const lead = leadsMap.get(invoiceRecord.lead_id);
+          return {
+            ...invoiceRecord,
+            leads_lead: lead || null
+          };
+        }).filter(record => record.leads_lead !== null);
+        
+        console.log('✅ All joined invoice records created:', allJoinedRecords.length, 'records');
+        
+        // Debug: Check the variables we're using for filtering
+        console.log('🔍 Debug variables for filtering:');
+        console.log('  - todayStr:', todayStr);
+        console.log('  - effectiveThirtyDaysAgo:', effectiveThirtyDaysAgo);
+        console.log('  - Sample record date:', allJoinedRecords[0]?.cdate);
+        
+        // Now filter by actual date ranges for Today and Last 30d
+        console.log('🔄 Starting date filtering...');
+        let todayRecords: any[] = [];
+        let last30dRecords: any[] = [];
+        
+        try {
+          todayRecords = allJoinedRecords.filter(record => {
+            const recordDate = record.cdate;
+            return recordDate === todayStr;
           });
-        }
-        
-        // Collect unique closer IDs for batch fetching
-        const closerIds = [...new Set(leadsData?.map(lead => lead.closer_id).filter(Boolean) || [])];
-        
-        // Fetch employee data for the closers
-        console.log('🔄 Fetching employee data for closers...');
-        const { data: employeeData, error: employeeError } = await supabase
-          .from('tenants_employee')
-          .select('id, department_id')
-          .in('id', closerIds);
-        
-        if (employeeError) {
-          console.error('❌ Error fetching employees for invoiced:', employeeError);
-          throw employeeError;
-        }
-        
-        // Create lookup map for closer_id to department_id
-        const closerToDeptMap = new Map();
-        if (employeeData) {
-          employeeData.forEach(emp => {
-            closerToDeptMap.set(String(emp.id), emp.department_id);
-            closerToDeptMap.set(emp.id, emp.department_id);
+          
+          // For Last 30d, ALWAYS use the actual last 30 days from current date (like agreement signed table)
+          // This should NOT be affected by the month filter - it's always relative to today
+          last30dRecords = allJoinedRecords.filter(record => {
+            const recordDate = record.cdate;
+            return recordDate >= effectiveThirtyDaysAgo && recordDate <= todayStr;
           });
+          
+          console.log('✅ Date filtering completed successfully');
+        } catch (error) {
+          console.error('❌ Error in date filtering:', error);
         }
         
+        console.log('📅 Filtered records:');
+        console.log('  - Today records:', todayRecords.length);
+        console.log('  - Last 30d records:', last30dRecords.length);
+        console.log('  - Date range used:', effectiveThirtyDaysAgo, 'to', todayStr);
+        console.log('  - Sample today record:', todayRecords[0]);
+        console.log('  - Sample last30d record:', last30dRecords[0]);
+        
+        // Process both Today and Last 30d records separately
+        const processRecords = (records: any[], period: string) => {
+          console.log(`🔄 Processing ${period} records:`, records.length, 'records');
+          
+          records.forEach((record, index) => {
+            if (index < 5) { // Only log first 5 records to avoid spam
+              console.log(`📊 Processing ${period} invoice record ${index + 1}:`, {
+                id: record.id,
+                lead_id: record.lead_id,
+                sub_total: record.sub_total,
+                cdate: record.cdate
+              });
+            }
+            
+            const lead = record.leads_lead as any;
+            if (!lead) {
+              console.log(`⚠️ No lead data for ${period} invoice record: leadId=${record.lead_id}`);
+              return;
+            }
+            
+            const amount = Math.ceil(parseFloat(record.sub_total) || 0);
+            const amountInNIS = convertToNIS(amount, record.currency_id);
+            const recordDate = record.cdate;
+            
+            // Debug currency conversion
+            console.log(`🔍 Dashboard Invoiced - Record ${record.id}:`, {
+              originalAmount: amount,
+              currencyId: record.currency_id,
+              convertedAmount: amountInNIS,
+              conversionRate: amount > 0 ? amountInNIS / amount : 1
+            });
+            
+            // Log non-NIS currencies for verification
+            if (record.currency_id && record.currency_id !== 1) {
+              console.log(`🌍 Non-NIS Invoice Currency Found - Record ${record.id}:`, {
+                currencyId: record.currency_id,
+                originalAmount: amount,
+                convertedAmount: amountInNIS,
+                currencyType: record.currency_id === 2 ? 'USD' : 
+                             record.currency_id === 3 ? 'EUR' : 
+                             record.currency_id === 4 ? 'GBP' : 'Unknown'
+              });
+            }
+            
+            // Get department ID from the JOIN
+            let departmentId = null;
+            if (lead.misc_category?.misc_maincategory?.department_id) {
+              departmentId = lead.misc_category.misc_maincategory.department_id;
+            }
+            
+            if (index < 5) { // Only log first 5 records
+              console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId}`);
+              console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
+            }
+            
+            if (departmentId && departmentIds.includes(departmentId)) {
+              if (index < 5) {
+                console.log(`  ✅ Valid ${period} record - processing...`);
+              }
+              
+              // For Today and Last 30d, use the department index + 1 (to skip General)
+              const deptIndex = departmentIds.indexOf(departmentId) + 1;
+              
+              // Extract date part for comparison
+              const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
+              
+              if (index < 5) {
+                console.log(`  📅 Date comparison: ${recordDateOnly} vs Today: ${todayStr}, Last30: ${effectiveThirtyDaysAgo}`);
+              }
+              
+              // Add to Today data if it's today
+              if (recordDateOnly === todayStr) {
+                newInvoicedData["Today"][deptIndex].count += 1;
+                newInvoicedData["Today"][deptIndex].amount += amountInNIS; // Use NIS amount
+                if (index < 5) console.log(`  ✅ Added to Today data: deptIndex=${deptIndex}, amount=${amountInNIS}`);
+              }
+              
+              // Add to Last 30d data if it's within the actual last 30 days (like agreement signed table)
+              if (recordDateOnly >= effectiveThirtyDaysAgo && recordDateOnly <= todayStr) {
+                newInvoicedData["Last 30d"][deptIndex].count += 1;
+                newInvoicedData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
+                if (index < 5) console.log(`  ✅ Added to Last 30d data: deptIndex=${deptIndex}, amount=${amountInNIS}`);
+              }
+            }
+          });
+        };
+        
+        // Process both Today and Last 30d records
+        console.log('🚀 About to process records...');
+        processRecords(todayRecords, 'Today');
+        processRecords(last30dRecords, 'Last 30d');
+        console.log('✅ Finished processing records');
+        
+        // Debug: Show the data after processing
+        console.log('📊 Data after processing:');
+        console.log('  - Today data:', newInvoicedData["Today"].map((item, index) => `[${index}]: count=${item.count}, amount=${item.amount}, expected=${item.expected}`));
+        console.log('  - Last 30d data:', newInvoicedData["Last 30d"].map((item, index) => `[${index}]: count=${item.count}, amount=${item.amount}, expected=${item.expected}`));
+        
+        // Use all joined records for processing (not just Last 30d filtered)
+        processedInvoiceRecords = allJoinedRecords; // Use all records for the main processing
+        console.log('✅ COMPLETED invoice records processing block');
+        console.log('🔍 processedInvoiceRecords length:', processedInvoiceRecords.length);
+        console.log('🔍 last30dRecords length:', last30dRecords.length);
+      } else {
+        console.log('❌ NOT ENTERING invoice records processing block - no records or error');
+        processedInvoiceRecords = []; // Set empty array if no records
+      }
+      
+      // Fetch data for selected month (separate query)
+      console.log('📋 Fetching invoice records for selected month:', selectedMonthName, selectedYear);
+      const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
+      console.log('🔍 Month query date range:', startOfMonthStr, 'to', endOfMonthStr);
+      const { data: monthInvoiceRecords, error: monthInvoiceError } = await supabase
+        .from('proformainvoice')
+        .select('id, lead_id, sub_total, cdate, currency_id')
+        .gte('cdate', startOfMonthStr)
+        .lte('cdate', endOfMonthStr);
+      
+      if (monthInvoiceError) {
+        console.error('❌ Error fetching month invoice records:', monthInvoiceError);
+        throw monthInvoiceError;
+      }
+      
+      console.log('✅ Month invoice records fetched:', monthInvoiceRecords?.length || 0, 'records');
+      
+      // Fetch leads data separately for month if we have invoice records
+      let processedMonthInvoiceRecords: any[] = [];
+      if (monthInvoiceRecords && monthInvoiceRecords.length > 0) {
+        const monthLeadIds = [...new Set(monthInvoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
+        console.log('📋 Fetching month leads data for', monthLeadIds.length, 'unique leads...');
+        
+        const { data: monthLeadsData, error: monthLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            misc_category(
+              id, name, parent_id,
+              misc_maincategory(
+                id, name, department_id,
+                tenant_departement(id, name)
+              )
+            )
+          `)
+          .in('id', monthLeadIds);
+        
+        if (monthLeadsError) {
+          console.error('❌ Error fetching month leads data for invoices:', monthLeadsError);
+          throw monthLeadsError;
+        }
+        
+        console.log('✅ Month leads data fetched for invoices:', monthLeadsData?.length || 0, 'records');
+        
+        // Join the data
+        const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
+        processedMonthInvoiceRecords = monthInvoiceRecords.map(invoiceRecord => {
+          const lead = monthLeadsMap.get(invoiceRecord.lead_id);
+          return {
+            ...invoiceRecord,
+            leads_lead: lead || null
+          };
+        }).filter(record => record.leads_lead !== null);
+        
+        console.log('✅ Joined month invoice records created:', processedMonthInvoiceRecords.length, 'records');
+      }
+      
+      console.log('🔍 Checking main processing condition:', {
+        hasProcessedRecords: !!processedInvoiceRecords,
+        recordsLength: processedInvoiceRecords?.length || 0,
+        hasProcessedMonthRecords: !!processedMonthInvoiceRecords,
+        monthRecordsLength: processedMonthInvoiceRecords?.length || 0
+      });
+      
+      if (processedInvoiceRecords && processedInvoiceRecords.length > 0) {
+        console.log('🚀 ENTERING main invoice processing block with', processedInvoiceRecords.length, 'records');
         // Process all invoice records
         let processedCount = 0;
         let skippedCount = 0;
         
         console.log('🔄 Processing invoice records...');
         console.log('🔍 Department IDs to check:', departmentIds);
-        console.log('🔍 Closer to department map size:', closerToDeptMap.size);
-        console.log('🔍 Sample closer mappings:', Array.from(closerToDeptMap.entries()).slice(0, 5));
         
-        invoiceRecords.forEach((record, index) => {
+        processedInvoiceRecords.forEach((record, index) => {
           if (index < 5) { // Only log first 5 records to avoid spam
             console.log(`📊 Processing invoice record ${index + 1}:`, {
               id: record.id,
               lead_id: record.lead_id,
-              total: record.total,
+              sub_total: record.sub_total,
               cdate: record.cdate
             });
           }
           
-          const leadData = leadToCloserMap.get(record.lead_id);
-          const closerId = leadData;
-          const departmentId = closerToDeptMap.get(closerId);
-          const amount = Math.ceil(parseFloat(record.total) || 0); // Round up to nearest whole number
+          const lead = record.leads_lead as any;
+          if (!lead) {
+            console.log(`⚠️ No lead data for invoice record: leadId=${record.lead_id}`);
+            return;
+          }
+          
+          const amount = Math.ceil(parseFloat(record.sub_total) || 0); // Round up to nearest whole number
+          const amountInNIS = convertToNIS(amount, record.currency_id);
           const recordDate = record.cdate;
           
+          // Get department ID from the JOIN
+          let departmentId = null;
+          if (lead.misc_category?.misc_maincategory?.department_id) {
+            departmentId = lead.misc_category.misc_maincategory.department_id;
+          }
+          
           if (index < 5) { // Only log first 5 records
-            console.log(`  🔍 Lead ${record.lead_id} -> Closer ${closerId} -> Department ${departmentId}`);
+            console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId}`);
             console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
           }
           
-          if (closerId && departmentId && departmentIds.includes(departmentId)) {
+          if (departmentId && departmentIds.includes(departmentId)) {
             processedCount++;
             
             if (index < 5) {
@@ -1596,49 +2030,172 @@ const Dashboard: React.FC = () => {
             // Check if it's today
             if (recordDateOnly === todayStr) {
               newInvoicedData.Today[deptIndex].count++;
-              newInvoicedData.Today[deptIndex].amount += amount;
+              newInvoicedData.Today[deptIndex].amount += amountInNIS; // Use NIS amount
               newInvoicedData.Today[0].count++; // General
-              newInvoicedData.Today[0].amount += amount;
+              newInvoicedData.Today[0].amount += amountInNIS; // Use NIS amount
             }
             
             // Check if it's in last 30 days (or entire month if at month end)
             if (recordDateOnly >= effectiveThirtyDaysAgo) {
               newInvoicedData["Last 30d"][deptIndex].count++;
-              newInvoicedData["Last 30d"][deptIndex].amount += amount;
+              newInvoicedData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
               newInvoicedData["Last 30d"][0].count++; // General
-              newInvoicedData["Last 30d"][0].amount += amount;
+              newInvoicedData["Last 30d"][0].amount += amountInNIS; // Use NIS amount
             }
             
-            // Check if it's in current month
-            if (recordDateOnly >= startOfMonthStr) {
-              newInvoicedData[selectedMonthName][monthDeptIndex].count++;
-              newInvoicedData[selectedMonthName][monthDeptIndex].amount += amount;
-            }
+            // Note: Month data will be processed separately from monthInvoiceRecords
           } else {
             skippedCount++;
             if (index < 5) {
-              console.log(`  ⏭️ Skipped: closerId=${closerId}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
+              console.log(`  ⏭️ Skipped: departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
             }
           }
         });
         
         console.log(`📈 Invoiced processing summary: ${processedCount} processed, ${skippedCount} skipped`);
         
-        // Calculate totals and round amounts up
-        const todayTotalCount = newInvoicedData.Today.slice(1, 6).reduce((sum, item) => sum + item.count, 0);
-        const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, 6).reduce((sum, item) => sum + item.amount, 0));
-        newInvoicedData.Today[6] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
+        // Process month invoice data separately
+        console.log('🔍 Checking month processing condition:', {
+          hasProcessedMonthRecords: !!processedMonthInvoiceRecords,
+          monthRecordsLength: processedMonthInvoiceRecords?.length || 0,
+          selectedMonth: selectedMonthName
+        });
         
+        if (processedMonthInvoiceRecords && processedMonthInvoiceRecords.length > 0) {
+          console.log('🚀 ENTERING month invoice processing block with', processedMonthInvoiceRecords.length, 'records');
+          let monthProcessedCount = 0;
+          let monthSkippedCount = 0;
+          
+          // Track processed records to prevent duplicates
+          const processedMonthRecordIds = new Set();
+          
+          processedMonthInvoiceRecords.forEach((record, index) => {
+            // Skip if already processed
+            if (processedMonthRecordIds.has(record.id)) {
+              console.log(`⚠️ Skipping duplicate month invoice record: id=${record.id}`);
+              return;
+            }
+            processedMonthRecordIds.add(record.id);
+            
+            const lead = record.leads_lead as any;
+            if (!lead) {
+              console.log(`⚠️ No lead data for month invoice record: leadId=${record.lead_id}`);
+              return;
+            }
+            
+            const amount = Math.ceil(parseFloat(record.sub_total) || 0); // Round up to nearest whole number
+            const amountInNIS = convertToNIS(amount, record.currency_id);
+            const recordDate = record.cdate;
+            
+            // Get department ID from the JOIN
+            let departmentId = null;
+            if (lead.misc_category?.misc_maincategory?.department_id) {
+              departmentId = lead.misc_category.misc_maincategory.department_id;
+            }
+            
+            if (index < 5) { // Only log first 5 records
+              console.log(`📊 Processing month invoice record ${index + 1}:`, {
+                id: record.id,
+                lead_id: record.lead_id,
+                sub_total: record.sub_total,
+                cdate: record.cdate
+              });
+              console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId}`);
+              console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
+            }
+            
+            if (departmentId && departmentIds.includes(departmentId)) {
+              monthProcessedCount++;
+              
+              if (index < 5) {
+                console.log(`  ✅ Valid month invoice record - processing...`);
+              }
+              
+              // For current month, use the department index directly (no General column)
+              const monthDeptIndex = departmentIds.indexOf(departmentId);
+              
+              // Extract date part for comparison
+              const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
+              
+              if (index < 5) {
+                console.log(`  📅 Date comparison: ${recordDateOnly} vs Month: ${startOfMonthStr}`);
+              }
+              
+              // Check if it's in selected month
+              if (recordDateOnly >= startOfMonthStr) {
+                newInvoicedData[selectedMonthName][monthDeptIndex].count++;
+                newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS; // Use NIS amount
+              }
+            } else {
+              monthSkippedCount++;
+              if (index < 5) {
+                console.log(`  ⏭️ Skipped month invoice: departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
+              }
+            }
+          });
+          
+          console.log(`📈 Month invoice processing summary: ${monthProcessedCount} processed, ${monthSkippedCount} skipped`);
+        } else {
+          console.log('❌ NOT ENTERING month invoice processing block - no processed month records');
+        }
+        
+        // Calculate totals and round amounts up
+        // Calculate dynamic totals based on actual number of departments
+        const numDepartments = departmentTargets.length;
+        const totalIndexToday = numDepartments + 1; // General + departments + Total
+        const totalIndexMonth = numDepartments; // departments + Total (no General for month)
+        
+        console.log(`🧮 Invoiced total calculation: ${numDepartments} departments, totalIndexToday=${totalIndexToday}, totalIndexMonth=${totalIndexMonth}`);
+        
+        // Today totals (sum of departments, excluding General and Total)
+        const todayTotalCount = newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+        const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+        newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
+        
+        // Last 30d totals - use the General row [0] which already contains the total
         const last30TotalCount = newInvoicedData["Last 30d"][0].count;
         const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"][0].amount);
-        newInvoicedData["Last 30d"][6] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
+        newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
         
-        const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.count, 0);
-        const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, 5).reduce((sum, item) => sum + item.amount, 0));
-        newInvoicedData[selectedMonthName][5] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
+        // Current month totals - calculate by summing the individual department values
+        const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
+        const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
+        newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
         
         console.log('📊 Final invoiced data:', newInvoicedData);
+        
+        // Log currency distribution summary for invoiced data
+        const invoiceCurrencyDistribution = {
+          NIS: 0,
+          USD: 0,
+          EUR: 0,
+          GBP: 0,
+          Unknown: 0
+        };
+        
+        // Count currencies from all invoice records
+        const allInvoiceRecords = [...(invoiceRecords || []), ...(monthInvoiceRecords || [])];
+        allInvoiceRecords.forEach(record => {
+          if (record.currency_id) {
+            switch (record.currency_id) {
+              case 1: invoiceCurrencyDistribution.NIS++; break;
+              case 2: invoiceCurrencyDistribution.USD++; break;
+              case 3: invoiceCurrencyDistribution.EUR++; break;
+              case 4: invoiceCurrencyDistribution.GBP++; break;
+              default: invoiceCurrencyDistribution.Unknown++; break;
+            }
+          }
+        });
+        
+        console.log('🌍 Currency Distribution in Invoiced Data:', invoiceCurrencyDistribution);
+        console.log('📊 Final invoiced data structure:');
+        console.log('  - Today:', newInvoicedData["Today"]);
+        console.log('  - Last 30d:', newInvoicedData["Last 30d"]);
+        console.log('  - Selected month:', newInvoicedData[selectedMonthName]);
         setInvoicedData(newInvoicedData);
+      } else {
+        console.log('❌ NOT ENTERING main invoice processing block - no processed records');
+        console.log('🔍 This means no data will be processed for Today, Last 30d, or month-specific calculations');
       }
       
     } catch (error: any) {
@@ -1676,13 +2233,13 @@ const Dashboard: React.FC = () => {
   const isContractsGrowthPositive = contractsPercentage >= 0;
 
   const scoreboardTabs = ["Today", "Last 30d", "Tables"];
+  // Department names state
+  const [departmentNames, setDepartmentNames] = useState<string[]>([]);
+  
+  // Dynamic scoreboard categories based on actual departments
   const scoreboardCategories = [
     "General",
-    "Commercial & Civil",
-    "Small cases",
-    "USA - Immigration",
-    "Immigration to Israel",
-    "Austria and Germany",
+    ...departmentNames,
     "Total"
   ];
   // Agreement signed data (first table) - will be populated with real data
@@ -2092,7 +2649,7 @@ const Dashboard: React.FC = () => {
                         <div className="space-y-1">
                           <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{data?.count || 0}</div>
                           <div className="border-t border-slate-200 my-1"></div>
-                          <div className="font-semibold text-slate-700">₪{amount.toLocaleString()}</div>
+                          <div className="font-semibold text-slate-700">₪{Math.ceil(amount).toLocaleString()}</div>
                         </div>
                       </td>
                     );
@@ -2118,14 +2675,14 @@ const Dashboard: React.FC = () => {
                       <div className="font-semibold text-white">
                         ₪{(() => {
                           if (isToday) {
-                            return dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0);
+                            return Math.ceil(dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0)).toLocaleString();
                           } else if (isLast30) {
-                            return dataSource["Last 30d"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0);
+                            return Math.ceil(dataSource["Last 30d"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0)).toLocaleString();
                                                       } else {
                               // Use the pre-calculated total from the data instead of recalculating
-                              return dataSource[selectedMonth]?.[5]?.amount || 0;
+                              return Math.ceil(dataSource[selectedMonth]?.[5]?.amount || 0).toLocaleString();
                             }
-                        })().toLocaleString()}
+                        })()}
                       </div>
                     </div>
                   </td>
@@ -2142,7 +2699,7 @@ const Dashboard: React.FC = () => {
                       
                       return (
                         <td key={`${category}-target`} className={`px-5 py-3 text-center font-semibold ${targetClass}`}>
-                          {target ? `₪${target.toLocaleString()}` : '—'}
+                          {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
                         </td>
                       );
                     })}
@@ -2154,7 +2711,7 @@ const Dashboard: React.FC = () => {
                         const totalTarget = dataSource[selectedMonth]?.slice(0, 5).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
                         return (
                           <span className="font-semibold text-white">
-                            {totalTarget ? `₪${totalTarget.toLocaleString()}` : '—'}
+                            {totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—'}
                           </span>
                         );
                       })()}
@@ -2614,8 +3171,8 @@ const Dashboard: React.FC = () => {
                               <span className="text-sm font-semibold text-gray-500">Amount</span>
                               <span className="text-sm font-bold text-gray-800">
                                 {lead.lead_type === 'legacy' 
-                                  ? `₪${(lead.amount || 0).toLocaleString()}` 
-                                  : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                  : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                                 }
                               </span>
                             </div>
@@ -2692,8 +3249,8 @@ const Dashboard: React.FC = () => {
                               <span className="text-sm font-semibold text-gray-500">Amount</span>
                               <span className="text-sm font-bold text-gray-800">
                                 {lead.lead_type === 'legacy' 
-                                  ? `₪${(lead.amount || 0).toLocaleString()}` 
-                                  : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                  : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                                 }
                               </span>
                             </div>
@@ -2799,8 +3356,8 @@ const Dashboard: React.FC = () => {
                                 <span className="text-sm font-semibold text-gray-500">Amount</span>
                                 <span className="text-sm font-bold text-gray-800">
                                   {lead.lead_type === 'legacy' 
-                                    ? `₪${(lead.amount || 0).toLocaleString()}` 
-                                    : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                    ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                    : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                                   }
                                 </span>
                               </div>
@@ -2872,8 +3429,8 @@ const Dashboard: React.FC = () => {
                                 <span className="text-sm font-semibold text-gray-500">Amount</span>
                                 <span className="text-sm font-bold text-gray-800">
                                   {lead.lead_type === 'legacy' 
-                                    ? `₪${(lead.amount || 0).toLocaleString()}` 
-                                    : `${lead.balance_currency || '₪'}${(lead.balance || 0).toLocaleString()}`
+                                    ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                    : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                                   }
                                 </span>
                               </div>
@@ -3032,7 +3589,7 @@ const Dashboard: React.FC = () => {
                     {leadsLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
                     ) : (
-                      <span className="text-2xl font-bold text-gray-900">{totalLeadsThisMonth.toLocaleString()}</span>
+                      <span className="text-2xl font-bold text-gray-900">{totalLeadsThisMonth}</span>
                     )}
                   </div>
                   <div className="text-sm text-gray-700 font-medium">Leads This Month</div>
@@ -3055,7 +3612,7 @@ const Dashboard: React.FC = () => {
                     {conversionLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
                     ) : (
-                      <span className="text-2xl font-bold text-gray-900">{meetingsScheduledThisMonth.toLocaleString()}</span>
+                      <span className="text-2xl font-bold text-gray-900">{meetingsScheduledThisMonth}</span>
                     )}
                   </div>
                   <div className="text-sm text-gray-700 font-medium">Meetings Scheduled</div>
@@ -3078,7 +3635,7 @@ const Dashboard: React.FC = () => {
                     {revenueLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
                     ) : (
-                      <span className="text-2xl font-bold text-gray-900">₪{realRevenueThisMonth.toLocaleString()}</span>
+                      <span className="text-2xl font-bold text-gray-900">₪{Math.ceil(realRevenueThisMonth).toLocaleString()}</span>
                     )}
                   </div>
                   <div className="text-sm text-gray-700 font-medium">Revenue This Month</div>
@@ -3118,7 +3675,7 @@ const Dashboard: React.FC = () => {
                     {contractsLoading ? (
                       <span className="text-2xl font-bold text-gray-900">Loading...</span>
                     ) : (
-                      <span className="text-2xl font-bold text-gray-900">{contractsSignedThisMonth.toLocaleString()}</span>
+                      <span className="text-2xl font-bold text-gray-900">{contractsSignedThisMonth}</span>
                     )}
                   </div>
                   <div className="text-sm text-gray-700 font-medium">Contracts Signed</div>
@@ -3247,8 +3804,8 @@ const Dashboard: React.FC = () => {
                   ) : (
                     <div className="grid grid-cols-1 gap-4 md:hidden">
                       {scoreboardCategories.map((category, index) => {
-                      const todayData = agreementData["Today"][index];
-                      const last30Data = agreementData["Last 30d"][index];
+                      const todayData = agreementData["Today"]?.[index] || { count: 0, amount: 0, expected: 0 };
+                      const last30Data = agreementData["Last 30d"]?.[index] || { count: 0, amount: 0, expected: 0 };
                       const isFlipped = flippedCards.has(category);
                       const chartData = generateDepartmentData(category);
                       return (
@@ -3267,7 +3824,7 @@ const Dashboard: React.FC = () => {
                                     </div>
                                     <div className="space-y-1">
                                       <div className="text-lg font-bold text-slate-800">{todayData.count}</div>
-                                      <div className="text-xs font-medium text-slate-600">₪{todayData.amount ? todayData.amount.toLocaleString() : '0'}</div>
+                                      <div className="text-xs font-medium text-slate-600">₪{todayData.amount ? Math.ceil(todayData.amount).toLocaleString() : '0'}</div>
                                         </div>
                                     </div>
                                   <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg p-3 border border-purple-400">
@@ -3277,7 +3834,7 @@ const Dashboard: React.FC = () => {
                                   </div>
                                     <div className="space-y-1">
                                       <div className="text-lg font-bold text-white">{last30Data.count}</div>
-                                      <div className="text-xs font-medium text-white/90">₪{last30Data.amount ? last30Data.amount.toLocaleString() : '0'}</div>
+                                      <div className="text-xs font-medium text-white/90">₪{last30Data.amount ? Math.ceil(last30Data.amount).toLocaleString() : '0'}</div>
                                 </div>
                                       </div>
                                     </div>
@@ -3390,9 +3947,9 @@ const Dashboard: React.FC = () => {
                                 labelStyle={{ color: '#111827', fontWeight: 'bold', fontSize: '14px', marginBottom: '8px' }}
                                 itemStyle={{ color: '#374151', fontSize: '13px', fontWeight: '500' }}
                                 formatter={(value: number, name: string) => {
-                                  if (name === 'signed') return [`${value.toLocaleString()} NIS`, 'Signed'];
-                                  if (name === 'due') return [`${value.toLocaleString()} NIS`, 'Due'];
-                                  return [value.toLocaleString(), name || 'Unknown'];
+                                  if (name === 'signed') return [`${Math.ceil(value).toLocaleString()} NIS`, 'Signed'];
+                                  if (name === 'due') return [`${Math.ceil(value).toLocaleString()} NIS`, 'Due'];
+                                  return [Math.ceil(value).toLocaleString(), name || 'Unknown'];
                                 }}
                                 cursor={{ fill: 'rgba(0, 0, 0, 0.05)' }}
                               />
@@ -3837,7 +4394,7 @@ const Dashboard: React.FC = () => {
                         {/* Amount */}
                         <div className="flex justify-between items-center py-1">
                           <span className="text-xs font-semibold text-gray-500">Amount</span>
-                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Number(lead.proposal_total).toLocaleString() : ''}</span>
+                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Math.ceil(Number(lead.proposal_total)).toLocaleString() : ''}</span>
                         </div>
                         {/* Signed Date */}
                         <div className="flex justify-between items-center py-1">
@@ -3892,7 +4449,7 @@ const Dashboard: React.FC = () => {
                         {/* Amount */}
                         <div className="flex justify-between items-center py-1">
                           <span className="text-xs font-semibold text-gray-500">Amount</span>
-                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Number(lead.proposal_total).toLocaleString() : ''}</span>
+                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Math.ceil(Number(lead.proposal_total)).toLocaleString() : ''}</span>
                         </div>
                         {/* Signed Date */}
                         <div className="flex justify-between items-center py-1">

@@ -166,11 +166,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       path: '/reports',
       icon: DocumentChartBarIcon,
     },
-    {
-      label: 'Teams',
-      path: '/teams',
-      icon: UserGroupIcon,
-    },
+    // {
+    //   label: 'Teams',
+    //   path: '/teams',
+    //   icon: UserGroupIcon,
+    // },
     
     
   ];
@@ -1014,8 +1014,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   right: '8px'
                 }}
               >
-                {/* RMQ Messages Option */}
-                <button
+                {/* RMQ Messages Option - COMMENTED OUT */}
+                {/* <button
                   onClick={() => {
                     setShowMobileQuickActionsDropdown(false);
                     if (onOpenMessaging) {
@@ -1026,7 +1026,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 >
                   <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
                   <span className="text-sm font-medium">RMQ Messages</span>
-                </button>
+                </button> */}
 
                 {/* My Profile Option */}
                 <button
@@ -1124,8 +1124,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
                 }}
               >
-                {/* RMQ Messages Option */}
-                <button
+                {/* RMQ Messages Option - COMMENTED OUT */}
+                {/* <button
                   onClick={() => {
                     setShowQuickActionsDropdown(false);
                     if (onOpenMessaging) {
@@ -1136,7 +1136,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 >
                   <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
                   <span className="text-sm font-medium">RMQ Messages</span>
-                </button>
+                </button> */}
 
                 {/* My Profile Option */}
                 <button
