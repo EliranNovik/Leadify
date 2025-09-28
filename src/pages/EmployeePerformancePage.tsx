@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { UserGroupIcon, ChartBarIcon, AcademicCapIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, ChartBarIcon, AcademicCapIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon, DocumentTextIcon, BanknotesIcon, Squares2X2Icon, ListBulletIcon } from '@heroicons/react/24/outline';
 import EmployeeModal from '../components/EmployeeModal';
+import SalaryModal from '../components/SalaryModal';
+import BonusPoolModal from '../components/BonusPoolModal';
 import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
+import { calculateEmployeeBonus, EmployeeBonus, RoleBonus } from '../lib/bonusCalculation';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, PieChart, Pie, Cell, Legend } from 'recharts';
 
 interface Employee {
   id: string;
@@ -16,12 +20,12 @@ interface Employee {
   mobile?: string;
   phone_ext?: string;
   performance_metrics?: {
-    total_meetings: number;
-    completed_meetings: number;
-    total_revenue: number;
-    total_bonus: number;
-    average_rating: number;
-    last_activity: string;
+    total_meetings?: number;
+    completed_meetings?: number;
+    total_revenue?: number;
+    total_bonus?: number;
+    average_rating?: number;
+    last_activity?: string;
     performance_percentage?: number;
     role_metrics?: { [key: string]: { signed: number; revenue: number } };
     team_average?: { avgSigned: number; avgRevenue: number; totalEmployees: number; totalSigned: number; totalRevenue: number };
@@ -45,6 +49,9 @@ interface Employee {
     contracts_managed?: number;
     signed_total?: number;
     total_due?: number;
+    // Bonus information
+    calculated_bonus?: number;
+    bonus_breakdown?: any[];
   };
 }
 
@@ -53,6 +60,7 @@ interface DepartmentGroup {
   employees: Employee[];
   total_meetings: number;
   total_revenue: number;
+  total_signed_contracts: number;
   average_performance: number;
 }
 
@@ -109,25 +117,577 @@ const getInitials = (displayName: string): string => {
     return roleMap[roleCode] || roleCode || 'No role';
   };
 
+// Employee Performance Box Component for grid view
+interface EmployeePerformanceBoxProps {
+  employee: Employee;
+  onEmployeeClick: (employee: Employee) => void;
+}
+
+const EmployeePerformanceBox: React.FC<EmployeePerformanceBoxProps> = ({ 
+  employee, 
+  onEmployeeClick 
+}) => {
+  const formatCurrency = (amount: number) => {
+    return `₪${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  };
+
+  const formatDate = (dateString: string) => {
+    if (!dateString || dateString === 'No activity') return 'No activity';
+    return new Date(dateString).toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'short', 
+      day: 'numeric' 
+    });
+  };
+
+  return (
+    <div 
+      className="card bg-base-100 shadow-sm border border-gray-200 hover:shadow-md transition-shadow cursor-pointer overflow-hidden"
+      onClick={() => onEmployeeClick(employee)}
+    >
+      {/* Header with background image */}
+      <div className="relative h-24 bg-gradient-to-br from-purple-500 via-pink-500 to-blue-500 overflow-hidden">
+        {/* Background pattern overlay */}
+        <div className="absolute inset-0 bg-black/20"></div>
+        <div className="absolute inset-0 bg-gradient-to-br from-transparent via-transparent to-black/30"></div>
+        
+        {/* Decorative elements */}
+        <div className="absolute top-2 right-2 w-16 h-16 bg-white/10 rounded-full blur-xl"></div>
+        <div className="absolute bottom-2 left-2 w-12 h-12 bg-white/5 rounded-full blur-lg"></div>
+        
+        {/* Employee info overlay */}
+        <div className="relative z-10 p-4 h-full flex items-end">
+          <div className="flex items-center gap-3">
+            <div className="avatar">
+              {employee.photo_url ? (
+                <div className="rounded-full w-16 h-16 ring-2 ring-white/30">
+                  <img 
+                    src={employee.photo_url} 
+                    alt={employee.display_name}
+                    className="w-full h-full object-cover rounded-full"
+                    onError={(e) => {
+                      // Fallback to initials if image fails to load
+                      const target = e.target as HTMLImageElement;
+                      target.style.display = 'none';
+                      const parent = target.parentElement;
+                      if (parent) {
+                        parent.innerHTML = `
+                          <div class="bg-white/20 backdrop-blur-sm text-white rounded-full w-16 h-16 flex items-center justify-center ring-2 ring-white/30">
+                            <span class="text-lg font-bold">${getInitials(employee.display_name)}</span>
+                          </div>
+                        `;
+                      }
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="bg-white/20 backdrop-blur-sm text-white rounded-full w-16 h-16 flex items-center justify-center ring-2 ring-white/30">
+                  <span className="text-lg font-bold">
+                    {getInitials(employee.display_name)}
+                  </span>
+                </div>
+              )}
+            </div>
+            <div className="text-white flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="font-semibold text-lg truncate drop-shadow-sm">{employee.display_name}</div>
+                <span className="text-xs px-2 py-1 rounded-full text-white font-medium bg-white/20 backdrop-blur-sm shadow-sm flex-shrink-0">
+                  {getRoleDisplayName(employee.bonuses_role)}
+                </span>
+              </div>
+              <div className="text-white/80 text-sm truncate drop-shadow-sm">{employee.email}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div className="card-body p-4">
+
+        {/* Performance Metrics */}
+        <div className="space-y-3">
+          {/* Meetings */}
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Meetings</span>
+            <div className="text-right">
+              <div className="font-semibold text-sm">
+                {employee.performance_metrics?.completed_meetings || 0} / {employee.performance_metrics?.total_meetings || 0}
+              </div>
+              <div className="text-xs text-success">Completed</div>
+            </div>
+          </div>
+
+          {/* Revenue */}
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Revenue</span>
+            <div className="text-right">
+              <div className="font-semibold text-sm">
+                {formatCurrency(employee.performance_metrics?.total_revenue || 0)}
+              </div>
+            </div>
+          </div>
+
+          {/* Bonus */}
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Bonus</span>
+            <div className="text-right">
+              <div className="font-semibold text-sm text-warning">
+                {formatCurrency(employee.performance_metrics?.calculated_bonus || employee.performance_metrics?.total_bonus || 0)}
+              </div>
+              {employee.performance_metrics?.calculated_bonus && employee.performance_metrics?.calculated_bonus !== employee.performance_metrics?.total_bonus && (
+                <div className="text-xs text-gray-500">
+                  (Calc: {formatCurrency(employee.performance_metrics.calculated_bonus)})
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Performance Percentage */}
+          <div className="space-y-2">
+            <div className="flex justify-between items-center">
+              <span className="text-sm text-gray-600">Performance</span>
+              <span className="text-sm font-medium">
+                {employee.performance_metrics?.performance_percentage || 0}%
+              </span>
+            </div>
+            {employee.performance_metrics?.performance_percentage !== undefined && (
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div 
+                  className={`h-2 rounded-full ${
+                    (employee.performance_metrics?.performance_percentage || 0) >= 100 
+                      ? 'bg-success' 
+                      : (employee.performance_metrics?.performance_percentage || 0) >= 75 
+                      ? 'bg-warning' 
+                      : 'bg-error'
+                  }`}
+                  style={{ 
+                    width: `${Math.min(100, Math.max(0, employee.performance_metrics?.performance_percentage || 0))}%` 
+                  }}
+                ></div>
+              </div>
+            )}
+          </div>
+
+          {/* Last Activity */}
+          <div className="flex justify-between items-center pt-2 border-t border-gray-100">
+            <span className="text-sm text-gray-600">Last Activity</span>
+            <div className="text-right">
+              <div className="text-xs text-gray-500">
+                {formatDate(employee.performance_metrics?.last_activity || 'No activity')}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const EmployeePerformancePage: React.FC = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [departmentGroups, setDepartmentGroups] = useState<DepartmentGroup[]>([]);
   const [subdepartmentGroups, setSubdepartmentGroups] = useState<SubdepartmentGroup[]>([]);
   const [correctedTotalRevenue, setCorrectedTotalRevenue] = useState<number>(0);
+  const [totalSignedContracts, setTotalSignedContracts] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [showRevenueGraph, setShowRevenueGraph] = useState(false);
+  const [revenueGraphData, setRevenueGraphData] = useState<any[]>([]);
+  const [showMeetingsGraph, setShowMeetingsGraph] = useState(false);
+  const [meetingsGraphData, setMeetingsGraphData] = useState<any[]>([]);
+  const [meetingsByTypeData, setMeetingsByTypeData] = useState<any[]>([]);
+  const [showContractsGraph, setShowContractsGraph] = useState(false);
+  const [contractsGraphData, setContractsGraphData] = useState<any[]>([]);
+  const [contractsByDepartmentData, setContractsByDepartmentData] = useState<any[]>([]);
+  
+  // Loading states for graphs
+  const [revenueGraphLoading, setRevenueGraphLoading] = useState(false);
+  const [meetingsGraphLoading, setMeetingsGraphLoading] = useState(false);
+  const [contractsGraphLoading, setContractsGraphLoading] = useState(false);
+  const [graphYear, setGraphYear] = useState<number>(new Date().getFullYear());
+  const [graphStartMonth, setGraphStartMonth] = useState<number>(1);
+  const [graphEndMonth, setGraphEndMonth] = useState<number>(new Date().getMonth() + 1);
   const [error, setError] = useState<string | null>(null);
   const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
   const [selectedRole, setSelectedRole] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
-  const [bonusAmount, setBonusAmount] = useState<string>('');
   const [viewMode, setViewMode] = useState<'department' | 'subdepartment'>('department');
   const [selectedSubdepartment, setSelectedSubdepartment] = useState<string>('all');
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSalaryModalOpen, setIsSalaryModalOpen] = useState(false);
+  const [isBonusPoolModalOpen, setIsBonusPoolModalOpen] = useState(false);
+  const [displayViewMode, setDisplayViewMode] = useState<'list' | 'grid'>('list');
 
   // Fetch comprehensive performance data for employees
+  // Fetch meetings data for the graph
+  const fetchMeetingsGraphData = async (year: number, startMonth: number, endMonth: number) => {
+    setMeetingsGraphLoading(true);
+    try {
+      console.log(`📊 Fetching meetings graph data for ${year}, months ${startMonth}-${endMonth}`);
+      
+      // Calculate date range for the entire period
+      const startDate = new Date(year, startMonth - 1, 1);
+      const endDate = new Date(year, endMonth, 0, 23, 59, 59);
+      const startDateStr = startDate.toISOString().split('T')[0];
+      const endDateStr = endDate.toISOString().split('T')[0];
+      
+      console.log(`📊 Fetching all meetings data for period: ${startDateStr} to ${endDateStr}`);
+      
+      // Fetch all regular meetings for the entire period in one query
+      const { data: allRegularMeetings, error: regularMeetingsError } = await supabase
+        .from('meetings')
+        .select(`
+          id, 
+          meeting_date, 
+          legacy_lead_id
+        `)
+        .gte('meeting_date', startDateStr)
+        .lte('meeting_date', endDateStr);
+      
+      if (regularMeetingsError) {
+        console.error('Error fetching regular meetings:', regularMeetingsError);
+      }
+      
+      // Fetch all legacy meetings for the entire period in one query
+      const { data: allLegacyMeetings, error: legacyMeetingsError } = await supabase
+        .from('leads_lead')
+        .select(`
+          id, 
+          meeting_date
+        `)
+        .gte('meeting_date', startDateStr)
+        .lte('meeting_date', endDateStr)
+        .not('meeting_date', 'is', null);
+      
+      if (legacyMeetingsError) {
+        console.error('Error fetching legacy meetings:', legacyMeetingsError);
+      }
+      
+      // Process data by month
+      const graphData = [];
+      const meetingsByDept = new Map();
+      
+      for (let month = startMonth; month <= endMonth; month++) {
+        const monthStartDate = new Date(year, month - 1, 1);
+        const monthEndDate = new Date(year, month, 0, 23, 59, 59);
+        const monthStartStr = monthStartDate.toISOString().split('T')[0];
+        const monthEndStr = monthEndDate.toISOString().split('T')[0];
+        
+        // Filter meetings for this month
+        const monthRegularMeetings = allRegularMeetings?.filter(meeting => 
+          meeting.meeting_date >= monthStartStr && meeting.meeting_date <= monthEndStr
+        ) || [];
+        
+        const monthLegacyMeetings = allLegacyMeetings?.filter(meeting => 
+          meeting.meeting_date >= monthStartStr && meeting.meeting_date <= monthEndStr
+        ) || [];
+        
+        // Create a set to track unique meetings and avoid double counting
+        const uniqueMeetings = new Set();
+        
+        // Add regular meetings to the set
+        monthRegularMeetings.forEach(meeting => {
+          uniqueMeetings.add(`regular_${meeting.id}`);
+        });
+        
+        // Add legacy meetings to the set, but only if they don't have a corresponding regular meeting
+        monthLegacyMeetings.forEach(legacyMeeting => {
+          // Check if this legacy meeting already has a corresponding regular meeting
+          const hasRegularMeeting = monthRegularMeetings.some(regularMeeting => 
+            regularMeeting.legacy_lead_id === legacyMeeting.id
+          );
+          
+          // Only add if there's no corresponding regular meeting
+          if (!hasRegularMeeting) {
+            uniqueMeetings.add(`legacy_${legacyMeeting.id}`);
+          }
+        });
+        
+        const totalMeetings = uniqueMeetings.size;
+        const regularCount = monthRegularMeetings.length;
+        const legacyCount = monthLegacyMeetings.length;
+        
+        graphData.push({
+          month: month,
+          monthName: monthStartDate.toLocaleDateString('en-US', { month: 'short' }),
+          total: totalMeetings
+        });
+        
+        console.log(`📊 ${year}-${month}: ${totalMeetings} unique meetings (${regularCount} regular + ${legacyCount} legacy, ${regularCount + legacyCount - totalMeetings} duplicates removed)`);
+      }
+      
+      // Get department data for meetings - fetch department info separately for better performance
+      const departmentCounts = new Map();
+      
+      // Get unique lead IDs from all meetings
+      const allLeadIds = new Set();
+      
+      // Add regular meeting lead IDs
+      if (allRegularMeetings) {
+        allRegularMeetings.forEach(meeting => {
+          if (meeting.legacy_lead_id) {
+            allLeadIds.add(meeting.legacy_lead_id);
+          }
+        });
+      }
+      
+      // Add legacy meeting IDs
+      if (allLegacyMeetings) {
+        allLegacyMeetings.forEach(meeting => {
+          allLeadIds.add(meeting.id);
+        });
+      }
+      
+      // Fetch department data for all unique leads in one query
+      if (allLeadIds.size > 0) {
+        const leadIdsArray = Array.from(allLeadIds);
+        
+        // Process in batches to avoid query size limits
+        const batchSize = 100;
+        for (let i = 0; i < leadIdsArray.length; i += batchSize) {
+          const batch = leadIdsArray.slice(i, i + batchSize);
+          
+          const { data: leadsWithDept, error: deptError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              misc_category(
+                misc_maincategory(
+                  tenant_departement(name)
+                )
+              )
+            `)
+            .in('id', batch);
+          
+          if (deptError) {
+            console.error('Error fetching department data:', deptError);
+            continue;
+          }
+          
+          // Count meetings by department
+          if (leadsWithDept) {
+            leadsWithDept.forEach(lead => {
+              const departmentName = lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
+              
+              // Count how many meetings this lead has
+              let meetingCount = 0;
+              
+              // Count regular meetings for this lead
+              if (allRegularMeetings) {
+                meetingCount += allRegularMeetings.filter(meeting => meeting.legacy_lead_id === lead.id).length;
+              }
+              
+              // Count legacy meetings for this lead
+              if (allLegacyMeetings) {
+                meetingCount += allLegacyMeetings.filter(meeting => meeting.id === lead.id).length;
+              }
+              
+              if (meetingCount > 0) {
+                departmentCounts.set(departmentName, (departmentCounts.get(departmentName) || 0) + meetingCount);
+              }
+            });
+          }
+        }
+      }
+      
+      // Convert meetings by department to array
+      const meetingsByDeptArray = Array.from(departmentCounts.entries()).map(([dept, count]) => ({
+        department: dept,
+        meetings: count
+      }));
+      
+      console.log('📊 Meetings graph data:', graphData);
+      console.log('📊 Meetings by department data:', meetingsByDeptArray);
+      setMeetingsGraphData(graphData);
+      setMeetingsByTypeData(meetingsByDeptArray);
+      
+    } catch (error) {
+      console.error('Error fetching meetings graph data:', error);
+    } finally {
+      setMeetingsGraphLoading(false);
+    }
+  };
+
+  // Fetch contracts data for the graph
+  const fetchContractsGraphData = async (year: number, startMonth: number, endMonth: number) => {
+    setContractsGraphLoading(true);
+    try {
+      console.log(`📊 Fetching contracts graph data for ${year}, months ${startMonth}-${endMonth}`);
+      
+      const graphData = [];
+      const contractsByDept = new Map();
+      
+      for (let month = startMonth; month <= endMonth; month++) {
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 0, 23, 59, 59);
+        
+        console.log(`📊 Fetching contracts data for ${year}-${month.toString().padStart(2, '0')}: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+        
+        // Fetch signed stages for this month
+        const { data: stageRecords, error: stageError } = await supabase
+          .from('leads_leadstage')
+          .select('lead_id, date')
+          .eq('stage', 60)
+          .gte('date', startDate.toISOString())
+          .lte('date', endDate.toISOString());
+        
+        if (stageError) {
+          console.error(`Error fetching stages for ${year}-${month}:`, stageError);
+          continue;
+        }
+        
+        if (!stageRecords || stageRecords.length === 0) {
+          graphData.push({
+            month: month,
+            monthName: startDate.toLocaleDateString('en-US', { month: 'short' }),
+            contracts: 0
+          });
+          continue;
+        }
+        
+        // Fetch leads data with department info
+        const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
+        const { data: leadsData, error: leadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id, total, currency_id,
+            misc_category(
+              id, name, parent_id,
+              misc_maincategory(
+                id, name, department_id,
+                tenant_departement(id, name)
+              )
+            )
+          `)
+          .in('id', leadIds);
+        
+        if (leadsError) {
+          console.error(`Error fetching leads for ${year}-${month}:`, leadsError);
+          continue;
+        }
+        
+        let monthContracts = 0;
+        
+        if (leadsData && leadsData.length > 0) {
+          leadsData.forEach(lead => {
+            monthContracts += 1;
+            
+            // Get department name
+            const departmentName = lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
+            contractsByDept.set(departmentName, (contractsByDept.get(departmentName) || 0) + 1);
+          });
+        }
+        
+        graphData.push({
+          month: month,
+          monthName: startDate.toLocaleDateString('en-US', { month: 'short' }),
+          contracts: monthContracts
+        });
+        
+        console.log(`📊 ${year}-${month}: ${monthContracts} contracts`);
+      }
+      
+      // Convert contracts by department to array
+      const contractsByDeptArray = Array.from(contractsByDept.entries()).map(([dept, count]) => ({
+        department: dept,
+        contracts: count
+      }));
+      
+      console.log('📊 Contracts graph data:', graphData);
+      console.log('📊 Contracts by department data:', contractsByDeptArray);
+      setContractsGraphData(graphData);
+      setContractsByDepartmentData(contractsByDeptArray);
+      
+    } catch (error) {
+      console.error('Error fetching contracts graph data:', error);
+    } finally {
+      setContractsGraphLoading(false);
+    }
+  };
+
+  // Fetch revenue data for the graph
+  const fetchRevenueGraphData = async (year: number, startMonth: number, endMonth: number) => {
+    setRevenueGraphLoading(true);
+    try {
+      console.log(`📊 Fetching revenue graph data for ${year}, months ${startMonth}-${endMonth}`);
+      
+      const graphData = [];
+      
+      for (let month = startMonth; month <= endMonth; month++) {
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 0, 23, 59, 59);
+        
+        console.log(`📊 Fetching data for ${year}-${month.toString().padStart(2, '0')}: ${startDate.toISOString()} to ${endDate.toISOString()}`);
+        
+        // Fetch signed stages for this month
+        const { data: stageRecords, error: stageError } = await supabase
+          .from('leads_leadstage')
+          .select('lead_id, date')
+          .eq('stage', 60)
+          .gte('date', startDate.toISOString())
+          .lte('date', endDate.toISOString());
+        
+        if (stageError) {
+          console.error(`Error fetching stages for ${year}-${month}:`, stageError);
+          continue;
+        }
+        
+        if (!stageRecords || stageRecords.length === 0) {
+          graphData.push({
+            month: month,
+            monthName: startDate.toLocaleDateString('en-US', { month: 'short' }),
+            revenue: 0,
+            contracts: 0
+          });
+          continue;
+        }
+        
+        // Fetch leads data for the signed stages
+        const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
+        const { data: leadsData, error: leadsError } = await supabase
+          .from('leads_lead')
+          .select('id, total, currency_id')
+          .in('id', leadIds);
+        
+        if (leadsError) {
+          console.error(`Error fetching leads for ${year}-${month}:`, leadsError);
+          continue;
+        }
+        
+        // Calculate total revenue for this month
+        let monthRevenue = 0;
+        let monthContracts = 0;
+        
+        if (leadsData && leadsData.length > 0) {
+          leadsData.forEach(lead => {
+            const amount = parseFloat(lead.total) || 0;
+            const amountInNIS = convertToNIS(amount, lead.currency_id);
+            monthRevenue += amountInNIS;
+            monthContracts += 1;
+          });
+        }
+        
+        graphData.push({
+          month: month,
+          monthName: startDate.toLocaleDateString('en-US', { month: 'short' }),
+          revenue: Math.round(monthRevenue),
+          contracts: monthContracts
+        });
+        
+        console.log(`📊 ${year}-${month}: ${monthContracts} contracts, ₪${Math.round(monthRevenue)} revenue`);
+      }
+      
+      console.log('📊 Revenue graph data:', graphData);
+      setRevenueGraphData(graphData);
+      
+    } catch (error) {
+      console.error('Error fetching revenue graph data:', error);
+    } finally {
+      setRevenueGraphLoading(false);
+    }
+  };
+
   const fetchComprehensivePerformanceData = async (dateFrom?: string, dateTo?: string) => {
     try {
       // Calculate date range - default to last 30 days if no dates provided
@@ -231,6 +791,49 @@ const EmployeePerformancePage: React.FC = () => {
   };
 
   // Calculate team averages for performance benchmarking
+  // Calculate bonuses for all employees
+  const calculateEmployeeBonuses = async (employees: Employee[], dateFrom?: string, dateTo?: string) => {
+    if (!dateFrom || !dateTo) return employees;
+
+    console.log(`🎯 Calculating bonuses for ${employees.length} employees for date range: ${dateFrom} to ${dateTo}`);
+
+    const employeesWithBonuses = await Promise.all(
+      employees.map(async (employee) => {
+        try {
+          console.log(`🎯 Processing employee: ${employee.display_name}, Role: ${employee.bonuses_role}, ID: ${employee.id}`);
+          
+          const bonusData = await calculateEmployeeBonus(
+            employee.id,
+            employee.bonuses_role,
+            dateFrom,
+            dateTo,
+            0 // monthlyPoolAmount - the function will fetch the actual pool internally
+          );
+
+          console.log(`🎯 Bonus calculated for ${employee.display_name}:`, {
+            totalBonus: bonusData.totalBonus,
+            roleBonuses: bonusData.roleBonuses.length,
+            roleBonusesDetails: bonusData.roleBonuses
+          });
+
+          return {
+            ...employee,
+            performance_metrics: {
+              ...employee.performance_metrics,
+              calculated_bonus: bonusData.totalBonus,
+              bonus_breakdown: bonusData.roleBonuses,
+            },
+          };
+        } catch (error) {
+          console.error(`Error calculating bonus for employee ${employee.id}:`, error);
+          return employee;
+        }
+      })
+    );
+
+    return employeesWithBonuses;
+  };
+
   const calculateTeamAverages = (employees: Employee[], signedLeads: any[], proformaInvoices: any[]) => {
     const roleAverages: { [key: string]: any } = {};
     
@@ -478,33 +1081,55 @@ const EmployeePerformancePage: React.FC = () => {
               });
               const leadDate = lead.cdate;
               
-              // Check each role
-              const roles = [
-                { key: 'h', id: lead.case_handler_id },
-                { key: 'c', id: lead.closer_id },
-                { key: 'e', id: lead.expert_id },
-                { key: 's', id: lead.meeting_scheduler_id },
-                { key: 'z', id: lead.meeting_manager_id },
-                { key: 'helper-closer', id: lead.meeting_lawyer_id }
-              ];
+              // Check only the employee's main role (bonuses_role)
+              const mainRole = employee.bonuses_role?.toLowerCase();
+              let isEmployeeInMainRole = false;
+              let roleKey = '';
               
-              roles.forEach(({ key, id }) => {
-                if (id === employeeIdStr) {
-                  if (!roleMetrics[key]) {
-                    roleMetrics[key] = { signed: 0, revenue: 0 };
-                  }
-                  roleMetrics[key].signed++;
-                  roleMetrics[key].revenue += leadTotalInNIS; // Use NIS amount
-                  
-                  totalMeetings++;
-                  completedMeetings++; // Signed contracts are considered completed
-                  totalRevenue += leadTotalInNIS; // Use NIS amount
-                  
-                  if (!lastActivity || new Date(leadDate) > new Date(lastActivity)) {
-                    lastActivity = leadDate;
-                  }
+              // Map the main role to the lead field
+              switch (mainRole) {
+                case 'h':
+                  isEmployeeInMainRole = lead.case_handler_id === employeeIdStr;
+                  roleKey = 'h';
+                  break;
+                case 'c':
+                  isEmployeeInMainRole = lead.closer_id === employeeIdStr;
+                  roleKey = 'c';
+                  break;
+                case 'e':
+                  isEmployeeInMainRole = lead.expert_id === employeeIdStr;
+                  roleKey = 'e';
+                  break;
+                case 's':
+                  isEmployeeInMainRole = lead.meeting_scheduler_id === employeeIdStr;
+                  roleKey = 's';
+                  break;
+                case 'z':
+                  isEmployeeInMainRole = lead.meeting_manager_id === employeeIdStr;
+                  roleKey = 'z';
+                  break;
+                case 'lawyer':
+                  isEmployeeInMainRole = lead.meeting_lawyer_id === employeeIdStr;
+                  roleKey = 'helper-closer';
+                  break;
+              }
+              
+              // Only count revenue if employee is in their main role
+              if (isEmployeeInMainRole) {
+                if (!roleMetrics[roleKey]) {
+                  roleMetrics[roleKey] = { signed: 0, revenue: 0 };
                 }
-              });
+                roleMetrics[roleKey].signed++;
+                roleMetrics[roleKey].revenue += leadTotalInNIS; // Use NIS amount
+                
+                totalMeetings++;
+                completedMeetings++; // Signed contracts are considered completed
+                totalRevenue += leadTotalInNIS; // Use NIS amount
+                
+                if (!lastActivity || new Date(leadDate) > new Date(lastActivity)) {
+                  lastActivity = leadDate;
+                }
+              }
             });
           }
           
@@ -531,10 +1156,13 @@ const EmployeePerformancePage: React.FC = () => {
           };
         });
 
-        setEmployees(employeesWithMetrics);
+        // Calculate bonuses for all employees
+        const employeesWithBonuses = await calculateEmployeeBonuses(employeesWithMetrics, dateFrom, dateTo);
+        
+        setEmployees(employeesWithBonuses);
 
         // Group employees by department
-        const groupedByDepartment = employeesWithMetrics.reduce((groups, employee) => {
+        const groupedByDepartment = employeesWithBonuses.reduce((groups, employee) => {
           const department = employee.department || 'Unassigned';
           if (!groups[department]) {
             groups[department] = [];
@@ -605,13 +1233,14 @@ const EmployeePerformancePage: React.FC = () => {
             
             // Fetch leads data for the signed stages
             let departmentRevenue: { [key: string]: number } = {};
+            let departmentCounts: { [key: string]: number } = {};
             if (signedStages && signedStages.length > 0) {
               const leadIds = [...new Set(signedStages.map(stage => stage.lead_id).filter(id => id !== null))];
               console.log('📋 Fetching leads data for department revenue calculation for', leadIds.length, 'unique signed leads...');
               
                 const { data: leadsData, error: leadsError } = await supabase
                   .from('leads_lead')
-                  .select(`
+                    .select(`
                     id, total, currency_id,
                     misc_category(
                       id, name, parent_id,
@@ -676,29 +1305,32 @@ const EmployeePerformancePage: React.FC = () => {
                   
                   if (!departmentRevenue[departmentName]) {
                     departmentRevenue[departmentName] = 0;
+                    departmentCounts[departmentName] = 0;
                   }
                   departmentRevenue[departmentName] += amountInNIS; // Use NIS amount
+                  departmentCounts[departmentName] += 1; // Count signed contracts
                   
-                  console.log(`📊 Updated revenue for ${departmentName}: ${departmentRevenue[departmentName]}`);
+                  console.log(`📊 Updated revenue for ${departmentName}: ${departmentRevenue[departmentName]}, count: ${departmentCounts[departmentName]}`);
                   
                   // Special debugging for Marketing department
                   if (departmentName.toLowerCase() === 'marketing') {
-                    console.log(`🎯 MARKETING LEAD FOUND: Lead ${lead.id}, Amount: ${amount}, AmountInNIS: ${amountInNIS}, Total Marketing Revenue: ${departmentRevenue[departmentName]}`);
+                    console.log(`🎯 MARKETING LEAD FOUND: Lead ${lead.id}, Amount: ${amount}, AmountInNIS: ${amountInNIS}, Total Marketing Revenue: ${departmentRevenue[departmentName]}, Count: ${departmentCounts[departmentName]}`);
                   }
                 }
               });
             }
             
             console.log('📊 Department revenue calculated:', departmentRevenue);
+            console.log('📊 Department counts calculated:', departmentCounts);
             
             // Special debugging for Marketing department
             if (departmentRevenue['Marketing']) {
-              console.log(`🎯 FINAL MARKETING REVENUE: ₪${departmentRevenue['Marketing']}`);
+              console.log(`🎯 FINAL MARKETING REVENUE: ₪${departmentRevenue['Marketing']}, COUNT: ${departmentCounts['Marketing'] || 0}`);
             } else {
               console.log('⚠️ NO MARKETING REVENUE FOUND in final calculation');
             }
             
-            return departmentRevenue;
+            return { revenue: departmentRevenue, counts: departmentCounts };
             } catch (error) {
             console.error('Error calculating department revenue:', error);
             return {};
@@ -706,9 +1338,12 @@ const EmployeePerformancePage: React.FC = () => {
         };
 
         // Calculate department revenue using Dashboard logic
-        const departmentRevenueData = await calculateDepartmentRevenue(dateFrom, dateTo);
+        const departmentData = await calculateDepartmentRevenue(dateFrom, dateTo);
+        const departmentRevenueData = departmentData.revenue || {};
+        const departmentCountsData = departmentData.counts || {};
         
         console.log('📊 Department revenue data received:', departmentRevenueData);
+        console.log('📊 Department counts data received:', departmentCountsData);
         console.log('📊 Available departments in groupedByDepartment:', Object.keys(groupedByDepartment));
         console.log('📊 Revenue calculation department names:', Object.keys(departmentRevenueData));
         console.log('📊 Employee department names:', Object.keys(groupedByDepartment));
@@ -730,8 +1365,9 @@ const EmployeePerformancePage: React.FC = () => {
         const departmentGroups: DepartmentGroup[] = Object.entries(groupedByDepartment).map(([deptName, deptEmployees]) => {
           const totalMeetings = deptEmployees.reduce((sum, emp) => sum + (emp.performance_metrics?.total_meetings || 0), 0);
           
-          // Try to find revenue for this department with case-insensitive matching
+          // Try to find revenue and counts for this department with case-insensitive matching
           let totalRevenue = departmentRevenueData[deptName] || 0;
+          let totalSignedContracts = departmentCountsData[deptName] || 0;
           
           // If no exact match, try case-insensitive matching
           if (totalRevenue === 0) {
@@ -741,7 +1377,8 @@ const EmployeePerformancePage: React.FC = () => {
             );
             if (matchingDept) {
               totalRevenue = departmentRevenueData[matchingDept];
-              console.log(`📊 Found case-insensitive match: ${deptName} -> ${matchingDept} (${totalRevenue})`);
+              totalSignedContracts = departmentCountsData[matchingDept] || 0;
+              console.log(`📊 Found case-insensitive match: ${deptName} -> ${matchingDept} (${totalRevenue} revenue, ${totalSignedContracts} contracts)`);
             }
           }
           
@@ -754,7 +1391,8 @@ const EmployeePerformancePage: React.FC = () => {
             );
             if (matchingDept) {
               totalRevenue = departmentRevenueData[matchingDept];
-              console.log(`📊 Found partial match: ${deptName} -> ${matchingDept} (${totalRevenue})`);
+              totalSignedContracts = departmentCountsData[matchingDept] || 0;
+              console.log(`📊 Found partial match: ${deptName} -> ${matchingDept} (${totalRevenue} revenue, ${totalSignedContracts} contracts)`);
             }
           }
           
@@ -762,13 +1400,14 @@ const EmployeePerformancePage: React.FC = () => {
             ? deptEmployees.reduce((sum, emp) => sum + (emp.performance_metrics?.completed_meetings || 0), 0) / deptEmployees.length
             : 0;
 
-          console.log(`📊 Department ${deptName}: ${deptEmployees.length} employees, ${totalMeetings} meetings, ${totalRevenue} revenue`);
+          console.log(`📊 Department ${deptName}: ${deptEmployees.length} employees, ${totalMeetings} meetings, ${totalRevenue} revenue, ${totalSignedContracts} signed contracts`);
 
           return {
             name: deptName,
             employees: deptEmployees,
             total_meetings: totalMeetings,
             total_revenue: totalRevenue,
+            total_signed_contracts: totalSignedContracts,
             average_performance: averagePerformance
           };
         });
@@ -826,8 +1465,34 @@ const EmployeePerformancePage: React.FC = () => {
         console.log('📊 Total revenue from all departments (avoiding double counting):', totalRevenueFromDepartments);
         console.log('📊 Shared departments detected:', Array.from(sharedDepartments));
 
-        // Store the corrected total revenue
+        // Calculate total signed contracts avoiding double counting for shared departments
+        let totalSignedContractsFromDepartments = 0;
+        const processedContractsBaseNames = new Set<string>();
+        
+        departmentGroups.forEach(dept => {
+          const baseName = dept.name.split(' - ')[0];
+          
+          if (sharedDepartments.has(baseName)) {
+            // Only count once for shared departments (use the first occurrence)
+            if (!processedContractsBaseNames.has(baseName)) {
+              totalSignedContractsFromDepartments += dept.total_signed_contracts;
+              processedContractsBaseNames.add(baseName);
+              console.log(`📊 Added contracts for shared department: ${dept.name} (${dept.total_signed_contracts} contracts)`);
+            } else {
+              console.log(`📊 Skipped duplicate contracts for shared department: ${dept.name} (${dept.total_signed_contracts} contracts)`);
+            }
+          } else {
+            // Count normally for non-shared departments
+            totalSignedContractsFromDepartments += dept.total_signed_contracts;
+            console.log(`📊 Added contracts for unique department: ${dept.name} (${dept.total_signed_contracts} contracts)`);
+          }
+        });
+        
+        console.log('📊 Total signed contracts from all departments (avoiding double counting):', totalSignedContractsFromDepartments);
+
+        // Store the corrected totals
         setCorrectedTotalRevenue(totalRevenueFromDepartments);
+        setTotalSignedContracts(totalSignedContractsFromDepartments);
         setDepartmentGroups(departmentGroups);
 
         // Create subdepartment groups
@@ -929,6 +1594,18 @@ const EmployeePerformancePage: React.FC = () => {
     fetchEmployeePerformance();
   }, [dateFrom, dateTo]); // Add dateFrom and dateTo as dependencies
 
+  // Fetch graph data when graph parameters change
+  useEffect(() => {
+    if (showRevenueGraph) {
+      fetchRevenueGraphData(graphYear, graphStartMonth, graphEndMonth);
+    }
+    if (showMeetingsGraph) {
+      fetchMeetingsGraphData(graphYear, graphStartMonth, graphEndMonth);
+    }
+    if (showContractsGraph) {
+      fetchContractsGraphData(graphYear, graphStartMonth, graphEndMonth);
+    }
+  }, [showRevenueGraph, showMeetingsGraph, showContractsGraph, graphYear, graphStartMonth, graphEndMonth]);
 
   // Filter employees based on selected department, role, search query, and date range
   const getFilteredEmployees = () => {
@@ -1031,9 +1708,59 @@ const EmployeePerformancePage: React.FC = () => {
     <div className="p-3 sm:p-6">
       {/* Header */}
       <div className="mb-4 sm:mb-6">
-        <div className="flex items-center gap-2 sm:gap-3 mb-3 sm:mb-4">
-          <ChartBarIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
-          <h1 className="text-xl sm:text-3xl font-bold">Employee Performance</h1>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-0 mb-3 sm:mb-4">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <ChartBarIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
+            <h1 className="text-xl sm:text-3xl font-bold">Employee Performance</h1>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* View Toggle */}
+            <div className="flex items-center bg-gray-100 rounded-lg p-1">
+              <button
+                onClick={() => setDisplayViewMode('list')}
+                className={`p-2 rounded-md transition-colors ${
+                  displayViewMode === 'list' 
+                    ? 'bg-white shadow-sm text-primary' 
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+                title="List View"
+              >
+                <ListBulletIcon className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setDisplayViewMode('grid')}
+                className={`p-2 rounded-md transition-colors ${
+                  displayViewMode === 'grid' 
+                    ? 'bg-white shadow-sm text-primary' 
+                    : 'text-gray-500 hover:text-gray-700'
+                }`}
+                title="Grid View"
+              >
+                <Squares2X2Icon className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Action Buttons */}
+            <div className="flex gap-2">
+              {/* Manage Salaries Button */}
+              <button
+                onClick={() => setIsSalaryModalOpen(true)}
+                className="btn btn-primary gap-2"
+              >
+                <BanknotesIcon className="w-5 h-5" />
+                Manage Salaries
+              </button>
+              
+              {/* Manage Bonus Pool Button */}
+              <button
+                onClick={() => setIsBonusPoolModalOpen(true)}
+                className="btn btn-secondary gap-2"
+              >
+                <CurrencyDollarIcon className="w-5 h-5" />
+                Bonus Pool
+              </button>
+            </div>
+          </div>
         </div>
         <p className="text-sm sm:text-base text-gray-600">Track and analyze employee performance across departments and roles</p>
       </div>
@@ -1055,23 +1782,29 @@ const EmployeePerformancePage: React.FC = () => {
           <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
         </div>
 
-        {/* Active Departments */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-3 md:p-6">
+        {/* Total Signed Contracts */}
+        <div 
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-3 md:p-6"
+          onClick={() => setShowContractsGraph(!showContractsGraph)}
+        >
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <AcademicCapIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+              <DocumentTextIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{departmentGroups.length}</div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Active Departments</div>
+              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{totalSignedContracts}</div>
+              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Signed Contracts</div>
             </div>
           </div>
-          {/* SVG Bar Chart Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
+          {/* SVG Document Placeholder */}
+          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="8" y="4" width="24" height="28" rx="2"/><path d="M16 12h16M16 16h16M16 20h12"/></svg>
         </div>
 
         {/* Total Meetings */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-3 md:p-6">
+        <div 
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-3 md:p-6"
+          onClick={() => setShowMeetingsGraph(!showMeetingsGraph)}
+        >
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <ClockIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
@@ -1088,7 +1821,10 @@ const EmployeePerformancePage: React.FC = () => {
         </div>
 
         {/* Total Revenue */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-3 md:p-6">
+        <div 
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-3 md:p-6"
+          onClick={() => setShowRevenueGraph(!showRevenueGraph)}
+        >
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <CurrencyDollarIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
@@ -1114,9 +1850,9 @@ const EmployeePerformancePage: React.FC = () => {
             </div>
             <div>
               <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
-                {formatCurrency(parseFloat(bonusAmount) || 0)}
+                {formatCurrency(employees.reduce((total, emp) => total + (emp.performance_metrics?.calculated_bonus || emp.performance_metrics?.total_bonus || 0), 0))}
               </div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Total Bonus</div>
+              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Total Employee Bonuses</div>
             </div>
           </div>
           {/* SVG Star Placeholder */}
@@ -1146,6 +1882,539 @@ const EmployeePerformancePage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Revenue Graph */}
+      {showRevenueGraph && (
+        <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+          <div className="card-body p-3 sm:p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Monthly Revenue Trend</h2>
+              
+              {/* Graph Controls */}
+              <div className="flex flex-col sm:flex-row gap-3">
+                {/* Year Selector */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">Year</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-24"
+                    value={graphYear}
+                    onChange={(e) => setGraphYear(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 5 }, (_, i) => {
+                      const year = new Date().getFullYear() - i;
+                      return (
+                        <option key={year} value={year}>{year}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* Start Month */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">From Month</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphStartMonth}
+                    onChange={(e) => setGraphStartMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return (
+                        <option key={month} value={month}>{monthName}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* End Month */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">To Month</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphEndMonth}
+                    onChange={(e) => setGraphEndMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return (
+                        <option key={month} value={month}>{monthName}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Chart */}
+            <div className="h-80 w-full">
+              {revenueGraphLoading ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="flex flex-col items-center gap-3">
+                    <span className="loading loading-spinner loading-lg text-primary"></span>
+                    <p className="text-sm text-gray-600">Loading revenue data...</p>
+                  </div>
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={revenueGraphData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                    <XAxis 
+                      dataKey="monthName" 
+                      stroke="#6b7280"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis 
+                      stroke="#6b7280"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                      tickFormatter={(value) => `₪${(value / 1000).toFixed(0)}k`}
+                    />
+                    <Tooltip 
+                      contentStyle={{
+                        backgroundColor: '#1f2937',
+                        border: 'none',
+                        borderRadius: '8px',
+                        color: '#f9fafb'
+                      }}
+                      formatter={(value: any, name: string) => [
+                        name === 'revenue' ? `₪${value.toLocaleString()}` : value,
+                        name === 'revenue' ? 'Revenue' : 'Contracts'
+                      ]}
+                      labelFormatter={(label) => `Month: ${label}`}
+                      itemStyle={{ color: '#f9fafb' }}
+                    />
+                      <Line 
+                        type="monotone" 
+                        dataKey="revenue" 
+                        stroke="#6c4edb" 
+                        strokeWidth={3}
+                        dot={{ fill: '#6c4edb', strokeWidth: 2, r: 4 }}
+                        activeDot={{ r: 6, stroke: '#6c4edb', strokeWidth: 2 }}
+                      />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </div>
+
+            {/* Summary Stats */}
+            {revenueGraphData.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6 pt-4 border-t border-gray-200">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    ₪{revenueGraphData.reduce((sum, item) => sum + item.revenue, 0).toLocaleString()}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Revenue</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    {revenueGraphData.reduce((sum, item) => sum + item.contracts, 0)}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Contracts</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    ₪{Math.round(revenueGraphData.reduce((sum, item) => sum + item.revenue, 0) / revenueGraphData.length).toLocaleString()}
+                  </div>
+                  <div className="text-sm text-gray-600">Avg Monthly Revenue</div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Meetings Graph */}
+      {showMeetingsGraph && (
+        <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+          <div className="card-body p-3 sm:p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Monthly Meetings Trend</h2>
+              
+              {/* Graph Controls */}
+              <div className="flex flex-col sm:flex-row gap-3">
+                {/* Year Selector */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">Year</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-24"
+                    value={graphYear}
+                    onChange={(e) => setGraphYear(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 5 }, (_, i) => {
+                      const year = new Date().getFullYear() - i;
+                      return (
+                        <option key={year} value={year}>{year}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* Start Month */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">From Month</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphStartMonth}
+                    onChange={(e) => setGraphStartMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return (
+                        <option key={month} value={month}>{monthName}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* End Month */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">To Month</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphEndMonth}
+                    onChange={(e) => setGraphEndMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return (
+                        <option key={month} value={month}>{monthName}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Charts Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Monthly Meetings Line Chart */}
+              <div className="h-80 w-full">
+                <h3 className="text-lg font-semibold text-gray-700 mb-4">Monthly Meetings Trend</h3>
+                {meetingsGraphLoading ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="flex flex-col items-center gap-3">
+                      <span className="loading loading-spinner loading-lg text-primary"></span>
+                      <p className="text-sm text-gray-600">Loading meetings data...</p>
+                    </div>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={meetingsGraphData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis 
+                        dataKey="monthName" 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: '#1f2937',
+                          border: 'none',
+                          borderRadius: '8px',
+                          color: '#f9fafb'
+                        }}
+                        itemStyle={{ color: '#f9fafb' }}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="total" 
+                        stroke="#3b82f6" 
+                        strokeWidth={3}
+                        dot={{ fill: '#3b82f6', strokeWidth: 2, r: 4 }}
+                        activeDot={{ r: 6, stroke: '#3b82f6', strokeWidth: 2 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+
+              {/* Meetings by Department Bar Chart */}
+              <div className="h-80 w-full">
+                <h3 className="text-lg font-semibold text-gray-700 mb-4">Meetings by Department</h3>
+                {meetingsGraphLoading ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="flex flex-col items-center gap-3">
+                      <span className="loading loading-spinner loading-lg text-primary"></span>
+                      <p className="text-sm text-gray-600">Loading department data...</p>
+                    </div>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={meetingsByTypeData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis 
+                        dataKey="department" 
+                        stroke="#6b7280"
+                        fontSize={10}
+                        tickLine={false}
+                        axisLine={false}
+                        angle={-45}
+                        textAnchor="end"
+                        height={80}
+                      />
+                      <YAxis 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: '#1f2937',
+                          border: 'none',
+                          borderRadius: '8px',
+                          color: '#f9fafb'
+                        }}
+                        itemStyle={{ color: '#f9fafb' }}
+                      />
+                      <Bar dataKey="meetings" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+
+            {/* Summary Stats */}
+            {meetingsGraphData.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 pt-4 border-t border-gray-200">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    {meetingsGraphData.reduce((sum, item) => sum + item.total, 0)}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Meetings</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    {Math.round(meetingsGraphData.reduce((sum, item) => sum + item.total, 0) / meetingsGraphData.length)}
+                  </div>
+                  <div className="text-sm text-gray-600">Avg Monthly</div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Contracts Graph */}
+      {showContractsGraph && (
+        <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+          <div className="card-body p-3 sm:p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+              <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Monthly Contracts Trend</h2>
+              
+              {/* Graph Controls */}
+              <div className="flex flex-col sm:flex-row gap-3">
+                {/* Year Selector */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">Year</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-24"
+                    value={graphYear}
+                    onChange={(e) => setGraphYear(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 5 }, (_, i) => {
+                      const year = new Date().getFullYear() - i;
+                      return (
+                        <option key={year} value={year}>{year}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* Start Month */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">From Month</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphStartMonth}
+                    onChange={(e) => setGraphStartMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return (
+                        <option key={month} value={month}>{monthName}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                {/* End Month */}
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text text-sm font-medium">To Month</span>
+                  </label>
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphEndMonth}
+                    onChange={(e) => setGraphEndMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return (
+                        <option key={month} value={month}>{monthName}</option>
+                      );
+                    })}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* Charts Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Monthly Contracts Line Chart */}
+              <div className="h-80 w-full">
+                <h3 className="text-lg font-semibold text-gray-700 mb-4">Monthly Contracts Trend</h3>
+                {contractsGraphLoading ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="flex flex-col items-center gap-3">
+                      <span className="loading loading-spinner loading-lg text-primary"></span>
+                      <p className="text-sm text-gray-600">Loading contracts data...</p>
+                    </div>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={contractsGraphData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis 
+                        dataKey="monthName" 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: '#1f2937',
+                          border: 'none',
+                          borderRadius: '8px',
+                          color: '#f9fafb'
+                        }}
+                        itemStyle={{ color: '#f9fafb' }}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="contracts" 
+                        stroke="#7c3aed" 
+                        strokeWidth={3}
+                        dot={{ fill: '#7c3aed', strokeWidth: 2, r: 4 }}
+                        activeDot={{ r: 6, stroke: '#7c3aed', strokeWidth: 2 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+
+              {/* Contracts by Department Bar Chart */}
+              <div className="h-80 w-full">
+                <h3 className="text-lg font-semibold text-gray-700 mb-4">Contracts by Department</h3>
+                {contractsGraphLoading ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="flex flex-col items-center gap-3">
+                      <span className="loading loading-spinner loading-lg text-primary"></span>
+                      <p className="text-sm text-gray-600">Loading department data...</p>
+                    </div>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={contractsByDepartmentData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis 
+                        dataKey="department" 
+                        stroke="#6b7280"
+                        fontSize={10}
+                        tickLine={false}
+                        axisLine={false}
+                        angle={-45}
+                        textAnchor="end"
+                        height={80}
+                      />
+                      <YAxis 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: '#1f2937',
+                          border: 'none',
+                          borderRadius: '8px',
+                          color: '#f9fafb'
+                        }}
+                        itemStyle={{ color: '#f9fafb' }}
+                      />
+                      <Bar dataKey="contracts" fill="#7c3aed" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </div>
+
+            {/* Summary Stats */}
+            {contractsGraphData.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-6 pt-4 border-t border-gray-200">
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    {contractsGraphData.reduce((sum, item) => sum + item.contracts, 0)}
+                  </div>
+                  <div className="text-sm text-gray-600">Total Contracts</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    {contractsByDepartmentData.length}
+                  </div>
+                  <div className="text-sm text-gray-600">Departments</div>
+                </div>
+                <div className="text-center">
+                  <div className="text-2xl font-bold text-gray-800">
+                    {Math.round(contractsGraphData.reduce((sum, item) => sum + item.contracts, 0) / contractsGraphData.length)}
+                  </div>
+                  <div className="text-sm text-gray-600">Avg Monthly</div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Filters */}
       <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
@@ -1282,44 +2551,25 @@ const EmployeePerformancePage: React.FC = () => {
               ) : null}
             </div>
 
-            {/* Monthly Bonus Pool with Clear All */}
+            {/* Clear All Button */}
             <div className="form-control">
-              <label className="label">
-                <span className="label-text font-semibold text-xs sm:text-sm">Monthly Bonus Pool</span>
-              </label>
-              <div className="flex flex-col gap-2">
-                <div className="relative">
-                  <input
-                    type="number"
-                    placeholder="Enter amount..."
-                    className="input input-bordered input-sm sm:input-md w-full pr-8 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                    value={bonusAmount}
-                    onChange={(e) => setBonusAmount(e.target.value)}
-                    min="0"
-                    step="0.01"
-                  />
-                  <div className="absolute inset-y-0 right-0 flex items-center pr-3">
-                    <span className="text-gray-400 text-xs sm:text-sm">$</span>
-                  </div>
-                </div>
-                <button
-                  className="btn btn-outline btn-xs sm:btn-sm w-full"
-                  onClick={() => {
-                    setSelectedDepartment('all');
-                    setSelectedSubdepartment('all');
-                    setSelectedRole('all');
-                    setSearchQuery('');
-                    setDateFrom('');
-                    setDateTo('');
-                    setBonusAmount('');
-                  }}
-                  title="Clear all filters"
-                >
-                  Clear All
-                </button>
-              </div>
               <div className="label">
+                <span className="label-text font-semibold text-xs sm:text-sm">Actions</span>
               </div>
+              <button
+                className="btn btn-outline btn-xs sm:btn-sm w-full"
+                onClick={() => {
+                  setSelectedDepartment('all');
+                  setSelectedSubdepartment('all');
+                  setSelectedRole('all');
+                  setSearchQuery('');
+                  setDateFrom('');
+                  setDateTo('');
+                }}
+                title="Clear all filters"
+              >
+                Clear All
+              </button>
             </div>
           </div>
         </div>
@@ -1398,14 +2648,16 @@ const EmployeePerformancePage: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-xs sm:text-sm text-gray-600">
-                  <span className="hidden sm:inline">{groupData.total_meetings} meetings • {formatCurrency(groupData.total_revenue)} revenue</span>
-                  <span className="sm:hidden">{groupData.total_meetings} meetings</span>
+                  <span className="hidden sm:inline">{groupData.total_meetings} meetings • {formatCurrency(groupData.total_revenue)} revenue • {groupData.total_signed_contracts} signed contracts</span>
+                  <span className="sm:hidden">{groupData.total_meetings} meetings • {groupData.total_signed_contracts} contracts</span>
                 </div>
               </div>
             </div>
             <div className="card-body p-0">
-              <div className="overflow-x-auto">
-                <table className="table w-full text-sm sm:text-base">
+              {displayViewMode === 'list' ? (
+                /* List View */
+                <div className="overflow-x-auto">
+                  <table className="table w-full text-sm sm:text-base">
                   <thead>
                     <tr>
                       <th className="w-1/3 text-sm sm:text-base">Employee</th>
@@ -1440,7 +2692,7 @@ const EmployeePerformancePage: React.FC = () => {
                       <div className="flex items-center gap-2 sm:gap-3">
                         <div className="avatar">
                           {employee.photo_url ? (
-                            <div className="rounded-full w-8 sm:w-12">
+                            <div className="rounded-full w-12 sm:w-16">
                               <img 
                                 src={employee.photo_url} 
                                 alt={employee.display_name}
@@ -1452,8 +2704,8 @@ const EmployeePerformancePage: React.FC = () => {
                                   const parent = target.parentElement;
                                   if (parent) {
                                     parent.innerHTML = `
-                                      <div class="bg-primary text-primary-content rounded-full w-8 sm:w-12 h-8 sm:h-12 flex items-center justify-center">
-                                        <span class="text-xs sm:text-base font-bold">${getInitials(employee.display_name)}</span>
+                                      <div class="bg-primary text-primary-content rounded-full w-12 sm:w-16 h-12 sm:h-16 flex items-center justify-center">
+                                        <span class="text-sm sm:text-lg font-bold">${getInitials(employee.display_name)}</span>
                                       </div>
                                     `;
                                   }
@@ -1462,8 +2714,8 @@ const EmployeePerformancePage: React.FC = () => {
                             </div>
                           ) : (
                             <div className="placeholder">
-                              <div className="bg-primary text-primary-content rounded-full w-8 sm:w-12 h-8 sm:h-12 flex items-center justify-center">
-                                <span className="text-xs sm:text-base font-bold">
+                              <div className="bg-primary text-primary-content rounded-full w-12 sm:w-16 h-12 sm:h-16 flex items-center justify-center">
+                                <span className="text-sm sm:text-lg font-bold">
                                   {getInitials(employee.display_name)}
                                 </span>
                               </div>
@@ -1500,10 +2752,15 @@ const EmployeePerformancePage: React.FC = () => {
                         }
                       </span>
                     </td>
-                    <td className="w-1/12 font-semibold text-warning text-sm sm:text-base">
-                      <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.total_bonus || 0)}</span>
-                      <span className="sm:hidden">₪{(employee.performance_metrics?.total_bonus || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
-                    </td>
+                      <td className="w-1/12 font-semibold text-warning text-sm sm:text-base">
+                        <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.calculated_bonus || employee.performance_metrics?.total_bonus || 0)}</span>
+                        <span className="sm:hidden">₪{(employee.performance_metrics?.calculated_bonus || employee.performance_metrics?.total_bonus || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
+                        {employee.performance_metrics?.calculated_bonus && employee.performance_metrics?.calculated_bonus !== employee.performance_metrics?.total_bonus && (
+                          <div className="text-xs text-gray-500 mt-1">
+                            (Calc: {formatCurrency(employee.performance_metrics.calculated_bonus)})
+                          </div>
+                        )}
+                      </td>
                     <td className="w-1/12">
                       {employee.performance_metrics?.performance_percentage !== undefined ? (
                       <div className="flex items-center gap-1 sm:gap-2">
@@ -1533,7 +2790,21 @@ const EmployeePerformancePage: React.FC = () => {
                     ))}
                   </tbody>
                 </table>
-              </div>
+                </div>
+              ) : (
+                /* Grid View */
+                <div className="p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {filteredEmployees.map((employee) => (
+                      <EmployeePerformanceBox
+                        key={employee.id}
+                        employee={employee}
+                        onEmployeeClick={handleEmployeeClick}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         );
@@ -1583,6 +2854,19 @@ const EmployeePerformancePage: React.FC = () => {
         allEmployees={employees}
         isOpen={isModalOpen} 
         onClose={handleModalClose} 
+      />
+
+      {/* Salary Modal */}
+      <SalaryModal 
+        isOpen={isSalaryModalOpen}
+        onClose={() => setIsSalaryModalOpen(false)}
+        employees={employees}
+      />
+
+      {/* Bonus Pool Modal */}
+      <BonusPoolModal 
+        isOpen={isBonusPoolModalOpen}
+        onClose={() => setIsBonusPoolModalOpen(false)}
       />
     </div>
   );

@@ -1,6 +1,16 @@
 import React, { useState } from 'react';
-import { XMarkIcon, UserIcon, ChartBarIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon, CalendarDaysIcon, TrophyIcon, PhoneIcon, DevicePhoneMobileIcon, EyeIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, UserIcon, ChartBarIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon, CalendarDaysIcon, TrophyIcon, PhoneIcon, DevicePhoneMobileIcon, EyeIcon, PencilIcon, DocumentTextIcon, CalendarIcon, BanknotesIcon } from '@heroicons/react/24/outline';
 import { convertToNIS, getCurrencySymbol as getCurrencySymbolFromLib } from '../lib/currencyConversion';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, PieChart, Pie, Cell, Legend } from 'recharts';
+import { supabase } from '../lib/supabase';
+import { calculateEmployeeBonus, getRoleDisplayName as getBonusRoleDisplayName, fetchMonthlyBonusPool, getRoleConfig, getBonusConfig } from '../lib/bonusCalculation';
+
+// Extend window object to include monthly bonus pools cache
+declare global {
+  interface Window {
+    monthlyBonusPoolsCache?: { [key: string]: any };
+  }
+}
 
 interface Employee {
   id: string;
@@ -120,6 +130,15 @@ function CloserPerformanceChart({ closerData, dateRange }: { closerData: any, da
   const teamDailyAverages = closerData?.teamDailyAverages || [];
   const maxTeamAverage = teamDailyAverages.length > 0 ? Math.max(...teamDailyAverages.map((d: any) => d.teamAverage), 1) : 1;
   
+  // Merge team averages with daily data for the chart
+  const chartData = dailyData.map((dailyPoint: any) => {
+    const teamPoint = teamDailyAverages.find((team: any) => team.date === dailyPoint.date);
+    return {
+      ...dailyPoint,
+      teamAverage: teamPoint ? teamPoint.teamAverage : 0
+    };
+  });
+  
   console.log('📊 CloserPerformanceChart - closerData:', closerData);
   console.log('📊 CloserPerformanceChart - dailyData length:', dailyData.length);
   console.log('📊 CloserPerformanceChart - teamDailyAverages length:', teamDailyAverages.length);
@@ -133,7 +152,6 @@ function CloserPerformanceChart({ closerData, dateRange }: { closerData: any, da
     return (
       <div className="w-full h-full flex flex-col items-center justify-center">
         <div className="text-center text-gray-500">
-          <div className="text-4xl mb-2"></div>
           <div className="text-sm">No contract data available for the selected period</div>
         </div>
       </div>
@@ -141,184 +159,70 @@ function CloserPerformanceChart({ closerData, dateRange }: { closerData: any, da
   }
 
   return (
-    <div className="w-full h-full flex flex-col">
-      {/* Chart Area - Reduced padding and better proportions */}
-      <div className="flex-1 relative px-1 py-1 min-h-0">
-        <svg className="w-full h-full" viewBox="0 0 380 200" preserveAspectRatio="xMidYMid meet">
-          {/* Modern Grid Lines */}
-          <defs>
-            <pattern id="closerGrid" width="40" height="20" patternUnits="userSpaceOnUse">
-              <path d="M 40 0 L 0 0 0 20" fill="none" stroke="#f8fafc" strokeWidth="0.5"/>
-            </pattern>
-            {/* Gradient for main line */}
-            <linearGradient id="closerGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="#362AB8" stopOpacity="0.8"/>
-              <stop offset="100%" stopColor="#362AB8" stopOpacity="0.1"/>
-            </linearGradient>
-            {/* Gradient for area fill */}
-            <linearGradient id="closerAreaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="#362AB8" stopOpacity="0.15"/>
-              <stop offset="100%" stopColor="#362AB8" stopOpacity="0.02"/>
-            </linearGradient>
-          </defs>
-          
-          {/* Background */}
-          <rect width="100%" height="100%" fill="url(#closerGrid)" />
-          
-          {/* Y-axis labels - Adjusted for new viewBox */}
-          {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((value) => {
-            const y = 160 - (value / 8) * 140;
-            return (
-              <g key={value}>
-                <line x1="30" y1={y} x2="350" y2={y} stroke="#e2e8f0" strokeWidth="0.5" opacity="0.5"/>
-                <text x="25" y={y + 4} textAnchor="end" className="text-xs fill-gray-400" fontSize="10">
-                  {value}
-                </text>
-              </g>
-            );
-          })}
-          
-          {/* Team Average Line - Adjusted coordinates */}
-          {teamDailyAverages.length > 0 && (
-            <path
-              d={teamDailyAverages.map((point: any, index: number) => {
-                const x = (index / (teamDailyAverages.length - 1)) * 320 + 30;
-                const y = 160 - (point.teamAverage / Math.max(maxContracts, maxTeamAverage)) * 140;
-                return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
-              }).join(' ')}
-              fill="none"
-              stroke="#94a3b8"
-              strokeWidth="2"
-              strokeDasharray="5,5"
-              opacity="0.7"
-            />
-          )}
-          
-          {/* Area Fill - Adjusted coordinates */}
-          <path
-            d={`M 30 160 ${dailyData.map((point: any, index: number) => {
-              const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                       (index / (dailyData.length - 1)) * 320 + 30;
-              const y = 160 - (point.contracts / maxContracts) * 140;
-              return `L ${x} ${y}`;
-            }).join(' ')} L 350 160 Z`}
-            fill="url(#closerAreaGradient)"
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+        <XAxis 
+          dataKey="date" 
+          stroke="#6b7280"
+          fontSize={12}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { day: 'numeric' })}
+        />
+        <YAxis 
+          stroke="#6b7280"
+          fontSize={12}
+          tickLine={false}
+          axisLine={false}
+          domain={[0, 'dataMax']}
+        />
+        <Tooltip 
+          contentStyle={{
+            backgroundColor: '#1f2937',
+            border: 'none',
+            borderRadius: '8px',
+            color: '#f9fafb'
+          }}
+          itemStyle={{ color: '#f9fafb' }}
+          formatter={(value, name) => {
+            if (name === 'contracts') {
+              return [value, 'Your Contracts'];
+            } else if (name === 'teamAverage') {
+              return [value, 'Team Average'];
+            }
+            return [value, name];
+          }}
+        />
+        <Line 
+          type="monotone" 
+          dataKey="contracts" 
+          stroke="#6c4edb"
+          strokeWidth={3}
+          dot={{ fill: '#6c4edb', strokeWidth: 2, r: 4 }}
+          activeDot={{ r: 6, stroke: '#6c4edb', strokeWidth: 2 }}
+        />
+        {teamDailyAverages.length > 0 && (
+          <Line 
+            type="monotone" 
+            dataKey="teamAverage" 
+            stroke="#9ca3af"
+            strokeWidth={2}
+            strokeDasharray="5 5"
+            dot={{ fill: '#9ca3af', strokeWidth: 2, r: 3 }}
+            activeDot={{ r: 5, stroke: '#9ca3af', strokeWidth: 2 }}
           />
-          
-          {/* Main Line - Adjusted coordinates */}
-          <path
-            d={dailyData.map((point: any, index: number) => {
-              const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                       (index / (dailyData.length - 1)) * 320 + 30;
-              const y = 160 - (point.contracts / maxContracts) * 140;
-              return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
-            }).join(' ')}
-            fill="none"
-            stroke="url(#closerGradient)"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="drop-shadow-lg"
-          />
-          
-          {/* Data Points - Adjusted coordinates */}
-          {dailyData.map((point: any, index: number) => {
-            const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                     (index / (dailyData.length - 1)) * 320 + 30;
-            const y = 160 - (point.contracts / maxContracts) * 140;
-            return (
-              <g key={index}>
-                {/* Glow effect */}
-                <circle
-                  cx={x}
-                  cy={y}
-                  r="6"
-                  fill="#362AB8"
-                  opacity="0.2"
-                />
-                {/* Main circle */}
-                <circle
-                  cx={x}
-                  cy={y}
-                  r="4"
-                  fill="#362AB8"
-                  stroke="white"
-                  strokeWidth="2"
-                  className="hover:r-6 transition-all duration-200 cursor-pointer drop-shadow-sm"
-                />
-                {/* Inner dot */}
-                <circle
-                  cx={x}
-                  cy={y}
-                  r="2"
-                  fill="white"
-                  opacity="0.8"
-                />
-                {/* Hover tooltip - only visible on hover */}
-                <g className="opacity-0 hover:opacity-100 transition-opacity duration-200">
-                  <rect
-                    x={x - 15}
-                    y={y - 25}
-                    width="30"
-                    height="16"
-                    fill="#374151"
-                    rx="3"
-                    className="drop-shadow-md"
-                  />
-                  <text
-                    x={x}
-                    y={y - 15}
-                    textAnchor="middle"
-                    className="text-xs font-semibold fill-white"
-                    fontSize="10"
-                  >
-                    {point.contracts}
-                  </text>
-                </g>
-              </g>
-            );
-          })}
-
-          {/* X-Axis Labels - Positioned within the main chart SVG */}
-          {dailyData.map((point: any, index: number) => {
-            // Show every nth label to avoid overcrowding
-            const showLabel = index % Math.max(1, Math.ceil(dailyData.length / 6)) === 0 || index === dailyData.length - 1;
-            if (!showLabel) return null;
-            
-            const date = new Date(point.date);
-            const month = date.toLocaleDateString('en-US', { month: 'short' });
-            const day = date.getDate();
-            
-            // Use the exact same calculation as the data points
-            const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                     (index / (dailyData.length - 1)) * 320 + 30;
-            
-            return (
-              <g key={`label-${index}`}>
-                <text
-                  x={x}
-                  y="175"
-                  textAnchor="middle"
-                  className="text-xs font-semibold fill-gray-800"
-                  fontSize="10"
-                >
-                  {day}
-                </text>
-                <text
-                  x={x}
-                  y="185"
-                  textAnchor="middle"
-                  className="text-xs fill-gray-500"
-                  fontSize="9"
-                >
-                  {month}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-    </div>
+        )}
+        <Legend 
+          wrapperStyle={{ paddingTop: '20px' }}
+          formatter={(value) => {
+            if (value === 'contracts') return 'Your Contracts';
+            if (value === 'teamAverage') return 'Team Average';
+            return value;
+          }}
+        />
+      </LineChart>
+    </ResponsiveContainer>
   );
 }
 
@@ -358,6 +262,15 @@ function ExpertPerformanceChart({ expertData, dateRange }: { expertData: any, da
   const teamDailyAverages = expertData?.teamDailyAverages || [];
   const maxTeamAverage = teamDailyAverages.length > 0 ? Math.max(...teamDailyAverages.map((d: any) => d.teamAverage), 1) : 1;
   
+  // Merge team averages with daily data for the chart
+  const chartData = dailyData.map((dailyPoint: any) => {
+    const teamPoint = teamDailyAverages.find((team: any) => team.date === dailyPoint.date);
+    return {
+      ...dailyPoint,
+      teamAverage: teamPoint ? teamPoint.teamAverage : 0
+    };
+  });
+  
   console.log('ExpertPerformanceChart - expertData:', expertData);
   console.log('ExpertPerformanceChart - dailyData length:', dailyData.length);
   console.log('ExpertPerformanceChart - teamDailyAverages length:', teamDailyAverages.length);
@@ -379,180 +292,70 @@ function ExpertPerformanceChart({ expertData, dateRange }: { expertData: any, da
   }
 
   return (
-    <div className="w-full h-full flex flex-col">
-      {/* Chart Area - Reduced padding and better proportions */}
-      <div className="flex-1 relative px-1 py-1 min-h-0">
-        <svg className="w-full h-full" viewBox="0 0 380 200" preserveAspectRatio="xMidYMid meet">
-          {/* Modern Grid Lines */}
-          <defs>
-            <pattern id="modernGrid" width="40" height="20" patternUnits="userSpaceOnUse">
-              <path d="M 40 0 L 0 0 0 20" fill="none" stroke="#f8fafc" strokeWidth="0.5"/>
-            </pattern>
-            {/* Gradient for main line */}
-            <linearGradient id="mainGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="#362AB8" stopOpacity="0.8"/>
-              <stop offset="100%" stopColor="#362AB8" stopOpacity="0.1"/>
-            </linearGradient>
-            {/* Gradient for area fill */}
-            <linearGradient id="areaGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-              <stop offset="0%" stopColor="#362AB8" stopOpacity="0.15"/>
-              <stop offset="100%" stopColor="#362AB8" stopOpacity="0.02"/>
-            </linearGradient>
-          </defs>
-          
-          {/* Background */}
-          <rect width="100%" height="100%" fill="url(#modernGrid)" />
-          
-          {/* Y-axis labels - Adjusted for new viewBox */}
-          {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((value) => {
-            const y = 160 - (value / 8) * 140;
-            return (
-              <g key={value}>
-                <line x1="30" y1={y} x2="350" y2={y} stroke="#e2e8f0" strokeWidth="0.5" opacity="0.5"/>
-                <text x="25" y={y + 4} textAnchor="end" className="text-xs fill-gray-400" fontSize="10">
-                  {value}
-                </text>
-              </g>
-            );
-          })}
-          
-          {/* Team Average Line - Adjusted coordinates */}
-          {teamDailyAverages.length > 0 && (
-            <path
-              d={teamDailyAverages.map((point: any, index: number) => {
-                const x = (index / (teamDailyAverages.length - 1)) * 320 + 30;
-                const y = 160 - (point.teamAverage / Math.max(maxExaminations, maxTeamAverage)) * 140;
-                return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
-              }).join(' ')}
-              fill="none"
-              stroke="#94a3b8"
-              strokeWidth="2"
-              strokeDasharray="5,5"
-              opacity="0.7"
-            />
-          )}
-          
-          {/* Area Fill - Adjusted coordinates */}
-          <path
-            d={`M 30 160 ${dailyData.map((point: any, index: number) => {
-              const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                       (index / (dailyData.length - 1)) * 320 + 30;
-              const y = 160 - (point.examinations / maxExaminations) * 140;
-              return `L ${x} ${y}`;
-            }).join(' ')} L 350 160 Z`}
-            fill="url(#areaGradient)"
+    <ResponsiveContainer width="100%" height="100%">
+      <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+        <XAxis 
+          dataKey="date" 
+          stroke="#6b7280"
+          fontSize={12}
+          tickLine={false}
+          axisLine={false}
+          tickFormatter={(value) => new Date(value).toLocaleDateString('en-US', { day: 'numeric' })}
+        />
+        <YAxis 
+          stroke="#6b7280"
+          fontSize={12}
+          tickLine={false}
+          axisLine={false}
+          domain={[0, 'dataMax']}
+        />
+        <Tooltip 
+          contentStyle={{
+            backgroundColor: '#1f2937',
+            border: 'none',
+            borderRadius: '8px',
+            color: '#f9fafb'
+          }}
+          itemStyle={{ color: '#f9fafb' }}
+          formatter={(value, name) => {
+            if (name === 'examinations') {
+              return [value, 'Your Examinations'];
+            } else if (name === 'teamAverage') {
+              return [value, 'Team Average'];
+            }
+            return [value, name];
+          }}
+        />
+        <Line 
+          type="monotone" 
+          dataKey="examinations" 
+          stroke="#6c4edb"
+          strokeWidth={3}
+          dot={{ fill: '#6c4edb', strokeWidth: 2, r: 4 }}
+          activeDot={{ r: 6, stroke: '#6c4edb', strokeWidth: 2 }}
+        />
+        {teamDailyAverages.length > 0 && (
+          <Line 
+            type="monotone" 
+            dataKey="teamAverage" 
+            stroke="#9ca3af"
+            strokeWidth={2}
+            strokeDasharray="5 5"
+            dot={{ fill: '#9ca3af', strokeWidth: 2, r: 3 }}
+            activeDot={{ r: 5, stroke: '#9ca3af', strokeWidth: 2 }}
           />
-          
-          {/* Main Line - Adjusted coordinates */}
-          <path
-            d={dailyData.map((point: any, index: number) => {
-              const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                       (index / (dailyData.length - 1)) * 320 + 30;
-              const y = 160 - (point.examinations / maxExaminations) * 140;
-              return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
-            }).join(' ')}
-            fill="none"
-            stroke="url(#mainGradient)"
-            strokeWidth="3"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className="drop-shadow-lg"
-          />
-          
-          {/* Data Points - Adjusted coordinates */}
-          {dailyData.map((point: any, index: number) => {
-            const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                     (index / (dailyData.length - 1)) * 320 + 30;
-            const y = 160 - (point.examinations / maxExaminations) * 140;
-            return (
-              <g key={index}>
-                {/* Glow effect */}
-                <circle
-                  cx={x}
-                  cy={y}
-                  r="6"
-                  fill="#362AB8"
-                  opacity="0.2"
-                />
-                {/* Main circle */}
-                <circle
-                  cx={x}
-                  cy={y}
-                  r="4"
-                  fill="#362AB8"
-                  stroke="white"
-                  strokeWidth="2"
-                  className="hover:r-6 transition-all duration-200 cursor-pointer drop-shadow-sm"
-                />
-                {/* Inner dot */}
-                <circle
-                  cx={x}
-                  cy={y}
-                  r="2"
-                  fill="white"
-                  opacity="0.8"
-                />
-                {/* Hover tooltip - only visible on hover */}
-                <g className="opacity-0 hover:opacity-100 transition-opacity duration-200">
-                  <rect
-                    x={x - 15}
-                    y={y - 25}
-                    width="30"
-                    height="16"
-                    fill="#374151"
-                    rx="3"
-                    className="drop-shadow-md"
-                  />
-                  <text
-                    x={x}
-                    y={y - 15}
-                    textAnchor="middle"
-                    className="text-xs font-semibold fill-white"
-                    fontSize="10"
-                  >
-                    {point.examinations}
-                  </text>
-                </g>
-              </g>
-            );
-          })}
-
-          {/* X-Axis Labels - Positioned within the main chart SVG */}
-          {dailyData.map((point: any, index: number) => {
-            // Show every nth label to avoid overcrowding
-            const showLabel = index % Math.max(1, Math.ceil(dailyData.length / 6)) === 0 || index === dailyData.length - 1;
-            if (!showLabel) return null;
-            
-            // Use the exact same calculation as the data points
-            const x = dailyData.length === 1 ? 30 + 320 / 2 : 
-                     (index / (dailyData.length - 1)) * 320 + 30;
-            
-            return (
-              <g key={`label-${index}`}>
-                <text
-                  x={x}
-                  y="175"
-                  textAnchor="middle"
-                  className="text-xs font-semibold fill-gray-800"
-                  fontSize="10"
-                >
-                  {point.dayNumber}
-                </text>
-                <text
-                  x={x}
-                  y="185"
-                  textAnchor="middle"
-                  className="text-xs fill-gray-500"
-                  fontSize="9"
-                >
-                  {point.dayName}
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
-    </div>
+        )}
+        <Legend 
+          wrapperStyle={{ paddingTop: '20px' }}
+          formatter={(value) => {
+            if (value === 'examinations') return 'Your Examinations';
+            if (value === 'teamAverage') return 'Team Average';
+            return value;
+          }}
+        />
+      </LineChart>
+    </ResponsiveContainer>
   );
 }
 
@@ -599,7 +402,7 @@ const getRoleTableHeaders = (role: string): string[] => {
 
 
 // Helper function to get role-based table data
-const getRoleTableData = (employee: Employee): (string | number)[] => {
+const getRoleTableData = (employee: Employee, performanceData?: any): (string | number)[] => {
   const role = employee.bonuses_role?.toLowerCase();
   const metrics = employee.performance_metrics || {
     total_meetings: 0,
@@ -611,34 +414,39 @@ const getRoleTableData = (employee: Employee): (string | number)[] => {
   
   switch (role) {
     case 'h': // Handler
+      // Use performance data if available, otherwise fall back to employee metrics
+      const handlerMetrics = performanceData?.roleMetrics?.handler;
       return [
         getRoleDisplayName(employee.bonuses_role),
-        (metrics as any).cases_handled || 0,
-        (metrics as any).applicants_processed || 0,
-        formatCurrency((metrics as any).total_invoiced_amount || 0)
+        handlerMetrics?.cases || (metrics as any).cases_handled || 0,
+        handlerMetrics?.applicants || (metrics as any).applicants_processed || 0,
+        `₪${(handlerMetrics?.invoiced || (metrics as any).total_invoiced_amount || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
       ];
     
     case 'c': // Closer
+      const closerMetrics = performanceData?.roleMetrics?.closer;
       return [
         getRoleDisplayName(employee.bonuses_role),
-        (metrics as any).signed_agreements || 0,
-        formatCurrency((metrics as any).total_agreement_amount || 0),
-        formatCurrency((metrics as any).total_due || 0)
+        closerMetrics?.signed || (metrics as any).signed_agreements || 0,
+        `₪${(closerMetrics?.total || (metrics as any).total_agreement_amount || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`,
+        `₪${(closerMetrics?.invoiced || (metrics as any).total_due || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
       ];
     
     case 'e': // Expert
+      const expertMetrics = performanceData?.roleMetrics?.expert;
       return [
         getRoleDisplayName(employee.bonuses_role),
-        (metrics as any).expert_examinations || 0,
-        formatCurrency((metrics as any).expert_total || 0)
+        expertMetrics?.signed || (metrics as any).expert_examinations || 0,
+        `₪${(expertMetrics?.total || (metrics as any).expert_total || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
       ];
     
     case 's': // Scheduler
+      const schedulerMetrics = performanceData?.roleMetrics?.scheduler;
       return [
         getRoleDisplayName(employee.bonuses_role),
-        (metrics as any).meetings_scheduled || 0,
-        (metrics as any).signed_meetings || 0,
-        formatCurrency((metrics as any).due_total || 0)
+        schedulerMetrics?.signed || (metrics as any).meetings_scheduled || 0,
+        schedulerMetrics?.signed || (metrics as any).signed_meetings || 0,
+        `₪${(schedulerMetrics?.invoiced || (metrics as any).due_total || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
       ];
     
     case 'z': // Manager
@@ -661,6 +469,299 @@ const getRoleTableData = (employee: Employee): (string | number)[] => {
   }
 };
 
+// Salary History Component
+interface SalaryHistoryProps {
+  employeeId: string;
+}
+
+// Bonus Breakdown Component
+interface BonusBreakdownProps {
+  employee: Employee;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+const BonusBreakdown: React.FC<BonusBreakdownProps> = ({ employee, dateFrom, dateTo }) => {
+  const [bonusData, setBonusData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  React.useEffect(() => {
+    const fetchBonusData = async () => {
+      if (!dateFrom || !dateTo) return;
+      
+      setLoading(true);
+      try {
+        const monthlyPoolAmount = 100000; // This should be configurable
+        const bonus = await calculateEmployeeBonus(
+          employee.id,
+          employee.bonuses_role,
+          dateFrom,
+          dateTo,
+          monthlyPoolAmount
+        );
+        setBonusData(bonus);
+      } catch (error) {
+        console.error('Error fetching bonus data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchBonusData();
+  }, [employee.id, employee.bonuses_role, dateFrom, dateTo]);
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <BanknotesIcon className="w-5 h-5 text-warning" />
+          <h3 className="text-lg font-semibold">Bonus Breakdown</h3>
+        </div>
+        <div className="text-center py-4">
+          <span className="loading loading-spinner loading-md"></span>
+          <p className="mt-2 text-gray-600">Calculating bonus...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!bonusData || bonusData.roleBonuses.length === 0) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <BanknotesIcon className="w-5 h-5 text-warning" />
+          <h3 className="text-lg font-semibold">Bonus Breakdown</h3>
+        </div>
+        <div className="text-center py-4 text-gray-500">
+          No bonus data available for the selected period
+        </div>
+      </div>
+    );
+  }
+
+  const formatCurrency = (amount: number) => {
+    return `₪${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <BanknotesIcon className="w-5 h-5 text-warning" />
+        <h3 className="text-lg font-semibold">Bonus Breakdown</h3>
+      </div>
+      
+      {/* Total Bonus */}
+      <div className="card bg-warning/10 border border-warning/20">
+        <div className="card-body p-4">
+          <div className="flex items-center justify-between">
+            <span className="font-semibold text-warning">Total Calculated Bonus</span>
+            <span className="text-2xl font-bold text-warning">
+              {formatCurrency(bonusData.totalBonus)}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Role Bonuses */}
+      <div className="space-y-3">
+        {bonusData.roleBonuses.map((roleBonus: any, index: number) => (
+          <div key={index} className="card bg-base-100 border border-gray-200">
+            <div className="card-body p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="badge badge-primary">
+                    {getBonusRoleDisplayName(roleBonus.role)}
+                  </span>
+                  <span className="text-sm text-gray-600">
+                    {roleBonus.percentage}%
+                  </span>
+                </div>
+                <span className="font-semibold text-warning">
+                  {formatCurrency(roleBonus.bonusAmount)}
+                </span>
+              </div>
+              
+              <div className="text-sm text-gray-600 space-y-1">
+                <div className="flex justify-between">
+                  <span>Base Amount:</span>
+                  <span>{formatCurrency(roleBonus.baseAmount)}</span>
+                </div>
+                {roleBonus.leadCount > 0 && (
+                  <div className="flex justify-between">
+                    <span>Leads:</span>
+                    <span>{roleBonus.leadCount}</span>
+                  </div>
+                )}
+                {roleBonus.isPoolBased && (
+                  <div className="flex justify-between">
+                    <span>Type:</span>
+                    <span className="text-blue-600">Monthly Pool</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+const SalaryHistory: React.FC<SalaryHistoryProps> = ({ employeeId }) => {
+  const [salaryRecords, setSalaryRecords] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Fetch salary records for the employee
+  const fetchSalaryRecords = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('employee_salaries')
+        .select('*')
+        .eq('employee_id', parseInt(employeeId))
+        .order('year', { ascending: false })
+        .order('month', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching salary records:', error);
+        setError('Failed to load salary records');
+        return;
+      }
+
+      setSalaryRecords(data || []);
+    } catch (err) {
+      console.error('Error fetching salary records:', err);
+      setError('Failed to load salary records');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Fetch salary records on component mount
+  React.useEffect(() => {
+    fetchSalaryRecords();
+  }, [employeeId]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <span className="loading loading-spinner loading-lg"></span>
+        <span className="ml-3 text-gray-600">Loading salary history...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="alert alert-error">
+        <XCircleIcon className="w-5 h-5" />
+        <span>{error}</span>
+      </div>
+    );
+  }
+
+  if (salaryRecords.length === 0) {
+    return (
+      <div className="text-center py-8">
+        <CurrencyDollarIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+        <h4 className="text-lg font-semibold text-gray-600 mb-2">No Salary Records</h4>
+        <p className="text-sm text-gray-500">No salary records found for this employee.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Summary Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="stat bg-base-200 rounded-lg">
+          <div className="stat-figure text-primary">
+            <CurrencyDollarIcon className="w-8 h-8" />
+          </div>
+          <div className="stat-title">Total Records</div>
+          <div className="stat-value text-primary">{salaryRecords.length}</div>
+        </div>
+        
+        <div className="stat bg-base-200 rounded-lg">
+          <div className="stat-figure text-secondary">
+            <CalendarIcon className="w-8 h-8" />
+          </div>
+          <div className="stat-title">Latest Salary</div>
+          <div className="stat-value text-secondary">
+            ₪{salaryRecords[0]?.salary_amount?.toLocaleString() || '0'}
+          </div>
+        </div>
+        
+        <div className="stat bg-base-200 rounded-lg">
+          <div className="stat-figure text-accent">
+            <ChartBarIcon className="w-8 h-8" />
+          </div>
+          <div className="stat-title">Average Salary</div>
+          <div className="stat-value text-accent">
+            ₪{Math.round(salaryRecords.reduce((sum, record) => sum + record.salary_amount, 0) / salaryRecords.length).toLocaleString()}
+          </div>
+        </div>
+      </div>
+
+      {/* Salary Records Table */}
+      <div className="overflow-x-auto">
+        <table className="table w-full">
+          <thead>
+            <tr>
+              <th>Period</th>
+              <th>Salary Amount</th>
+              <th>Created</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {salaryRecords.map((record) => {
+              const monthName = new Date(record.year, record.month - 1).toLocaleDateString('en-US', { month: 'long' });
+              return (
+                <tr key={record.id}>
+                  <td>
+                    <div className="flex items-center gap-2">
+                      <CalendarIcon className="w-4 h-4 text-gray-500" />
+                      <span className="font-medium">{monthName} {record.year}</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="flex items-center gap-2">
+                      <CurrencyDollarIcon className="w-4 h-4 text-green-500" />
+                      <span className="font-semibold text-green-600">
+                        ₪{record.salary_amount.toLocaleString()}
+                      </span>
+                    </div>
+                  </td>
+                  <td>
+                    <span className="text-sm text-gray-600">
+                      {new Date(record.created_at).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                      })}
+                    </span>
+                  </td>
+                  <td>
+                    <span className="text-sm text-gray-600">
+                      {new Date(record.updated_at).toLocaleDateString('en-US', {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric'
+                      })}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, isOpen, onClose }) => {
   const [showRoleDetails, setShowRoleDetails] = useState(false);
   const [selectedRole, setSelectedRole] = useState<string>('');
@@ -668,7 +769,56 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const [loadingRoleLeads, setLoadingRoleLeads] = useState(false);
   const [fromDate, setFromDate] = useState<string>('');
   const [toDate, setToDate] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'overview' | 'availability' | 'tasks' | 'clients' | 'feedback'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'availability' | 'tasks' | 'clients' | 'feedback' | 'salary' | 'bonus'>('overview');
+
+  // Populate monthly bonus pools cache when modal opens
+  React.useEffect(() => {
+    if (isOpen && employee) {
+      populateMonthlyBonusPoolsCache();
+    }
+  }, [isOpen, employee]);
+
+  // Function to populate the monthly bonus pools cache
+  const populateMonthlyBonusPoolsCache = async () => {
+    try {
+      console.log('🔄 Populating monthly bonus pools cache...');
+      
+      // Initialize cache if it doesn't exist
+      if (!window.monthlyBonusPoolsCache) {
+        window.monthlyBonusPoolsCache = {};
+      }
+      
+      // Get the current year and fetch pools for the last 12 months
+      const currentYear = new Date().getFullYear();
+      const currentMonth = new Date().getMonth() + 1;
+      
+      // Fetch pools for current year and previous year
+      for (let year = currentYear - 1; year <= currentYear; year++) {
+        for (let month = 1; month <= 12; month++) {
+          const poolKey = `${year}-${month}`;
+          
+          // Skip if already cached
+          if (window.monthlyBonusPoolsCache[poolKey]) {
+            continue;
+          }
+          
+          try {
+            const pool = await fetchMonthlyBonusPool(year, month);
+            if (pool) {
+              window.monthlyBonusPoolsCache[poolKey] = pool;
+              console.log(`✅ Cached pool for ${poolKey}: ${pool.pool_percentage}%`);
+            }
+          } catch (error) {
+            console.log(`📊 No pool found for ${poolKey}`);
+          }
+        }
+      }
+      
+      console.log('🎯 Monthly bonus pools cache populated:', window.monthlyBonusPoolsCache);
+    } catch (error) {
+      console.error('❌ Error populating monthly bonus pools cache:', error);
+    }
+  };
   const [unavailableTimes, setUnavailableTimes] = useState<any[]>([]);
   const [unavailableRanges, setUnavailableRanges] = useState<any[]>([]);
   const [loadingAvailability, setLoadingAvailability] = useState(false);
@@ -688,6 +838,24 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const [newBackgroundUrl, setNewBackgroundUrl] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  
+  // Interactive graphs state
+  const [showRevenueGraph, setShowRevenueGraph] = useState(false);
+  const [revenueGraphData, setRevenueGraphData] = useState<any[]>([]);
+  const [showMeetingsGraph, setShowMeetingsGraph] = useState(false);
+  const [meetingsGraphData, setMeetingsGraphData] = useState<any[]>([]);
+  const [meetingsByTypeData, setMeetingsByTypeData] = useState<any[]>([]);
+  const [showContractsGraph, setShowContractsGraph] = useState(false);
+  const [contractsGraphData, setContractsGraphData] = useState<any[]>([]);
+  const [contractsByDepartmentData, setContractsByDepartmentData] = useState<any[]>([]);
+  
+  // Loading states for graphs
+  const [revenueGraphLoading, setRevenueGraphLoading] = useState(false);
+  const [meetingsGraphLoading, setMeetingsGraphLoading] = useState(false);
+  const [contractsGraphLoading, setContractsGraphLoading] = useState(false);
+  const [graphYear, setGraphYear] = useState<number>(new Date().getFullYear());
+  const [graphStartMonth, setGraphStartMonth] = useState<number>(1);
+  const [graphEndMonth, setGraphEndMonth] = useState<number>(new Date().getMonth() + 1);
 
   // Function to upload image to Supabase storage
   const uploadImageToStorage = async (file: File): Promise<string | null> => {
@@ -1091,6 +1259,16 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
         }
         
         signedLeads = leadsData || [];
+        
+        // Add stage date to each lead for proper date filtering
+        signedLeads = signedLeads.map(lead => {
+          const correspondingStage = signedStages.find(stage => stage.lead_id === lead.id);
+          return {
+            ...lead,
+            stage_date: correspondingStage?.cdate || lead.cdate // Use stage date if available, fallback to lead date
+          };
+        });
+        
         console.log('📊 Signed leads fetched:', signedLeads.length);
         console.log('📊 Sample signed lead:', signedLeads[0]);
       }
@@ -1390,6 +1568,493 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     }
   }, [employee, fromDate, toDate]);
 
+  // Fetch revenue data for the graph (employee-specific)
+  const fetchRevenueGraphData = async (year: number, startMonth: number, endMonth: number) => {
+    setRevenueGraphLoading(true);
+    try {
+      if (!employee) return;
+      
+      console.log(`📊 Fetching revenue graph data for employee ${employee.display_name} (${year}, months ${startMonth}-${endMonth})`);
+      
+      const { supabase } = await import('../lib/supabase');
+      
+      // Calculate date range for the entire period
+      const startDate = new Date(year, startMonth - 1, 1);
+      const endDate = new Date(year, endMonth, 0, 23, 59, 59);
+      const startDateStr = startDate.toISOString().split('T')[0];
+      const endDateStr = endDate.toISOString().split('T')[0];
+      
+      console.log(`📊 Fetching employee revenue data for period: ${startDateStr} to ${endDateStr}`);
+      
+      // Fetch signed stages for the entire period
+      const { data: stageRecords, error: stageError } = await supabase
+        .from('leads_leadstage')
+        .select('lead_id, date')
+        .eq('stage', 60)
+        .gte('date', startDate.toISOString())
+        .lte('date', endDate.toISOString());
+      
+      if (stageError) {
+        console.error('Error fetching stages:', stageError);
+        return;
+      }
+      
+      if (!stageRecords || stageRecords.length === 0) {
+        setRevenueGraphData([]);
+        return;
+      }
+      
+      // Fetch leads data for the signed stages
+      const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
+      const { data: leadsData, error: leadsError } = await supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          total,
+          meeting_total_currency_id,
+          case_handler_id,
+          closer_id,
+          expert_id,
+          meeting_scheduler_id,
+          meeting_manager_id,
+          meeting_lawyer_id
+        `)
+        .in('id', leadIds);
+      
+      if (leadsError) {
+        console.error('Error fetching leads:', leadsError);
+        return;
+      }
+      
+      // Create a map for quick lookup of lead details
+      const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]));
+      
+      // Process data by month
+      const graphData = [];
+      
+      for (let month = startMonth; month <= endMonth; month++) {
+        const monthStartDate = new Date(year, month - 1, 1);
+        const monthEndDate = new Date(year, month, 0, 23, 59, 59);
+        
+        // Filter stages for this month
+        const monthStages = stageRecords.filter(record => {
+          const recordDate = new Date(record.date);
+          return recordDate >= monthStartDate && recordDate <= monthEndDate;
+        });
+        
+        // Calculate total revenue for this month
+        let monthRevenue = 0;
+        let monthContracts = 0;
+        
+        monthStages.forEach(stage => {
+          const lead = leadsMap.get(stage.lead_id);
+          if (lead) {
+            // Check if this lead belongs to the current employee in their MAIN role only
+            const employeeIdStr = String(employee.id);
+            const mainRole = employee.bonuses_role?.toLowerCase();
+            let isEmployeeLead = false;
+            
+            switch (mainRole) {
+              case 'h': // Handler
+                isEmployeeLead = lead.case_handler_id === employeeIdStr;
+                break;
+              case 'c': // Closer
+                isEmployeeLead = lead.closer_id === employeeIdStr;
+                break;
+              case 'e': // Expert
+                isEmployeeLead = lead.expert_id === employeeIdStr;
+                break;
+              case 's': // Scheduler
+                isEmployeeLead = lead.meeting_scheduler_id === employeeIdStr;
+                break;
+              case 'z': // Manager
+              case 'Z': // Manager
+                isEmployeeLead = lead.meeting_manager_id === employeeIdStr;
+                break;
+              case 'helper-closer': // Helper Closer
+                isEmployeeLead = lead.meeting_lawyer_id === employeeIdStr;
+                break;
+              default:
+                // If no main role defined, don't count any revenue
+                isEmployeeLead = false;
+            }
+            
+            if (isEmployeeLead) {
+              const amount = parseFloat(lead.total) || 0;
+              const amountInNIS = convertToNIS(amount, lead.meeting_total_currency_id);
+              monthRevenue += amountInNIS;
+              monthContracts += 1;
+              
+              console.log(`✅ Revenue - Lead ${lead.id}: ${amount} (${lead.meeting_total_currency_id}) -> ₪${amountInNIS} for employee ${employee.display_name} in main role: ${mainRole}`);
+            }
+          }
+        });
+        
+        graphData.push({
+          month: month,
+          monthName: monthStartDate.toLocaleDateString('en-US', { month: 'short' }),
+          revenue: Math.round(monthRevenue),
+          contracts: monthContracts
+        });
+        
+        console.log(`📊 ${year}-${month}: ${monthContracts} employee contracts, ₪${Math.round(monthRevenue)} employee revenue for main role: ${employee.bonuses_role?.toLowerCase()}`);
+      }
+      
+      console.log('📊 Employee revenue graph data:', graphData);
+      setRevenueGraphData(graphData);
+      
+    } catch (error) {
+      console.error('Error fetching employee revenue graph data:', error);
+    } finally {
+      setRevenueGraphLoading(false);
+    }
+  };
+
+  // Fetch meetings data for the graph (employee-specific)
+  const fetchMeetingsGraphData = async (year: number, startMonth: number, endMonth: number) => {
+    setMeetingsGraphLoading(true);
+    try {
+      if (!employee) return;
+      
+      console.log(`📊 Fetching meetings graph data for employee ${employee.display_name} (${year}, months ${startMonth}-${endMonth})`);
+      
+      const { supabase } = await import('../lib/supabase');
+      
+      // Calculate date range for the entire period
+      const startDate = new Date(year, startMonth - 1, 1);
+      const endDate = new Date(year, endMonth, 0, 23, 59, 59);
+      const startDateStr = startDate.toISOString().split('T')[0];
+      const endDateStr = endDate.toISOString().split('T')[0];
+      
+      console.log(`📊 Fetching employee meetings data for period: ${startDateStr} to ${endDateStr}`);
+      
+      // Fetch all regular meetings for the entire period
+      const { data: allRegularMeetings, error: regularMeetingsError } = await supabase
+        .from('meetings')
+        .select(`
+          id, 
+          meeting_date, 
+          legacy_lead_id
+        `)
+        .gte('meeting_date', startDateStr)
+        .lte('meeting_date', endDateStr);
+      
+      if (regularMeetingsError) {
+        console.error('Error fetching regular meetings:', regularMeetingsError);
+      }
+      
+      // Fetch all legacy meetings for the entire period
+      const { data: allLegacyMeetings, error: legacyMeetingsError } = await supabase
+        .from('leads_lead')
+        .select(`
+          id, 
+          meeting_date
+        `)
+        .gte('meeting_date', startDateStr)
+        .lte('meeting_date', endDateStr)
+        .not('meeting_date', 'is', null);
+      
+      if (legacyMeetingsError) {
+        console.error('Error fetching legacy meetings:', legacyMeetingsError);
+      }
+      
+      // Collect all unique lead IDs from both regular and legacy meetings
+      const allLeadIds = new Set<number>();
+      allRegularMeetings?.forEach(meeting => {
+        if (meeting.legacy_lead_id) allLeadIds.add(meeting.legacy_lead_id);
+      });
+      allLegacyMeetings?.forEach(meeting => allLeadIds.add(meeting.id));
+      
+      // Fetch lead details (including role fields) for all unique leads
+      let leadsData: any[] = [];
+      if (allLeadIds.size > 0) {
+        const { data, error } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            case_handler_id,
+            closer_id,
+            expert_id,
+            meeting_scheduler_id,
+            meeting_manager_id,
+            meeting_lawyer_id,
+            misc_category(
+              misc_maincategory(
+                tenant_departement(name)
+              )
+            )
+          `)
+          .in('id', Array.from(allLeadIds));
+        if (error) console.error('Error fetching lead details for meetings:', error);
+        else leadsData = data || [];
+      }
+      
+      const leadsMap = new Map(leadsData.map(lead => [lead.id, lead]));
+      
+      // Filter meetings by employee using role-based filtering
+      const employeeRegularMeetings = allRegularMeetings?.filter(meeting => {
+        const lead = leadsMap.get(meeting.legacy_lead_id);
+        if (!lead) return false;
+        
+        const employeeIdStr = String(employee.id);
+        return lead.case_handler_id === employeeIdStr ||
+               lead.closer_id === employeeIdStr ||
+               lead.expert_id === employeeIdStr ||
+               lead.meeting_scheduler_id === employeeIdStr ||
+               lead.meeting_manager_id === employeeIdStr ||
+               lead.meeting_lawyer_id === employeeIdStr;
+      }) || [];
+      
+      const employeeLegacyMeetings = allLegacyMeetings?.filter(meeting => {
+        const lead = leadsMap.get(meeting.id);
+        if (!lead) return false;
+        
+        const employeeIdStr = String(employee.id);
+        return lead.case_handler_id === employeeIdStr ||
+               lead.closer_id === employeeIdStr ||
+               lead.expert_id === employeeIdStr ||
+               lead.meeting_scheduler_id === employeeIdStr ||
+               lead.meeting_manager_id === employeeIdStr ||
+               lead.meeting_lawyer_id === employeeIdStr;
+      }) || [];
+      
+      console.log(`📊 Found ${employeeRegularMeetings.length} employee regular meetings and ${employeeLegacyMeetings.length} employee legacy meetings`);
+      
+      // Process data by month
+      const graphData = [];
+      const meetingsByDept = new Map();
+      
+      for (let month = startMonth; month <= endMonth; month++) {
+        const monthStartDate = new Date(year, month - 1, 1);
+        const monthEndDate = new Date(year, month, 0, 23, 59, 59);
+        const monthStartStr = monthStartDate.toISOString().split('T')[0];
+        const monthEndStr = monthEndDate.toISOString().split('T')[0];
+        
+        // Filter meetings for this month
+        const monthRegularMeetings = employeeRegularMeetings.filter(meeting => 
+          meeting.meeting_date >= monthStartStr && meeting.meeting_date <= monthEndStr
+        );
+        
+        const monthLegacyMeetings = employeeLegacyMeetings.filter(meeting => 
+          meeting.meeting_date >= monthStartStr && meeting.meeting_date <= monthEndStr
+        );
+        
+        // Create a set to track unique meetings and avoid double counting
+        const uniqueMeetings = new Set();
+        
+        // Add regular meetings to the set
+        monthRegularMeetings.forEach(meeting => {
+          uniqueMeetings.add(`regular_${meeting.id}`);
+        });
+        
+        // Add legacy meetings to the set, but only if they don't have a corresponding regular meeting
+        monthLegacyMeetings.forEach(legacyMeeting => {
+          // Check if this legacy meeting already has a corresponding regular meeting
+          const hasRegularMeeting = monthRegularMeetings.some(regularMeeting => 
+            regularMeeting.legacy_lead_id === legacyMeeting.id
+          );
+          
+          // Only add if there's no corresponding regular meeting
+          if (!hasRegularMeeting) {
+            uniqueMeetings.add(`legacy_${legacyMeeting.id}`);
+          }
+        });
+        
+        const totalMeetings = uniqueMeetings.size;
+        const regularCount = monthRegularMeetings.length;
+        const legacyCount = monthLegacyMeetings.length;
+        
+        graphData.push({
+          month: month,
+          monthName: monthStartDate.toLocaleDateString('en-US', { month: 'short' }),
+          total: totalMeetings
+        });
+        
+        console.log(`📊 ${year}-${month}: ${totalMeetings} unique employee meetings (${regularCount} regular + ${legacyCount} legacy, ${regularCount + legacyCount - totalMeetings} duplicates removed)`);
+      }
+      
+      // Get department data for employee meetings
+      const departmentCounts = new Map();
+      
+      // Count meetings by department using the employee-filtered data
+      employeeRegularMeetings.forEach(meeting => {
+        const lead = leadsMap.get(meeting.legacy_lead_id);
+        if (lead) {
+          const leadData = lead as any;
+          const departmentName = leadData.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
+          console.log(`🔍 Meeting ${meeting.id} department structure:`, {
+            misc_category: lead.misc_category,
+            departmentName: departmentName
+          });
+          departmentCounts.set(departmentName, (departmentCounts.get(departmentName) || 0) + 1);
+        }
+      });
+      
+      employeeLegacyMeetings.forEach(meeting => {
+        const lead = leadsMap.get(meeting.id);
+        if (lead) {
+          const leadData = lead as any;
+          const departmentName = leadData.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
+          departmentCounts.set(departmentName, (departmentCounts.get(departmentName) || 0) + 1);
+        }
+      });
+      
+      // Convert meetings by department to array
+      const meetingsByDeptArray = Array.from(departmentCounts.entries()).map(([dept, count]) => ({
+        department: dept,
+        meetings: count
+      }));
+      
+      console.log('📊 Meetings graph data:', graphData);
+      console.log('📊 Meetings by department data:', meetingsByDeptArray);
+      setMeetingsGraphData(graphData);
+      setMeetingsByTypeData(meetingsByDeptArray);
+      
+    } catch (error) {
+      console.error('Error fetching meetings graph data:', error);
+    } finally {
+      setMeetingsGraphLoading(false);
+    }
+  };
+
+  // Fetch contracts data for the graph (employee-specific)
+  const fetchContractsGraphData = async (year: number, startMonth: number, endMonth: number) => {
+    setContractsGraphLoading(true);
+    try {
+      if (!employee) return;
+      
+      console.log(`📊 Fetching contracts graph data for employee ${employee.display_name} (ID: ${employee.id}) (${year}, months ${startMonth}-${endMonth})`);
+      console.log(`🔍 Employee object:`, { id: employee.id, display_name: employee.display_name, email: employee.email, department: employee.department });
+      
+      const { supabase } = await import('../lib/supabase');
+      
+      const graphData = [];
+      const contractsByDept = new Map();
+      
+      for (let month = startMonth; month <= endMonth; month++) {
+        const startDate = new Date(year, month - 1, 1);
+        const endDate = new Date(year, month, 0, 23, 59, 59);
+        const startDateStr = startDate.toISOString().split('T')[0];
+        const endDateStr = endDate.toISOString().split('T')[0];
+        
+        console.log(`📊 Fetching employee contracts data for ${year}-${month.toString().padStart(2, '0')}: ${startDateStr} to ${endDateStr}`);
+        
+        // Fetch signed stages (stage 60 - agreement signed) for this month
+        const { data: signedStages, error: stagesError } = await supabase
+          .from('leads_leadstage')
+          .select(`
+            id,
+            lead_id,
+            stage,
+            cdate
+          `)
+          .eq('stage', 60)
+          .gte('cdate', startDateStr)
+          .lte('cdate', endDateStr);
+        
+        if (stagesError) {
+          console.error(`Error fetching signed stages for ${year}-${month}:`, stagesError);
+          continue;
+        }
+        
+        let monthContracts = 0;
+        
+        if (signedStages && signedStages.length > 0) {
+          // Fetch leads data for the signed stages to get department info
+          const leadIds = [...new Set(signedStages.map(stage => stage.lead_id).filter(id => id !== null))];
+          
+          const { data: leadsData, error: leadsError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              case_handler_id,
+              closer_id,
+              expert_id,
+              meeting_scheduler_id,
+              meeting_manager_id,
+              meeting_lawyer_id,
+              misc_category(
+                misc_maincategory(
+                  tenant_departement(name)
+                )
+              )
+            `)
+            .in('id', leadIds);
+          
+          if (leadsError) {
+            console.error(`Error fetching leads data for ${year}-${month}:`, leadsError);
+            continue;
+          }
+          
+          
+          // Filter contracts by employee using role-based filtering
+          const employeeContracts = signedStages.filter(stage => {
+            const lead = leadsData?.find(l => l.id === stage.lead_id);
+            if (!lead) return false;
+            
+            const employeeIdStr = String(employee.id);
+            const isEmployeeLead = 
+              lead.case_handler_id === employeeIdStr ||
+              lead.closer_id === employeeIdStr ||
+              lead.expert_id === employeeIdStr ||
+              lead.meeting_scheduler_id === employeeIdStr ||
+              lead.meeting_manager_id === employeeIdStr ||
+              lead.meeting_lawyer_id === employeeIdStr;
+            
+            if (isEmployeeLead) {
+              console.log(`✅ Found employee ${employee.display_name} (${employee.id}) in lead ${lead.id} with role`);
+            }
+            
+            return isEmployeeLead;
+          });
+          
+          console.log(`📊 Found ${employeeContracts.length} employee contracts out of ${signedStages.length} total for ${year}-${month}`);
+          
+          // Count contracts and track departments
+          employeeContracts.forEach(stage => {
+            const lead = leadsData?.find(l => l.id === stage.lead_id);
+            if (lead) {
+              monthContracts += 1;
+              
+              // Track department for contracts
+              const leadData = lead as any;
+              const departmentName = leadData.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
+              console.log(`🔍 Lead ${lead.id} department structure:`, {
+                misc_category: lead.misc_category,
+                departmentName: departmentName
+              });
+              contractsByDept.set(departmentName, (contractsByDept.get(departmentName) || 0) + 1);
+            }
+          });
+        }
+        
+        graphData.push({
+          month: month,
+          monthName: startDate.toLocaleDateString('en-US', { month: 'short' }),
+          contracts: monthContracts
+        });
+        
+        console.log(`📊 ${year}-${month}: ${monthContracts} employee contracts`);
+      }
+      
+      // Convert contracts by department to array
+      const contractsByDeptArray = Array.from(contractsByDept.entries()).map(([dept, count]) => ({
+        department: dept,
+        contracts: count
+      }));
+      
+      console.log('📊 Contracts graph data:', graphData);
+      console.log('📊 Contracts by department data:', contractsByDeptArray);
+      setContractsGraphData(graphData);
+      setContractsByDepartmentData(contractsByDeptArray);
+      
+    } catch (error) {
+      console.error('Error fetching contracts graph data:', error);
+    } finally {
+      setContractsGraphLoading(false);
+    }
+  };
+
   // Function to process performance data
   const processPerformanceData = (signedLeads: any[], proformaInvoices: any[], employee: Employee, expertData?: any, closerData?: any) => {
     const employeeId = employee.id;
@@ -1632,6 +2297,25 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     }
   }, [activeTab, employee, fetchAvailabilityData]);
 
+  // Fetch graph data when graphs are shown
+  React.useEffect(() => {
+    if (showRevenueGraph && employee) {
+      fetchRevenueGraphData(graphYear, graphStartMonth, graphEndMonth);
+    }
+  }, [showRevenueGraph, graphYear, graphStartMonth, graphEndMonth, employee]);
+
+  React.useEffect(() => {
+    if (showMeetingsGraph && employee) {
+      fetchMeetingsGraphData(graphYear, graphStartMonth, graphEndMonth);
+    }
+  }, [showMeetingsGraph, graphYear, graphStartMonth, graphEndMonth, employee]);
+
+  React.useEffect(() => {
+    if (showContractsGraph && employee) {
+      fetchContractsGraphData(graphYear, graphStartMonth, graphEndMonth);
+    }
+  }, [showContractsGraph, graphYear, graphStartMonth, graphEndMonth, employee]);
+
   if (!employee) return null;
 
   const metrics = employee.performance_metrics || {
@@ -1691,24 +2375,11 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
           break;
       }
 
-      // Apply date filter to role leads
-      const today = new Date();
-      const defaultFromDate = new Date(today);
-      defaultFromDate.setDate(today.getDate() - 30);
+      // The signedLeads are already filtered by date range in processPerformanceData
+      // No need to apply additional date filtering
+      const filteredRoleLeads = roleLeads;
       
-      const fromDateValue = fromDate || defaultFromDate.toISOString().split('T')[0];
-      const toDateValue = toDate || today.toISOString().split('T')[0];
-      
-      console.log('🔍 Filtering role leads by date range:', fromDateValue, 'to', toDateValue);
-      
-      const filteredRoleLeads = roleLeads.filter(lead => {
-        const leadDate = lead.cdate ? lead.cdate.split('T')[0] : null;
-        const isInRange = leadDate && leadDate >= fromDateValue && leadDate <= toDateValue;
-        console.log('🔍 Lead date check:', { leadId: lead.id, leadDate, fromDateValue, toDateValue, isInRange });
-        return isInRange;
-      });
-      
-      console.log(`🔍 Filtered ${filteredRoleLeads.length} leads from ${roleLeads.length} total leads for date range`);
+      console.log(`🔍 Using ${filteredRoleLeads.length} leads for role ${role} (already filtered by date range)`);
 
       // Format the leads for display
       const formattedLeads = filteredRoleLeads.map(lead => {
@@ -1738,7 +2409,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             return convertedAmount;
           })(), // Convert to NIS
           balance: lead.balance || 0,
-          cdate: lead.cdate,
+          cdate: lead.stage_date || lead.cdate, // Use stage date (when signed) if available, fallback to creation date
           currency_id: lead.meeting_total_currency_id // Include currency ID for proper formatting
         };
       });
@@ -1774,6 +2445,73 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     const roundedAmount = Math.ceil(amount);
     const currencySymbol = getCurrencySymbol(currencyId);
     return `${currencySymbol}${roundedAmount.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  };
+
+  // Calculate bonus for a specific lead based on employee's role using two-tier system
+  const calculateLeadBonus = (lead: any, role: string) => {
+    const totalAmount = lead.total || 0;
+    
+    // Get role configuration
+    const roleConfig = getRoleConfig(role);
+    const groupConfig = getBonusConfig(role);
+    
+    if (!roleConfig || !groupConfig) {
+      console.log(`No bonus configuration found for role: ${role}`);
+      return {
+        amount: 0,
+        percentage: 0,
+        basePercentage: 0,
+        poolPercentage: 100,
+        poolInfo: '',
+        formatted: formatCurrency(0, lead.currency_id)
+      };
+    }
+
+    // Get the monthly bonus pool percentage for the lead's date
+    let poolPercentage = 100; // Default to 100% if no pool found
+    let poolInfo = '';
+    
+    try {
+      if (lead.cdate) {
+        const leadDate = new Date(lead.cdate);
+        const year = leadDate.getFullYear();
+        const month = leadDate.getMonth() + 1;
+        
+        // Check if we have a cached pool percentage for this month
+        const poolKey = `${year}-${month}`;
+        const cachedPool = window.monthlyBonusPoolsCache?.[poolKey];
+        
+        if (cachedPool && cachedPool.pool_percentage > 0) {
+          poolPercentage = cachedPool.pool_percentage;
+          poolInfo = ` (Pool: ${poolPercentage.toFixed(1)}%)`;
+          console.log(`🎯 Using cached pool percentage ${poolPercentage}% for lead ${lead.id} (${year}-${month})`);
+        } else {
+          console.log(`📊 No cached pool found for ${year}-${month}, using base percentage ${roleConfig.percentage}%`);
+        }
+      }
+    } catch (error) {
+      console.error('Error getting pool percentage:', error);
+    }
+    
+    // Two-tier calculation:
+    // 1. Group gets percentage of monthly pool
+    // 2. Role gets percentage of group allocation
+    const groupPoolPercentage = groupConfig.groupPercentage;
+    const roleGroupPercentage = roleConfig.percentage;
+    
+    // Final calculation: (Group % of Pool) * (Role % of Group) / 100
+    const finalPercentage = (groupPoolPercentage * roleGroupPercentage) / 100;
+    
+    const bonusAmount = (totalAmount * finalPercentage) / 100;
+    return {
+      amount: bonusAmount,
+      percentage: finalPercentage,
+      basePercentage: roleGroupPercentage,
+      poolPercentage: poolPercentage,
+      poolInfo: poolInfo,
+      groupPercentage: groupPoolPercentage,
+      formatted: formatCurrency(bonusAmount, lead.currency_id)
+    };
   };
 
   const averageRevenuePerMeeting = metrics.completed_meetings > 0 
@@ -1848,7 +2586,11 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             <div className="stat-value" style={{color: '#3829BF'}}>{metrics.meetings_scheduled || 0}</div>
             <div className="stat-desc text-base">Total meetings scheduled</div>
           </div>,
-          <div key="total-meetings" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
+          <div 
+            key="total-meetings" 
+            className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 cursor-pointer"
+            onClick={() => setShowMeetingsGraph(!showMeetingsGraph)}
+          >
             <div className="stat-figure" style={{color: '#3829BF'}}>
               <ChartBarIcon className="w-8 h-8" />
             </div>
@@ -1876,13 +2618,17 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
 
       case 'c': // Closer
         return [
-          <div key="signed-agreements" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
+          <div 
+            key="signed-agreements" 
+            className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 cursor-pointer"
+            onClick={() => setShowContractsGraph(!showContractsGraph)}
+          >
             <div className="stat-figure" style={{color: '#3829BF'}}>
-              <CheckCircleIcon className="w-8 h-8" />
+              <DocumentTextIcon className="w-8 h-8" />
             </div>
-            <div className="stat-title">Signed Agreements</div>
+            <div className="stat-title">Signed Contracts</div>
             <div className="stat-value" style={{color: '#3829BF'}}>{performanceData ? performanceData.roleMetrics.closer.signed : 0}</div>
-            <div className="stat-desc text-base">Total agreements signed</div>
+            <div className="stat-desc text-base">Total contracts signed</div>
           </div>,
           <div key="total-agreement-amount" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
             <div className="stat-figure" style={{color: '#3829BF'}}>
@@ -1904,7 +2650,11 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             </div>
             <div className="stat-desc text-base">Per agreement</div>
           </div>,
-          <div key="total-revenue" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
+          <div 
+            key="total-revenue" 
+            className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 cursor-pointer"
+            onClick={() => setShowRevenueGraph(!showRevenueGraph)}
+          >
             <div className="stat-figure" style={{color: '#3829BF'}}>
               <ChartBarIcon className="w-8 h-8" />
             </div>
@@ -1956,7 +2706,11 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
 
       default: // Default stats for other roles
         return [
-          <div key="total-meetings" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
+          <div 
+            key="total-meetings" 
+            className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 cursor-pointer"
+            onClick={() => setShowMeetingsGraph(!showMeetingsGraph)}
+          >
             <div className="stat-figure" style={{color: '#3829BF'}}>
               <CalendarDaysIcon className="w-8 h-8" />
             </div>
@@ -1972,7 +2726,11 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             <div className="stat-value" style={{color: '#3829BF'}}>{metrics.completed_meetings || 0}</div>
             <div className="stat-desc text-base">{completionRate}% completion rate</div>
           </div>,
-          <div key="total-revenue" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
+          <div 
+            key="total-revenue" 
+            className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200 cursor-pointer"
+            onClick={() => setShowRevenueGraph(!showRevenueGraph)}
+          >
             <div className="stat-figure" style={{color: '#3829BF'}}>
               <CurrencyDollarIcon className="w-8 h-8" />
             </div>
@@ -2554,6 +3312,26 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             >
               Feedback & Reviews
             </button>
+            <button
+              className={`flex-shrink-0 px-4 sm:px-6 py-3 font-medium text-sm sm:text-base border-b-2 transition-colors ${
+                activeTab === 'salary'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setActiveTab('salary')}
+            >
+              Salary
+            </button>
+            <button
+              className={`flex-shrink-0 px-4 sm:px-6 py-3 font-medium text-sm sm:text-base border-b-2 transition-colors ${
+                activeTab === 'bonus'
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-base-content/70 hover:text-base-content'
+              }`}
+              onClick={() => setActiveTab('bonus')}
+            >
+              Bonus
+            </button>
           </div>
         </div>
 
@@ -2569,25 +3347,23 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
           {/* Expert Performance Chart, Closer Performance Chart, or Completion Rate Chart */}
           {employee.bonuses_role?.toLowerCase() === 'e' && performanceData?.expertMetrics ? (
-            <div className="card bg-base-100 shadow-sm">
-              <div className="card-body">
-                <h3 className="card-title flex items-center gap-2">
-                  <ChartBarIcon className="w-5 h-5" />
-                  Expert Performance Trend
-                </h3>
-                <div className="h-80">
+            <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+              <div className="card-body p-3 sm:p-6">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Expert Performance Trend</h2>
+                </div>
+                <div className="h-80 w-full">
                   <ExpertPerformanceChart expertData={performanceData.expertMetrics} dateRange={performanceData.dateRange} />
                 </div>
               </div>
             </div>
           ) : employee.bonuses_role?.toLowerCase() === 'c' && performanceData?.closerMetrics ? (
-            <div className="card bg-base-100 shadow-sm">
-              <div className="card-body">
-                <h3 className="card-title flex items-center gap-2">
-                  <ChartBarIcon className="w-5 h-5" />
-                  Closer Performance Trend
-                </h3>
-                <div className="h-80">
+            <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+              <div className="card-body p-3 sm:p-6">
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Closer Performance Trend</h2>
+                </div>
+                <div className="h-80 w-full">
                   <CloserPerformanceChart closerData={performanceData.closerMetrics} dateRange={performanceData.dateRange} />
                 </div>
               </div>
@@ -2636,6 +3412,460 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
           </div>
         </div>
 
+        {/* Interactive Graphs Section */}
+        {/* Revenue Graph */}
+        {showRevenueGraph && (
+          <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+            <div className="card-body p-3 sm:p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Monthly Revenue Trend</h2>
+                
+                {/* Graph Controls (Year, From Month, To Month) */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  {/* Year Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-24"
+                    value={graphYear}
+                    onChange={(e) => setGraphYear(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 5 }, (_, i) => {
+                      const year = new Date().getFullYear() - 2 + i;
+                      return <option key={year} value={year}>{year}</option>;
+                    })}
+                  </select>
+                  
+                  {/* From Month Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphStartMonth}
+                    onChange={(e) => setGraphStartMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return <option key={month} value={month}>{monthName}</option>;
+                    })}
+                  </select>
+                  
+                  {/* To Month Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphEndMonth}
+                    onChange={(e) => setGraphEndMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return <option key={month} value={month}>{monthName}</option>;
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              {/* Revenue Line Chart */}
+              <div className="h-80 w-full">
+                {revenueGraphLoading ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="flex flex-col items-center gap-3">
+                      <span className="loading loading-spinner loading-lg text-primary"></span>
+                      <p className="text-sm text-gray-600">Loading revenue data...</p>
+                    </div>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={revenueGraphData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                      <XAxis 
+                        dataKey="monthName" 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                      />
+                      <YAxis 
+                        stroke="#6b7280"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        tickFormatter={(value) => value.toLocaleString()}
+                      />
+                      <Tooltip 
+                        contentStyle={{
+                          backgroundColor: '#1f2937',
+                          border: 'none',
+                          borderRadius: '8px',
+                          color: '#f9fafb'
+                        }}
+                        itemStyle={{ color: '#f9fafb' }}
+                        formatter={(value, name) => {
+                          if (name === 'revenue') {
+                            return [`₪${Number(value).toLocaleString()}`, 'Revenue'];
+                          }
+                          return [value, name];
+                        }}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="revenue" 
+                        stroke="#6c4edb"
+                        strokeWidth={3}
+                        dot={{ fill: '#6c4edb', strokeWidth: 2, r: 4 }}
+                        activeDot={{ r: 6, stroke: '#6c4edb', strokeWidth: 2 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+
+              {/* Summary Stats */}
+              {revenueGraphData.length > 0 && (
+                <div className="flex justify-center mt-6 pt-4 border-t border-gray-200">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-gray-800">
+                      ₪{revenueGraphData.reduce((sum, item) => sum + item.revenue, 0).toLocaleString()}
+                    </div>
+                    <div className="text-sm text-gray-600">Total Revenue</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Meetings Graph */}
+        {showMeetingsGraph && (
+          <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+            <div className="card-body p-3 sm:p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Monthly Meetings Trend</h2>
+                
+                {/* Graph Controls (Year, From Month, To Month) */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  {/* Year Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-24"
+                    value={graphYear}
+                    onChange={(e) => setGraphYear(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 5 }, (_, i) => {
+                      const year = new Date().getFullYear() - 2 + i;
+                      return <option key={year} value={year}>{year}</option>;
+                    })}
+                  </select>
+                  
+                  {/* From Month Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphStartMonth}
+                    onChange={(e) => setGraphStartMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return <option key={month} value={month}>{monthName}</option>;
+                    })}
+                  </select>
+                  
+                  {/* To Month Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphEndMonth}
+                    onChange={(e) => setGraphEndMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return <option key={month} value={month}>{monthName}</option>;
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              {/* Charts Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Monthly Meetings Line Chart */}
+                <div className="h-80 w-full">
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4">Monthly Meetings Trend</h3>
+                  {meetingsGraphLoading ? (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="flex flex-col items-center gap-3">
+                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                        <p className="text-sm text-gray-600">Loading meetings data...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={meetingsGraphData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis 
+                          dataKey="monthName" 
+                          stroke="#6b7280"
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <YAxis 
+                          stroke="#6b7280"
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <Tooltip 
+                          contentStyle={{
+                            backgroundColor: '#1f2937',
+                            border: 'none',
+                            borderRadius: '8px',
+                            color: '#f9fafb'
+                          }}
+                          itemStyle={{ color: '#f9fafb' }}
+                        />
+                        <Line 
+                          type="monotone" 
+                          dataKey="total" 
+                          stroke="#3b82f6"
+                          strokeWidth={3}
+                          dot={{ fill: '#3b82f6', strokeWidth: 2, r: 4 }}
+                          activeDot={{ r: 6, stroke: '#3b82f6', strokeWidth: 2 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                {/* Meetings by Department Bar Chart */}
+                <div className="h-80 w-full">
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4">Meetings by Department</h3>
+                  {meetingsGraphLoading ? (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="flex flex-col items-center gap-3">
+                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                        <p className="text-sm text-gray-600">Loading department data...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={meetingsByTypeData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis 
+                          dataKey="department" 
+                          stroke="#6b7280"
+                          fontSize={10}
+                          tickLine={false}
+                          axisLine={false}
+                          angle={-45}
+                          textAnchor="end"
+                          height={80}
+                        />
+                        <YAxis 
+                          stroke="#6b7280"
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <Tooltip 
+                          contentStyle={{
+                            backgroundColor: '#1f2937',
+                            border: 'none',
+                            borderRadius: '8px',
+                            color: '#f9fafb'
+                          }}
+                          itemStyle={{ color: '#f9fafb' }}
+                        />
+                        <Bar dataKey="meetings" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+
+              {/* Summary Stats */}
+              {meetingsGraphData.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 pt-4 border-t border-gray-200">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-gray-800">
+                      {meetingsGraphData.reduce((sum, item) => sum + item.total, 0)}
+                    </div>
+                    <div className="text-sm text-gray-600">Total Meetings</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-gray-800">
+                      {Math.round(meetingsGraphData.reduce((sum, item) => sum + item.total, 0) / meetingsGraphData.length)}
+                    </div>
+                    <div className="text-sm text-gray-600">Avg Monthly</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Contracts Graph */}
+        {showContractsGraph && (
+          <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
+            <div className="card-body p-3 sm:p-6">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
+                <h2 className="text-xl sm:text-2xl font-bold text-gray-800">Monthly Contracts Trend</h2>
+                
+                {/* Graph Controls (Year, From Month, To Month) */}
+                <div className="flex flex-col sm:flex-row gap-3">
+                  {/* Year Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-24"
+                    value={graphYear}
+                    onChange={(e) => setGraphYear(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 5 }, (_, i) => {
+                      const year = new Date().getFullYear() - 2 + i;
+                      return <option key={year} value={year}>{year}</option>;
+                    })}
+                  </select>
+                  
+                  {/* From Month Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphStartMonth}
+                    onChange={(e) => setGraphStartMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return <option key={month} value={month}>{monthName}</option>;
+                    })}
+                  </select>
+                  
+                  {/* To Month Selector */}
+                  <select 
+                    className="select select-bordered select-sm w-full sm:w-32"
+                    value={graphEndMonth}
+                    onChange={(e) => setGraphEndMonth(parseInt(e.target.value))}
+                  >
+                    {Array.from({ length: 12 }, (_, i) => {
+                      const month = i + 1;
+                      const monthName = new Date(2024, i).toLocaleDateString('en-US', { month: 'short' });
+                      return <option key={month} value={month}>{monthName}</option>;
+                    })}
+                  </select>
+                </div>
+              </div>
+
+              {/* Charts Grid */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Monthly Contracts Line Chart */}
+                <div className="h-80 w-full">
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4">Monthly Contracts Trend</h3>
+                  {contractsGraphLoading ? (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="flex flex-col items-center gap-3">
+                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                        <p className="text-sm text-gray-600">Loading contracts data...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={contractsGraphData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis 
+                          dataKey="monthName" 
+                          stroke="#6b7280"
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <YAxis 
+                          stroke="#6b7280"
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <Tooltip 
+                          contentStyle={{
+                            backgroundColor: '#1f2937',
+                            border: 'none',
+                            borderRadius: '8px',
+                            color: '#f9fafb'
+                          }}
+                          itemStyle={{ color: '#f9fafb' }}
+                        />
+                        <Line 
+                          type="monotone" 
+                          dataKey="contracts" 
+                          stroke="#7c3aed"
+                          strokeWidth={3}
+                          dot={{ fill: '#7c3aed', strokeWidth: 2, r: 4 }}
+                          activeDot={{ r: 6, stroke: '#7c3aed', strokeWidth: 2 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+
+                {/* Contracts by Department Bar Chart */}
+                <div className="h-80 w-full">
+                  <h3 className="text-lg font-semibold text-gray-700 mb-4">Contracts by Department</h3>
+                  {contractsGraphLoading ? (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="flex flex-col items-center gap-3">
+                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                        <p className="text-sm text-gray-600">Loading department data...</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={contractsByDepartmentData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                        <XAxis 
+                          dataKey="department" 
+                          stroke="#6b7280"
+                          fontSize={10}
+                          tickLine={false}
+                          axisLine={false}
+                          angle={-45}
+                          textAnchor="end"
+                          height={80}
+                        />
+                        <YAxis 
+                          stroke="#6b7280"
+                          fontSize={12}
+                          tickLine={false}
+                          axisLine={false}
+                        />
+                        <Tooltip 
+                          contentStyle={{
+                            backgroundColor: '#1f2937',
+                            border: 'none',
+                            borderRadius: '8px',
+                            color: '#f9fafb'
+                          }}
+                          itemStyle={{ color: '#f9fafb' }}
+                        />
+                        <Bar dataKey="contracts" fill="#7c3aed" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              </div>
+
+              {/* Summary Stats */}
+              {contractsGraphData.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-6 pt-4 border-t border-gray-200">
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-gray-800">
+                      {contractsGraphData.reduce((sum, item) => sum + item.contracts, 0)}
+                    </div>
+                    <div className="text-sm text-gray-600">Total Contracts</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-2xl font-bold text-gray-800">
+                      {contractsByDepartmentData.length}
+                    </div>
+                    <div className="text-sm text-gray-600">Departments</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Current Employee Role Performance Table */}
         <div className="card bg-base-100 shadow-sm mb-6 mt-6">
           <div className="card-body">
@@ -2663,19 +3893,17 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                 <table className="table table-zebra w-full text-base">
                   <thead>
                     <tr>
-                      <th className="font-semibold text-base">Role</th>
-                      <th className="font-semibold text-base">Signed Contracts</th>
-                      <th className="font-semibold text-base">Signed Total</th>
-                      <th className="font-semibold text-base">Total Due (Invoiced)</th>
+                      {getRoleTableHeaders(employee.bonuses_role || '').map((header, index) => (
+                        <th key={index} className="font-semibold text-base">{header}</th>
+                      ))}
                       <th className="font-semibold text-base">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr>
-                      <td className="font-medium">{getRoleDisplayName(employee.bonuses_role)}</td>
-                      <td className="font-medium">{getRoleMetrics(employee.bonuses_role).signed}</td>
-                      <td className="font-medium">{formatCurrency(getRoleMetrics(employee.bonuses_role).total)}</td>
-                      <td className="font-medium">{formatCurrency(getRoleMetrics(employee.bonuses_role).invoiced)}</td>
+                      {getRoleTableData(employee, performanceData).map((data, index) => (
+                        <td key={index} className="font-medium">{data}</td>
+                      ))}
                       <td>
                         <button
                           onClick={() => handleRoleClick(employee.bonuses_role || '')}
@@ -3307,6 +4535,37 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
           </div>
         )}
 
+        {/* Salary Tab */}
+        {activeTab === 'salary' && (
+          <div className="space-y-6">
+            <div className="card bg-base-100 shadow-sm">
+              <div className="card-body">
+                <h3 className="card-title">Salary History</h3>
+                <p className="text-sm text-gray-600 mb-4">Monthly salary records for {employee.display_name}</p>
+                
+                <SalaryHistory employeeId={employee.id} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'bonus' && (
+          <div className="space-y-6">
+            <div className="card bg-base-100 shadow-sm">
+              <div className="card-body">
+                <h3 className="card-title">Bonus Calculation</h3>
+                <p className="text-sm text-gray-600 mb-4">Detailed bonus breakdown for {employee.display_name} based on current date filter</p>
+                
+                <BonusBreakdown 
+                  employee={employee} 
+                  dateFrom={fromDate} 
+                  dateTo={toDate} 
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
                 {/* Footer Actions */}
                 <div className="modal-action">
                   <button className="btn btn-primary" onClick={onClose}>
@@ -3396,6 +4655,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                               <th className="font-semibold text-base">Language</th>
                               <th className="font-semibold text-base">Applicants</th>
                               <th className="font-semibold text-base">Total Amount</th>
+                              <th className="font-semibold text-base">Bonus</th>
                               <th className="font-semibold text-base">Signed Date</th>
                             </tr>
                           </thead>
@@ -3413,6 +4673,30 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                                   <td>{lead.language || 'N/A'}</td>
                                   <td className="text-center">{lead.applicants || 0}</td>
                                   <td className="font-semibold text-success">{formatCurrency(lead.total || 0, lead.currency_id)}</td>
+                                  <td className="font-semibold text-warning">
+                                    {(() => {
+                                      if (!selectedRole) {
+                                        return (
+                                          <div className="flex flex-col">
+                                            <span>₪0</span>
+                                            <span className="text-xs text-gray-500">(0%)</span>
+                                          </div>
+                                        );
+                                      }
+                                      const bonus = calculateLeadBonus(lead, selectedRole);
+                                      return (
+                                        <div className="flex flex-col">
+                                          <span>{bonus.formatted}</span>
+                                          <span className="text-xs text-gray-500">
+                                            ({bonus.percentage.toFixed(1)}%{bonus.poolInfo})
+                                          </span>
+                                          <span className="text-xs text-blue-500">
+                                            Group: {bonus.groupPercentage}% × Role: {bonus.basePercentage}%
+                                          </span>
+                                        </div>
+                                      );
+                                    })()}
+                                  </td>
                                   <td className="text-sm text-gray-600">
                                     {lead.cdate ? new Date(lead.cdate).toLocaleDateString('en-US', {
                                       year: 'numeric',
@@ -3424,7 +4708,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                               ))
                             ) : (
                               <tr>
-                                <td colSpan={7} className="text-center text-gray-500 py-8">
+                                <td colSpan={8} className="text-center text-gray-500 py-8">
                                   No signed leads found for this role in the selected period
                                 </td>
                               </tr>
