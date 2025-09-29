@@ -176,7 +176,7 @@ const EmployeeSalaryRow: React.FC<EmployeeSalaryRowProps> = ({
           {salaryRecord ? (
             <span className="text-success">Salary set</span>
           ) : (
-            <span className="text-warning">No salary</span>
+            <span style={{ color: '#3e2bcd' }}>No salary</span>
           )}
         </div>
       </td>
@@ -199,9 +199,9 @@ const EmployeeSalaryBox: React.FC<EmployeeSalaryRowProps> = ({
   }, [salaryRecord]);
 
   return (
-    <div className="card bg-base-100 shadow-sm border border-gray-200 overflow-hidden">
+    <div className="card bg-base-100 shadow-2xl overflow-hidden" style={{ boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(255, 255, 255, 0.1)' }}>
       {/* Header with background image */}
-      <div className="relative h-24 bg-gradient-to-br from-purple-500 via-pink-500 to-blue-500 overflow-hidden">
+      <div className="relative h-24 overflow-hidden" style={{ backgroundColor: '#3e2bcd' }}>
         {/* Background pattern overlay */}
         <div className="absolute inset-0 bg-black/20"></div>
         <div className="absolute inset-0 bg-gradient-to-br from-transparent via-transparent to-black/30"></div>
@@ -256,12 +256,16 @@ const EmployeeSalaryBox: React.FC<EmployeeSalaryRowProps> = ({
         </div>
       </div>
       
-      <div className="card-body p-4">
-
-        {/* Department */}
-        <div className="mb-4">
-          <span className="badge badge-outline">{employee.department}</span>
+      {/* Department Glassy Box */}
+      <div className="relative -mt-2 mx-4 mb-4">
+        <div className="bg-white/80 backdrop-blur-md rounded-lg p-3 border border-white/20" style={{ boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.1)' }}>
+          <div className="flex items-center">
+            <span className="text-sm font-medium text-gray-700">{employee.department}</span>
+          </div>
         </div>
+      </div>
+      
+      <div className="card-body p-4">
 
         {/* Salary Input */}
         <div className="space-y-3">
@@ -295,7 +299,7 @@ const EmployeeSalaryBox: React.FC<EmployeeSalaryRowProps> = ({
               {salaryRecord ? (
                 <span className="text-success font-medium">✓ Salary set</span>
               ) : (
-                <span className="text-warning font-medium">⚠ No salary</span>
+                <span className="font-medium" style={{ color: '#3e2bcd' }}>⚠ No salary</span>
               )}
             </div>
             {salaryRecord && (
@@ -473,7 +477,7 @@ const SalaryModal: React.FC<SalaryModalProps> = ({ isOpen, onClose, employees })
         {/* Full Screen Modal */}
         <div className="relative bg-white w-full h-screen overflow-hidden">
           {/* Header */}
-          <div className="flex items-center justify-between p-6 border-b border-gray-200">
+          <div className="flex items-center justify-between p-6 bg-white/80 backdrop-blur-md border-b border-white/20">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-primary/10 rounded-lg">
                 <CurrencyDollarIcon className="w-6 h-6 text-primary" />

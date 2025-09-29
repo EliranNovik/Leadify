@@ -420,7 +420,7 @@ const getRoleTableData = (employee: Employee, performanceData?: any): (string | 
         getRoleDisplayName(employee.bonuses_role),
         handlerMetrics?.cases || (metrics as any).cases_handled || 0,
         handlerMetrics?.applicants || (metrics as any).applicants_processed || 0,
-        `₪${(handlerMetrics?.invoiced || (metrics as any).total_invoiced_amount || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
+        `₪${(handlerMetrics?.total || (metrics as any).total_agreement_amount || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}`
       ];
     
     case 'c': // Closer
@@ -2451,9 +2451,21 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const calculateLeadBonus = (lead: any, role: string) => {
     const totalAmount = lead.total || 0;
     
+    // Map role names to bonus configuration role codes
+    const roleMapping: { [key: string]: string } = {
+      'helper-closer': 'lawyer',
+      'handler': 'h',
+      'closer': 'c',
+      'expert': 'e',
+      'scheduler': 's',
+      'manager': 'z'
+    };
+    
+    const bonusRole = roleMapping[role] || role;
+    
     // Get role configuration
-    const roleConfig = getRoleConfig(role);
-    const groupConfig = getBonusConfig(role);
+    const roleConfig = getRoleConfig(bonusRole);
+    const groupConfig = getBonusConfig(bonusRole);
     
     if (!roleConfig || !groupConfig) {
       console.log(`No bonus configuration found for role: ${role}`);
@@ -2687,20 +2699,18 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
               <CurrencyDollarIcon className="w-8 h-8" />
             </div>
             <div className="stat-title">Total Invoiced Amount</div>
-            <div className="stat-value" style={{color: '#3829BF'}}>{performanceData ? formatCurrency(performanceData.totalSignedAcrossAllRoles) : formatCurrency(0)}</div>
-            <div className="stat-desc text-base">Signed total across all roles</div>
+            <div className="stat-value" style={{color: '#3829BF'}}>{performanceData ? formatCurrency(performanceData.roleMetrics.handler.invoiced) : formatCurrency(0)}</div>
+            <div className="stat-desc text-base">Handler role invoiced amount</div>
           </div>,
-          <div key="avg-case-value" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
+          <div key="total-revenue-all-roles" className="stat bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
             <div className="stat-figure" style={{color: '#3829BF'}}>
               <TrophyIcon className="w-8 h-8" />
             </div>
-            <div className="stat-title">Avg Case Value</div>
+            <div className="stat-title">Total Revenue All Roles</div>
             <div className="stat-value" style={{color: '#3829BF'}}>
-              {formatCurrency((metrics.cases_handled && metrics.cases_handled > 0) 
-                ? (metrics.total_invoiced_amount || 0) / metrics.cases_handled 
-                : 0)}
+              {performanceData ? formatCurrency(performanceData.totalSignedAcrossAllRoles) : formatCurrency(0)}
             </div>
-            <div className="stat-desc text-base">Per case handled</div>
+            <div className="stat-desc text-base">Combined revenue across all roles</div>
           </div>
         ];
 
@@ -2923,20 +2933,20 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
               </div>
               <div className="flex items-center gap-2">
                 <button 
-                  className={`btn btn-sm btn-circle flex-shrink-0 ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
+                  className={`btn btn-md btn-circle flex-shrink-0 ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
                   onClick={() => {
                     setIsEditingBackground(true);
                     setNewBackgroundUrl(employee.photo || '');
                   }}
                   title="Edit background image"
                 >
-                  <PencilIcon className="w-4 h-4" />
+                  <PencilIcon className="w-5 h-5" />
                 </button>
                 <button 
-                  className={`btn btn-sm btn-circle flex-shrink-0 ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
+                  className={`btn btn-md btn-circle flex-shrink-0 ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
                   onClick={onClose}
                 >
-                  <XMarkIcon className="w-5 h-5" />
+                  <XMarkIcon className="w-6 h-6" />
                 </button>
               </div>
             </div>
@@ -3044,20 +3054,20 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             
             <div className="flex items-center gap-2">
               <button 
-                className={`btn btn-sm btn-circle ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
+                className={`btn btn-md btn-circle ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
                 onClick={() => {
                   setIsEditingBackground(true);
                   setNewBackgroundUrl(employee.photo || '');
                 }}
                 title="Edit background image"
               >
-                <PencilIcon className="w-4 h-4" />
+                <PencilIcon className="w-5 h-5" />
               </button>
               <button 
-                className={`btn btn-sm btn-circle ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
+                className={`btn btn-md btn-circle ${employee.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
                 onClick={onClose}
               >
-                <XMarkIcon className="w-5 h-5" />
+                <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
           </div>
@@ -4586,14 +4596,14 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                       ← Back to Roles
                     </button>
                     <h2 className="text-2xl font-bold text-gray-900 dark:text-white">
-                      {employee.display_name}'s {selectedRole} Leads
+                      {employee.display_name}'s {getRoleDisplayName(selectedRole)} Leads
                     </h2>
                   </div>
                   <button
                     onClick={onClose}
-                    className="btn btn-sm btn-circle btn-ghost"
+                    className="btn btn-md btn-circle btn-ghost"
                   >
-                    <XMarkIcon className="w-5 h-5" />
+                    <XMarkIcon className="w-6 h-6" />
                   </button>
                 </div>
 
@@ -4603,20 +4613,20 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                     <div className="card-body">
                       <h3 className="card-title flex items-center gap-2">
                         <ChartBarIcon className="w-5 h-5" />
-                        {selectedRole} Performance Summary
+                        {getRoleDisplayName(selectedRole)} Performance Summary
                       </h3>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                        <div className="stat bg-primary/10 rounded-lg p-4">
+                        <div className="stat bg-white rounded-lg p-4 shadow-lg" style={{ boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)' }}>
                           <div className="stat-title">Signed Contracts</div>
-                          <div className="stat-value text-primary">{getRoleMetrics(selectedRole).signed}</div>
+                          <div className="stat-value" style={{ color: '#3e2bcd' }}>{getRoleMetrics(selectedRole).signed}</div>
                         </div>
-                        <div className="stat bg-success/10 rounded-lg p-4">
+                        <div className="stat bg-white rounded-lg p-4 shadow-lg" style={{ boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)' }}>
                           <div className="stat-title">Signed Total</div>
-                          <div className="stat-value text-success">{formatCurrency(getRoleMetrics(selectedRole).total)}</div>
+                          <div className="stat-value" style={{ color: '#3e2bcd' }}>{formatCurrency(getRoleMetrics(selectedRole).total)}</div>
                         </div>
-                        <div className="stat bg-info/10 rounded-lg p-4">
+                        <div className="stat bg-white rounded-lg p-4 shadow-lg" style={{ boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)' }}>
                           <div className="stat-title">Total Invoiced</div>
-                          <div className="stat-value text-info">{formatCurrency(getRoleMetrics(selectedRole).invoiced)}</div>
+                          <div className="stat-value" style={{ color: '#3e2bcd' }}>{formatCurrency(getRoleMetrics(selectedRole).invoiced)}</div>
                         </div>
                       </div>
                       <div className="text-sm text-gray-600 mt-2">
@@ -4631,10 +4641,10 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                   <div className="card-body">
                <h3 className="card-title flex items-center gap-2">
                  <ChartBarIcon className="w-5 h-5" />
-                 {selectedRole} Role Leads ({roleLeads.length} leads)
+                 {getRoleDisplayName(selectedRole)} Role Leads ({roleLeads.length} leads)
                </h3>
                <p className="text-sm text-gray-600 mb-4">
-                 All signed leads for {employee.display_name} in the {selectedRole} role during the selected period
+                 All signed leads for {employee.display_name} in the {getRoleDisplayName(selectedRole)} role during the selected period
                </p>
                <div className="text-xs text-gray-500 mb-2">
                  Period: {performanceData?.dateRange?.from || 'Last 30 days'} to {performanceData?.dateRange?.to || 'Today'}

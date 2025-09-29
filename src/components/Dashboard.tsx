@@ -2280,6 +2280,7 @@ const Dashboard: React.FC = () => {
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthName);
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
   
+  
   // Available months and years for filtering
   const months = [
     'January', 'February', 'March', 'April', 'May', 'June',
@@ -3711,33 +3712,56 @@ const Dashboard: React.FC = () => {
                           <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
                           <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                           <div className="border-l border-slate-300 h-6 mx-2"></div>
-                          <div className="dropdown dropdown-end">
-                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                          <details className="dropdown dropdown-end">
+                            <summary className="btn btn-xs btn-ghost text-slate-700">
                               {selectedMonth} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </div>
-                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto">
+                            </summary>
+                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                               {months.map(month => (
-                                <li key={month}>
+                                <li key={month} style={{ width: '100%' }}>
                                   <a 
-                                    onClick={() => setSelectedMonth(month)}
-                                    className={`${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setSelectedMonth(month);
+                                      // Close the details element
+                                      const details = e.currentTarget.closest('details');
+                                      if (details) {
+                                        details.removeAttribute('open');
+                                      }
+                                    }}
+                                    className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
                                   >
                                     {month}
                                   </a>
                                 </li>
                               ))}
                             </ul>
-                          </div>
-                          <div className="dropdown dropdown-end">
-                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                          </details>
+                          <details className="dropdown dropdown-end">
+                            <summary className="btn btn-xs btn-ghost text-slate-700">
                               {selectedYear} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </div>
-                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto">
+                            </summary>
+                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                               {years.map(year => (
-                                <li key={year}><a onClick={() => setSelectedYear(year)}>{year}</a></li>
+                                <li key={year} style={{ width: '100%' }}>
+                                  <a 
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setSelectedYear(year);
+                                      // Close the details element
+                                      const details = e.currentTarget.closest('details');
+                                      if (details) {
+                                        details.removeAttribute('open');
+                                      }
+                                    }}
+                                    className="block w-full p-2 text-sm hover:bg-gray-100"
+                                  >
+                                    {year}
+                                  </a>
+                                </li>
                               ))}
                             </ul>
-                          </div>
+                          </details>
                         </div>
                       </div>
                       {departmentPerformanceLoading ? (
@@ -3759,33 +3783,56 @@ const Dashboard: React.FC = () => {
                           <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
                           <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                           <div className="border-l border-slate-300 h-6 mx-2"></div>
-                          <div className="dropdown dropdown-end">
-                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                          <details className="dropdown dropdown-end">
+                            <summary className="btn btn-xs btn-ghost text-slate-700">
                               {selectedMonth} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </div>
-                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto">
+                            </summary>
+                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                               {months.map(month => (
-                                <li key={month}>
+                                <li key={month} style={{ width: '100%' }}>
                                   <a 
-                                    onClick={() => setSelectedMonth(month)}
-                                    className={`${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setSelectedMonth(month);
+                                      // Close the details element
+                                      const details = e.currentTarget.closest('details');
+                                      if (details) {
+                                        details.removeAttribute('open');
+                                      }
+                                    }}
+                                    className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
                                   >
                                     {month}
                                   </a>
                                 </li>
                               ))}
                             </ul>
-                          </div>
-                          <div className="dropdown dropdown-end">
-                            <div tabIndex={0} role="button" className="btn btn-xs btn-ghost text-slate-700">
+                          </details>
+                          <details className="dropdown dropdown-end">
+                            <summary className="btn btn-xs btn-ghost text-slate-700">
                               {selectedYear} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </div>
-                            <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto">
+                            </summary>
+                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
                               {years.map(year => (
-                                <li key={year}><a onClick={() => setSelectedYear(year)}>{year}</a></li>
+                                <li key={year} style={{ width: '100%' }}>
+                                  <a 
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      setSelectedYear(year);
+                                      // Close the details element
+                                      const details = e.currentTarget.closest('details');
+                                      if (details) {
+                                        details.removeAttribute('open');
+                                      }
+                                    }}
+                                    className="block w-full p-2 text-sm hover:bg-gray-100"
+                                  >
+                                    {year}
+                                  </a>
+                                </li>
                               ))}
                             </ul>
-                          </div>
+                          </details>
                         </div>
                       </div>
                       {invoicedDataLoading ? (

@@ -68,6 +68,7 @@ export const BONUS_ROLES: { [key: string]: { groupPercentage: number; roles: Bon
       { role: 's', percentage: 30, isPoolBased: false }, // Scheduler
       { role: 'z', percentage: 20, isPoolBased: false }, // Manager (z/Z)
       { role: 'c', percentage: 40, isPoolBased: false }, // Closer
+      { role: 'lawyer', percentage: 25, isPoolBased: false }, // Helper Closer
       { role: 'e', percentage: 10, isPoolBased: false }, // Expert
     ]
   },

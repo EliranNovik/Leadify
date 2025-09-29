@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { UserGroupIcon, ChartBarIcon, AcademicCapIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon, DocumentTextIcon, BanknotesIcon, Squares2X2Icon, ListBulletIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, ChartBarIcon, AcademicCapIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon, DocumentTextIcon, BanknotesIcon, Squares2X2Icon, ListBulletIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import EmployeeModal from '../components/EmployeeModal';
 import SalaryModal from '../components/SalaryModal';
 import BonusPoolModal from '../components/BonusPoolModal';
@@ -22,6 +22,8 @@ interface Employee {
   performance_metrics?: {
     total_meetings?: number;
     completed_meetings?: number;
+    contracts_signed?: number;
+    cases_handled?: number;
     total_revenue?: number;
     total_bonus?: number;
     average_rating?: number;
@@ -146,7 +148,7 @@ const EmployeePerformanceBox: React.FC<EmployeePerformanceBoxProps> = ({
       onClick={() => onEmployeeClick(employee)}
     >
       {/* Header with background image */}
-      <div className="relative h-24 bg-gradient-to-br from-purple-500 via-pink-500 to-blue-500 overflow-hidden">
+      <div className="relative h-24 overflow-hidden" style={{ backgroundColor: '#3e2bcd' }}>
         {/* Background pattern overlay */}
         <div className="absolute inset-0 bg-black/20"></div>
         <div className="absolute inset-0 bg-gradient-to-br from-transparent via-transparent to-black/30"></div>
@@ -191,12 +193,18 @@ const EmployeePerformanceBox: React.FC<EmployeePerformanceBoxProps> = ({
             <div className="text-white flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="font-semibold text-lg truncate drop-shadow-sm">{employee.display_name}</div>
-                <span className="text-xs px-2 py-1 rounded-full text-white font-medium bg-white/20 backdrop-blur-sm shadow-sm flex-shrink-0">
-                  {getRoleDisplayName(employee.bonuses_role)}
-                </span>
               </div>
               <div className="text-white/80 text-sm truncate drop-shadow-sm">{employee.email}</div>
             </div>
+          </div>
+        </div>
+      </div>
+      
+      {/* Role Glassy Box */}
+      <div className="relative -mt-2 mx-4 mb-4">
+        <div className="bg-white/80 backdrop-blur-md rounded-lg p-3 border border-white/20" style={{ boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.1)' }}>
+          <div className="flex items-center">
+            <span className="text-sm font-medium text-gray-700">{getRoleDisplayName(employee.bonuses_role)}</span>
           </div>
         </div>
       </div>
@@ -205,14 +213,47 @@ const EmployeePerformanceBox: React.FC<EmployeePerformanceBoxProps> = ({
 
         {/* Performance Metrics */}
         <div className="space-y-3">
-          {/* Meetings */}
+          {/* Managed Meetings */}
           <div className="flex justify-between items-center">
-            <span className="text-sm text-gray-600">Meetings</span>
+            <span className="text-sm text-gray-600">Managed</span>
             <div className="text-right">
               <div className="font-semibold text-sm">
-                {employee.performance_metrics?.completed_meetings || 0} / {employee.performance_metrics?.total_meetings || 0}
+                {employee.performance_metrics?.total_meetings || 0}
               </div>
-              <div className="text-xs text-success">Completed</div>
+              <div className="text-xs text-gray-500">Meetings</div>
+            </div>
+          </div>
+
+          {/* Scheduled Meetings */}
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Scheduled</span>
+            <div className="text-right">
+              <div className="font-semibold text-sm">
+                {employee.performance_metrics?.meetings_scheduled || 0}
+              </div>
+              <div className="text-xs text-gray-500">Meetings</div>
+            </div>
+          </div>
+
+          {/* Cases */}
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Cases</span>
+            <div className="text-right">
+              <div className="font-semibold text-sm">
+                {employee.performance_metrics?.cases_handled || 0}
+              </div>
+              <div className="text-xs text-gray-500">Handled</div>
+            </div>
+          </div>
+
+          {/* Contracts Signed */}
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-gray-600">Contracts</span>
+            <div className="text-right">
+              <div className="font-semibold text-sm">
+                {employee.performance_metrics?.contracts_signed || 0}
+              </div>
+              <div className="text-xs text-gray-500">Signed</div>
             </div>
           </div>
 
@@ -230,14 +271,9 @@ const EmployeePerformanceBox: React.FC<EmployeePerformanceBoxProps> = ({
           <div className="flex justify-between items-center">
             <span className="text-sm text-gray-600">Bonus</span>
             <div className="text-right">
-              <div className="font-semibold text-sm text-warning">
+              <div className="font-semibold text-sm text-black">
                 {formatCurrency(employee.performance_metrics?.calculated_bonus || employee.performance_metrics?.total_bonus || 0)}
               </div>
-              {employee.performance_metrics?.calculated_bonus && employee.performance_metrics?.calculated_bonus !== employee.performance_metrics?.total_bonus && (
-                <div className="text-xs text-gray-500">
-                  (Calc: {formatCurrency(employee.performance_metrics.calculated_bonus)})
-                </div>
-              )}
             </div>
           </div>
 
@@ -753,6 +789,33 @@ const EmployeePerformancePage: React.FC = () => {
         console.log('📊 Signed leads fetched:', signedLeads.length);
       }
 
+      // Fetch ALL leads for the date range to get total meetings count
+      const { data: allLeads, error: allLeadsError } = await supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          name,
+          case_handler_id,
+          closer_id,
+          expert_id,
+          meeting_scheduler_id,
+          meeting_manager_id,
+          meeting_lawyer_id,
+          total,
+          currency_id,
+          cdate,
+          no_of_applicants
+        `)
+        .gte('cdate', fromDateValue)
+        .lte('cdate', toDateValue);
+      
+      if (allLeadsError) {
+        console.error('Error fetching all leads:', allLeadsError);
+        throw allLeadsError;
+      }
+      
+      console.log('📊 All leads fetched:', allLeads?.length || 0);
+
       // Fetch proforma invoices for the signed leads in the date range
       const { data: allInvoices, error: invoicesError } = await supabase
         .from('proformainvoice')
@@ -781,6 +844,7 @@ const EmployeePerformancePage: React.FC = () => {
 
       return {
         signedLeads,
+        allLeads: allLeads || [],
         proformaInvoices,
         dateRange: { from: fromDateValue, to: toDateValue }
       };
@@ -1059,14 +1123,44 @@ const EmployeePerformancePage: React.FC = () => {
               
           // Initialize metrics - all employees start with 0 values
           let totalMeetings = 0;
+          let scheduledMeetings = 0;
           let completedMeetings = 0;
+          let contractsSigned = 0;
+          let casesHandled = 0;
           let totalRevenue = 0;
           let lastActivity: string | null = null;
           
           // Count signed contracts across all roles
           const roleMetrics: { [key: string]: { signed: number; revenue: number } } = {};
           
-          // Only process if there are signed leads for the period
+          // Process ALL leads for total meetings count
+          if (performanceData.allLeads && performanceData.allLeads.length > 0) {
+            performanceData.allLeads.forEach(lead => {
+              const leadDate = lead.cdate;
+              
+              // Check if employee participated in the meeting (only meeting roles)
+              const isEmployeeInMeeting = 
+                lead.meeting_manager_id === employeeIdStr ||
+                lead.meeting_lawyer_id === employeeIdStr;
+              
+              if (isEmployeeInMeeting) {
+                totalMeetings++;
+                
+                if (!lastActivity || new Date(leadDate) > new Date(lastActivity)) {
+                  lastActivity = leadDate;
+                }
+              }
+              
+              // Check if employee scheduled this meeting
+              if (lead.meeting_scheduler_id === employeeIdStr) {
+                scheduledMeetings++;
+              }
+              
+              // Note: Cases are counted from signed leads only, not all leads
+            });
+          }
+          
+          // Process SIGNED leads for contracts signed count and revenue
           if (performanceData.signedLeads && performanceData.signedLeads.length > 0) {
             performanceData.signedLeads.forEach(lead => {
               const leadTotal = parseFloat(lead.total) || 0;
@@ -1079,56 +1173,46 @@ const EmployeePerformancePage: React.FC = () => {
                 convertedAmount: leadTotalInNIS,
                 conversionRate: leadTotal > 0 ? leadTotalInNIS / leadTotal : 1
               });
-              const leadDate = lead.cdate;
               
-              // Check only the employee's main role (bonuses_role)
-              const mainRole = employee.bonuses_role?.toLowerCase();
-              let isEmployeeInMainRole = false;
-              let roleKey = '';
+              // Check if employee appears in ANY role for this signed lead
+              let isEmployeeInAnyRole = false;
+              let actualRole = '';
               
-              // Map the main role to the lead field
-              switch (mainRole) {
-                case 'h':
-                  isEmployeeInMainRole = lead.case_handler_id === employeeIdStr;
-                  roleKey = 'h';
-                  break;
-                case 'c':
-                  isEmployeeInMainRole = lead.closer_id === employeeIdStr;
-                  roleKey = 'c';
-                  break;
-                case 'e':
-                  isEmployeeInMainRole = lead.expert_id === employeeIdStr;
-                  roleKey = 'e';
-                  break;
-                case 's':
-                  isEmployeeInMainRole = lead.meeting_scheduler_id === employeeIdStr;
-                  roleKey = 's';
-                  break;
-                case 'z':
-                  isEmployeeInMainRole = lead.meeting_manager_id === employeeIdStr;
-                  roleKey = 'z';
-                  break;
-                case 'lawyer':
-                  isEmployeeInMainRole = lead.meeting_lawyer_id === employeeIdStr;
-                  roleKey = 'helper-closer';
-                  break;
+              if (lead.case_handler_id === employeeIdStr) {
+                isEmployeeInAnyRole = true;
+                actualRole = 'h';
+              } else if (lead.closer_id === employeeIdStr) {
+                isEmployeeInAnyRole = true;
+                actualRole = 'c';
+              } else if (lead.expert_id === employeeIdStr) {
+                isEmployeeInAnyRole = true;
+                actualRole = 'e';
+              } else if (lead.meeting_scheduler_id === employeeIdStr) {
+                isEmployeeInAnyRole = true;
+                actualRole = 's';
+              } else if (lead.meeting_manager_id === employeeIdStr) {
+                isEmployeeInAnyRole = true;
+                actualRole = 'z';
+              } else if (lead.meeting_lawyer_id === employeeIdStr) {
+                isEmployeeInAnyRole = true;
+                actualRole = 'helper-closer';
               }
               
-              // Only count revenue if employee is in their main role
-              if (isEmployeeInMainRole) {
-                if (!roleMetrics[roleKey]) {
-                  roleMetrics[roleKey] = { signed: 0, revenue: 0 };
+              if (isEmployeeInAnyRole) {
+                // Initialize role metrics if not exists
+                if (!roleMetrics[actualRole]) {
+                  roleMetrics[actualRole] = { signed: 0, revenue: 0 };
                 }
-                roleMetrics[roleKey].signed++;
-                roleMetrics[roleKey].revenue += leadTotalInNIS; // Use NIS amount
+                roleMetrics[actualRole].signed++;
+                roleMetrics[actualRole].revenue += leadTotalInNIS; // Use NIS amount
                 
-                totalMeetings++;
-                completedMeetings++; // Signed contracts are considered completed
+                contractsSigned++; // Count actual contracts signed
                 totalRevenue += leadTotalInNIS; // Use NIS amount
-                
-                if (!lastActivity || new Date(leadDate) > new Date(lastActivity)) {
-                  lastActivity = leadDate;
-                }
+              }
+              
+              // Count cases handled (only from signed leads)
+              if (lead.case_handler_id === employeeIdStr) {
+                casesHandled++;
               }
             });
           }
@@ -1144,7 +1228,10 @@ const EmployeePerformancePage: React.FC = () => {
             ...employee,
             performance_metrics: {
               total_meetings: totalMeetings,
+              meetings_scheduled: scheduledMeetings,
               completed_meetings: completedMeetings,
+              contracts_signed: contractsSigned,
+              cases_handled: casesHandled,
               total_revenue: totalRevenue,
               total_bonus: 0,
               average_rating: 0,
@@ -1626,22 +1713,8 @@ const EmployeePerformancePage: React.FC = () => {
       );
     }
 
-    // Date range filtering based on last activity
-    if (dateFrom) {
-      filtered = filtered.filter(emp => {
-        const lastActivity = emp.performance_metrics?.last_activity;
-        if (!lastActivity || lastActivity === 'No activity') return false;
-        return new Date(lastActivity) >= new Date(dateFrom);
-      });
-    }
-
-    if (dateTo) {
-      filtered = filtered.filter(emp => {
-        const lastActivity = emp.performance_metrics?.last_activity;
-        if (!lastActivity || lastActivity === 'No activity') return false;
-        return new Date(lastActivity) <= new Date(dateTo);
-      });
-    }
+    // Note: Date filtering is handled in the data fetching, not in employee display
+    // All employees should be shown even if they have no activity in the selected period
 
     return filtered;
   };
@@ -1754,7 +1827,7 @@ const EmployeePerformancePage: React.FC = () => {
               {/* Manage Bonus Pool Button */}
               <button
                 onClick={() => setIsBonusPoolModalOpen(true)}
-                className="btn btn-secondary gap-2"
+                className="btn btn-primary gap-2"
               >
                 <CurrencyDollarIcon className="w-5 h-5" />
                 Bonus Pool
@@ -1762,126 +1835,95 @@ const EmployeePerformancePage: React.FC = () => {
             </div>
           </div>
         </div>
-        <p className="text-sm sm:text-base text-gray-600">Track and analyze employee performance across departments and roles</p>
       </div>
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-3 md:gap-4 mb-8">
         {/* Total Employees */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-3 md:p-6">
+        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl bg-white text-gray-800 relative overflow-hidden p-3 md:p-6" style={{ boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.1)' }}>
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <UserGroupIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full shadow" style={{ backgroundColor: '#3e2bcd' }}>
+              <UserGroupIcon className="w-5 h-5 md:w-7 md:h-7 text-white" />
             </div>
-            <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{employees.length}</div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Total Employees</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm sm:text-base md:text-lg lg:text-xl font-extrabold leading-tight" style={{ color: '#3e2bcd' }}>{employees.length}</div>
+              <div className="text-gray-600 text-xs md:text-sm font-medium mt-1">Total Employees</div>
             </div>
           </div>
-          {/* SVG Graph Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
         </div>
 
         {/* Total Signed Contracts */}
         <div 
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-3 md:p-6"
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl bg-white text-gray-800 relative overflow-hidden p-3 md:p-6"
+          style={{ boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.1)' }}
           onClick={() => setShowContractsGraph(!showContractsGraph)}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <DocumentTextIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full shadow" style={{ backgroundColor: '#3e2bcd' }}>
+              <DocumentTextIcon className="w-5 h-5 md:w-7 md:h-7 text-white" />
             </div>
-            <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{totalSignedContracts}</div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Signed Contracts</div>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm sm:text-base md:text-lg lg:text-xl font-extrabold leading-tight" style={{ color: '#3e2bcd' }}>{totalSignedContracts}</div>
+              <div className="text-gray-600 text-xs md:text-sm font-medium mt-1">Signed Contracts</div>
             </div>
           </div>
-          {/* SVG Document Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="8" y="4" width="24" height="28" rx="2"/><path d="M16 12h16M16 16h16M16 20h12"/></svg>
         </div>
 
         {/* Total Meetings */}
         <div 
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-3 md:p-6"
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl bg-white text-gray-800 relative overflow-hidden p-3 md:p-6"
+          style={{ boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.1)' }}
           onClick={() => setShowMeetingsGraph(!showMeetingsGraph)}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <ClockIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full shadow" style={{ backgroundColor: '#3e2bcd' }}>
+              <CalendarDaysIcon className="w-5 h-5 md:w-7 md:h-7 text-white" />
             </div>
-            <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm sm:text-base md:text-lg lg:text-xl font-extrabold leading-tight" style={{ color: '#3e2bcd' }}>
                 {employees.reduce((sum, emp) => sum + (emp.performance_metrics?.total_meetings || 0), 0)}
               </div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Total Meetings</div>
+              <div className="text-gray-600 text-xs md:text-sm font-medium mt-1">Managed Meetings</div>
             </div>
           </div>
-          {/* SVG Circle Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" /><text x="16" y="21" textAnchor="middle" fontSize="10" fill="white" opacity="0.7">99+</text></svg>
         </div>
+
 
         {/* Total Revenue */}
         <div 
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-3 md:p-6"
+          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl bg-white text-gray-800 relative overflow-hidden p-3 md:p-6"
+          style={{ boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.1)' }}
           onClick={() => setShowRevenueGraph(!showRevenueGraph)}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <CurrencyDollarIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full shadow" style={{ backgroundColor: '#3e2bcd' }}>
+              <CurrencyDollarIcon className="w-5 h-5 md:w-7 md:h-7 text-white" />
             </div>
-            <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm sm:text-base md:text-lg lg:text-xl font-extrabold leading-tight" style={{ color: '#3e2bcd' }}>
                 {formatCurrency(correctedTotalRevenue)}
               </div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Total Revenue</div>
+              <div className="text-gray-600 text-xs md:text-sm font-medium mt-1">Total Revenue</div>
             </div>
           </div>
-          {/* SVG Line Chart Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
         </div>
 
         {/* Total Bonus */}
-        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-yellow-500 via-orange-500 to-red-500 text-white relative overflow-hidden p-3 md:p-6">
+        <div className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl bg-white text-gray-800 relative overflow-hidden p-3 md:p-6" style={{ boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.1)' }}>
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <svg className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
-              </svg>
+            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full shadow" style={{ backgroundColor: '#3e2bcd' }}>
+              <BanknotesIcon className="w-5 h-5 md:w-7 md:h-7 text-white" />
             </div>
-            <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm sm:text-base md:text-lg lg:text-xl font-extrabold leading-tight" style={{ color: '#3e2bcd' }}>
                 {formatCurrency(employees.reduce((total, emp) => total + (emp.performance_metrics?.calculated_bonus || emp.performance_metrics?.total_bonus || 0), 0))}
               </div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Total Employee Bonuses</div>
+              <div className="text-gray-600 text-xs md:text-sm font-medium mt-1">Total Employee Bonuses</div>
             </div>
           </div>
-          {/* SVG Star Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 32"><polygon points="16,2 20,12 30,12 22,20 26,30 16,24 6,30 10,20 2,12 12,12" /></svg>
         </div>
       </div>
 
-      {/* View Mode Toggle */}
-      <div className="card bg-base-100 shadow-sm mb-4 sm:mb-6">
-        <div className="card-body p-3 sm:p-6">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
-            <h3 className="text-base sm:text-lg font-semibold">View Mode</h3>
-            <div className="flex gap-2 w-full sm:w-auto">
-              <button
-                className={`btn btn-sm sm:btn-md flex-1 sm:flex-none ${viewMode === 'department' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setViewMode('department')}
-              >
-                Departments
-              </button>
-              <button
-                className={`btn btn-sm sm:btn-md flex-1 sm:flex-none ${viewMode === 'subdepartment' ? 'btn-primary' : 'btn-outline'}`}
-                onClick={() => setViewMode('subdepartment')}
-              >
-                Roles
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
 
       {/* Revenue Graph */}
       {showRevenueGraph && (
@@ -2480,7 +2522,7 @@ const EmployeePerformancePage: React.FC = () => {
                 ) : (
                   subdepartmentGroups.map(subdept => (
                     <option key={subdept.name} value={subdept.name}>
-                      {subdept.name} ({subdept.bonus_percentage}%)
+                      {subdept.name}
                     </option>
                   ))
                 )}
@@ -2522,24 +2564,12 @@ const EmployeePerformancePage: React.FC = () => {
               <label className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">Date To</span>
               </label>
-              <div className="flex gap-2">
               <input
                 type="date"
-                  className="input input-bordered input-sm sm:input-md flex-1"
+                className="input input-bordered input-sm sm:input-md"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
               />
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => {
-                    setDateFrom('');
-                    setDateTo('');
-                  }}
-                  title="Clear date filters (reset to last 30 days)"
-                >
-                  Clear
-                </button>
-              </div>
               {/* Show message when only one date is selected */}
               {(dateFrom && !dateTo) || (!dateFrom && dateTo) ? (
                 <div className="text-xs text-warning mt-1 flex items-center gap-1">
@@ -2551,25 +2581,39 @@ const EmployeePerformancePage: React.FC = () => {
               ) : null}
             </div>
 
-            {/* Clear All Button */}
+            {/* Actions */}
             <div className="form-control">
               <div className="label">
                 <span className="label-text font-semibold text-xs sm:text-sm">Actions</span>
               </div>
-              <button
-                className="btn btn-outline btn-xs sm:btn-sm w-full"
-                onClick={() => {
-                  setSelectedDepartment('all');
-                  setSelectedSubdepartment('all');
-                  setSelectedRole('all');
-                  setSearchQuery('');
-                  setDateFrom('');
-                  setDateTo('');
-                }}
-                title="Clear all filters"
-              >
-                Clear All
-              </button>
+              <div className="flex gap-2">
+                <button
+                  className={`btn btn-xs sm:btn-sm flex-1 ${viewMode === 'department' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setViewMode('department')}
+                >
+                  Departments
+                </button>
+                <button
+                  className={`btn btn-xs sm:btn-sm flex-1 ${viewMode === 'subdepartment' ? 'btn-primary' : 'btn-outline'}`}
+                  onClick={() => setViewMode('subdepartment')}
+                >
+                  Roles
+                </button>
+                <button
+                  className="btn btn-outline btn-xs sm:btn-sm flex-1"
+                  onClick={() => {
+                    setSelectedDepartment('all');
+                    setSelectedSubdepartment('all');
+                    setSelectedRole('all');
+                    setSearchQuery('');
+                    setDateFrom('');
+                    setDateTo('');
+                  }}
+                  title="Clear all filters"
+                >
+                  Clear
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2611,18 +2655,8 @@ const EmployeePerformancePage: React.FC = () => {
             if (!matchesSearch) return false;
           }
           
-          // Date range filtering based on last activity
-          if (dateFrom) {
-            const lastActivity = emp.performance_metrics?.last_activity;
-            if (!lastActivity || lastActivity === 'No activity') return false;
-            if (new Date(lastActivity) < new Date(dateFrom)) return false;
-          }
-          
-          if (dateTo) {
-            const lastActivity = emp.performance_metrics?.last_activity;
-            if (!lastActivity || lastActivity === 'No activity') return false;
-            if (new Date(lastActivity) > new Date(dateTo)) return false;
-          }
+          // Note: Date filtering is handled in the data fetching, not in employee display
+          // All employees should be shown even if they have no activity in the selected period
           
           return true;
         });
@@ -2639,11 +2673,6 @@ const EmployeePerformancePage: React.FC = () => {
                 <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                   <h3 className="text-lg sm:text-xl font-bold">{groupData.name}</h3>
                   <div className="flex items-center gap-2 flex-wrap">
-                    {isSubdepartment && (
-                      <span className="badge badge-secondary text-xs">
-                        {(groupData as SubdepartmentGroup).bonus_percentage}% Bonus
-                      </span>
-                    )}
                     <span className="badge badge-primary text-xs">{filteredEmployees.length} employees</span>
                   </div>
                 </div>
@@ -2662,12 +2691,20 @@ const EmployeePerformancePage: React.FC = () => {
                     <tr>
                       <th className="w-1/3 text-sm sm:text-base">Employee</th>
                       <th className="w-1/12 text-sm sm:text-base">
-                        <span className="hidden sm:inline">Total Meetings</span>
-                        <span className="sm:hidden">Total</span>
+                        <span className="hidden sm:inline">Managed Meetings</span>
+                        <span className="sm:hidden">Managed</span>
                       </th>
                       <th className="w-1/12 text-sm sm:text-base">
-                        <span className="hidden sm:inline">Completed</span>
-                        <span className="sm:hidden">Done</span>
+                        <span className="hidden sm:inline">Scheduled Meetings</span>
+                        <span className="sm:hidden">Scheduled</span>
+                      </th>
+                      <th className="w-1/12 text-sm sm:text-base">
+                        <span className="hidden sm:inline">Contracts Signed</span>
+                        <span className="sm:hidden">Contracts</span>
+                      </th>
+                      <th className="w-1/12 text-sm sm:text-base">
+                        <span className="hidden sm:inline">Cases</span>
+                        <span className="sm:hidden">Cases</span>
                       </th>
                       <th className="w-1/12 text-sm sm:text-base">Revenue</th>
                       <th className="w-1/12 text-sm sm:text-base">
@@ -2736,8 +2773,14 @@ const EmployeePerformancePage: React.FC = () => {
                     <td className="w-1/12 font-semibold text-sm sm:text-base">
                       {employee.performance_metrics?.total_meetings || 0}
                     </td>
-                    <td className="w-1/12 font-semibold text-success text-sm sm:text-base">
-                      {employee.performance_metrics?.completed_meetings || 0}
+                    <td className="w-1/12 font-semibold text-sm sm:text-base">
+                      {employee.performance_metrics?.meetings_scheduled || 0}
+                    </td>
+                    <td className="w-1/12 font-semibold text-sm sm:text-base">
+                      {employee.performance_metrics?.contracts_signed || 0}
+                    </td>
+                    <td className="w-1/12 font-semibold text-sm sm:text-base">
+                      {employee.performance_metrics?.cases_handled || 0}
                     </td>
                     <td className="w-1/12 font-semibold text-sm sm:text-base">
                       <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.total_revenue || 0)}</span>
@@ -2752,14 +2795,9 @@ const EmployeePerformancePage: React.FC = () => {
                         }
                       </span>
                     </td>
-                      <td className="w-1/12 font-semibold text-warning text-sm sm:text-base">
+                      <td className="w-1/12 font-semibold text-black text-sm sm:text-base">
                         <span className="hidden sm:inline">{formatCurrency(employee.performance_metrics?.calculated_bonus || employee.performance_metrics?.total_bonus || 0)}</span>
                         <span className="sm:hidden">₪{(employee.performance_metrics?.calculated_bonus || employee.performance_metrics?.total_bonus || 0).toLocaleString('en-US', { maximumFractionDigits: 0 })}</span>
-                        {employee.performance_metrics?.calculated_bonus && employee.performance_metrics?.calculated_bonus !== employee.performance_metrics?.total_bonus && (
-                          <div className="text-xs text-gray-500 mt-1">
-                            (Calc: {formatCurrency(employee.performance_metrics.calculated_bonus)})
-                          </div>
-                        )}
                       </td>
                     <td className="w-1/12">
                       {employee.performance_metrics?.performance_percentage !== undefined ? (
