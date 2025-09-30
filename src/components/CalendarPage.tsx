@@ -2620,7 +2620,7 @@ const CalendarPage: React.FC = () => {
 
             {/* Amount */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Amount</span>
+              <span className="text-xs md:text-base font-semibold text-gray-500">Value</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
                 {lead.balance === '--' || meeting.meeting_amount === '--' 
                   ? '--'
@@ -3316,7 +3316,7 @@ const CalendarPage: React.FC = () => {
                 <th className="hidden sm:table-cell">Manager</th>
                 <th className="hidden md:table-cell">Helper</th>
                 <th className="hidden lg:table-cell">Category</th>
-                <th className="hidden sm:table-cell">Amount</th>
+                <th className="hidden sm:table-cell">Value</th>
                 <th className="hidden lg:table-cell">Expert</th>
                 <th className="hidden md:table-cell">Location</th>
                 <th>Info</th>

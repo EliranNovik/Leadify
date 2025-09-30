@@ -24,6 +24,7 @@ import OutlookCalendarPage from './components/OutlookCalendarPage';
 import PipelinePage from './components/PipelinePage';
 import NewCasesPage from './pages/NewCasesPage';
 import NewHandlerCasesPage from './pages/NewHandlerCasesPage';
+import MyCasesPage from './pages/MyCasesPage';
 import CaseManagerPageNew from './components/CaseManagerPageNew';
 import DoubleLeadsPage from './pages/DoubleLeadsPage';
 import AdminPage from './components/admin/AdminPage';
@@ -34,6 +35,7 @@ import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
 import ProformaViewPage from './pages/ProformaViewPage';
 import ReportsPage from './pages/ReportsPage';
+import MasterLeadPage from './components/MasterLeadPage';
 import SettingsPage from './pages/SettingsPage';
 import TimelinePage from './components/TimelinePage';
 import HistoryPage from './components/HistoryPage';
@@ -241,6 +243,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients/:lead_number/contract" element={<ContractPage />} />
                     <Route path="/clients/:lead_number/timeline" element={<TimelinePage />} />
                     <Route path="/clients/:lead_number/history" element={<HistoryPage />} />
+                    <Route path="/clients/:lead_number/master" element={<MasterLeadPage />} />
                     <Route path="/clients/:lead_number/*" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
                     <Route path="/calendar" element={<CalendarPage />} />
                     <Route path="/outlook-calendar" element={<OutlookCalendarPage />} />
@@ -250,6 +253,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/pipeline" element={<PipelinePage />} />
                     <Route path="/new-cases" element={<NewCasesPage />} />
                     <Route path="/new-handler-cases" element={<NewHandlerCasesPage />} />
+                    <Route path="/my-cases" element={<MyCasesPage />} />
                     <Route path="/case-manager" element={<CaseManagerPageNew />} />
                     <Route path="/double-leads" element={<DoubleLeadsPage />} />
                     <Route path="/admin" element={<AdminPage />} />

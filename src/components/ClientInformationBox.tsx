@@ -15,7 +15,33 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
         <div className="flex flex-col flex-1">
           <div className="flex items-center gap-2">
             <span className="text-xl font-bold text-gray-900">
-              {selectedClient ? (selectedClient.lead_number || selectedClient.id || '---') : '---'}
+              {selectedClient ? (() => {
+                // Use manual_id if available, otherwise use lead_number or id
+                let displayNumber = selectedClient.manual_id || selectedClient.lead_number || selectedClient.id || '---';
+                
+                // Debug logging
+                console.log('🔍 ClientInformationBox - Lead number logic:', {
+                  id: selectedClient.id,
+                  idString: selectedClient.id?.toString(),
+                  isLegacy: selectedClient.id?.toString().startsWith('legacy_'),
+                  stage: selectedClient.stage,
+                  stageType: typeof selectedClient.stage,
+                  manual_id: selectedClient.manual_id,
+                  lead_number: selectedClient.lead_number,
+                  displayNumber: displayNumber
+                });
+                
+                // Add "C" prefix for legacy leads with stage "100" (Success) or higher (after stage 60)
+                const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
+                const isSuccessStage = selectedClient.stage === '100' || selectedClient.stage === 100;
+                
+                if (isLegacyLead && isSuccessStage) {
+                  console.log('🔍 Adding C prefix to:', displayNumber);
+                  displayNumber = `C${displayNumber}`;
+                }
+                
+                return displayNumber;
+              })() : '---'}
             </span>
           </div>
           <div className="flex items-center gap-2">

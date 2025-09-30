@@ -927,7 +927,7 @@ const Clients: React.FC<ClientsProps> = ({
             clientData = {
               ...legacyLead,
               id: `legacy_${legacyLead.id}`,
-              lead_number: String(legacyLead.id), // Always use id as lead_number for legacy leads
+              lead_number: legacyLead.manual_id || String(legacyLead.id), // Use manual_id if exists, otherwise use id
               stage: legacyLead.stage !== null && legacyLead.stage !== undefined ? String(legacyLead.stage) : '',
               source: String(legacyLead.source_id || ''),
               created_at: legacyLead.cdate,
@@ -3183,8 +3183,10 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   // After extracting fullLeadNumber
-  const isSubLead = fullLeadNumber.includes('/');
-  const masterLeadNumber = isSubLead ? fullLeadNumber.split('/')[0] : null;
+  const isSubLead = fullLeadNumber.includes('/') || (selectedClient && selectedClient.master_id);
+  const masterLeadNumber = isSubLead ? 
+    (fullLeadNumber.includes('/') ? fullLeadNumber.split('/')[0] : selectedClient?.master_id) : 
+    null;
   
   // Add state for sub-leads
   const [subLeads, setSubLeads] = useState<any[]>([]);
@@ -3851,7 +3853,11 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Sub-lead notice at the top */}
           {isSubLead && masterLeadNumber && (
             <div className="text-sm text-gray-500 mb-2">
-              This is a sub-lead of the master lead <a href={`/clients/${masterLeadNumber}`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
+              This is a sub-lead of the master lead <a href={`/clients/${masterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{(() => {
+                // For display purposes, we'll show the master_id as-is since we don't have the master lead data here
+                // The actual formatting will be handled in the MasterLeadPage component
+                return masterLeadNumber;
+              })()}</a>
             </div>
           )}
           {/* Master lead notice */}
