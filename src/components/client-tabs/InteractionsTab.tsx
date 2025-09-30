@@ -481,6 +481,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
   }
+  
+  // Determine if this is a legacy lead
+  const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+  
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [editIndex, setEditIndex] = useState<number|null>(null);
   const [editData, setEditData] = useState({ date: '', time: '', content: '', observation: '', length: '' });
@@ -1301,12 +1305,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             const legacyId = parseInt(client.id.replace('legacy_', ''));
             query = query.eq('lead_id', legacyId);
           } else {
-            query = query.eq('lead_id', client.id);
+            // For new leads, try client_id column first, then fallback to lead_id
+            query = query.eq('client_id', client.id);
           }
           
           const { data: callLogs, error } = await query.order('cdate', { ascending: false });
           if (error) {
             console.error('🔍 Call logs query error:', error);
+            // For new leads, if no call_logs exist, that's expected - they don't have automatic call logging yet
+            if (!isLegacyLead) {
+              console.log('🔍 No call logs found for new lead - this is expected as automatic call logging is not yet implemented');
+            }
           } else {
             console.log('🔍 Raw call logs from database:', callLogs?.map(cl => ({
               id: cl.id,
@@ -1833,19 +1842,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         }
 
         // Save to call_logs table
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const callLogData: any = {
+          cdate: now.toISOString().split('T')[0],
+          direction: 'Manual Entry',
+          date: newContact.date ? new Date(newContact.date).toISOString().split('T')[0] : now.toISOString().split('T')[0],
+          time: newContact.time || now.toTimeString().split(' ')[0].substring(0, 5),
+          status: 'ANSWERED', // Default for manual entries
+          duration: newContact.length ? parseInt(newContact.length) * 60 : 0, // Convert minutes to seconds
+          employee_id: employeeId, // Include employee_id for JOIN queries
+          action: ''
+        };
+        
+        if (isLegacyLead) {
+          const legacyId = parseInt(client.id.replace('legacy_', ''));
+          callLogData.lead_id = legacyId;
+        } else {
+          callLogData.client_id = client.id;
+        }
+        
         const { error: callLogError } = await supabase
           .from('call_logs')
-          .insert({
-            cdate: now.toISOString().split('T')[0],
-            direction: 'Manual Entry',
-            date: newContact.date ? new Date(newContact.date).toISOString().split('T')[0] : now.toISOString().split('T')[0],
-            time: newContact.time || now.toTimeString().split(' ')[0].substring(0, 5),
-            status: 'ANSWERED', // Default for manual entries
-            duration: newContact.length ? parseInt(newContact.length) * 60 : 0, // Convert minutes to seconds
-            lead_id: client.id,
-            employee_id: employeeId, // Include employee_id for JOIN queries
-            action: ''
-          });
+          .insert(callLogData);
 
         if (callLogError) throw callLogError;
         
@@ -2000,6 +2018,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               <div className="absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-accent to-secondary shadow-lg" style={{ zIndex: 0 }} />
               
               <div className="space-y-8 md:space-y-10 lg:space-y-12">
+            {/* Info message for new leads about call logs */}
+            {!isLegacyLead && sortedInteractions.filter(i => i.kind === 'call').length === 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                <div className="flex items-start gap-3">
+                  <div className="flex-shrink-0">
+                    <svg className="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-medium text-blue-800">Call Logs Information</h3>
+                    <p className="text-sm text-blue-700 mt-1">
+                      For new leads, call logs are not automatically created by the system yet. 
+                      You can manually add call logs using the "Add Contact" button above.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
             {sortedInteractions.map((row, idx) => {
               // Date formatting
               const dateObj = new Date(row.raw_date);

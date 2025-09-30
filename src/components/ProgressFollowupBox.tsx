@@ -8,9 +8,9 @@ interface ProgressFollowupBoxProps {
 
 const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClient, getEmployeeDisplayName }) => {
   return (
-    <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-white border border-gray-200 text-black relative overflow-hidden p-4 h-full">
+    <div className="text-black">
       <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
+        <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: '#391BC8' }}>
           <ChartBarIcon className="w-5 h-5 text-white" />
         </div>
         <span className="text-base font-semibold text-gray-900">Progress & Follow-up</span>

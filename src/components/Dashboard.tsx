@@ -15,6 +15,7 @@ import { DateTime } from 'luxon';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 import { getStageName } from '../lib/stageUtils';
+import EmployeeScoreboard from './EmployeeScoreboard';
 
 
 
@@ -68,7 +69,9 @@ const Dashboard: React.FC = () => {
   const [loadingMoreLeads, setLoadingMoreLeads] = useState(false);
   const [overdueCountFetched, setOverdueCountFetched] = useState(false);
 
+
   const navigate = useNavigate();
+
 
   // Fetch detailed unavailable employees data for table
   const fetchUnavailableEmployeesData = async () => {
@@ -193,7 +196,8 @@ const Dashboard: React.FC = () => {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
 
-      const { data: userData } = await supabase
+      console.log('🔍 Dashboard - Fetching user data for auth_id:', user.id);
+      const { data: userData, error: userDataError } = await supabase
         .from('users')
         .select(`
           ids,
@@ -206,6 +210,17 @@ const Dashboard: React.FC = () => {
         `)
         .eq('auth_id', user.id)
         .single();
+
+      if (userDataError) {
+        console.error('❌ Dashboard - Error fetching user data:', userDataError);
+        console.error('❌ Dashboard - User data error details:', {
+          message: userDataError.message,
+          details: userDataError.details,
+          hint: userDataError.hint,
+          code: userDataError.code
+        });
+        return { newLeads: [], legacyLeads: [], totalCount: 0 };
+      }
 
       if (!userData) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
@@ -451,7 +466,8 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        const { data: userData } = await supabase
+        console.log('🔍 Dashboard - Fetching user data for overdue followups, auth_id:', user.id);
+        const { data: userData, error: userDataError } = await supabase
           .from('users')
           .select(`
             ids,
@@ -464,6 +480,18 @@ const Dashboard: React.FC = () => {
           `)
           .eq('auth_id', user.id)
           .single();
+
+        if (userDataError) {
+          console.error('❌ Dashboard - Error fetching user data for overdue followups:', userDataError);
+          console.error('❌ Dashboard - User data error details:', {
+            message: userDataError.message,
+            details: userDataError.details,
+            hint: userDataError.hint,
+            code: userDataError.code
+          });
+          setOverdueFollowups(0);
+          return;
+        }
 
         if (!userData) {
           setOverdueFollowups(0);
@@ -529,11 +557,23 @@ const Dashboard: React.FC = () => {
         if (!user) return;
 
         // Get user's leads
-        const { data: userLeads } = await supabase
+        console.log('🔍 Dashboard - Fetching user leads for auth_id:', user.id);
+        const { data: userLeads, error: userLeadsError } = await supabase
           .from('users')
-          .select('id')
+          .select('ids')
           .eq('auth_id', user.id)
           .single();
+
+        if (userLeadsError) {
+          console.error('❌ Dashboard - Error fetching user leads:', userLeadsError);
+          console.error('❌ Dashboard - User leads error details:', {
+            message: userLeadsError.message,
+            details: userLeadsError.details,
+            hint: userLeadsError.hint,
+            code: userLeadsError.code
+          });
+          return;
+        }
 
         if (!userLeads) return;
 
@@ -2300,6 +2340,7 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     fetchUnavailableEmployeesData();
   }, []);
+
 
   // Refresh data when unavailable employees modal closes
   useEffect(() => {
@@ -4085,149 +4126,8 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* 3. Top Workers Row: 4 boxes */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 w-full mb-12 px-4 md:px-0">
-        {/* Top Closers */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white h-full min-h-[180px] md:min-h-0">
-          <div className="flex items-center gap-2 mb-2">
-            <UserGroupIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
-            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Closers</span>
-          </div>
-          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
-            {[
-              { name: 'MiriamL', count: 12, movement: 'up' },
-              { name: 'YehonatanD', count: 9, movement: 'down' },
-              { name: 'Isaac', count: 7, movement: 'none' },
-            ].map((user, idx) => (
-              <div key={user.name} className="flex items-center gap-2 w-full">
-                <div className="flex items-center gap-1">
-                  {user.movement === 'up' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
-                  )}
-                  {user.movement === 'down' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
-                  )}
-                  {user.movement === 'none' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
-                  )}
-                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
-                </div>
-                <div className="flex-1">
-                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        {/* Top Schedulers */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white h-full min-h-[180px] md:min-h-0">
-          <div className="flex items-center gap-2 mb-2">
-            <CalendarIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
-            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Schedulers</span>
-          </div>
-          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
-            {[
-              { name: 'Anna Zh', count: 15, movement: 'up' },
-              { name: 'MichaelW', count: 11, movement: 'down' },
-              { name: 'Isaac', count: 8, movement: 'none' },
-            ].map((user, idx) => (
-              <div key={user.name} className="flex items-center gap-2 w-full">
-                <div className="flex items-center gap-1">
-                  {user.movement === 'up' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
-                  )}
-                  {user.movement === 'down' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
-                  )}
-                  {user.movement === 'none' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
-                  )}
-                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
-                </div>
-                <div className="flex-1">
-                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        {/* Top Experts */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white h-full min-h-[180px] md:min-h-0">
-          <div className="flex items-center gap-2 mb-2">
-            <svg className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 14l9-5-9-5-9 5 9 5z" /><path d="M12 14l6.16-3.422A12.083 12.083 0 0112 21.5a12.083 12.083 0 01-6.16-10.922L12 14z" /></svg>
-            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Experts</span>
-          </div>
-          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
-            {[
-              { name: 'Kyrill', count: 10, movement: 'down' },
-              { name: 'Ido', count: 8, movement: 'up' },
-              { name: 'YaelG', count: 6, movement: 'none' },
-            ].map((user, idx) => (
-              <div key={user.name} className="flex items-center gap-2 w-full">
-                <div className="flex items-center gap-1">
-                  {user.movement === 'up' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
-                  )}
-                  {user.movement === 'down' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
-                  )}
-                  {user.movement === 'none' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
-                  )}
-                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
-                </div>
-                <div className="flex-1">
-                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-        {/* Top Handler */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white h-full min-h-[180px] md:min-h-0">
-          <div className="flex items-center gap-2 mb-2">
-            <UserGroupIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
-            <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Handlers</span>
-          </div>
-          <div className="w-full flex flex-col gap-2 mt-1 flex-1">
-            {[
-              { name: 'Caroline', count: 7, movement: 'up' },
-              { name: 'Lena', count: 6, movement: 'down' },
-              { name: 'Lior', count: 5, movement: 'none' },
-            ].map((user, idx) => (
-              <div key={user.name} className="flex items-center gap-2 w-full">
-                <div className="flex items-center gap-1">
-                  {user.movement === 'up' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 16V4m0 0l-5 5m5-5l5 5" /></svg>
-                  )}
-                  {user.movement === 'down' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M10 4v12m0 0l-5-5m5 5l5-5" /></svg>
-                  )}
-                  {user.movement === 'none' && (
-                    <svg className="w-3 h-3 md:w-4 md:h-4 text-white" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 20 20"><path strokeLinecap="round" strokeLinejoin="round" d="M6 10h8" /></svg>
-                  )}
-                  <div className={`w-6 h-6 md:w-7 md:h-7 rounded-full flex items-center justify-center font-bold text-sm md:text-base shadow-lg bg-white/20 text-white`}>{user.name[0]}</div>
-                </div>
-                <div className="flex-1">
-                  <span className="font-semibold text-white text-base md:text-xl">{user.name}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <span className="text-2xl md:text-3xl font-bold text-white">{user.count}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+      {/* 3. Employee Scoreboard Component */}
+      <EmployeeScoreboard />
 
       {/* Team Availability Section */}
       <div className="w-full mt-12">

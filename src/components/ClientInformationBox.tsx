@@ -7,9 +7,9 @@ interface ClientInformationBoxProps {
 
 const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedClient }) => {
   return (
-    <div className="rounded-2xl cursor-pointer transition-all duration-200 hover:shadow-xl shadow-lg bg-white border border-gray-200 text-black relative overflow-hidden p-4 h-full">
+    <div className="text-black">
       <div className="flex items-center gap-3 mb-4">
-        <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center">
+        <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: '#391BC8' }}>
           <UserIcon className="w-5 h-5 text-white" />
         </div>
         <div className="flex flex-col flex-1">
@@ -19,11 +19,11 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-lg font-semibold text-gray-700 truncate max-w-[200px]">
+            <span className="text-2xl font-bold text-gray-700 truncate max-w-[200px]">
               {selectedClient ? (selectedClient.name || '---') : '---'}
             </span>
             {selectedClient?.language && (
-              <span className="px-2 py-1 text-xs font-medium text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full">
+              <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full">
                 {selectedClient.language}
               </span>
             )}

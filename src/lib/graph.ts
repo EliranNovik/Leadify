@@ -370,14 +370,16 @@ export const sendEmail = async (accessToken: string, email: {
   to: string;
   subject: string;
   body: string;
+  skipSignature?: boolean;
 }) => {
   // Get the user's email signature from the database
   const { getCurrentUserEmailSignature } = await import('./emailSignature');
   const userSignature = await getCurrentUserEmailSignature();
   
-  // Handle signature (HTML or plain text)
   let fullBody = email.body;
-  if (userSignature) {
+  
+  // If we have a database signature, use it (unless explicitly skipped)
+  if (!email.skipSignature && userSignature) {
     // Check if signature is already HTML
     if (userSignature.includes('<') && userSignature.includes('>')) {
       fullBody = email.body + `<br><br>${userSignature}`;
@@ -387,6 +389,7 @@ export const sendEmail = async (accessToken: string, email: {
       fullBody = email.body + signatureHtml;
     }
   }
+  // If no database signature and not skipped, let Outlook add its automatic signature
 
   const emailToSend = {
     message: {

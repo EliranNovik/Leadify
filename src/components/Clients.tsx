@@ -581,16 +581,16 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [selectedClient]);
 
-  // Fetch scheduler options from database
+  // Fetch scheduler options from database - employees with bonuses_role 's' or 'c'
   useEffect(() => {
     const fetchSchedulers = async () => {
       const { data, error } = await supabase
-        .from('users')
-        .select('full_name, role')
-        .eq('role', 'scheduler')
-        .order('full_name', { ascending: true });
+        .from('tenants_employee')
+        .select('display_name, bonuses_role')
+        .in('bonuses_role', ['s', 'c'])
+        .order('display_name', { ascending: true });
       if (!error && data) {
-        setSchedulerOptions(data.map((u: any) => u.full_name));
+        setSchedulerOptions(data.map((emp: any) => emp.display_name));
       }
     };
     fetchSchedulers();
@@ -3761,118 +3761,78 @@ const Clients: React.FC<ClientsProps> = ({
           Loading additional data...
         </div>
       )}
-      {/* Mobile-Only Stylish Client Card (Pipeline Style) */}
-      <div className="md:hidden px-2 pt-4 pb-2">
-        <div className="bg-white dark:bg-gray-800 rounded-2xl p-5 min-h-[340px] flex flex-col justify-between relative">
-          {/* Remove Dropdown menu for secondary actions (top right) */}
-          {/* Top Row: Lead Number, Name, Stage */}
-          <div className="flex items-center gap-2 mb-2 w-full">
-            <span className="text-xs font-semibold text-[#411CCF] tracking-widest saira-regular">{selectedClient?.lead_number}</span>
-            <span className="text-[#411CCF] font-bold text-xs">/</span>
-            <span className="text-lg font-extrabold text-[#411CCF] truncate flex-1 saira-regular">{selectedClient?.name || 'Loading...'}</span>
-          </div>
-          {isSubLead && masterLeadNumber && (
-            <div className="text-xs text-gray-500 mb-2">
-              This is a sub-lead of the master lead <a href={`/clients/${masterLeadNumber}`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
-            </div>
-          )}
-          {/* Master lead notice for mobile */}
-          {isMasterLead && subLeads.length > 0 && (
-            <div className="text-xs text-gray-500 mb-2">
-              Sub-leads: {subLeads.map((subLead, index) => (
-                <span key={subLead.lead_number}>
-                  <a href={`/clients/${subLead.lead_number}`} className="underline text-blue-700 hover:text-blue-900">{subLead.lead_number}</a>
-                  {index < subLeads.length - 1 ? ', ' : ''}
-                </span>
-              ))}
-            </div>
-          )}
-          {/* Category badge */}
-          <div className="mb-2">
-            <span className="px-2 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700">{selectedClient?.category || 'Not specified'}</span>
-          </div>
-          {/* Info Grid: Amount, Probability, Next Follow-up, Category, Topic */}
-          <div className="grid grid-cols-2 gap-y-2 gap-x-4 items-center mb-6 mt-2">
-            <span className="text-base text-gray-500 text-left font-semibold">Amount</span>
-            <span className="text-xl font-bold text-[#411CCF] text-right saira-regular">{getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}{(selectedClient?.balance || 0).toLocaleString()}</span>
-            <span className="text-base text-gray-500 text-left font-semibold">Probability</span>
-            <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.probability || 0}%</span>
-            <span className="text-base text-gray-500 text-left font-semibold">Next Follow-up</span>
-            <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.next_followup ? new Date(selectedClient.next_followup).toLocaleDateString() : '--'}</span>
-            <span className="text-base text-gray-500 text-left font-semibold">Category</span>
-            <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient?.category || 'Not specified'}</span>
-            {selectedClient?.topic && (
-              <>
-                <span className="text-base text-gray-500 text-left font-semibold">Topic</span>
-                <span className="font-bold text-xl text-black text-right saira-regular">{selectedClient.topic}</span>
-              </>
-            )}
-          </div>
-          {/* Contact Row (centered, below info grid, above buttons) */}
-          <div className="flex items-center justify-center gap-8 mt-2 w-full">
-            <a href={selectedClient?.email ? `mailto:${selectedClient.email}` : undefined} className="text-primary" title="Email">
-              <EnvelopeIcon className="w-7 h-7" />
-            </a>
-            <a href={selectedClient?.phone ? `tel:${selectedClient.phone}` : undefined} className="text-primary" title="Call">
-              <PhoneIcon className="w-7 h-7" />
-            </a>
-          </div>
-          {/* Regular Stages and Actions buttons at the bottom */}
-          <div className="flex gap-3 w-full mt-4">
-            <div className="flex-1">
-              <div className="dropdown w-full">
-                <label tabIndex={0} className="btn btn-md w-full bg-black text-white border-none gap-3 shadow-sm text-lg font-bold py-3">
-                  <span>Stages</span>
-                  <ChevronDownIcon className="w-6 h-6" />
-                </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                  {dropdownItems}
-                </ul>
-              </div>
-            </div>
-            {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-              <div className="flex-1">
-                <div className="dropdown w-full">
-                  <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
-                    <span>Assign to</span>
-                    <ChevronDownIcon className="w-4 h-4" />
-                  </label>
-                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                    {schedulerOptions.map((scheduler) => (
-                      <li key={scheduler}>
-                        <a 
-                          className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                          onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
-                        >
-                          <UserIcon className="w-5 h-5 text-primary" />
-                          <span className="font-medium">{scheduler}</span>
-                        </a>
-                      </li>
-                    ))}
-                  </ul>
+      {/* Mobile view - aligned with desktop layout */}
+      <div className="md:hidden px-4 pt-4 pb-3">
+        <div className="flex flex-col gap-4">
+          {/* Client info card */}
+          <ClientInformationBox selectedClient={selectedClient} />
+
+          {/* Amount badge + stage badge + applicants */}
+          <div className="w-full flex flex-col items-center">
+            <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg px-5 py-3 mb-3 w-full max-w-xs">
+              <div className="text-center">
+                <div className="text-white text-2xl font-bold">
+                  {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
+                  {(selectedClient?.balance || 0).toLocaleString()}
                 </div>
               </div>
-            )}
-            <div className="flex-1">
-              <div className="dropdown w-full">
-                <label tabIndex={0} className="btn btn-md w-full bg-black text-white border-none gap-3 shadow-sm text-lg font-bold py-3">
-                  <span>Actions</span>
-                  <ChevronDownIcon className="w-6 h-6" />
+            </div>
+
+            {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
+              <div className="dropdown dropdown-end mb-2">
+                <label 
+                  tabIndex={0} 
+                  className="btn btn-sm text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm cursor-pointer hover:from-pink-600 hover:via-purple-600 hover:to-purple-700 transition-all duration-200 flex items-center gap-2 whitespace-nowrap px-4"
+                >
+                  {getStageName(selectedClient.stage)}
+                  <ChevronDownIcon className="w-4 h-4" />
                 </label>
-                <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                  <li>
-                    <a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}>
-                      <NoSymbolIcon className="w-5 h-5 text-red-500" />
-                      <span className="text-red-600 font-medium">Unactivate</span>
-                    </a>
-                  </li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                <ul 
+                  tabIndex={0} 
+                  className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
+                >
+                  {availableStages.map((stageOption) => (
+                    <li key={stageOption.id}>
+                      <a 
+                        className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
+                          selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
+                        }`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleStageChange(stageOption.id);
+                        }}
+                      >
+                        <span className="font-medium">{stageOption.name}</span>
+                        {selectedClient.stage === stageOption.id && (
+                          <CheckIcon className="w-4 h-4 text-purple-600" />
+                        )}
+                      </a>
+                    </li>
+                  ))}
                 </ul>
               </div>
-            </div>
+            )}
+
+            {/* Applicants (same logic as desktop) */}
+            {(() => {
+              const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+              const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
+              return applicantsCount && applicantsCount > 0 ? (
+                <div className="text-center mb-2">
+                  <div className="text-black text-lg font-semibold">
+                    {applicantsCount} applicant{applicantsCount !== 1 ? 's' : ''}
+                  </div>
+                </div>
+              ) : null;
+            })()}
           </div>
+
+          {/* Progress & Follow-up card */}
+          <ProgressFollowupBox 
+            selectedClient={selectedClient} 
+            getEmployeeDisplayName={getEmployeeDisplayName}
+          />
         </div>
       </div>
       {/* Vibrant 'Lead is cold' badge, top right, same height as Stages/Actions */}
@@ -3959,6 +3919,20 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 )}
                 
+                {/* Applicants Display - Under stage badge */}
+                {(() => {
+                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                  const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
+                  
+                  return applicantsCount && applicantsCount > 0 ? (
+                    <div className="text-center mb-3">
+                      <div className="text-black text-lg font-semibold">
+                        {applicantsCount} applicant{applicantsCount !== 1 ? 's' : ''}
+                      </div>
+                    </div>
+                  ) : null;
+                })()}
+                
                 {/* Show "Case is not active" message for unactivated leads */}
                 {isUnactivated && (
                   <div className="mt-3">
@@ -3989,7 +3963,7 @@ const Clients: React.FC<ClientsProps> = ({
           <div className="w-full">
             {/* Desktop version */}
             <div className="hidden md:flex items-center px-4 py-4 gap-4">
-              <div className="flex bg-gray-50 dark:bg-gray-700 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide">
+              <div className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide">
                                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
@@ -4071,6 +4045,58 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
             {/* Mobile version: modern card-based design */}
             <div className="md:hidden px-6 py-4">
+              {/* Mobile Action Buttons - Above tabs */}
+              <div className="flex gap-2 mb-4">
+                <div className="flex-1">
+                  <div className="dropdown w-full">
+                    <label tabIndex={0} className="btn btn-sm w-full bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
+                      <span>Stages</span>
+                      <ChevronDownIcon className="w-4 h-4" />
+                    </label>
+                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                      {dropdownItems}
+                    </ul>
+                  </div>
+                </div>
+                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                  <div className="flex-1">
+                    <div className="dropdown w-full">
+                      <label tabIndex={0} className="btn btn-sm bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
+                        <span>Assign to</span>
+                        <ChevronDownIcon className="w-4 h-4" />
+                      </label>
+                      <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                        {schedulerOptions.map((scheduler) => (
+                          <li key={scheduler}>
+                            <a 
+                              className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
+                              onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
+                            >
+                              <UserIcon className="w-5 h-5 text-primary" />
+                              <span className="font-medium">{scheduler}</span>
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )}
+                <div className="flex-1">
+                  <div className="dropdown w-full">
+                    <label tabIndex={0} className="btn btn-sm w-full bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
+                      <span>Actions</span>
+                      <ChevronDownIcon className="w-4 h-4" />
+                    </label>
+                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+              
               <div
                 ref={mobileTabsRef}
                 className="overflow-x-auto scrollbar-hide bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 dark:border-gray-700 p-3 w-full"

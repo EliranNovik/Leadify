@@ -19,6 +19,7 @@ import {
   DocumentTextIcon,
   AcademicCapIcon,
   ArrowPathIcon,
+  PencilIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { useMsal } from '@azure/msal-react';
@@ -90,6 +91,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }>({});
   const [editingField, setEditingField] = useState<{ meetingId: number; field: 'expert_notes' | 'handler_notes' } | null>(null);
   const [editedContent, setEditedContent] = useState<string>('');
+  
+  // Edit meeting state
+  const [editingMeetingId, setEditingMeetingId] = useState<number | null>(null);
+  const [editedMeeting, setEditedMeeting] = useState<Partial<Meeting>>({});
+  const [isUpdatingMeeting, setIsUpdatingMeeting] = useState(false);
 
 
   // New: Lead-level scheduling info
@@ -567,22 +573,26 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account });
       const senderName = account?.name || 'Your Team';
       const now = new Date();
+      
+      // Format time without seconds
+      const formattedTime = meeting.time ? meeting.time.substring(0, 5) : meeting.time;
+      
       // Compose subject and HTML body using the template
-      const subject = `Meeting Invitation: ${meeting.date} at ${meeting.time}`;
+      const subject = `Meeting Invitation: ${meeting.date} at ${formattedTime}`;
       const joinLink = getValidTeamsLink(meeting.link);
       const category = client.category || '---';
       const topic = client.topic || '---';
       const htmlBody = meetingInvitationEmailTemplate({
         clientName: client.name,
         meetingDate: meeting.date,
-        meetingTime: meeting.time,
+        meetingTime: formattedTime,
         location: meeting.location,
         category,
         topic,
         joinLink,
-        senderName: senderName + ' - אלירן נוביק',
+        senderName: senderName,
       });
-      // Send email via Graph API
+      // Send email via Graph API (will use database signature if available, otherwise Outlook signature)
       await sendEmail(tokenResponse.accessToken, { to: client.email, subject, body: htmlBody });
       toast.success(`Email sent for meeting on ${meeting.date}`);
       // --- Optimistic upsert to emails table ---
@@ -631,7 +641,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         subject: `Meeting with ${client.name}`,
         startDateTime,
         endDateTime,
-        attendees: client.email ? [{ email: client.email }] : [],
       });
       const joinUrl = teamsData.joinUrl;
       if (!joinUrl) throw new Error('No joinUrl returned from Teams API');
@@ -689,11 +698,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return '';
   };
 
-  // Helper to determine if a meeting is in the past
+  // Helper to determine if a meeting is in the past (based on date only, not time)
   const isPastMeeting = (meeting: Meeting) => {
     if (meeting.status === 'canceled') return true;
-    const meetingDateTime = new Date(`${meeting.date}T${meeting.time || '00:00'}`);
-    return meetingDateTime < new Date();
+    const meetingDate = new Date(meeting.date);
+    const today = new Date();
+    // Set both dates to start of day for comparison
+    meetingDate.setHours(0, 0, 0, 0);
+    today.setHours(0, 0, 0, 0);
+    return meetingDate < today;
   };
 
   // Helper to determine if a past meeting is within 1 day
@@ -727,10 +740,133 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setEditedContent(currentContent || '');
     };
 
-    const handleCancelEditField = () => {
-      setEditingField(null);
-      setEditedContent('');
-    };
+  const handleCancelEditField = () => {
+    setEditingField(null);
+    setEditedContent('');
+  };
+
+  // Edit meeting functions
+  const handleEditMeeting = (meeting: Meeting) => {
+    setEditingMeetingId(meeting.id);
+    setEditedMeeting({
+      date: meeting.date,
+      time: meeting.time ? meeting.time.substring(0, 5) : meeting.time, // Remove seconds if present
+      location: meeting.location,
+      manager: meeting.manager,
+      currency: meeting.currency,
+      amount: meeting.amount,
+      brief: meeting.brief,
+      scheduler: meeting.scheduler,
+      helper: meeting.helper,
+    });
+  };
+
+  const handleCancelEditMeeting = () => {
+    setEditingMeetingId(null);
+    setEditedMeeting({});
+  };
+
+  const handleSaveMeeting = async () => {
+    if (!editingMeetingId) return;
+    
+    setIsUpdatingMeeting(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const editor = user?.email || 'system';
+      
+      // Update database
+      const { error: dbError } = await supabase
+        .from('meetings')
+        .update({
+          meeting_date: editedMeeting.date,
+          meeting_time: editedMeeting.time,
+          meeting_location: editedMeeting.location,
+          meeting_manager: editedMeeting.manager,
+          meeting_currency: editedMeeting.currency,
+          meeting_amount: editedMeeting.amount,
+          meeting_brief: editedMeeting.brief,
+          scheduler: editedMeeting.scheduler,
+          helper: editedMeeting.helper,
+          last_edited_timestamp: new Date().toISOString(),
+          last_edited_by: editor,
+        })
+        .eq('id', editingMeetingId);
+
+      if (dbError) throw dbError;
+
+      // If it's a Teams meeting and date/time changed, update Outlook
+      const originalMeeting = meetings.find(m => m.id === editingMeetingId);
+      if (originalMeeting && getMeetingLocationName(editedMeeting.location) === 'Teams' && originalMeeting.link) {
+        const dateChanged = originalMeeting.date !== editedMeeting.date;
+        const timeChanged = originalMeeting.time !== editedMeeting.time;
+        
+        if (dateChanged || timeChanged) {
+          try {
+            const account = instance.getActiveAccount();
+            if (account) {
+              const tokenResponse = await instance.acquireTokenSilent({
+                ...loginRequest,
+                account: account,
+              });
+              
+              if (tokenResponse.accessToken) {
+                await updateOutlookMeeting(tokenResponse.accessToken, originalMeeting.link, {
+                  startDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
+                  endDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
+                });
+              }
+            }
+          } catch (outlookError) {
+            console.warn('Failed to update Outlook meeting:', outlookError);
+            toast.error('Meeting updated in database but failed to sync with Outlook');
+          }
+        }
+      }
+
+      toast.success('Meeting updated successfully');
+      setMeetings(prev => prev.map(m => 
+        m.id === editingMeetingId 
+          ? { ...m, ...editedMeeting, lastEdited: { timestamp: new Date().toISOString(), user: editor } }
+          : m
+      ));
+      
+      setEditingMeetingId(null);
+      setEditedMeeting({});
+      
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Error updating meeting:', error);
+      toast.error('Failed to update meeting');
+    } finally {
+      setIsUpdatingMeeting(false);
+    }
+  };
+
+  const updateOutlookMeeting = async (accessToken: string, meetingId: string, updates: any) => {
+    const url = `https://graph.microsoft.com/v1.0/me/calendar/events/${meetingId}`;
+    
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        start: {
+          dateTime: updates.startDateTime,
+          timeZone: 'Asia/Jerusalem'
+        },
+        end: {
+          dateTime: updates.endDateTime,
+          timeZone: 'Asia/Jerusalem'
+        }
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to update Outlook meeting: ${response.statusText}`);
+    }
+  };
 
     // Use expandedMeetingData if available
     const expandedData = expandedMeetingData[meeting.id] || {};
@@ -742,7 +878,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const showPastActions = past && isRecentPastMeeting(meeting);
 
     return (
-      <div key={meeting.id} className="bg-white border border-purple-200 rounded-xl shadow-lg hover:shadow-xl hover:border-purple-300 transition-all duration-200 overflow-hidden relative">
+      <div key={meeting.id} className="bg-white border border-gray-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden relative">
         {/* Canceled watermark */}
         {meeting.status === 'canceled' && (
           <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
@@ -752,15 +888,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         )}
         {/* Header */}
-        <div className="px-4 py-3 bg-gradient-to-r from-purple-50 to-blue-50 border-b border-purple-100">
+        <div className="px-4 py-3 border-b" style={{ backgroundColor: '#391BCB', color: 'white' }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500 to-purple-600 shadow-sm">
+              <div className="flex items-center justify-center w-10 h-10 rounded-lg shadow-sm" style={{ backgroundColor: '#391BCB' }}>
                 <CalendarIcon className="w-5 h-5 text-white" />
               </div>
               <div>
-                <p className="font-bold text-lg text-gray-900">{formattedDate}</p>
-                <div className="flex items-center gap-2 text-purple-600">
+                <p className="font-bold text-lg text-white">{formattedDate}</p>
+                <div className="flex items-center gap-2 text-white">
                   <ClockIcon className="w-4 h-4" />
                   <span className="text-sm font-medium">{meeting.time ? meeting.time.substring(0, 5) : ''}</span>
                 </div>
@@ -768,39 +904,52 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
             {/* Action Buttons */}
             <div className="flex gap-2">
+              {/* Edit Button */}
+              <button
+                className="btn btn-sm text-white"
+                style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
+                onClick={() => handleEditMeeting(meeting)}
+                title="Edit Meeting"
+              >
+                <PencilIcon className="w-4 h-4 sm:hidden" />
+                <span className="hidden sm:inline">Edit</span>
+              </button>
               {!past && (
                 <button
-                  className="btn btn-sm bg-purple-600 hover:bg-purple-700 text-white border-none shadow-sm"
+                  className="btn btn-sm text-white"
+                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
                   onClick={() => handleSendEmail(meeting)}
                   disabled={isSendingEmail}
                 >
-                  <EnvelopeIcon className="w-4 h-4" />
-                  Notify
+                  <EnvelopeIcon className="w-4 h-4 sm:hidden" />
+                  <span className="hidden sm:inline">Notify</span>
                 </button>
               )}
               {!past && getMeetingLocationName(meeting.location) === 'Teams' && !meeting.link && (
                 <button
-                  className="btn btn-sm btn-outline border-purple-300 text-purple-600 hover:bg-purple-50"
+                  className="btn btn-sm text-white"
+                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
                   onClick={() => handleCreateTeamsMeeting(meeting)}
                   disabled={creatingTeamsMeetingId === meeting.id}
                 >
                   {creatingTeamsMeetingId === meeting.id ? (
                     <span className="loading loading-spinner loading-xs"></span>
                   ) : (
-                    <VideoCameraIcon className="w-4 h-4" />
+                    <VideoCameraIcon className="w-4 h-4 sm:hidden" />
                   )}
-                  Teams
+                  <span className="hidden sm:inline">Teams</span>
                 </button>
               )}
-              {!past && meeting.link && getValidTeamsLink(meeting.link) && (
+              {!past && getMeetingLocationName(meeting.location) === 'Teams' && meeting.link && getValidTeamsLink(meeting.link) && (
                 <a
                   href={getValidTeamsLink(meeting.link)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-sm bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 text-white border-none shadow-sm"
+                  className="btn btn-sm text-white"
+                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
                 >
-                  <LinkIcon className="w-4 h-4" />
-                  Join
+                  <LinkIcon className="w-4 h-4 sm:hidden" />
+                  <span className="hidden sm:inline">Join</span>
                 </a>
               )}
               {/* Legacy meeting URL link */}
@@ -809,16 +958,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   href={meeting.link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-sm bg-green-600 hover:bg-green-700 text-white border-none shadow-sm"
+                  className="btn btn-sm text-white"
+                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
                 >
-                  <LinkIcon className="w-4 h-4" />
-                  Link
+                  <LinkIcon className="w-4 h-4 sm:hidden" />
+                  <span className="hidden sm:inline">Link</span>
                 </a>
               )}
               {/* Cancel only for upcoming and not canceled */}
               {!isPastMeeting(meeting) && meeting.status !== 'canceled' && (
                 <button
-                  className="btn btn-outline btn-error btn-sm"
+                  className="btn btn-sm text-white"
+                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
                   title="Cancel Meeting"
                   onClick={async (e) => {
                     e.stopPropagation();
@@ -838,7 +989,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     }
                   }}
                 >
-                  Cancel
+                  <XMarkIcon className="w-4 h-4 sm:hidden" />
+                  <span className="hidden sm:inline">Cancel</span>
                 </button>
               )}
             </div>
@@ -852,92 +1004,248 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
 
             {/* Meeting Details */}
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Location</label>
-                <div className="flex items-center gap-2">
-                  <MapPinIcon className="w-4 h-4 text-purple-400" />
-                  <span className="text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
+            {editingMeetingId === meeting.id ? (
+              /* Edit Mode */
+              <div className="space-y-4">
+                {/* Date and Time */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Date</label>
+                    <input
+                      type="date"
+                      className="input input-bordered w-full"
+                      value={editedMeeting.date || ''}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, date: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Time</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={editedMeeting.time || ''}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, time: e.target.value }))}
+                    >
+                      <option value="">{meeting.time ? meeting.time.substring(0, 5) : 'Select time'}</option>
+                      {timeOptions.map(time => (
+                        <option key={time} value={time}>{time}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Location and Manager */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={editedMeeting.location || ''}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, location: e.target.value }))}
+                    >
+                      <option value="">{getMeetingLocationName(meeting.location) || 'Select location'}</option>
+                      {allMeetingLocations.map((location: any) => (
+                        <option key={location.id} value={location.id}>{location.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={editedMeeting.manager || ''}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, manager: e.target.value }))}
+                    >
+                      <option value="">{getEmployeeDisplayName(meeting.manager) || 'Select manager'}</option>
+                      {allEmployees.map((emp: any) => (
+                        <option key={emp.id} value={emp.id}>{emp.display_name || emp.full_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Scheduler and Helper */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={editedMeeting.scheduler || ''}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, scheduler: e.target.value }))}
+                    >
+                      <option value="">{getEmployeeDisplayName(meeting.scheduler) || 'Select scheduler'}</option>
+                      {allEmployees.map((emp: any) => (
+                        <option key={emp.id} value={emp.id}>{emp.display_name || emp.full_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={editedMeeting.helper || ''}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, helper: e.target.value }))}
+                    >
+                      <option value="">{getEmployeeDisplayName(meeting.helper) || 'Select helper'}</option>
+                      {allEmployees.map((emp: any) => (
+                        <option key={emp.id} value={emp.id}>{emp.display_name || emp.full_name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Amount */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
+                  <div className="flex gap-2">
+                    <select
+                      className="select select-bordered flex-shrink-0"
+                      value={editedMeeting.currency || 'NIS'}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, currency: e.target.value }))}
+                    >
+                      {currencyOptions.map(currency => (
+                        <option key={currency.value} value={currency.value}>{currency.symbol}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      className="input input-bordered flex-1"
+                      placeholder={meeting.amount ? meeting.amount.toString() : "Amount"}
+                      value={editedMeeting.amount || ''}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, amount: parseFloat(e.target.value) || 0 }))}
+                    />
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-2 pt-4 border-t border-purple-100">
+                  <button
+                    className="btn btn-sm text-white border-none"
+                    style={{ backgroundColor: '#391BCB' }}
+                    onClick={handleSaveMeeting}
+                    disabled={isUpdatingMeeting}
+                  >
+                    {isUpdatingMeeting ? (
+                      <span className="loading loading-spinner loading-xs"></span>
+                    ) : (
+                      <CheckIcon className="w-4 h-4" />
+                    )}
+                    Save Changes
+                  </button>
+                  <button
+                    className="btn btn-sm text-white border-none"
+                    style={{ backgroundColor: '#391BCB' }}
+                    onClick={handleCancelEditMeeting}
+                    disabled={isUpdatingMeeting}
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                    Cancel
+                  </button>
                 </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Manager</label>
-                <div className="flex items-center gap-2">
-                  <UserIcon className="w-4 h-4 text-purple-400" />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
+            ) : (
+              /* View Mode */
+              <div className="grid grid-cols-3 gap-3">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
+                  <div className="flex items-center gap-2">
+                    <MapPinIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                    <span className="text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
+                  <div className="flex items-center gap-2">
+                    <UserIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
+                  <div className="flex items-center gap-2">
+                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
+                  <div className="flex items-center gap-2">
+                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Expert</label>
+                  <div className="flex items-center gap-2">
+                    <AcademicCapIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
+                  <div className="flex items-center gap-1">
+                    {meeting.amount && meeting.amount > 0 ? (
+                      <span className="text-base font-semibold" style={{ color: '#391BCB' }}>
+                        {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
+                      </span>
+                    ) : (
+                      <span className="text-base text-gray-400 italic">Not specified</span>
+                    )}
+                  </div>
                 </div>
               </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Scheduler</label>
-                <div className="flex items-center gap-2">
-                  <UserCircleIcon className="w-4 h-4 text-purple-400" />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Helper</label>
-                <div className="flex items-center gap-2">
-                  <UserCircleIcon className="w-4 h-4 text-purple-400" />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Expert</label>
-                <div className="flex items-center gap-2">
-                  <AcademicCapIcon className="w-4 h-4 text-purple-400" />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Amount</label>
-                <div className="flex items-center gap-1">
-                  {meeting.amount && meeting.amount > 0 ? (
-                    <span className="text-base font-semibold text-purple-700">
-                      {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
-                    </span>
-                  ) : (
-                    <span className="text-base text-gray-400 italic">Not specified</span>
-                  )}
-                </div>
-              </div>
-            </div>
+            )}
 
             {/* Brief Section */}
-            <div className="border-t border-purple-100 pt-3">
-              <div className="flex justify-between items-center mb-2">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Brief</label>
-                {editingBriefId === meeting.id ? (
-                  <div className="flex items-center gap-1">
-                    <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
-                      <CheckIcon className="w-4 h-4 text-green-600" />
-                    </button>
-                    <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
-                      <XMarkIcon className="w-4 h-4 text-red-600" />
-                    </button>
-                  </div>
-                ) : (
-                  <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
-                    <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
-                  </button>
-                )}
-              </div>
-              {editingBriefId === meeting.id ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-20 text-base"
-                  value={editedBrief}
-                  onChange={(e) => setEditedBrief(e.target.value)}
-                  placeholder="Add a meeting brief..."
-                />
-              ) : (
-                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
-                  {meeting.brief ? (
-                    <p className="text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+            {editingMeetingId !== meeting.id && (
+              <div className="border-t border-purple-100 pt-3">
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Brief</label>
+                  {editingBriefId === meeting.id ? (
+                    <div className="flex items-center gap-1">
+                      <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
+                        <CheckIcon className="w-4 h-4 text-green-600" />
+                      </button>
+                      <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
+                        <XMarkIcon className="w-4 h-4 text-red-600" />
+                      </button>
+                    </div>
                   ) : (
-                    <span className="text-base text-gray-400 italic">No brief provided</span>
+                    <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
+                      <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
+                    </button>
                   )}
                 </div>
-              )}
-            </div>
+                {editingBriefId === meeting.id ? (
+                  <textarea
+                    className="textarea textarea-bordered w-full h-20 text-base"
+                    value={editedBrief}
+                    onChange={(e) => setEditedBrief(e.target.value)}
+                    placeholder="Add a meeting brief..."
+                  />
+                ) : (
+                  <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                    {meeting.brief ? (
+                      <p className="text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+                    ) : (
+                      <span className="text-base text-gray-400 italic">No brief provided</span>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Brief Section in Edit Mode */}
+            {editingMeetingId === meeting.id && (
+              <div className="border-t border-purple-100 pt-3">
+                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Brief</label>
+                <textarea
+                  className="textarea textarea-bordered w-full h-20 text-base mt-2"
+                  value={editedMeeting.brief || ''}
+                  onChange={(e) => setEditedMeeting(prev => ({ ...prev, brief: e.target.value }))}
+                  placeholder="Add a meeting brief..."
+                />
+              </div>
+            )}
 
             {/* Last Edited */}
             {meeting.lastEdited && (
@@ -1037,12 +1345,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         {/* Expander Toggle */}
         <div
-          className="bg-gradient-to-r from-purple-500 to-blue-500 hover:from-purple-600 hover:to-blue-600 cursor-pointer transition-all p-2 text-center border-t border-purple-200"
+          className="cursor-pointer transition-all p-2 text-center border-t border-purple-200 bg-white"
           onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
         >
-          <div className="flex items-center justify-center gap-2 text-xs font-medium text-white">
+          <div className="flex items-center justify-center gap-2 text-xs font-medium" style={{ color: '#391BCB' }}>
             <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
-            <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} />
+            <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} style={{ color: '#391BCB' }} />
           </div>
         </div>
       </div>
@@ -1062,21 +1370,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <p className="text-sm text-gray-500">Schedule and track client meetings</p>
           </div>
         </div>
-        <button
-          onClick={fetchMeetings}
-          className="btn btn-outline btn-sm gap-2 hover:bg-purple-50"
-          title="Refresh meetings"
-        >
-          <ArrowPathIcon className="w-4 h-4" />
-          Refresh
-        </button>
       </div>
 
       {/* Lead Scheduling Info Box */}
       {(leadSchedulingInfo.scheduler || leadSchedulingInfo.meeting_scheduling_notes || leadSchedulingInfo.next_followup || leadSchedulingInfo.followup) && (
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="px-6 py-4 bg-white">
             <h4 className="text-lg font-semibold text-gray-900">Scheduling Information</h4>
+            <div className="border-b border-gray-200 mt-3"></div>
           </div>
           <div className="p-6">
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -1168,8 +1469,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Upcoming Meetings (Left) */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="px-6 py-4 bg-white">
             <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
+            <div className="border-b border-gray-200 mt-3"></div>
           </div>
           <div className="p-6">
             <div className="space-y-4">
@@ -1188,8 +1490,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         {/* Past Meetings (Right) */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="px-6 py-4 bg-white">
             <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
+            <div className="border-b border-gray-200 mt-3"></div>
           </div>
           <div className="p-6">
             <div className="space-y-4">
@@ -1209,8 +1512,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       {meetings.length === 0 && (
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
-          <div className="px-6 py-4 bg-gray-50 border-b border-gray-100">
+          <div className="px-6 py-4 bg-white">
             <h4 className="text-lg font-semibold text-gray-900">Meetings</h4>
+            <div className="border-b border-gray-200 mt-3"></div>
           </div>
           <div className="p-6">
             <div className="text-center py-12 text-gray-500">

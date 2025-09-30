@@ -80,7 +80,11 @@ export const meetingInvitationEmailTemplate = ({
   topic: string;
   joinLink: string;
   senderName: string;
-}) => `
+}) => {
+  // Check if this is a Teams meeting and has a valid join link
+  const isTeamsMeeting = location && location.toLowerCase().includes('teams') && joinLink;
+  
+  return `
   <div style="font-family: system-ui, Arial, sans-serif; font-size: 16px; color: #222;">
     <p>Dear ${clientName},</p>
     <p>You are invited to a meeting with our office. Please find the details below:</p>
@@ -91,14 +95,15 @@ export const meetingInvitationEmailTemplate = ({
       <li><strong>Category:</strong> ${category}</li>
       <li><strong>Topic:</strong> ${topic}</li>
     </ul>
+    ${isTeamsMeeting ? `
     <div style="margin: 24px 0;">
       <a href="${joinLink}" target="_blank" style="display: inline-block; background: #3b28c7; color: #fff; font-weight: 600; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-size: 17px; letter-spacing: 0.5px;">Join Meeting</a>
     </div>
+    ` : ''}
     <p>If you have any questions or need to reschedule, please let us know.</p>
-    <br />
-    <p>Best regards,<br />${senderName}<br />Decker Pex Levi Law Offices</p>
   </div>
 `;
+};
 
 const Meetings: React.FC = () => {
   const [todayMeetings, setTodayMeetings] = useState<Meeting[]>([]);
