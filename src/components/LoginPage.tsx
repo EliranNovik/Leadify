@@ -12,6 +12,7 @@ const LoginPage: React.FC = () => {
   const [success, setSuccess] = useState<string | null>(null);
   const [showSuccessAnim, setShowSuccessAnim] = useState(false);
   const [welcomeName, setWelcomeName] = useState<string>('');
+  const [welcomeImage, setWelcomeImage] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -23,23 +24,61 @@ const LoginPage: React.FC = () => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) setError(error.message);
     else {
-      // Try to fetch the user's name from the users table or auth metadata
+      // Try to fetch the user's official_name from the tenants_employee table using JOIN
       let name = email;
+      let imageUrl = '';
+      
       if (data?.user?.email) {
         const { data: userData, error: userError } = await supabase
           .from('users')
-          .select('first_name, last_name, full_name')
+          .select(`
+            first_name, 
+            last_name, 
+            full_name,
+            employee_id,
+            tenants_employee!users_employee_id_fkey(
+              official_name,
+              display_name,
+              photo_url
+            )
+          `)
           .eq('email', data.user.email)
           .single();
         
+        console.log('Login - User data fetched:', userData);
+        console.log('Login - User error:', userError);
+        
         if (!userError && userData) {
-          // Use first_name + last_name if available, otherwise fall back to full_name
-          if (userData.first_name && userData.last_name && userData.first_name.trim() && userData.last_name.trim()) {
+          // Handle both array and single object responses
+          const empData = userData.tenants_employee ? 
+            (Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee) : 
+            null;
+          
+          console.log('Login - Employee data:', empData);
+          
+          // Set profile image if available
+          if (empData?.photo_url) {
+            imageUrl = empData.photo_url;
+          }
+          
+          // Priority: official_name > display_name > first_name + last_name > full_name
+          if (empData?.official_name && empData.official_name.trim()) {
+            name = empData.official_name.trim();
+            console.log('Login - Using official_name:', name);
+          } else if (empData?.display_name && empData.display_name.trim()) {
+            name = empData.display_name.trim();
+            console.log('Login - Using display_name:', name);
+          } else if (userData.first_name && userData.last_name && userData.first_name.trim() && userData.last_name.trim()) {
             name = `${userData.first_name.trim()} ${userData.last_name.trim()}`;
+            console.log('Login - Using first_name + last_name:', name);
           } else if (userData.full_name && userData.full_name.trim()) {
             name = userData.full_name.trim();
+            console.log('Login - Using full_name:', name);
+          } else {
+            console.log('Login - No name found, using email:', name);
           }
         } else {
+          console.log('Login - User error or no data, error:', userError);
           // Fallback to auth user metadata
           if (data.user.user_metadata?.first_name || data.user.user_metadata?.full_name) {
             name = data.user.user_metadata.first_name || data.user.user_metadata.full_name;
@@ -47,6 +86,7 @@ const LoginPage: React.FC = () => {
         }
       }
       setWelcomeName(name);
+      setWelcomeImage(imageUrl);
       setSuccess('Signed in! Redirecting...');
       setShowSuccessAnim(true);
       setTimeout(() => {
@@ -407,8 +447,29 @@ const LoginPage: React.FC = () => {
           {/* Animated gradient background */}
           <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-blue-600 via-purple-800 to-purple-900 animate-gradient z-0" />
           {/* Welcome message and icon */}
-          <div className="relative z-10 flex flex-col items-center justify-center w-full h-full">
-          <CheckCircleIcon className="w-24 h-24 text-green-400 checkmark-pop mb-4" />
+          <div className="relative z-10 flex flex-col items-center justify-center w-full h-full gap-6">
+            {/* Employee Image or Success Icon */}
+            {welcomeImage ? (
+              <div className="checkmark-pop">
+                <div className="relative">
+                  <img 
+                    src={welcomeImage} 
+                    alt={welcomeName}
+                    className="w-32 h-32 rounded-full object-cover border-4 border-green-400 shadow-2xl"
+                    onError={(e) => {
+                      // If image fails to load, hide it and show the checkmark icon instead
+                      e.currentTarget.style.display = 'none';
+                      const checkIcon = document.createElement('div');
+                      checkIcon.innerHTML = '<svg class="w-24 h-24 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>';
+                      e.currentTarget.parentNode?.appendChild(checkIcon);
+                    }}
+                  />
+                  <CheckCircleIcon className="w-10 h-10 text-green-400 absolute bottom-0 right-0 bg-white rounded-full" />
+                </div>
+              </div>
+            ) : (
+              <CheckCircleIcon className="w-24 h-24 text-green-400 checkmark-pop" />
+            )}
             <div className="text-3xl font-bold text-white slide-fade-in">
               Welcome, {welcomeName}!
             </div>

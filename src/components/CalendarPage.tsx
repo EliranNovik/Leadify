@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -16,6 +16,7 @@ import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../lib/api';
 import { fetchStageNames, getStageName } from '../lib/stageUtils';
 import TeamsMeetingModal from './TeamsMeetingModal';
+import StaffMeetingEditModal from './StaffMeetingEditModal';
 import DepartmentList from './DepartmentList';
 
 // Email templates
@@ -262,7 +263,9 @@ const CalendarPage: React.FC = () => {
   const [meetings, setMeetings] = useState<any[]>([]);
   const [filteredMeetings, setFilteredMeetings] = useState<any[]>([]);
   const [staff, setStaff] = useState<string[]>([]);
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [fromDate, setFromDate] = useState(new Date().toISOString().split('T')[0]);
+  const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0]);
+  const [datesManuallySet, setDatesManuallySet] = useState(false);
   const [selectedStaff, setSelectedStaff] = useState('');
   const [totalAmount, setTotalAmount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -398,6 +401,10 @@ const CalendarPage: React.FC = () => {
   const [isTeamsMeetingModalOpen, setIsTeamsMeetingModalOpen] = useState(false);
   const [selectedDateForMeeting, setSelectedDateForMeeting] = useState<Date | null>(null);
   const [selectedTimeForMeeting, setSelectedTimeForMeeting] = useState<string>('');
+
+  // Staff meeting edit modal state
+  const [isStaffMeetingEditModalOpen, setIsStaffMeetingEditModalOpen] = useState(false);
+  const [selectedStaffMeeting, setSelectedStaffMeeting] = useState<any>(null);
   
 
   // Helper function to get employee display name from ID
@@ -479,113 +486,143 @@ const CalendarPage: React.FC = () => {
   };
 
 
-  // Navigation functions for date switching
+  // Navigation functions for date range switching
   const goToPreviousDay = () => {
-    const baseDate = selectedDate || new Date().toISOString().split('T')[0];
-    const currentDate = new Date(baseDate);
-    if (!isNaN(currentDate.getTime())) {
-    currentDate.setDate(currentDate.getDate() - 1);
-    setSelectedDate(currentDate.toISOString().split('T')[0]);
+    const fromDateObj = new Date(fromDate);
+    const toDateObj = new Date(toDate);
+    if (!isNaN(fromDateObj.getTime()) && !isNaN(toDateObj.getTime())) {
+      fromDateObj.setDate(fromDateObj.getDate() - 1);
+      toDateObj.setDate(toDateObj.getDate() - 1);
+      setFromDate(fromDateObj.toISOString().split('T')[0]);
+      setToDate(toDateObj.toISOString().split('T')[0]);
+      setDatesManuallySet(true);
     }
   };
 
   const goToNextDay = () => {
-    const baseDate = selectedDate || new Date().toISOString().split('T')[0];
-    const currentDate = new Date(baseDate);
-    if (!isNaN(currentDate.getTime())) {
-    currentDate.setDate(currentDate.getDate() + 1);
-    setSelectedDate(currentDate.toISOString().split('T')[0]);
+    const fromDateObj = new Date(fromDate);
+    const toDateObj = new Date(toDate);
+    if (!isNaN(fromDateObj.getTime()) && !isNaN(toDateObj.getTime())) {
+      fromDateObj.setDate(fromDateObj.getDate() + 1);
+      toDateObj.setDate(toDateObj.getDate() + 1);
+      setFromDate(fromDateObj.toISOString().split('T')[0]);
+      setToDate(toDateObj.toISOString().split('T')[0]);
+      setDatesManuallySet(true);
     }
   };
 
   const goToToday = () => {
-    setSelectedDate(new Date().toISOString().split('T')[0]);
+    const today = new Date().toISOString().split('T')[0];
+    setFromDate(today);
+    setToDate(today);
+    setDatesManuallySet(true);
   };
 
   // Function to load legacy meetings for a specific date
   // Fetch staff meetings from shared-staffcalendar@lawoffice.org.il
-  const fetchStaffMeetings = async (targetDate: string) => {
+  const fetchStaffMeetings = async (fromDate: string, toDate: string) => {
     setIsStaffMeetingsLoading(true);
     
     try {
-      const account = instance.getActiveAccount();
-      if (!account) {
-        console.log('No active account for staff meetings');
+      // Fetch staff meetings from database for date range
+      const { data: allMeetings, error: allMeetingsError } = await supabase
+        .from('outlook_teams_meetings')
+        .select('*')
+        .order('start_date_time');
+      
+      // Filter by date range manually
+      const staffMeetingsData = allMeetings?.filter(meeting => {
+        const meetingDate = new Date(meeting.start_date_time).toISOString().split('T')[0];
+        return meetingDate >= fromDate && meetingDate <= toDate;
+      }) || [];
+
+      if (allMeetingsError) {
+        console.error('Error fetching staff meetings from database:', allMeetingsError);
         return;
       }
 
-      const tokenResponse = await instance.acquireTokenSilent({
-        ...loginRequest,
-        account: account,
-      });
+      
+      if (staffMeetingsData && staffMeetingsData.length > 0) {
+        // Fetch all employees to match emails with display names
+        const { data: employeesData, error: employeesError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .not('display_name', 'is', null);
 
-      if (!tokenResponse) {
-        console.log('No token response for staff meetings');
-        return;
-      }
+        if (employeesError) {
+          console.error('Error fetching employees:', employeesError);
+          return;
+        }
 
-      const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
-      const startDate = new Date(targetDate);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(targetDate);
-      endDate.setHours(23, 59, 59, 999);
+        // Create email to display name mapping
+        const emailToNameMap = new Map();
+        if (employeesData) {
+          employeesData.forEach(emp => {
+            const email = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+            emailToNameMap.set(email, emp.display_name);
+          });
+        }
 
-      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events?$filter=start/dateTime ge '${startDate.toISOString()}' and start/dateTime le '${endDate.toISOString()}'&$orderby=start/dateTime`;
-
-
-      const response = await fetch(url, {
-        headers: {
-          Authorization: `Bearer ${tokenResponse.accessToken}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
-      if (!response.ok) {
-        console.error('Error fetching staff meetings:', response.status, response.statusText);
-        return;
-      }
-
-      const data = await response.json();
-
-      if (data.value) {
-        const formattedStaffMeetings = data.value.map((event: any) => ({
-          id: `staff-${event.id}`,
-          meeting_date: targetDate,
-            meeting_time: event.start?.dateTime ? (() => {
-              // Parse UTC time correctly by adding 'Z' to indicate UTC
-              const utcDateTimeString = event.start.dateTime.endsWith('Z') ? event.start.dateTime : event.start.dateTime + 'Z';
-              const utcDate = new Date(utcDateTimeString);
-              
-              // Get local time components directly
-              const localHours = utcDate.getHours();
-              const localMinutes = utcDate.getMinutes();
-              return `${String(localHours).padStart(2, '0')}:${String(localMinutes).padStart(2, '0')}`;
-            })() : '00:00',
-          meeting_manager: '--',
-          helper: '--',
-          meeting_location: event.location?.displayName || 'Teams',
-          teams_meeting_url: event.onlineMeeting?.joinUrl || event.webLink || '',
-          meeting_amount: '--',
-          meeting_currency: '',
-          status: 'scheduled',
-          client_id: null,
-          legacy_lead_id: null,
-          calendar_type: 'staff',
-          lead: {
-            id: `staff-${event.id}`,
-            name: event.subject || 'Staff Meeting',
-            lead_number: 'STAFF',
-            stage: 'Staff Meeting',
-            manager: '--',
-            category: '--',
-            balance: '--',
-            balance_currency: '',
-            expert: '--',
-            probability: '--',
-            phone: '--',
-            email: '--'
+        const formattedStaffMeetings = staffMeetingsData.map((meeting: any) => {
+          // Extract attendees from JSONB
+          const attendees = meeting.attendees || [];
+          
+          // Convert attendee emails to display names
+          const attendeeNames = attendees.map((email: string) => {
+            return emailToNameMap.get(email) || email;
+          }).filter(Boolean);
+          
+          // Create display text for attendees
+          let attendeesDisplay = '--';
+          if (attendeeNames.length > 0) {
+            if (attendeeNames.length > 10) {
+              attendeesDisplay = 'All Staff';
+            } else if (attendeeNames.length === 1) {
+              attendeesDisplay = attendeeNames[0];
+            } else if (attendeeNames.length <= 3) {
+              attendeesDisplay = attendeeNames.join(', ');
+            } else {
+              attendeesDisplay = `${attendeeNames.slice(0, 2).join(', ')} +${attendeeNames.length - 2} more`;
+            }
           }
-        }));
+
+          // Parse the start_date_time to get time
+          const startDate = new Date(meeting.start_date_time);
+          const time = `${String(startDate.getHours()).padStart(2, '0')}:${String(startDate.getMinutes()).padStart(2, '0')}`;
+
+          return {
+            id: `staff-${meeting.teams_meeting_id}`,
+            meeting_date: new Date(meeting.start_date_time).toISOString().split('T')[0],
+            meeting_time: time,
+            meeting_manager: attendeesDisplay,
+            helper: '--',
+            meeting_location: meeting.location || 'Teams',
+            teams_meeting_url: meeting.teams_join_url || '',
+            meeting_amount: '--',
+            meeting_currency: '',
+            status: 'scheduled',
+            client_id: null,
+            legacy_lead_id: null,
+            calendar_type: 'staff',
+            teams_meeting_id: meeting.teams_meeting_id,
+            attendees: attendees,
+            description: meeting.description || '',
+            lead: {
+              id: `staff-${meeting.teams_meeting_id}`,
+              name: meeting.subject || 'Staff Meeting',
+              lead_number: 'STAFF',
+              stage: 'Staff Meeting',
+              manager: attendeesDisplay,
+              category: '--',
+              balance: '--',
+              balance_currency: '',
+              expert: '--',
+              probability: '--',
+              phone: '--',
+              email: '--'
+            }
+          };
+        });
 
         setStaffMeetings(formattedStaffMeetings);
       }
@@ -596,8 +633,8 @@ const CalendarPage: React.FC = () => {
     }
   };
 
-  const loadLegacyForDate = async (targetDate: string) => {
-    if (!targetDate || legacyLoadingDisabled) return;
+  const loadLegacyForDateRange = async (fromDate: string, toDate: string) => {
+    if (!fromDate || !toDate || legacyLoadingDisabled) return;
     
     setIsLegacyLoading(true);
     
@@ -607,7 +644,7 @@ const CalendarPage: React.FC = () => {
         .select(`
           id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
           meeting_manager_id, meeting_lawyer_id, total, meeting_total_currency_id, expert_id, 
-          probability, phone, email, mobile, meeting_location_id,
+          probability, phone, email, mobile, meeting_location_id, expert_examination,
           misc_category!category_id(
             id, name, parent_id,
             misc_maincategory!parent_id(
@@ -616,10 +653,10 @@ const CalendarPage: React.FC = () => {
             )
           )
         `)
-        .eq('meeting_date', targetDate)
+        .gte('meeting_date', fromDate)
+        .lte('meeting_date', toDate)
         .not('meeting_date', 'is', null)
-        .not('name', 'is', null)
-        .limit(20);
+        .not('name', 'is', null);
 
       if (legacyError) {
         // Don't return, just continue with empty data
@@ -694,6 +731,7 @@ const CalendarPage: React.FC = () => {
                                  legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
                                  legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
                 expert: legacyLead.expert_id,
+                expert_examination: legacyLead.expert_examination,
                 probability: parseFloat(legacyLead.probability || '0'),
                 category: legacyLead.category || legacyLead.category_id,
                 language: null,
@@ -711,9 +749,9 @@ const CalendarPage: React.FC = () => {
 
         // Add legacy meetings to the current meetings
         setMeetings(prevMeetings => {
-          // Remove any existing legacy meetings for this date first
+          // Remove any existing legacy meetings for this date range first
           const filteredMeetings = prevMeetings.filter(meeting => 
-            !(meeting.lead?.lead_type === 'legacy' && meeting.meeting_date === targetDate)
+            !(meeting.lead?.lead_type === 'legacy' && meeting.meeting_date >= fromDate && meeting.meeting_date <= toDate)
           );
           
           // Add new legacy meetings
@@ -812,7 +850,7 @@ const CalendarPage: React.FC = () => {
             ),
             legacy_lead:leads_lead!legacy_lead_id(
               id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants,
+              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -964,7 +1002,7 @@ const CalendarPage: React.FC = () => {
             ),
             legacy_lead:leads_lead!legacy_lead_id(
               id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants,
+              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -1053,7 +1091,7 @@ const CalendarPage: React.FC = () => {
         }
 
         // Fetch staff meetings for today
-        await fetchStaffMeetings(today);
+        await fetchStaffMeetings(today, today);
 
         // Fetch all staff from tenants_employee table for the main calendar filter
         const { data: allStaffData, error: allStaffError } = await supabase
@@ -1138,16 +1176,17 @@ const CalendarPage: React.FC = () => {
     }
   }, [expandedMeetingId, meetings]);
 
-  // Load legacy meetings and staff meetings when selected date changes
+  // Load legacy meetings and staff meetings when date range changes
   useEffect(() => {
-    if (selectedDate) {
-      // Reset loading state when date changes
+    // Only fetch data when both dates are set and user has manually set them
+    if (fromDate && toDate && fromDate.trim() !== '' && toDate.trim() !== '' && datesManuallySet) {
+      // Reset loading state when date range changes
       setIsLegacyLoading(true);
-      loadLegacyForDate(selectedDate);
-      // Also load staff meetings for the selected date
-      fetchStaffMeetings(selectedDate);
+      loadLegacyForDateRange(fromDate, toDate);
+      // Also load staff meetings for the date range
+      fetchStaffMeetings(fromDate, toDate);
     }
-  }, [selectedDate]);
+  }, [fromDate, toDate, datesManuallySet]);
 
   useEffect(() => {
     // Combine regular meetings and staff meetings
@@ -1155,9 +1194,9 @@ const CalendarPage: React.FC = () => {
     let filtered = allMeetings;
 
 
-    if (selectedDate) {
+    if (fromDate && toDate) {
       const beforeFilter = filtered.length;
-      filtered = filtered.filter(m => m.meeting_date === selectedDate);
+      filtered = filtered.filter(m => m.meeting_date >= fromDate && m.meeting_date <= toDate);
     }
 
     if (selectedStaff) {
@@ -1249,7 +1288,7 @@ const CalendarPage: React.FC = () => {
     setTotalAmount(totalAmountInNIS);
     
 
-  }, [selectedDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
+  }, [fromDate, toDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
 
   useEffect(() => {
     const fetchEmails = async () => {
@@ -2472,7 +2511,12 @@ const CalendarPage: React.FC = () => {
     const lead = meeting.lead || {};
     const isExpanded = expandedMeetingId === meeting.id;
     const expandedData = expandedMeetingData[meeting.id] || {};
-    const hasExpertNotes = Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false;
+    // For legacy leads, check expert_examination column (0 = not checked/question mark, 5/8 = checked/graduation cap)
+    // For new leads, check expert_notes array
+    const hasExpertNotes = meeting.calendar_type === 'staff' ? false : 
+      (lead.lead_type === 'legacy' && lead.expert_examination !== undefined && lead.expert_examination !== null ? 
+        (String(lead.expert_examination).trim() !== '0' && String(lead.expert_examination).trim() !== '') : 
+        (Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false));
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
     const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
@@ -2538,11 +2582,21 @@ const CalendarPage: React.FC = () => {
               </span>
             </div>
 
-            {/* Manager */}
+            {/* Manager / Attendees */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
+              <span className="text-xs md:text-base font-semibold text-gray-500">
+                {meeting.calendar_type === 'staff' ? 'Attendees' : 'Manager'}
+              </span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'}
+                {meeting.calendar_type === 'staff' ? (
+                  <div className="text-right max-w-xs">
+                    <div className="text-sm md:text-lg font-bold text-gray-800 break-words">
+                      {meeting.meeting_manager || 'No attendees'}
+                    </div>
+                  </div>
+                ) : (
+                  getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'
+                )}
               </span>
             </div>
 
@@ -2550,7 +2604,11 @@ const CalendarPage: React.FC = () => {
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
               <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {getEmployeeDisplayName(lead.helper || meeting.helper) || '---'}
+                {meeting.calendar_type === 'staff' ? (
+                  null
+                ) : (
+                  getEmployeeDisplayName(lead.helper || meeting.helper) || '---'
+                )}
               </span>
             </div>
 
@@ -2667,6 +2725,20 @@ const CalendarPage: React.FC = () => {
             >
               <VideoCameraIcon className="w-4 h-4" />
             </button>
+            {/* Show edit button for staff meetings */}
+            {meeting.calendar_type === 'staff' && (
+              <button
+                className="btn btn-outline btn-warning btn-sm"
+                title="Edit Staff Meeting"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedStaffMeeting(meeting);
+                  setIsStaffMeetingEditModalOpen(true);
+                }}
+              >
+                <PencilIcon className="w-4 h-4" />
+              </button>
+            )}
             {/* Only show WhatsApp and Email buttons for non-staff meetings */}
             {meeting.calendar_type !== 'staff' && lead.phone && (
               <button
@@ -2792,7 +2864,12 @@ const CalendarPage: React.FC = () => {
     const lead = meeting.lead || {};
     const isExpanded = expandedMeetingId === meeting.id;
     const expandedData = expandedMeetingData[meeting.id] || {};
-    const hasExpertNotes = Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false;
+    // For legacy leads, check expert_examination column (0 = not checked/question mark, 5/8 = checked/graduation cap)
+    // For new leads, check expert_notes array
+    const hasExpertNotes = meeting.calendar_type === 'staff' ? false : 
+      (lead.lead_type === 'legacy' && lead.expert_examination !== undefined && lead.expert_examination !== null ? 
+        (String(lead.expert_examination).trim() !== '0' && String(lead.expert_examination).trim() !== '') : 
+        (Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false));
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
     const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
@@ -2806,18 +2883,18 @@ const CalendarPage: React.FC = () => {
       <React.Fragment key={meeting.id}>
         <tr className="hover:bg-base-200/50">
           <td className="font-bold">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (
-                <span className="text-black">
+                <span className="text-black text-xs sm:text-sm">
                   {lead.name || meeting.name}
                 </span>
               ) : (
-                <Link to={`/clients/${lead.lead_number || meeting.lead_number}`} className="text-black hover:opacity-75">
+                <Link to={`/clients/${lead.lead_number || meeting.lead_number}`} className="text-black hover:opacity-75 text-xs sm:text-sm">
                   {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
                 </Link>
               )}
               {meeting.calendar_type && (
-                <span className={`badge badge-sm ${
+                <span className={`badge badge-xs sm:badge-sm ${
                   meeting.calendar_type === 'active_client' 
                     ? 'badge-success' 
                     : meeting.calendar_type === 'staff'
@@ -2830,34 +2907,51 @@ const CalendarPage: React.FC = () => {
               )}
             </div>
           </td>
-          <td>{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
-          <td>{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</td>
-          <td>{getEmployeeDisplayName(lead.helper || meeting.helper)}</td>
-          <td>{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</td>
-          <td>
+          <td className="text-xs sm:text-sm">{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
+          <td className="hidden sm:table-cell">
+            {meeting.calendar_type === 'staff' ? (
+              <div className="max-w-xs">
+                <div className="text-xs font-medium text-gray-700">Attendees:</div>
+                <div className="text-sm font-semibold text-gray-800 break-words">
+                  {meeting.meeting_manager || 'No attendees'}
+                </div>
+              </div>
+            ) : (
+              <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
+            )}
+          </td>
+          <td className="hidden md:table-cell">
+            {meeting.calendar_type === 'staff' ? (
+              null
+            ) : (
+              <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
+            )}
+          </td>
+          <td className="hidden lg:table-cell text-xs sm:text-sm">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</td>
+          <td className="hidden sm:table-cell text-xs sm:text-sm">
             {lead.balance === '--' || meeting.meeting_amount === '--' 
               ? '--'
               : typeof lead.balance === 'number'
               ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
               : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '0')}
           </td>
-          <td>
+          <td className="hidden lg:table-cell">
             <span className="inline-flex items-center">
               {hasExpertNotes ? (
-                <AcademicCapIcon className="w-5 h-5 text-green-500 mr-1" title="Expert opinion exists" />
+                <AcademicCapIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 mr-1" title="Expert opinion exists" />
               ) : (
-                <QuestionMarkCircleIcon className="w-5 h-5 text-yellow-400 mr-1" title="No expert opinion" />
+                <QuestionMarkCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-yellow-400 mr-1" title="No expert opinion" />
               )}
-              {getEmployeeDisplayName(lead.expert || meeting.expert) || <span className="text-gray-400">N/A</span>}
+              <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.expert || meeting.expert) || <span className="text-gray-400">N/A</span>}</span>
             </span>
           </td>
-          <td>{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
+          <td className="hidden md:table-cell text-xs sm:text-sm">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
           <td>
             <div className="flex items-center gap-1">
               {isNotFirstMeeting(meeting) && (
-                <FireIcon className="w-6 h-6 text-orange-500" title="Another meeting" />
+                <FireIcon className="w-4 h-4 sm:w-6 sm:h-6 text-orange-500" title="Another meeting" />
               )}
-            <span className={`font-bold ${probabilityColor}`}>
+            <span className={`font-bold text-xs sm:text-sm ${probabilityColor}`}>
                 {(() => {
                   // For new meetings, use attendance_probability
                   if (meeting.attendance_probability && ['Low', 'Medium', 'High', 'Very High'].includes(meeting.attendance_probability)) {
@@ -2882,23 +2976,23 @@ const CalendarPage: React.FC = () => {
             </span>
               {((meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id))?.toLowerCase().includes('tlv with parking')) && (
                 <TruckIcon 
-                  className="w-6 h-6 text-blue-600 cursor-help" 
+                  className="w-4 h-4 sm:w-6 sm:h-6 text-blue-600 cursor-help" 
                   title={getLegacyCarNumber(meeting) ? `Car Number: ${getLegacyCarNumber(meeting)}` : 'TLV with parking location'}
                 />
               )}
               {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
                 <BookOpenIcon 
-                  className="w-6 h-6 text-purple-600" 
+                  className="w-4 h-4 sm:w-6 sm:h-6 text-purple-600" 
                   title="Complex Meeting"
                 />
               )}
             </div>
           </td>
-          <td>{getStageBadge(lead.stage || meeting.stage)}</td>
+          <td className="hidden sm:table-cell">{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
-            <div className="flex flex-row items-center gap-2">
+            <div className="flex flex-row items-center gap-1 sm:gap-2">
               <button 
-                className="btn btn-primary btn-sm"
+                className="btn btn-primary btn-xs sm:btn-sm"
                 onClick={() => {
                   const url = getValidTeamsLink(meeting.teams_meeting_url);
                   if (url) {
@@ -2909,8 +3003,21 @@ const CalendarPage: React.FC = () => {
                 }}
                 title="Teams Meeting"
               >
-                <VideoCameraIcon className="w-4 h-4" />
+                <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
               </button>
+              {/* Show edit button for staff meetings */}
+              {meeting.calendar_type === 'staff' && (
+                <button
+                  className="btn btn-warning btn-xs sm:btn-sm"
+                  title="Edit Staff Meeting"
+                  onClick={() => {
+                    setSelectedStaffMeeting(meeting);
+                    setIsStaffMeetingEditModalOpen(true);
+                  }}
+                >
+                  <PencilIcon className="w-4 h-4" />
+                </button>
+              )}
               {/* Only show WhatsApp and Email buttons for non-staff meetings */}
               {meeting.calendar_type !== 'staff' && lead.phone && (
                 <button
@@ -3060,12 +3167,23 @@ const CalendarPage: React.FC = () => {
         
         <div className="flex items-center gap-3">
           <span className="text-lg font-semibold">
-            {new Date(selectedDate).toLocaleDateString('en-US', { 
-              weekday: 'long', 
-              year: 'numeric', 
-              month: 'long', 
-              day: 'numeric' 
-            })}
+            {fromDate === toDate ? (
+              new Date(fromDate).toLocaleDateString('en-US', { 
+                weekday: 'long', 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+              })
+            ) : (
+              `${new Date(fromDate).toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric' 
+              })} - ${new Date(toDate).toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric',
+                year: 'numeric'
+              })}`
+            )}
           </span>
           <button
             onClick={goToToday}
@@ -3085,109 +3203,124 @@ const CalendarPage: React.FC = () => {
         </button>
       </div>
 
-      <div className="mb-6 flex flex-col md:flex-row justify-between items-center gap-4">
-        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-4">
-          <h1 className="text-2xl sm:text-3xl font-bold flex items-center gap-2 sm:gap-3">
-            <CalendarIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
-            <span className="text-2xl sm:text-3xl">Calendar</span>
-          </h1>
-          <div className="btn btn-sm sm:btn-lg flex items-center gap-2 bg-base-200 border-base-300 hover:bg-base-300">
-            <span className="text-xs sm:text-sm font-medium text-base-content/70">Total Meetings:</span>
-            <span className="text-sm sm:text-lg font-bold text-primary">{filteredMeetings.length}</span>
-          </div>
-          <button
-            className="btn btn-primary btn-sm sm:btn-lg flex items-center gap-2 w-full sm:w-auto"
-            onClick={openAssignStaffModal}
-          >
-            <UserGroupIcon className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span className="text-sm sm:text-base">Assign Staff</span>
-          </button>
-        </div>
-
-        {/* Filters */}
-        <div className="flex flex-col md:flex-row gap-4 w-full md:w-auto">
+      {/* Filters */}
+      <div className="mb-6 flex flex-col md:flex-row gap-4 w-full justify-center items-center">
+        <div className="flex items-center gap-2">
+          <FunnelIcon className="w-5 h-5 text-gray-500" />
           <div className="flex items-center gap-2">
-            <FunnelIcon className="w-5 h-5 text-gray-500" />
             <input 
               type="date" 
               className="input input-bordered w-full md:w-auto"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
+              value={fromDate}
+              onChange={(e) => {
+                setFromDate(e.target.value);
+                setDatesManuallySet(true);
+              }}
+              title="From Date"
+            />
+            <span className="text-gray-500">to</span>
+            <input 
+              type="date" 
+              className="input input-bordered w-full md:w-auto"
+              value={toDate}
+              onChange={(e) => {
+                setToDate(e.target.value);
+                setDatesManuallySet(true);
+              }}
+              title="To Date"
             />
           </div>
-          <div className="flex items-center gap-2">
-            <UserIcon className="w-5 h-5 text-gray-500" />
-            <select 
-              className="select select-bordered w-full md:w-auto"
-              value={selectedStaff}
-              onChange={(e) => setSelectedStaff(e.target.value)}
-            >
-              <option value="">All Staff</option>
-              {staff.map((s, index) => <option key={`${s}-${index}`} value={s}>{s}</option>)}
-            </select>
-          </div>
-          <div className="flex items-center gap-2">
-            <CalendarIcon className="w-5 h-5 text-gray-500" />
-            <select 
-              className="select select-bordered w-full md:w-auto"
-              value={selectedMeetingType}
-              onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff')}
-            >
-              <option value="all">All Meetings</option>
-              <option value="potential">Potential Clients</option>
-              <option value="active">Active Clients</option>
-              <option value="staff">Staff Meetings</option>
-            </select>
-          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <UserIcon className="w-5 h-5 text-gray-500" />
+          <select 
+            className="select select-bordered w-full md:w-auto"
+            value={selectedStaff}
+            onChange={(e) => setSelectedStaff(e.target.value)}
+          >
+            <option value="">All Staff</option>
+            {staff.map((s, index) => <option key={`${s}-${index}`} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <CalendarIcon className="w-5 h-5 text-gray-500" />
+          <select 
+            className="select select-bordered w-full md:w-auto"
+            value={selectedMeetingType}
+            onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff')}
+          >
+            <option value="all">All Meetings</option>
+            <option value="potential">Potential Clients</option>
+            <option value="active">Active Clients</option>
+            <option value="staff">Staff Meetings</option>
+          </select>
         </div>
       </div>
 
-      {/* Action Buttons */}
-      <div className="flex justify-end gap-2 mb-4">
-        <button
-          className="btn btn-primary btn-sm flex items-center gap-2"
-          onClick={() => {
-            setSelectedDateForMeeting(new Date());
-            setSelectedTimeForMeeting('09:00');
-            setIsTeamsMeetingModalOpen(true);
-          }}
-          title="Create Teams Meeting"
-        >
-          <VideoCameraIcon className="w-5 h-5" />
-          <span className="hidden md:inline">Create Teams Meeting</span>
-        </button>
-        <button
-          className="btn btn-outline btn-primary btn-sm flex items-center gap-2"
-          onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
-          title={viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
-        >
-          {viewMode === 'cards' ? (
-            <Bars3Icon className="w-5 h-5" />
-          ) : (
-            <Squares2X2Icon className="w-5 h-5" />
-          )}
-          <span className="hidden md:inline">{viewMode === 'cards' ? 'List View' : 'Card View'}</span>
-        </button>
+
+      {/* Action Buttons Row */}
+      <div className="mb-6 flex flex-row items-center justify-between gap-2 w-full">
+        <div className="flex flex-row items-center gap-2">
+          <div className="btn btn-xs sm:btn-sm flex items-center gap-2 bg-base-200 border-base-300 hover:bg-base-300">
+            <span className="text-xs font-medium text-base-content/70">Total Meetings:</span>
+            <span className="text-sm font-bold text-primary">{filteredMeetings.length}</span>
+          </div>
+          <button
+            className="btn btn-primary btn-xs sm:btn-sm flex items-center gap-2"
+            onClick={openAssignStaffModal}
+          >
+            <UserGroupIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+            <span className="text-xs sm:text-sm">Assign Staff</span>
+          </button>
+        </div>
+        <div className="flex flex-row items-center gap-2">
+          <button
+            className="btn btn-primary btn-xs sm:btn-sm flex items-center gap-2"
+            onClick={() => {
+              setSelectedDateForMeeting(new Date());
+              setSelectedTimeForMeeting('09:00');
+              setIsTeamsMeetingModalOpen(true);
+            }}
+            title="Create Teams Meeting"
+          >
+            <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+            <span className="text-xs sm:text-sm hidden md:inline">Create Teams Meeting</span>
+          </button>
+          <button
+            className="btn btn-outline btn-primary btn-xs sm:btn-sm flex items-center gap-2"
+            onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
+            title={viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
+          >
+            {viewMode === 'cards' ? (
+              <Bars3Icon className="w-3 h-3 sm:w-4 sm:h-4" />
+            ) : (
+              <Squares2X2Icon className="w-3 h-3 sm:w-4 sm:h-4" />
+            )}
+            <span className="text-xs sm:text-sm hidden md:inline">{viewMode === 'cards' ? 'List View' : 'Card View'}</span>
+          </button>
+        </div>
       </div>
 
 
+
+
       {/* Meetings List */}
-      <div className="bg-base-100 rounded-lg shadow-lg overflow-x-auto">
+      <div className="mt-6 bg-base-100 rounded-lg shadow-lg overflow-x-auto">
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
-          <table className="table w-full text-base">
+          <table className="table w-full text-xs sm:text-sm md:text-base">
             <thead>
-              <tr className="bg-base-200 text-lg">
+              <tr className="bg-base-200 text-sm sm:text-base md:text-lg">
                 <th>Lead</th>
                 <th>Time</th>
-                <th>Manager</th>
-                <th>Helper</th>
-                <th>Category</th>
-                <th>Amount</th>
-                <th>Expert</th>
-                <th>Location</th>
+                <th className="hidden sm:table-cell">Manager</th>
+                <th className="hidden md:table-cell">Helper</th>
+                <th className="hidden lg:table-cell">Category</th>
+                <th className="hidden sm:table-cell">Amount</th>
+                <th className="hidden lg:table-cell">Expert</th>
+                <th className="hidden md:table-cell">Location</th>
                 <th>Info</th>
-                <th>Status</th>
+                <th className="hidden sm:table-cell">Status</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -4295,6 +4428,19 @@ const CalendarPage: React.FC = () => {
         }}
         selectedDate={selectedDateForMeeting || undefined}
         selectedTime={selectedTimeForMeeting}
+      />
+
+      {/* Staff Meeting Edit Modal */}
+      <StaffMeetingEditModal
+        isOpen={isStaffMeetingEditModalOpen}
+        onClose={() => setIsStaffMeetingEditModalOpen(false)}
+        meeting={selectedStaffMeeting}
+        onUpdate={() => {
+          // Refresh staff meetings when updated
+          if (fromDate && toDate) {
+            fetchStaffMeetings(fromDate, toDate);
+          }
+        }}
       />
     </div>
   );

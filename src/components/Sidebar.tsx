@@ -105,16 +105,33 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   // State for user role and department from database
   const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>('User');
   const [userDepartment, setUserDepartment] = React.useState<string>('');
+  const [userOfficialName, setUserOfficialName] = React.useState<string>('');
   
   // Helper function to get role display name
   const getRoleDisplayName = (role: string): string => {
     const roleMap: { [key: string]: string } = {
       'pm': 'Project Manager',
-      'se': 'Software Engineer',
+      'se': 'Secretary',
       'dv': 'Developer',
       'dm': 'Department Manager',
-      'b': 'Business',
-      'f': 'Finance'
+      'b': 'Book Keeper',
+      'f': 'Finance',
+      'h': 'Handler',
+      'e': 'Expert',
+      'm': 'Manager',
+      'l': 'Lawyer',
+      'a': 'Administrator',
+      's': 'Scheduler',
+      'c': 'Coordinator',
+      'adv': 'Advocate',
+      'advocate': 'Advocate',
+      'handler': 'Handler',
+      'expert': 'Expert',
+      'manager': 'Manager',
+      'lawyer': 'Lawyer',
+      'admin': 'Administrator',
+      'coordinator': 'Coordinator',
+      'scheduler': 'Scheduler'
     };
     return roleMap[role?.toLowerCase()] || role || 'User';
   };
@@ -133,12 +150,13 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               full_name,
               email,
               employee_id,
-              tenants_employee!employee_id(
+              tenants_employee!users_employee_id_fkey(
                 id,
                 display_name,
+                official_name,
                 bonuses_role,
                 department_id,
-                tenant_departement!department_id(
+                tenant_departement!tenants_employee_department_id_fkey(
                   id,
                   name
                 )
@@ -148,15 +166,23 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             .single();
 
           if (!userError && userData && userData.tenants_employee) {
-            const empData = userData.tenants_employee;
+            // Handle both array and single object responses
+            const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
             
-            // Set role with proper mapping
-            const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
-            setUserRoleFromDB(roleDisplay);
-            
-            // Set department
-            const deptName = empData.tenant_departement?.name || 'General';
-            setUserDepartment(deptName);
+            if (empData) {
+              // Set official name (use official_name if available, fallback to display_name or full_name)
+              const officialName = empData.official_name || empData.display_name || userData.full_name || '';
+              setUserOfficialName(officialName);
+              
+              // Set role with proper mapping
+              const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
+              setUserRoleFromDB(roleDisplay);
+              
+              // Set department
+              const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
+              const deptName = deptData?.name || 'General';
+              setUserDepartment(deptName);
+            }
           }
         }
       } catch (error) {
@@ -335,7 +361,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               {isSidebarHovered && (
                 <div className="flex flex-col min-w-0">
                   <span className="text-white font-medium text-sm truncate">
-                    {userName}
+                    {userOfficialName || userName}
                   </span>
                   <span className="text-white/70 text-xs truncate">
                     {userRoleFromDB}
@@ -490,7 +516,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 {/* User info - always visible on mobile */}
                 <div className="flex flex-col min-w-0">
                   <span className="text-base-content font-medium text-sm truncate">
-                    {userName}
+                    {userOfficialName || userName}
                   </span>
                   <span className="text-base-content/70 text-xs truncate">
                     {userRoleFromDB}
