@@ -11,9 +11,11 @@ import {
   CurrencyDollarIcon,
   CalendarIcon,
   EnvelopeIcon,
-  DevicePhoneMobileIcon
+  DevicePhoneMobileIcon,
+  UserGroupIcon
 } from '@heroicons/react/24/outline';
 import EmployeeAvailability from '../components/EmployeeAvailability';
+import EmployeeAvailabilityManager from '../components/EmployeeAvailabilityManager';
 import OutlookSignature from '../components/OutlookSignature';
 
 interface SettingsSection {
@@ -494,7 +496,18 @@ const SettingsPage: React.FC = () => {
                           onClick={() => setActiveCalendarTab('availability')}
                         >
                           <CalendarIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
-                          Availability
+                          My Availability
+                        </button>
+                        <button
+                          className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
+                            activeCalendarTab === 'manage'
+                              ? 'border-primary text-primary'
+                              : 'border-transparent text-base-content/70 hover:text-base-content'
+                          }`}
+                          onClick={() => setActiveCalendarTab('manage')}
+                        >
+                          <UserGroupIcon className="w-3 h-3 sm:w-4 sm:h-4 inline mr-1 sm:mr-2" />
+                          Manage Others
                         </button>
                         <button
                           className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
@@ -513,12 +526,24 @@ const SettingsPage: React.FC = () => {
                       {activeCalendarTab === 'availability' && (
                         <div>
                           <div className="mb-3 sm:mb-4">
-                            <h3 className="text-base sm:text-lg font-semibold text-base-content mb-1 sm:mb-2">Employee Availability</h3>
+                            <h3 className="text-base sm:text-lg font-semibold text-base-content mb-1 sm:mb-2">My Availability</h3>
                             <p className="text-base-content/70 text-xs sm:text-sm">
                               Manage your unavailable times and sync with Microsoft Outlook calendar.
                             </p>
                           </div>
                           <EmployeeAvailability />
+                        </div>
+                      )}
+                      
+                      {activeCalendarTab === 'manage' && (
+                        <div>
+                          <div className="mb-3 sm:mb-4">
+                            <h3 className="text-base sm:text-lg font-semibold text-base-content mb-1 sm:mb-2">Manage Employee Availability</h3>
+                            <p className="text-base-content/70 text-xs sm:text-sm">
+                              Set unavailable times and ranges for other team members.
+                            </p>
+                          </div>
+                          <EmployeeAvailabilityManager />
                         </div>
                       )}
                       
