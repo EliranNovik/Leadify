@@ -48,6 +48,8 @@
      SUPABASE_ANON_KEY=your_supabase_anon_key
      SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
      JWT_SECRET=your_jwt_secret
+     ONECOM_API_KEY=Lufbp2hYHpLrwMCZ
+     ONECOM_TENANT=decker
      ```
 
 5. **Deploy**
@@ -77,19 +79,21 @@ const BACKEND_URL = "https://your-app-name.onrender.com";
 
 ## Environment Variables Reference
 
-| Variable                    | Description                   | Required |
-| --------------------------- | ----------------------------- | -------- |
-| `NODE_ENV`                  | Environment (production)      | Yes      |
-| `PORT`                      | Server port (3001)            | Yes      |
-| `SUPABASE_URL`              | Your Supabase project URL     | Yes      |
-| `SUPABASE_ANON_KEY`         | Supabase anonymous key        | Yes      |
-| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key     | Yes      |
-| `JWT_SECRET`                | Secret for JWT tokens         | Yes      |
-| `TEAMS_CLIENT_ID`           | Microsoft Teams client ID     | No       |
-| `TEAMS_CLIENT_SECRET`       | Microsoft Teams client secret | No       |
-| `TEAMS_TENANT_ID`           | Microsoft Teams tenant ID     | No       |
-| `WHATSAPP_API_KEY`          | WhatsApp Business API key     | No       |
-| `WHATSAPP_PHONE_NUMBER_ID`  | WhatsApp phone number ID      | No       |
+| Variable                    | Description                      | Required |
+| --------------------------- | -------------------------------- | -------- |
+| `NODE_ENV`                  | Environment (production)         | Yes      |
+| `PORT`                      | Server port (3001)               | Yes      |
+| `SUPABASE_URL`              | Your Supabase project URL        | Yes      |
+| `SUPABASE_ANON_KEY`         | Supabase anonymous key           | Yes      |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service role key        | Yes      |
+| `JWT_SECRET`                | Secret for JWT tokens            | Yes      |
+| `ONECOM_API_KEY`            | 1com API key for call recordings | Yes      |
+| `ONECOM_TENANT`             | 1com tenant name                 | Yes      |
+| `TEAMS_CLIENT_ID`           | Microsoft Teams client ID        | No       |
+| `TEAMS_CLIENT_SECRET`       | Microsoft Teams client secret    | No       |
+| `TEAMS_TENANT_ID`           | Microsoft Teams tenant ID        | No       |
+| `WHATSAPP_API_KEY`          | WhatsApp Business API key        | No       |
+| `WHATSAPP_PHONE_NUMBER_ID`  | WhatsApp phone number ID         | No       |
 
 ## Troubleshooting
 

@@ -538,10 +538,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     let hasShownError = false; // Flag to prevent duplicate toast notifications
     
     try {
-      console.log('🎵 Raw recording URL from database:', recordingUrl);
-      console.log('🎵 URL length:', recordingUrl.length);
-      console.log('🎵 URL starts with http:', recordingUrl.startsWith('http'));
-      console.log('🎵 URL contains 1com:', recordingUrl.includes('1com'));
       
       // Stop current audio if playing
       if (audioRef && !audioRef.paused) {
@@ -557,14 +553,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       try {
         // Try to decode the URL first
         decodedUrl = decodeURIComponent(recordingUrl);
-        console.log('🎵 Decoded URL:', decodedUrl);
       } catch (error) {
         // If decoding fails, use the original URL
-        console.log('🎵 URL decoding failed, using original:', error);
         decodedUrl = recordingUrl;
       }
-      
-      console.log('🎵 Final URL to process:', decodedUrl);
       const isAbsolute = decodedUrl.startsWith('http://') || decodedUrl.startsWith('https://');
       
       if (!isAbsolute) {
@@ -575,11 +567,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
 
       // For 1com URLs, extract call ID and use our proxy endpoint
       if (decodedUrl.includes('pbx6webserver.1com.co.il')) {
-        console.log('1com recording URL detected:', decodedUrl);
-        
         try {
           // Extract call ID from the URL
-          // URL format: https://pbx6webserver.1com.co.il/pbx/proxyapi.php?reqtype=INFO&info=playrecording&id=pbx24-1740917387.14030184&key=...&tenant=...
           const urlParams = new URL(decodedUrl).searchParams;
           const callId = urlParams.get('id');
           const tenant = urlParams.get('tenant');
@@ -590,17 +579,48 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             return;
           }
           
-          console.log('Extracted call ID:', callId, 'tenant:', tenant);
-          
           // Use our backend proxy to avoid CORS issues
           const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
           cleanUrl = `${backendUrl}/api/call-recording/${callId}${tenant ? `?tenant=${tenant}` : ''}`;
-          
-          console.log('Proxied URL:', cleanUrl);
         } catch (error) {
           console.error('Error parsing 1com URL:', error);
           toast.error('Failed to parse recording URL');
           return;
+        }
+      }
+
+      // First, check if this is a 2024 recording that might not be available
+      const isOldRecording = callId.startsWith('pbx24-') || decodedUrl.includes('pbx24-');
+      if (isOldRecording) {
+        // Make a GET request to check if the recording is available
+        try {
+          const checkResponse = await fetch(cleanUrl);
+          if (!checkResponse.ok) {
+            const errorData = await checkResponse.json().catch(() => null);
+            if (errorData?.isOldRecording) {
+              if (!hasShownError) {
+                hasShownError = true;
+                toast.error('This recording is from 2024 and may no longer be accessible. 1com typically archives older recordings.');
+              }
+              return;
+            }
+          } else {
+            // Check if the response is actually audio
+            const contentType = checkResponse.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+              // The backend returned JSON instead of audio, likely an error
+              const errorData = await checkResponse.json().catch(() => null);
+              if (errorData?.isOldRecording) {
+                if (!hasShownError) {
+                  hasShownError = true;
+                  toast.error('This recording is from 2024 and may no longer be accessible. 1com typically archives older recordings.');
+                }
+                return;
+              }
+            }
+          }
+        } catch (checkError) {
+          // Continue with normal playback attempt
         }
       }
 
@@ -619,19 +639,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         console.error('Failed URL:', cleanUrl);
         if (!hasShownError) {
           hasShownError = true;
-          toast.error('Recording is not available');
+          // Check if this is a 2024 recording for a more specific error message
+          if (isOldRecording) {
+            toast.error('This recording is from 2024 and may no longer be accessible. 1com typically archives older recordings.');
+          } else {
+            toast.error('Recording is not available');
+          }
         }
         setPlayingAudioId(null);
         setAudioRef(null);
       };
 
-      audio.onloadstart = () => {
-        console.log('Audio loading started for:', cleanUrl);
-      };
-
-      audio.oncanplay = () => {
-        console.log('Audio can play:', cleanUrl);
-      };
 
       await audio.play();
     } catch (error) {
@@ -1974,20 +1992,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 AI Smart Recap
               </button>
               
-              {/* Legacy Interactions Test Button - only show for legacy leads */}
-              {(client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_')) && (
-                <button 
-                  className="btn btn-outline btn-warning text-xs"
-                  onClick={async () => {
-                    console.log('🧪 Testing legacy interactions access...');
-                    await testLegacyInteractionsAccess();
-                    toast.success('Check console for legacy interactions test results');
-                  }}
-                  title="Test legacy interactions database access"
-                >
-                  Test Legacy
-                </button>
-              )}
             </div>
             
             {/* Timeline container with improved spacing */}
@@ -2202,9 +2206,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                             <div className="flex items-center justify-between bg-gray-50 rounded-lg p-3 mb-4">
                               <div className="flex items-center gap-2">
                                 <SpeakerWaveIcon className="w-5 h-5 text-gray-500" />
-                                <span className="text-sm font-medium text-gray-700">
-                                  {row.recording_url ? 'Call Recording' : 'Recording not available'}
-                                </span>
+                                <div className="flex flex-col">
+                                  <span className="text-sm font-medium text-gray-700">
+                                    {row.recording_url ? 'Call Recording' : 'Recording not available'}
+                                  </span>
+                                </div>
                               </div>
                               {row.recording_url && (
                                 <button
