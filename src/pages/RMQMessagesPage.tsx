@@ -133,11 +133,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const getRoleDisplayName = (role: string): string => {
     const roleMap: { [key: string]: string } = {
       'pm': 'Project Manager',
-      'se': 'Software Engineer', 
+      'se': 'Secretary',
       'dv': 'Developer',
       'dm': 'Department Manager',
-      'b': 'Business',
-      'f': 'Finance'
+      'b': 'Book Keeper',
+      'f': 'Finance',
+      'h': 'Handler',
+      'e': 'Expert',
+      'm': 'Manager',
+      'l': 'Lawyer',
+      'a': 'Administrator',
+      's': 'Scheduler',
+      'c': 'Coordinator',
+      'adv': 'Advocate',
+      'advocate': 'Advocate',
+      'handler': 'Handler',
+      'expert': 'Expert',
+      'manager': 'Manager',
+      'lawyer': 'Lawyer',
+      'admin': 'Administrator',
+      'coordinator': 'Coordinator',
+      'scheduler': 'Scheduler'
     };
     return roleMap[role?.toLowerCase()] || role || 'User';
   };
@@ -322,12 +338,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             full_name,
             email,
             employee_id,
-            tenants_employee!left(
+            tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
               department_id,
               photo_url,
-              tenant_departement!left(
+              tenant_departement!tenants_employee_department_id_fkey(
                 name
               )
             )
@@ -423,12 +439,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               full_name,
               email,
               employee_id,
-              tenants_employee!left(
+              tenants_employee!users_employee_id_fkey(
                 display_name,
                 bonuses_role,
                 department_id,
                 photo_url,
-                tenant_departement!left(
+                tenant_departement!tenants_employee_department_id_fkey(
                   name
                 )
               )
@@ -539,12 +555,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               full_name,
               email,
               employee_id,
-              tenants_employee!left(
+              tenants_employee!users_employee_id_fkey(
                 display_name,
                 bonuses_role,
                 department_id,
                 photo_url,
-                tenant_departement!left(
+                tenant_departement!tenants_employee_department_id_fkey(
                   name
                 )
               )
@@ -650,7 +666,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             full_name,
             email,
             employee_id,
-            tenants_employee!left(
+            tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
               photo_url
@@ -661,7 +677,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             content,
             sender:users!sender_id(
               full_name,
-              tenants_employee!left(display_name)
+              tenants_employee!users_employee_id_fkey(display_name)
             )
           )
         `)
@@ -711,12 +727,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           full_name,
           email,
           employee_id,
-          tenants_employee!left(
+          tenants_employee!users_employee_id_fkey(
             display_name,
             bonuses_role,
             department_id,
             photo_url,
-            tenant_departement!left(
+            tenant_departement!tenants_employee_department_id_fkey(
               name
             )
           )
@@ -732,11 +748,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       // Remove duplicates and filter out users without basic info
-      const uniqueUsers = (usersData || []).filter((user, index, self) => 
-        user.ids && 
-        user.full_name && 
-        index === self.findIndex(u => u.ids === user.ids)
-      );
+      const uniqueUsers = (usersData || []).filter((user, index, self) => {
+        // Check if user has either full_name or display_name from employee
+        const empData = user.tenants_employee ? 
+          (Array.isArray(user.tenants_employee) ? user.tenants_employee[0] : user.tenants_employee) : 
+          null;
+        const hasName = user.full_name || empData?.display_name;
+        
+        return user.ids && 
+               hasName && 
+               index === self.findIndex(u => u.ids === user.ids);
+      });
 
       setAllUsers(uniqueUsers as unknown as User[]);
     } catch (error) {
@@ -875,7 +897,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             full_name,
             email,
             employee_id,
-            tenants_employee!left(
+            tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
               photo_url
@@ -954,7 +976,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             full_name,
             email,
             employee_id,
-            tenants_employee!left(
+            tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
               photo_url

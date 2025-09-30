@@ -1,5 +1,5 @@
 import React, { useState, forwardRef, useImperativeHandle, useEffect } from 'react';
-import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, ArrowPathIcon, MegaphoneIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 
@@ -13,6 +13,14 @@ interface Suggestion {
   leadId?: string;
   leadNumber?: string;
   clientName?: string;
+}
+
+interface PublicMessage {
+  id: number;
+  content: string;
+  created_at: string;
+  updated_at: string;
+  is_active: boolean;
 }
 
 // Initial suggestions shown on dashboard
@@ -150,6 +158,8 @@ const AISuggestions = forwardRef((props, ref) => {
   const [isLoading, setIsLoading] = useState(true);
   const [aiMessage, setAiMessage] = useState('');
   const [isSummaryOpen, setIsSummaryOpen] = useState(false);
+  const [publicMessages, setPublicMessages] = useState<PublicMessage[]>([]);
+  const [isLoadingPublicMessages, setIsLoadingPublicMessages] = useState(true);
 
   const getTypeIcon = (type: Suggestion['type']) => {
     switch (type) {
@@ -172,6 +182,30 @@ const AISuggestions = forwardRef((props, ref) => {
       case 'important': return 'border-yellow-500';
       case 'reminder': return 'border-green-500';
       default: return 'border-gray-300';
+    }
+  };
+
+  // Fetch public messages from the database
+  const fetchPublicMessages = async () => {
+    setIsLoadingPublicMessages(true);
+    try {
+      const { data, error } = await supabase
+        .from('public_messages')
+        .select('id, content, created_at, updated_at, is_active')
+        .eq('is_active', true)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching public messages:', error);
+        setPublicMessages([]);
+      } else {
+        setPublicMessages(data || []);
+      }
+    } catch (error) {
+      console.error('Error fetching public messages:', error);
+      setPublicMessages([]);
+    } finally {
+      setIsLoadingPublicMessages(false);
     }
   };
 
@@ -222,10 +256,15 @@ const AISuggestions = forwardRef((props, ref) => {
   // Auto-refresh notifications every 5 minutes
   useEffect(() => {
     fetchNotifications();
+    fetchPublicMessages();
     
     const interval = setInterval(fetchNotifications, 5 * 60 * 1000); // 5 minutes
+    const publicMessagesInterval = setInterval(fetchPublicMessages, 10 * 60 * 1000); // 10 minutes
     
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      clearInterval(publicMessagesInterval);
+    };
   }, []);
   const getDueColor = (type: Suggestion['type']) => {
     switch (type) {
@@ -366,14 +405,53 @@ const AISuggestions = forwardRef((props, ref) => {
         <div className="flex items-center gap-2">
           <button 
             className="btn btn-sm btn-ghost" 
-            onClick={fetchNotifications}
-            disabled={isLoading}
-            title="Refresh notifications"
+            onClick={() => {
+              fetchNotifications();
+              fetchPublicMessages();
+            }}
+            disabled={isLoading || isLoadingPublicMessages}
+            title="Refresh notifications and announcements"
           >
-            <ArrowPathIcon className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            <ArrowPathIcon className={`w-4 h-4 ${(isLoading || isLoadingPublicMessages) ? 'animate-spin' : ''}`} />
           </button>
         </div>
       </div>
+      
+      {/* Public Messages Section */}
+      {publicMessages.length > 0 && (
+        <div className="mb-4">
+          <div className="flex items-center gap-2 mb-3">
+            <MegaphoneIcon className="w-5 h-5 text-gray-700" />
+            <span className="text-sm font-semibold text-gray-800">Public Announcements</span>
+          </div>
+          <div className="space-y-3">
+            {publicMessages.map((message) => (
+              <div 
+                key={message.id} 
+                className="bg-white rounded-xl p-4 text-sm text-gray-900 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1"
+                style={{
+                  boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.05)'
+                }}
+              >
+                <div 
+                  className="whitespace-pre-wrap leading-relaxed"
+                  dir="auto"
+                  style={{ textAlign: 'start' }}
+                >
+                  {message.content}
+                </div>
+                <div className="text-xs text-gray-500 mt-2 pt-2 border-t border-gray-100">
+                  {new Date(message.created_at).toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'short',
+                    day: 'numeric'
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       
       <div 
         className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible max-h-[1200px] bg-white"

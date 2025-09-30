@@ -249,7 +249,7 @@ const Dashboard: React.FC = () => {
           .not('next_followup', 'is', null)
           .eq('status', 0)
           .lt('stage', 100)
-          .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`)
+          .or(`expert_id.eq."${userEmployeeId}",meeting_manager_id.eq."${userEmployeeId}"`)
           .limit(fetchAll ? 1000 : 12);
         
         legacyLeadsData = data;
@@ -506,7 +506,7 @@ const Dashboard: React.FC = () => {
               .not('next_followup', 'is', null)
               .eq('status', 0)
               .lt('stage', 100)
-              .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId}`)
+              .or(`expert_id.eq."${userEmployeeId}",meeting_manager_id.eq."${userEmployeeId}"`)
           );
         }
         
