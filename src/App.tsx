@@ -52,6 +52,7 @@ import SimpleTestPage from './pages/SimpleTestPage';
 import DebugTestPage from './pages/DebugTestPage';
 import EmployeePerformancePage from './pages/EmployeePerformancePage';
 import RMQMessagesPage from './pages/RMQMessagesPage';
+import CallsLedgerPage from './pages/CallsLedgerPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -211,6 +212,29 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
       <Route path="/payment/:token" element={<PaymentPage />} />
+      <Route path="/calls-ledger" element={
+        <ProtectedRoute user={authUser}>
+          <div className="flex h-screen bg-white">
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <Header 
+                onMenuClick={() => setIsSidebarOpen(prev => !prev)} 
+                onSearchClick={() => setIsSearchOpen(prev => !prev)}
+                isSearchOpen={isSearchOpen}
+                setIsSearchOpen={setIsSearchOpen}
+                appJustLoggedIn={appJustLoggedIn}
+                onOpenAIChat={() => setIsAiChatOpen(true)}
+                onOpenEmailThread={() => setIsEmailThreadOpen(true)}
+                onOpenWhatsApp={() => setIsWhatsAppOpen(true)}
+                onOpenMessaging={() => setIsMessagingOpen(true)}
+                isMenuOpen={isSidebarOpen}
+              />
+              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white">
+                <CallsLedgerPage />
+              </main>
+            </div>
+          </div>
+        </ProtectedRoute>
+      } />
       <Route
         path="/*"
         element={

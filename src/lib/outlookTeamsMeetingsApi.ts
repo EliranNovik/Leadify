@@ -40,14 +40,10 @@ export async function saveOutlookTeamsMeeting(
       .single();
 
     if (error) {
-      console.error('Error saving Teams meeting to database:', error);
       return { data: null, error };
     }
-
-    console.log('Teams meeting saved to database:', data);
     return { data, error: null };
   } catch (error) {
-    console.error('Exception saving Teams meeting to database:', error);
     return { data: null, error };
   }
 }

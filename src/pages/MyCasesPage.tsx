@@ -32,26 +32,62 @@ const MyCasesPage: React.FC = () => {
       setError(null);
 
       // Get current user's employee ID from users table
+      console.log('🔍 MyCases - Current user ID:', user?.id);
+      
       const { data: userData, error: userError } = await supabase
         .from('users')
         .select('employee_id')
         .eq('auth_id', user?.id)
         .single();
 
+      console.log('🔍 MyCases - User data query result:', { userData, userError });
+
       if (userError || !userData?.employee_id) {
+        console.error('🔍 MyCases - Employee lookup failed:', { userError, userData });
         throw new Error('Employee not found for current user');
       }
 
       const employeeId = userData.employee_id;
-      console.log('🔍 MyCases - Employee ID:', employeeId);
+      console.log('🔍 MyCases - Employee ID found:', employeeId);
 
       // Calculate date 1 week ago
       const oneWeekAgo = new Date();
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
       const oneWeekAgoISO = oneWeekAgo.toISOString().split('T')[0];
 
-      // Use the same successful pattern as PipelinePage and Dashboard
       console.log('🔍 MyCases - Fetching leads with case_handler_id:', employeeId);
+      
+      // Use a targeted approach - only last 6 months for better performance
+      const sixMonthsAgo = new Date();
+      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+      const sixMonthsAgoISO = sixMonthsAgo.toISOString().split('T')[0];
+      
+      console.log('🔍 MyCases - Date range:', { sixMonthsAgoISO });
+      
+      // Let's check what case_handler_id values exist in the database
+      const { data: allCaseHandlers, error: handlersError } = await supabase
+        .from('leads_lead')
+        .select('case_handler_id')
+        .not('case_handler_id', 'is', null)
+        .limit(20);
+      
+      console.log('🔍 MyCases - Sample case_handler_id values in database:', { 
+        allCaseHandlers: allCaseHandlers?.map(l => l.case_handler_id),
+        handlersError 
+      });
+      
+      // First, let's check if there are ANY leads with this case_handler_id
+      const { data: testLeads, error: testError } = await supabase
+        .from('leads_lead')
+        .select('id, case_handler_id, cdate')
+        .eq('case_handler_id', employeeId)
+        .limit(5);
+      
+      console.log('🔍 MyCases - Test query (any leads with this case_handler_id):', { 
+        testLeads, 
+        testError,
+        count: testLeads?.length || 0 
+      });
       
       const { data: leadsData, error: leadsError } = await supabase
         .from('leads_lead')
@@ -64,23 +100,27 @@ const MyCasesPage: React.FC = () => {
           cdate
         `)
         .eq('case_handler_id', employeeId)
-        .eq('status', 0) // Only active leads like other components
+        // Remove status filter - let's see all leads assigned to this handler
+        // Remove date filter - let's see all leads regardless of date
         .order('cdate', { ascending: false })
-        .limit(100); // Reasonable limit like other components
+        .limit(100); // Increased limit since we have proper indexes now
 
-      if (leadsError) {
-        console.error('❌ MyCases - Error fetching leads:', leadsError);
-        throw leadsError;
-      }
+      console.log('🔍 MyCases - Leads query result:', { 
+        leadsData, 
+        leadsError,
+        count: leadsData?.length || 0 
+      });
+
+      if (leadsError) throw leadsError;
 
       console.log('🔍 MyCases - Leads fetched:', leadsData?.length || 0);
 
-      // Fetch stage names separately (like other components do)
+      // Fetch stage names separately (since foreign key relationship doesn't exist yet)
       const { data: stages } = await supabase
         .from('lead_stages')
         .select('id, name');
 
-      // Fetch all categories with their parent main category names using JOINs (like CalendarPage)
+      // Fetch categories with their parent main category names using JOINs
       const { data: allCategories } = await supabase
         .from('misc_category')
         .select(`

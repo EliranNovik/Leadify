@@ -9,10 +9,12 @@ let isCacheInitialized = false;
  */
 export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
   if (isCacheInitialized) {
+    console.log('🔍 StageUtils - Using cached stage names:', stageNamesCache);
     return stageNamesCache;
   }
 
   try {
+    console.log('🔍 StageUtils - Fetching stage names from database...');
     const { data, error } = await supabase
       .from('lead_stages')
       .select('id, name')
@@ -30,6 +32,8 @@ export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
         stageMapping[stage.id] = stage.name || stage.id;
       });
       
+      console.log('🔍 StageUtils - Stage names fetched and cached:', stageMapping);
+      
       // Update cache
       stageNamesCache = stageMapping;
       isCacheInitialized = true;
@@ -37,6 +41,7 @@ export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
       return stageMapping;
     }
     
+    console.log('🔍 StageUtils - No stage data returned from database');
     return {};
   } catch (err) {
     console.error('Exception while fetching stages:', err);
@@ -57,9 +62,15 @@ export const getStageName = (stageId: string): string => {
   const specialStageMappings: { [key: string]: string } = {
     '0': 'Precommunication',
     '1': 'Created',
-    '91': 'Dropped (Spam/Irrelevant)',
+    '10': 'Scheduler assigned',
+    '20': 'Meeting scheduled',
+    '35': 'Meeting Irrelevant',
+    '50': 'Meeting Scheduled',
     '51': 'Client declined price offer',
-    '35': 'Meeting Irrelevant'
+    '91': 'Dropped (Spam/Irrelevant)',
+    '105': 'Success',
+    'meeting_scheduled': 'Meeting Scheduled',
+    'scheduler_assigned': 'Scheduler assigned'
   };
   
   // Check special mappings first
@@ -71,6 +82,9 @@ export const getStageName = (stageId: string): string => {
   if (stageNamesCache[stageIdStr]) {
     return stageNamesCache[stageIdStr];
   }
+  
+  // Debug logging
+  console.log('🔍 StageUtils - Stage not found in cache:', { stageId: stageIdStr, cacheKeys: Object.keys(stageNamesCache) });
   
   // Fallback to formatting the stage ID if no name is found
   const fallbackName = (stageIdStr !== undefined && stageIdStr !== null && stageIdStr !== '' ? stageIdStr : 'No Stage')
@@ -143,8 +157,18 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
  * Clears the stage names cache (useful for testing or when data changes)
  */
 export const clearStageNamesCache = () => {
+  console.log('🔍 StageUtils - Clearing stage names cache');
   stageNamesCache = {};
   isCacheInitialized = false;
+};
+
+/**
+ * Forces a refresh of the stage names cache
+ */
+export const refreshStageNames = async (): Promise<{ [key: string]: string }> => {
+  console.log('🔍 StageUtils - Force refreshing stage names cache');
+  clearStageNamesCache();
+  return await fetchStageNames();
 };
 
 /**

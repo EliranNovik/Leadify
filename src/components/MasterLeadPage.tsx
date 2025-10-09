@@ -148,7 +148,7 @@ const MasterLeadPage: React.FC = () => {
         setLoading(true);
         setError(null);
         
-        // First, get the master lead info with related data
+        // First, get the master lead info with related data including employee joins
         const { data: masterLead, error: masterError } = await supabase
           .from('leads_lead')
           .select(`
@@ -163,6 +163,15 @@ const MasterLeadPage: React.FC = () => {
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
+            ),
+            scheduler:tenants_employee!meeting_scheduler_id (
+              display_name
+            ),
+            closer:tenants_employee!closer_id (
+              display_name
+            ),
+            handler:tenants_employee!case_handler_id (
+              display_name
             )
           `)
           .eq('id', parseInt(lead_number))
@@ -176,7 +185,7 @@ const MasterLeadPage: React.FC = () => {
 
         setMasterLeadInfo(masterLead);
 
-        // Fetch sub-leads with related data
+        // Fetch sub-leads with related data including employee joins
         setSubLeadsLoading(true);
         const { data: subLeadsData, error: subLeadsError } = await supabase
           .from('leads_lead')
@@ -192,6 +201,15 @@ const MasterLeadPage: React.FC = () => {
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
+            ),
+            scheduler:tenants_employee!meeting_scheduler_id (
+              display_name
+            ),
+            closer:tenants_employee!closer_id (
+              display_name
+            ),
+            handler:tenants_employee!case_handler_id (
+              display_name
             )
           `)
           .eq('master_id', lead_number)
@@ -355,9 +373,18 @@ const MasterLeadPage: React.FC = () => {
                 View Agreement
               </a>
             ) : '---',
-            scheduler: employeeMap.get(masterLead.meeting_scheduler_id) || '---',
-            closer: employeeMap.get(masterLead.closer_id) || '---',
-            handler: employeeMap.get(masterLead.case_handler_id) || '---',
+            scheduler: (() => {
+              const scheduler = Array.isArray(masterLead.scheduler) ? masterLead.scheduler[0] : masterLead.scheduler;
+              return (scheduler as any)?.display_name || '---';
+            })(),
+            closer: (() => {
+              const closer = Array.isArray(masterLead.closer) ? masterLead.closer[0] : masterLead.closer;
+              return (closer as any)?.display_name || '---';
+            })(),
+            handler: (() => {
+              const handler = Array.isArray(masterLead.handler) ? masterLead.handler[0] : masterLead.handler;
+              return (handler as any)?.display_name || '---';
+            })(),
             master_id: masterLead.master_id,
             isMaster: true
           });
@@ -378,11 +405,14 @@ const MasterLeadPage: React.FC = () => {
                 currency_id: lead.currency_id,
                 currency_info: currencyInfo,
                 meeting_scheduler_id: lead.meeting_scheduler_id,
-                scheduler: employeeMap.get(lead.meeting_scheduler_id),
+                scheduler_joined: lead.scheduler,
+                scheduler_display_name: Array.isArray(lead.scheduler) ? (lead.scheduler[0] as any)?.display_name : (lead.scheduler as any)?.display_name,
                 closer_id: lead.closer_id,
-                closer: employeeMap.get(lead.closer_id),
+                closer_joined: lead.closer,
+                closer_display_name: Array.isArray(lead.closer) ? (lead.closer[0] as any)?.display_name : (lead.closer as any)?.display_name,
                 case_handler_id: lead.case_handler_id,
-                handler: employeeMap.get(lead.case_handler_id)
+                handler_joined: lead.handler,
+                handler_display_name: Array.isArray(lead.handler) ? (lead.handler[0] as any)?.display_name : (lead.handler as any)?.display_name
               });
             }
             
@@ -409,9 +439,18 @@ const MasterLeadPage: React.FC = () => {
                   View Agreement
                 </a>
               ) : '---',
-              scheduler: employeeMap.get(lead.meeting_scheduler_id) || '---',
-              closer: employeeMap.get(lead.closer_id) || '---',
-              handler: employeeMap.get(lead.case_handler_id) || '---',
+              scheduler: (() => {
+                const scheduler = Array.isArray(lead.scheduler) ? lead.scheduler[0] : lead.scheduler;
+                return (scheduler as any)?.display_name || '---';
+              })(),
+              closer: (() => {
+                const closer = Array.isArray(lead.closer) ? lead.closer[0] : lead.closer;
+                return (closer as any)?.display_name || '---';
+              })(),
+              handler: (() => {
+                const handler = Array.isArray(lead.handler) ? lead.handler[0] : lead.handler;
+                return (handler as any)?.display_name || '---';
+              })(),
               master_id: lead.master_id,
               isMaster: false
             });

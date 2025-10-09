@@ -3182,15 +3182,69 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  // After extracting fullLeadNumber
-  const isSubLead = fullLeadNumber.includes('/') || (selectedClient && selectedClient.master_id);
-  const masterLeadNumber = isSubLead ? 
-    (fullLeadNumber.includes('/') ? fullLeadNumber.split('/')[0] : selectedClient?.master_id) : 
-    null;
-  
   // Add state for sub-leads
   const [subLeads, setSubLeads] = useState<any[]>([]);
   const [isMasterLead, setIsMasterLead] = useState(false);
+  
+  // Add persistent state for sub-lead detection
+  const [persistentIsSubLead, setPersistentIsSubLead] = useState<boolean | null>(null);
+  const [persistentMasterLeadNumber, setPersistentMasterLeadNumber] = useState<string | null>(null);
+
+  // After extracting fullLeadNumber
+  // Check if this is a sub-lead by looking at the lead_number in the database
+  // Logic: If database lead_number contains '/', then it's a sub-lead
+  // Example: lead_number = "192974/1" means this is a sub-lead of master lead "192974"
+  const isSubLead = fullLeadNumber.includes('/') || 
+                   (selectedClient && selectedClient.master_id) ||
+                   (selectedClient && selectedClient.lead_number && selectedClient.lead_number.includes('/'));
+  
+  const masterLeadNumber = isSubLead ? 
+    (fullLeadNumber.includes('/') ? fullLeadNumber.split('/')[0] : 
+     selectedClient?.lead_number?.includes('/') ? selectedClient.lead_number.split('/')[0] :
+     selectedClient?.master_id) : 
+    null;
+  
+  // Persist sub-lead detection when first detected
+  useEffect(() => {
+    if (isSubLead && masterLeadNumber && persistentIsSubLead === null) {
+      console.log('🔍 Persisting sub-lead detection:', { isSubLead, masterLeadNumber });
+      setPersistentIsSubLead(true);
+      setPersistentMasterLeadNumber(masterLeadNumber);
+      console.log('🔍 Persistent state set:', { persistentIsSubLead: true, persistentMasterLeadNumber: masterLeadNumber });
+    }
+  }, [isSubLead, masterLeadNumber, persistentIsSubLead]);
+
+  // Reset persistent state only when the URL changes (different client)
+  useEffect(() => {
+    setPersistentIsSubLead(null);
+    setPersistentMasterLeadNumber(null);
+  }, [fullLeadNumber]); // Reset when URL changes, not when client data refreshes
+
+  // Debug logging for master lead detection
+  console.log('🔍 Master lead detection:', {
+    fullLeadNumber,
+    isSubLead,
+    masterLeadNumber,
+    persistentIsSubLead,
+    persistentMasterLeadNumber,
+    selectedClientId: selectedClient?.id,
+    selectedClientLeadNumber: selectedClient?.lead_number,
+    masterId: selectedClient?.master_id,
+    hasSlash: fullLeadNumber.includes('/'),
+    hasMasterId: !!(selectedClient && selectedClient.master_id),
+    selectedClientData: selectedClient ? {
+      id: selectedClient.id,
+      lead_number: selectedClient.lead_number,
+      master_id: selectedClient.master_id,
+      manual_id: selectedClient.manual_id
+    } : null,
+    // Clear explanation of the logic
+    explanation: selectedClient?.lead_number?.includes('/') ? 
+      `Lead number "${selectedClient.lead_number}" contains "/" → Sub-lead detected` :
+      fullLeadNumber.includes('/') ? 
+      `URL fullLeadNumber "${fullLeadNumber}" contains "/" → Sub-lead detected` :
+      'No sub-lead detected'
+  });
 
   // Function to fetch sub-leads for master leads
   const fetchSubLeads = useCallback(async (leadNumber: string) => {
@@ -3766,6 +3820,30 @@ const Clients: React.FC<ClientsProps> = ({
       {/* Mobile view - aligned with desktop layout */}
       <div className="md:hidden px-4 pt-4 pb-3">
         <div className="flex flex-col gap-4">
+          {/* Sub-lead notice for mobile */}
+          {(isSubLead || persistentIsSubLead) && (masterLeadNumber || persistentMasterLeadNumber) && (
+            <div className="text-sm text-gray-500 mb-2">
+              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber || persistentMasterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber || persistentMasterLeadNumber}</a>
+            </div>
+          )}
+          
+          {/* Master lead notice for mobile */}
+          {isMasterLead && subLeads.length > 0 && (
+            <div className="text-sm text-gray-500 mb-2">
+              This is a master lead with {subLeads.length} sub-lead{subLeads.length !== 1 ? 's' : ''}. 
+              <a 
+                href={`/clients/${(() => {
+                  // Get the base lead number without any suffix like /2
+                  const leadNumber = selectedClient.lead_number || selectedClient.id || '';
+                  return leadNumber.toString().split('/')[0];
+                })()}/master`} 
+                className="underline text-blue-700 hover:text-blue-900 ml-1"
+              >
+                View all sub-leads
+              </a>
+            </div>
+          )}
+          
           {/* Client info card */}
           <ClientInformationBox selectedClient={selectedClient} />
 
@@ -3851,24 +3929,25 @@ const Clients: React.FC<ClientsProps> = ({
         {/* Modern CRM Header */}
         <div className="px-8 py-6">
           {/* Sub-lead notice at the top */}
-          {isSubLead && masterLeadNumber && (
+          {(isSubLead || persistentIsSubLead) && (masterLeadNumber || persistentMasterLeadNumber) && (
             <div className="text-sm text-gray-500 mb-2">
-              This is a sub-lead of the master lead <a href={`/clients/${masterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{(() => {
-                // For display purposes, we'll show the master_id as-is since we don't have the master lead data here
-                // The actual formatting will be handled in the MasterLeadPage component
-                return masterLeadNumber;
-              })()}</a>
+              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber || persistentMasterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber || persistentMasterLeadNumber}</a>
             </div>
           )}
           {/* Master lead notice */}
           {isMasterLead && subLeads.length > 0 && (
             <div className="text-sm text-gray-500 mb-2">
-              Sub-leads: {subLeads.map((subLead, index) => (
-                <span key={subLead.lead_number}>
-                  <a href={`/clients/${subLead.lead_number}`} className="underline text-blue-700 hover:text-blue-900">{subLead.lead_number}</a>
-                  {index < subLeads.length - 1 ? ', ' : ''}
-                </span>
-              ))}
+              This is a master lead with {subLeads.length} sub-lead{subLeads.length !== 1 ? 's' : ''}. 
+              <a 
+                href={`/clients/${(() => {
+                  // Get the base lead number without any suffix like /2
+                  const leadNumber = selectedClient.lead_number || selectedClient.id || '';
+                  return leadNumber.toString().split('/')[0];
+                })()}/master`} 
+                className="underline text-blue-700 hover:text-blue-900 ml-1"
+              >
+                View all sub-leads
+              </a>
             </div>
           )}
 

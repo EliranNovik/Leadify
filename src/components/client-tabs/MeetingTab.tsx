@@ -740,18 +740,27 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setEditedContent(currentContent || '');
     };
 
-  const handleCancelEditField = () => {
-    setEditingField(null);
-    setEditedContent('');
-  };
+    const handleCancelEditField = () => {
+      setEditingField(null);
+      setEditedContent('');
+    };
 
   // Edit meeting functions
   const handleEditMeeting = (meeting: Meeting) => {
     setEditingMeetingId(meeting.id);
+    
+    // Find the location ID for the current location name
+    let locationId = meeting.location;
+    if (typeof meeting.location === 'string' && !meeting.location.match(/^\d+$/)) {
+      // If it's a string name, find the corresponding ID
+      const location = allMeetingLocations.find(loc => loc.name === meeting.location);
+      locationId = location ? location.id : meeting.location;
+    }
+    
     setEditedMeeting({
       date: meeting.date,
       time: meeting.time ? meeting.time.substring(0, 5) : meeting.time, // Remove seconds if present
-      location: meeting.location,
+      location: locationId,
       manager: meeting.manager,
       currency: meeting.currency,
       amount: meeting.amount,
@@ -774,10 +783,119 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const { data: { user } } = await supabase.auth.getUser();
       const editor = user?.email || 'system';
       
-      // Update database
-      const { error: dbError } = await supabase
-        .from('meetings')
-        .update({
+      // Check if location changed to Teams and needs Teams meeting creation
+      const originalMeeting = meetings.find(m => m.id === editingMeetingId);
+      const newLocationName = getMeetingLocationName(editedMeeting.location);
+      const originalLocationName = getMeetingLocationName(originalMeeting?.location);
+      
+      // For Teams meetings, we should create a Teams meeting if:
+      // 1. New location is Teams AND original location was not Teams, OR
+      // 2. New location is Teams AND there's no existing Teams meeting link
+      const needsTeamsMeeting = newLocationName === 'Teams' && 
+        (originalLocationName !== 'Teams' || !originalMeeting?.link || !getValidTeamsLink(originalMeeting?.link));
+      
+      console.log('🔍 Teams meeting creation check:', {
+        editingMeetingId,
+        originalMeeting: originalMeeting ? { id: originalMeeting.id, location: originalMeeting.location } : null,
+        editedMeetingLocation: editedMeeting.location,
+        newLocationName,
+        originalLocationName,
+        hasExistingLink: !!originalMeeting?.link,
+        existingLink: originalMeeting?.link,
+        isValidTeamsLink: originalMeeting?.link ? !!getValidTeamsLink(originalMeeting.link) : false,
+        needsTeamsMeeting
+      });
+      
+      let teamsMeetingUrl = originalMeeting?.link; // Keep existing link if any
+      
+      // Create Teams meeting if location changed to Teams and no existing link
+      if (needsTeamsMeeting) {
+        console.log('🔧 Creating Teams meeting for location change...');
+        console.log('🔧 Meeting details:', { date: editedMeeting.date, time: editedMeeting.time, client: client.name });
+        
+        try {
+          if (!instance) throw new Error('MSAL instance not available');
+          const accounts = instance.getAllAccounts();
+          if (!accounts.length) throw new Error('No Microsoft account found');
+          
+          console.log('🔧 MSAL instance and accounts available');
+          
+          const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+          console.log('🔧 Token acquired successfully');
+          
+          const startDateTime = new Date(`${editedMeeting.date}T${editedMeeting.time || '09:00'}`).toISOString();
+          const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
+          
+          console.log('🔧 Creating Teams meeting with:', {
+            subject: `Meeting with ${client.name}`,
+            startDateTime,
+            endDateTime,
+          });
+          
+          const teamsData = await createTeamsMeeting(tokenResponse.accessToken, {
+            subject: `Meeting with ${client.name}`,
+            startDateTime,
+            endDateTime,
+          });
+          
+          console.log('🔧 Teams meeting created successfully:', teamsData);
+          
+          if (!teamsData || !teamsData.joinUrl) {
+            throw new Error('No joinUrl returned from Teams API');
+          }
+          
+          teamsMeetingUrl = teamsData.joinUrl;
+          console.log('🔧 Teams meeting URL:', teamsMeetingUrl);
+          toast.success('Teams meeting created automatically!');
+        } catch (teamsError) {
+          console.error('❌ Failed to create Teams meeting:', teamsError);
+          console.error('❌ Error details:', {
+            message: teamsError.message,
+            stack: teamsError.stack,
+            needsTeamsMeeting,
+            newLocationName,
+            originalLocationName,
+            hasExistingLink: !!originalMeeting?.link
+          });
+          toast.error(`Meeting updated but failed to create Teams meeting: ${teamsError.message}`);
+        }
+      }
+      
+      // Check if this is a legacy meeting
+      const isLegacyMeeting = originalMeeting && (originalMeeting as any).isLegacy;
+      
+      // Update database based on meeting type
+      let dbError;
+      
+      if (isLegacyMeeting) {
+        // For legacy meetings, update the leads_lead table
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const updateData: any = {
+          meeting_date: editedMeeting.date,
+          meeting_time: editedMeeting.time,
+          meeting_location_id: editedMeeting.location,
+          meeting_manager_id: editedMeeting.manager,
+          meeting_total_currency_id: editedMeeting.currency === 'NIS' ? 1 : editedMeeting.currency === 'USD' ? 2 : 3,
+          meeting_total: editedMeeting.amount,
+          meeting_brief: editedMeeting.brief,
+          meeting_scheduler_id: editedMeeting.scheduler,
+          meeting_lawyer_id: editedMeeting.helper,
+        };
+        
+        // Add Teams meeting URL if we created one
+        if (teamsMeetingUrl && newLocationName === 'Teams') {
+          updateData.meeting_url = teamsMeetingUrl;
+        }
+        
+        const { error } = await supabase
+          .from('leads_lead')
+          .update(updateData)
+          .eq('id', legacyId);
+        
+        dbError = error;
+      } else {
+        // For new meetings, update the meetings table
+        const updateData: any = {
           meeting_date: editedMeeting.date,
           meeting_time: editedMeeting.time,
           meeting_location: editedMeeting.location,
@@ -789,16 +907,38 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           helper: editedMeeting.helper,
           last_edited_timestamp: new Date().toISOString(),
           last_edited_by: editor,
-        })
-        .eq('id', editingMeetingId);
+        };
+        
+        // Add Teams meeting URL if we created one
+        if (teamsMeetingUrl && newLocationName === 'Teams') {
+          updateData.teams_meeting_url = teamsMeetingUrl;
+        }
+
+        const { error } = await supabase
+          .from('meetings')
+          .update(updateData)
+          .eq('id', editingMeetingId);
+        
+        dbError = error;
+      }
 
       if (dbError) throw dbError;
 
       // If it's a Teams meeting and date/time changed, update Outlook
-      const originalMeeting = meetings.find(m => m.id === editingMeetingId);
-      if (originalMeeting && getMeetingLocationName(editedMeeting.location) === 'Teams' && originalMeeting.link) {
+      const finalTeamsUrl = teamsMeetingUrl || originalMeeting?.link;
+      if (originalMeeting && getMeetingLocationName(editedMeeting.location) === 'Teams' && finalTeamsUrl) {
         const dateChanged = originalMeeting.date !== editedMeeting.date;
         const timeChanged = originalMeeting.time !== editedMeeting.time;
+        
+        console.log('🔄 Checking Outlook sync:', {
+          dateChanged,
+          timeChanged,
+          finalTeamsUrl,
+          originalDate: originalMeeting.date,
+          newDate: editedMeeting.date,
+          originalTime: originalMeeting.time,
+          newTime: editedMeeting.time
+        });
         
         if (dateChanged || timeChanged) {
           try {
@@ -810,14 +950,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               });
               
               if (tokenResponse.accessToken) {
-                await updateOutlookMeeting(tokenResponse.accessToken, originalMeeting.link, {
+                console.log('🔄 Updating Outlook meeting...');
+                await updateOutlookMeeting(tokenResponse.accessToken, finalTeamsUrl, {
                   startDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
                   endDateTime: `${editedMeeting.date}T${editedMeeting.time}:00`,
                 });
+                console.log('✅ Outlook meeting updated successfully');
               }
             }
           } catch (outlookError) {
-            console.warn('Failed to update Outlook meeting:', outlookError);
+            console.error('❌ Failed to update Outlook meeting:', outlookError);
             toast.error('Meeting updated in database but failed to sync with Outlook');
           }
         }
@@ -826,7 +968,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       toast.success('Meeting updated successfully');
       setMeetings(prev => prev.map(m => 
         m.id === editingMeetingId 
-          ? { ...m, ...editedMeeting, lastEdited: { timestamp: new Date().toISOString(), user: editor } }
+          ? { ...m, ...editedMeeting, link: teamsMeetingUrl || m.link, lastEdited: { timestamp: new Date().toISOString(), user: editor } }
           : m
       ));
       
@@ -866,7 +1008,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     if (!response.ok) {
       throw new Error(`Failed to update Outlook meeting: ${response.statusText}`);
     }
-  };
+    };
 
     // Use expandedMeetingData if available
     const expandedData = expandedMeetingData[meeting.id] || {};
@@ -1008,8 +1150,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               /* Edit Mode */
               <div className="space-y-4">
                 {/* Date and Time */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
                     <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Date</label>
                     <input
                       type="date"
@@ -1040,7 +1182,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     <select
                       className="select select-bordered w-full"
                       value={editedMeeting.location || ''}
-                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, location: e.target.value }))}
+                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, location: parseInt(e.target.value) || e.target.value }))}
                     >
                       <option value="">{getMeetingLocationName(meeting.location) || 'Select location'}</option>
                       {allMeetingLocations.map((location: any) => (
@@ -1147,91 +1289,91 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-2">
                   <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
-                  <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2">
                     <MapPinIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                    <span className="text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
-                  <div className="flex items-center gap-2">
-                    <UserIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
-                  <div className="flex items-center gap-2">
-                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
-                  <div className="flex items-center gap-2">
-                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Expert</label>
-                  <div className="flex items-center gap-2">
-                    <AcademicCapIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                    <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
-                  <div className="flex items-center gap-1">
-                    {meeting.amount && meeting.amount > 0 ? (
-                      <span className="text-base font-semibold" style={{ color: '#391BCB' }}>
-                        {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
-                      </span>
-                    ) : (
-                      <span className="text-base text-gray-400 italic">Not specified</span>
-                    )}
-                  </div>
+                  <span className="text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
                 </div>
               </div>
+              <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
+                <div className="flex items-center gap-2">
+                    <UserIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
+                <div className="flex items-center gap-2">
+                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
+                <div className="flex items-center gap-2">
+                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Expert</label>
+                <div className="flex items-center gap-2">
+                    <AcademicCapIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
+                </div>
+              </div>
+              <div className="space-y-2">
+                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
+                <div className="flex items-center gap-1">
+                  {meeting.amount && meeting.amount > 0 ? (
+                      <span className="text-base font-semibold" style={{ color: '#391BCB' }}>
+                      {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
+                    </span>
+                  ) : (
+                    <span className="text-base text-gray-400 italic">Not specified</span>
+                  )}
+                </div>
+              </div>
+            </div>
             )}
 
             {/* Brief Section */}
             {editingMeetingId !== meeting.id && (
-              <div className="border-t border-purple-100 pt-3">
-                <div className="flex justify-between items-center mb-2">
+            <div className="border-t border-purple-100 pt-3">
+              <div className="flex justify-between items-center mb-2">
                   <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Brief</label>
-                  {editingBriefId === meeting.id ? (
-                    <div className="flex items-center gap-1">
-                      <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
-                        <CheckIcon className="w-4 h-4 text-green-600" />
-                      </button>
-                      <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
-                        <XMarkIcon className="w-4 h-4 text-red-600" />
-                      </button>
-                    </div>
-                  ) : (
-                    <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
-                      <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
-                    </button>
-                  )}
-                </div>
                 {editingBriefId === meeting.id ? (
-                  <textarea
-                    className="textarea textarea-bordered w-full h-20 text-base"
-                    value={editedBrief}
-                    onChange={(e) => setEditedBrief(e.target.value)}
-                    placeholder="Add a meeting brief..."
-                  />
-                ) : (
-                  <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
-                    {meeting.brief ? (
-                      <p className="text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
-                    ) : (
-                      <span className="text-base text-gray-400 italic">No brief provided</span>
-                    )}
+                  <div className="flex items-center gap-1">
+                    <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
+                      <CheckIcon className="w-4 h-4 text-green-600" />
+                    </button>
+                    <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
+                      <XMarkIcon className="w-4 h-4 text-red-600" />
+                    </button>
                   </div>
+                ) : (
+                  <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
+                    <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
+                  </button>
                 )}
               </div>
+              {editingBriefId === meeting.id ? (
+                <textarea
+                  className="textarea textarea-bordered w-full h-20 text-base"
+                  value={editedBrief}
+                  onChange={(e) => setEditedBrief(e.target.value)}
+                  placeholder="Add a meeting brief..."
+                />
+              ) : (
+                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                  {meeting.brief ? (
+                    <p className="text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+                  ) : (
+                    <span className="text-base text-gray-400 italic">No brief provided</span>
+                  )}
+                </div>
+              )}
+            </div>
             )}
 
             {/* Brief Section in Edit Mode */}

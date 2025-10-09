@@ -24,6 +24,7 @@ import {
   ExclamationTriangleIcon,
   ShieldCheckIcon,
   ChatBubbleLeftRightIcon,
+  PhoneIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 
@@ -65,6 +66,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
+  { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
@@ -91,6 +93,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: DocumentChartBarIcon, label: 'Case Manager', path: '/case-manager' },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
+  { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
   { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },

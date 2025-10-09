@@ -195,6 +195,7 @@ export async function createStaffTeamsMeeting(
     body.recurrence = recurrence;
   }
 
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -206,18 +207,19 @@ export async function createStaffTeamsMeeting(
 
   if (!response.ok) {
     const error = await response.json();
-    console.error('Staff Teams meeting creation error:', error);
-    throw new Error(error.error?.message || 'Failed to create Staff Teams meeting');
+    throw new Error(error.error?.message || `Failed to create Staff Teams meeting: ${response.status} ${response.statusText}`);
   }
 
   const data = await response.json();
   
   // Return the online meeting URL if available, otherwise the join URL
-  return {
+  const result = {
     joinUrl: data.onlineMeeting?.joinUrl || data.webLink,
     id: data.id,
     onlineMeeting: data.onlineMeeting
   };
+  
+  return result;
 }
 
 // Teams Calling Functions

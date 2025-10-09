@@ -13,6 +13,7 @@ const teamsCallingRoutes = require('./src/routes/teamsCallingRoutes');
 const teamsBotRoutes = require('./src/routes/teamsBotRoutes');
 const webhookRoutes = require('./src/routes/webhookRoutes');
 const whatsappRoutes = require('./src/routes/whatsappRoutes');
+const onecomRoutes = require('./src/routes/onecomRoutes');
 const accessLogger = require('./src/middleware/accessLogger');
 
 const app = express();
@@ -296,6 +297,7 @@ app.use('/api/teams', teamsCallingRoutes);
 app.use('/api/teams/bot', teamsBotRoutes);
 app.use('/api', webhookRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/onecom', onecomRoutes);
 
 // Serve uploaded files
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));

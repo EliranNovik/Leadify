@@ -532,12 +532,12 @@ const PipelinePage: React.FC = () => {
             .neq('stage', 51) // Exclude Client declined price offer stage by ID only
             .neq('stage', 35); // Exclude Meeting Irrelevant stage by ID only
           
-          // Apply filter using employee display_name (legacy tables store display_name directly)
-          if (currentUserFullName) {
+          // Apply filter using employee ID (columns are now bigint)
+          if (currentUserEmployeeId) {
             if (pipelineMode === 'closer') {
-              legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', currentUserFullName);
+              legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', currentUserEmployeeId);
             } else if (pipelineMode === 'scheduler') {
-              legacyLeadsQuery = legacyLeadsQuery.eq('meeting_scheduler_id', currentUserFullName);
+              legacyLeadsQuery = legacyLeadsQuery.eq('meeting_scheduler_id', currentUserEmployeeId);
             }
           }
           
@@ -641,13 +641,13 @@ const PipelinePage: React.FC = () => {
     setIsLoading(false);
   };
 
-  // Only fetch leads when we have a valid user name
+  // Only fetch leads when we have a valid employee ID
   useEffect(() => {
-    if (!currentUserFullName) {
+    if (!currentUserEmployeeId) {
       return;
     }
     fetchLeads();
-  }, [pipelineMode, currentUserFullName, currentUserEmployeeId]);
+  }, [pipelineMode, currentUserEmployeeId]);
 
   // Get signed agreement leads
   const signedAgreementLeads = useMemo(() => {
@@ -1459,13 +1459,13 @@ const PipelinePage: React.FC = () => {
         legacyLeadsQuery = legacyLeadsQuery.lte('stage', 21);
       }
 
-      // Filter based on pipeline mode
+      // Filter based on pipeline mode using employee ID
       if (pipelineMode === 'closer') {
         // Unassigned closers OR closers with old interactions
-        legacyLeadsQuery = legacyLeadsQuery.or('closer_id.is.null,closer_id.eq."",closer_id.neq.' + currentUserFullName);
+        legacyLeadsQuery = legacyLeadsQuery.or(`closer_id.is.null,closer_id.neq.${currentUserEmployeeId}`);
       } else {
         // Unassigned schedulers OR schedulers with old interactions
-        legacyLeadsQuery = legacyLeadsQuery.or('meeting_scheduler_id.is.null,meeting_scheduler_id.eq."",meeting_scheduler_id.neq.' + currentUserFullName);
+        legacyLeadsQuery = legacyLeadsQuery.or(`meeting_scheduler_id.is.null,meeting_scheduler_id.neq.${currentUserEmployeeId}`);
       }
 
       const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.order('cdate', { ascending: false });
@@ -1640,18 +1640,18 @@ const PipelinePage: React.FC = () => {
         const numericId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
         
         if (pipelineMode === 'closer') {
-          // Assign as closer using display_name
+          // Assign as closer using employee ID
           const { error } = await supabase
             .from('leads_lead')
-            .update({ closer_id: currentUserFullName })
+            .update({ closer_id: currentUserEmployeeId })
             .eq('id', numericId);
           
           if (error) throw error;
         } else {
-          // Assign as scheduler using display_name
+          // Assign as scheduler using employee ID
           const { error } = await supabase
             .from('leads_lead')
-            .update({ meeting_scheduler_id: currentUserFullName })
+            .update({ meeting_scheduler_id: currentUserEmployeeId })
             .eq('id', numericId);
           
           if (error) throw error;

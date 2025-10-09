@@ -14,7 +14,7 @@ import 'react-quill/dist/quill.snow.css';
 import { useRef } from 'react';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../lib/api';
-import { fetchStageNames, getStageName } from '../lib/stageUtils';
+import { fetchStageNames, getStageName, refreshStageNames } from '../lib/stageUtils';
 import TeamsMeetingModal from './TeamsMeetingModal';
 import StaffMeetingEditModal from './StaffMeetingEditModal';
 import DepartmentList from './DepartmentList';
@@ -265,6 +265,8 @@ const CalendarPage: React.FC = () => {
   const [staff, setStaff] = useState<string[]>([]);
   const [fromDate, setFromDate] = useState(new Date().toISOString().split('T')[0]);
   const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0]);
+  const [appliedFromDate, setAppliedFromDate] = useState(new Date().toISOString().split('T')[0]);
+  const [appliedToDate, setAppliedToDate] = useState(new Date().toISOString().split('T')[0]);
   const [datesManuallySet, setDatesManuallySet] = useState(false);
   const [selectedStaff, setSelectedStaff] = useState('');
   const [totalAmount, setTotalAmount] = useState(0);
@@ -405,14 +407,16 @@ const CalendarPage: React.FC = () => {
   // Staff meeting edit modal state
   const [isStaffMeetingEditModalOpen, setIsStaffMeetingEditModalOpen] = useState(false);
   const [selectedStaffMeeting, setSelectedStaffMeeting] = useState<any>(null);
+  const [stageNamesLoaded, setStageNamesLoaded] = useState(false);
   
 
   // Helper function to get employee display name from ID
-  const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
+  const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
     if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
     // Find employee in the loaded employees array
+    // Convert both to string for comparison since employeeId might be bigint
     const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
-    return employee ? employee.display_name : employeeId; // Fallback to ID if not found
+    return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
   };
 
   // Helper function to get category name from ID or name with main category
@@ -488,25 +492,33 @@ const CalendarPage: React.FC = () => {
 
   // Navigation functions for date range switching
   const goToPreviousDay = () => {
-    const fromDateObj = new Date(fromDate);
-    const toDateObj = new Date(toDate);
+    const fromDateObj = new Date(appliedFromDate);
+    const toDateObj = new Date(appliedToDate);
     if (!isNaN(fromDateObj.getTime()) && !isNaN(toDateObj.getTime())) {
       fromDateObj.setDate(fromDateObj.getDate() - 1);
       toDateObj.setDate(toDateObj.getDate() - 1);
-      setFromDate(fromDateObj.toISOString().split('T')[0]);
-      setToDate(toDateObj.toISOString().split('T')[0]);
+      const newFromDate = fromDateObj.toISOString().split('T')[0];
+      const newToDate = toDateObj.toISOString().split('T')[0];
+      setFromDate(newFromDate);
+      setToDate(newToDate);
+      setAppliedFromDate(newFromDate);
+      setAppliedToDate(newToDate);
       setDatesManuallySet(true);
     }
   };
 
   const goToNextDay = () => {
-    const fromDateObj = new Date(fromDate);
-    const toDateObj = new Date(toDate);
+    const fromDateObj = new Date(appliedFromDate);
+    const toDateObj = new Date(appliedToDate);
     if (!isNaN(fromDateObj.getTime()) && !isNaN(toDateObj.getTime())) {
       fromDateObj.setDate(fromDateObj.getDate() + 1);
       toDateObj.setDate(toDateObj.getDate() + 1);
-      setFromDate(fromDateObj.toISOString().split('T')[0]);
-      setToDate(toDateObj.toISOString().split('T')[0]);
+      const newFromDate = fromDateObj.toISOString().split('T')[0];
+      const newToDate = toDateObj.toISOString().split('T')[0];
+      setFromDate(newFromDate);
+      setToDate(newToDate);
+      setAppliedFromDate(newFromDate);
+      setAppliedToDate(newToDate);
       setDatesManuallySet(true);
     }
   };
@@ -515,6 +527,14 @@ const CalendarPage: React.FC = () => {
     const today = new Date().toISOString().split('T')[0];
     setFromDate(today);
     setToDate(today);
+    setAppliedFromDate(today);
+    setAppliedToDate(today);
+    setDatesManuallySet(true);
+  };
+
+  const handleShowButton = () => {
+    setAppliedFromDate(fromDate);
+    setAppliedToDate(toDate);
     setDatesManuallySet(true);
   };
 
@@ -809,7 +829,18 @@ const CalendarPage: React.FC = () => {
 
 
         // Initialize stage names cache
-        await fetchStageNames();
+        const stageNames = await fetchStageNames();
+        console.log('🔍 Calendar - Stage names fetched:', stageNames);
+        
+        // If no stage names were fetched, try to refresh the cache
+        if (!stageNames || Object.keys(stageNames).length === 0) {
+          console.log('🔍 Calendar - No stage names found, refreshing cache...');
+          const refreshedStageNames = await refreshStageNames();
+          console.log('🔍 Calendar - Refreshed stage names:', refreshedStageNames);
+        }
+        
+        // Mark stage names as loaded
+        setStageNamesLoaded(true);
 
         // Create a helper function to get category name using the loaded data
         const getCategoryNameFromData = (categoryId: string | number | null | undefined) => {
@@ -936,6 +967,8 @@ const CalendarPage: React.FC = () => {
           // Quick processing for today's meetings with department data
           const todayProcessedMeetings = (todayMeetingsData || []).map((meeting: any) => ({
             ...meeting,
+            // Map location ID to location name using universal function
+            meeting_location: getMeetingLocationName(meeting.meeting_location),
             lead: meeting.legacy_lead ? {
                 ...meeting.legacy_lead,
                 lead_type: 'legacy',
@@ -1074,6 +1107,8 @@ const CalendarPage: React.FC = () => {
               
               return {
                 ...meeting,
+                // Map location ID to location name using universal function
+                meeting_location: getMeetingLocationName(meeting.meeting_location),
                 lead: leadData
               };
             });
@@ -1176,17 +1211,17 @@ const CalendarPage: React.FC = () => {
     }
   }, [expandedMeetingId, meetings]);
 
-  // Load legacy meetings and staff meetings when date range changes
+  // Load legacy meetings and staff meetings when applied date range changes
   useEffect(() => {
-    // Only fetch data when both dates are set and user has manually set them
-    if (fromDate && toDate && fromDate.trim() !== '' && toDate.trim() !== '' && datesManuallySet) {
+    // Only fetch data when both applied dates are set and user has manually set them
+    if (appliedFromDate && appliedToDate && appliedFromDate.trim() !== '' && appliedToDate.trim() !== '' && datesManuallySet) {
       // Reset loading state when date range changes
       setIsLegacyLoading(true);
-      loadLegacyForDateRange(fromDate, toDate);
+      loadLegacyForDateRange(appliedFromDate, appliedToDate);
       // Also load staff meetings for the date range
-      fetchStaffMeetings(fromDate, toDate);
+      fetchStaffMeetings(appliedFromDate, appliedToDate);
     }
-  }, [fromDate, toDate, datesManuallySet]);
+  }, [appliedFromDate, appliedToDate, datesManuallySet]);
 
   useEffect(() => {
     // Combine regular meetings and staff meetings
@@ -1194,9 +1229,9 @@ const CalendarPage: React.FC = () => {
     let filtered = allMeetings;
 
 
-    if (fromDate && toDate) {
+    if (appliedFromDate && appliedToDate) {
       const beforeFilter = filtered.length;
-      filtered = filtered.filter(m => m.meeting_date >= fromDate && m.meeting_date <= toDate);
+      filtered = filtered.filter(m => m.meeting_date >= appliedFromDate && m.meeting_date <= appliedToDate);
     }
 
     if (selectedStaff) {
@@ -1288,7 +1323,7 @@ const CalendarPage: React.FC = () => {
     setTotalAmount(totalAmountInNIS);
     
 
-  }, [fromDate, toDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
+  }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
 
   useEffect(() => {
     const fetchEmails = async () => {
@@ -1362,12 +1397,37 @@ const CalendarPage: React.FC = () => {
         </span>
       );
     }
+    
+    // Temporary hardcoded mapping for immediate testing
+    const tempStageMapping: { [key: string]: string } = {
+      '50': 'Meeting Scheduled',
+      '105': 'Success',
+      '35': 'Meeting Irrelevant',
+      '91': 'Dropped (Spam/Irrelevant)',
+      '51': 'Client declined price offer',
+      '10': 'Scheduler assigned',
+      '20': 'Meeting scheduled',
+      'meeting_scheduled': 'Meeting Scheduled',
+      'scheduler_assigned': 'Scheduler assigned'
+    };
+    
+    const stageStr = String(stage);
+    const stageName = tempStageMapping[stageStr] || getStageName(stageStr);
+    
+    console.log('🔍 Calendar - Stage badge:', { 
+      stage, 
+      stageName, 
+      stageType: typeof stage,
+      stageString: stageStr,
+      tempMapping: tempStageMapping[stageStr]
+    });
+    
     return (
       <span
         className="btn btn-primary btn-sm pointer-events-none font-semibold whitespace-nowrap"
         style={{ background: '#3b28c7' }}
       >
-        {getStageName(String(stage))}
+        {stageName}
       </span>
     );
   };
@@ -2270,7 +2330,94 @@ const CalendarPage: React.FC = () => {
     // Convert to number if it's a string
     const numericId = typeof locationId === 'string' ? parseInt(locationId, 10) : locationId;
     const location = meetingLocations[numericId];
+    
+    // Fallback mapping for common location IDs if meetingLocations is not loaded yet
+    if (!location && numericId) {
+      const fallbackMap: {[key: number]: string} = {
+        1: 'TLV',
+        2: 'JRSLM',
+        3: 'Office Zoom 4',
+        4: 'Office Zoom 6',
+        5: 'Zoom - assign later',
+        6: 'Zoom - indvidual',
+        8: 'TLV with parking',
+        9: 'Teams',
+        10: 'WhatsApp Video',
+        11: 'Phone call',
+        12: 'Nirit Flaishman office',
+        13: 'Facetime',
+        15: 'Office Zoom 7',
+        16: 'Google meet-2',
+        17: 'Office Zoom 5',
+        18: 'e-mail meeting',
+        19: 'Office Zoom 1',
+        21: 'Office Zoom 2',
+        22: 'Office Zoom 3',
+        23: 'Google meet-1',
+        24: 'Google meet-3',
+        25: 'Google meet-4',
+        26: 'Google meet-5',
+        27: 'Room Meeting 101',
+        28: 'Room Meeting 102',
+        29: 'Room Meeting 103'
+      };
+      return fallbackMap[numericId] || `Location ${numericId}`;
+    }
+    
     return location || 'N/A';
+  };
+
+  // New function to handle both legacy and new meeting locations
+  const getMeetingLocationName = (location?: number | string) => {
+    if (!location) {
+      return 'N/A';
+    }
+    
+    // If it's already a string name (like "Teams"), return it as is
+    if (typeof location === 'string' && !location.match(/^\d+$/)) {
+      return location;
+    }
+    
+    // If it's a numeric ID (number or string that's all digits), map it
+    const numericId = typeof location === 'string' ? parseInt(location, 10) : location;
+    
+    // First try the meetingLocations state
+    const locationFromState = meetingLocations[numericId];
+    if (locationFromState) {
+      return locationFromState;
+    }
+    
+    // Fallback mapping for common location IDs
+    const fallbackMap: {[key: number]: string} = {
+      1: 'TLV',
+      2: 'JRSLM',
+      3: 'Office Zoom 4',
+      4: 'Office Zoom 6',
+      5: 'Zoom - assign later',
+      6: 'Zoom - indvidual',
+      8: 'TLV with parking',
+      9: 'Teams',
+      10: 'WhatsApp Video',
+      11: 'Phone call',
+      12: 'Nirit Flaishman office',
+      13: 'Facetime',
+      15: 'Office Zoom 7',
+      16: 'Google meet-2',
+      17: 'Office Zoom 5',
+      18: 'e-mail meeting',
+      19: 'Office Zoom 1',
+      21: 'Office Zoom 2',
+      22: 'Office Zoom 3',
+      23: 'Google meet-1',
+      24: 'Google meet-3',
+      25: 'Google meet-4',
+      26: 'Google meet-5',
+      27: 'Room Meeting 101',
+      28: 'Room Meeting 102',
+      29: 'Room Meeting 103'
+    };
+    
+    return fallbackMap[numericId] || `Location ${numericId}`;
   };
 
   const getLegacyCarNumber = (meeting: any) => {
@@ -2710,21 +2857,24 @@ const CalendarPage: React.FC = () => {
 
         {/* Action Buttons */}
         <div className="mt-4 flex flex-row gap-2 justify-end">
-            <button
-              className="btn btn-outline btn-primary btn-sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                const url = getValidTeamsLink(meeting.teams_meeting_url);
-                if (url) {
-                  window.open(url, '_blank');
-                } else {
-                  alert('No meeting URL available');
-                }
-              }}
-              title="Teams Meeting"
-            >
-              <VideoCameraIcon className="w-4 h-4" />
-            </button>
+            {/* Only show join button if location is Teams OR it's a staff meeting */}
+            {(meeting.meeting_location === 'Teams' || meeting.location === 'Teams' || meeting.calendar_type === 'staff') && (
+              <button
+                className="btn btn-outline btn-primary btn-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const url = getValidTeamsLink(meeting.teams_meeting_url);
+                  if (url) {
+                    window.open(url, '_blank');
+                  } else {
+                    alert('No meeting URL available');
+                  }
+                }}
+                title="Teams Meeting"
+              >
+                <VideoCameraIcon className="w-4 h-4" />
+              </button>
+            )}
             {/* Show edit button for staff meetings */}
             {meeting.calendar_type === 'staff' && (
               <button
@@ -2991,20 +3141,23 @@ const CalendarPage: React.FC = () => {
           <td className="hidden sm:table-cell">{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
             <div className="flex flex-row items-center gap-1 sm:gap-2">
-              <button 
-                className="btn btn-primary btn-xs sm:btn-sm"
-                onClick={() => {
-                  const url = getValidTeamsLink(meeting.teams_meeting_url);
-                  if (url) {
-                    window.open(url, '_blank');
-                  } else {
-                    alert('No meeting URL available');
-                  }
-                }}
-                title="Teams Meeting"
-              >
-                <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-              </button>
+              {/* Only show join button if location is Teams OR it's a staff meeting */}
+              {(meeting.meeting_location === 'Teams' || meeting.location === 'Teams' || meeting.calendar_type === 'staff') && (
+                <button 
+                  className="btn btn-primary btn-xs sm:btn-sm"
+                  onClick={() => {
+                    const url = getValidTeamsLink(meeting.teams_meeting_url);
+                    if (url) {
+                      window.open(url, '_blank');
+                    } else {
+                      alert('No meeting URL available');
+                    }
+                  }}
+                  title="Teams Meeting"
+                >
+                  <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                </button>
+              )}
               {/* Show edit button for staff meetings */}
               {meeting.calendar_type === 'staff' && (
                 <button
@@ -3167,21 +3320,21 @@ const CalendarPage: React.FC = () => {
         
         <div className="flex items-center gap-3">
           <span className="text-lg font-semibold">
-            {fromDate === toDate ? (
-              new Date(fromDate).toLocaleDateString('en-US', { 
+            {appliedFromDate === appliedToDate ? (
+              new Date(appliedFromDate).toLocaleDateString('en-US', { 
                 weekday: 'long', 
                 year: 'numeric', 
                 month: 'long', 
                 day: 'numeric' 
               })
             ) : (
-              `${new Date(fromDate).toLocaleDateString('en-US', { 
+              `${new Date(appliedFromDate).toLocaleDateString('en-US', { 
                 month: 'short', 
                 day: 'numeric' 
-              })} - ${new Date(toDate).toLocaleDateString('en-US', { 
+              })} - ${new Date(appliedToDate).toLocaleDateString('en-US', { 
                 month: 'short', 
-                day: 'numeric',
-                year: 'numeric'
+                day: 'numeric', 
+                year: 'numeric' 
               })}`
             )}
           </span>
@@ -3214,7 +3367,6 @@ const CalendarPage: React.FC = () => {
               value={fromDate}
               onChange={(e) => {
                 setFromDate(e.target.value);
-                setDatesManuallySet(true);
               }}
               title="From Date"
             />
@@ -3225,10 +3377,16 @@ const CalendarPage: React.FC = () => {
               value={toDate}
               onChange={(e) => {
                 setToDate(e.target.value);
-                setDatesManuallySet(true);
               }}
               title="To Date"
             />
+            <button
+              onClick={handleShowButton}
+              className="btn btn-primary btn-sm"
+              title="Apply Date Filter"
+            >
+              Show
+            </button>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -3346,10 +3504,12 @@ const CalendarPage: React.FC = () => {
         {/* Cards View - Show when viewMode is 'cards' */}
         {viewMode === 'cards' && (
           <div>
-            {isLoading ? (
+            {isLoading || !stageNamesLoaded ? (
               <div className="text-center p-8">
                 <div className="loading loading-spinner loading-lg"></div>
-                <p className="mt-4 text-base-content/60">Loading meetings...</p>
+                <p className="mt-4 text-base-content/60">
+                  {isLoading ? 'Loading meetings...' : 'Loading stage names...'}
+                </p>
               </div>
             ) : filteredMeetings.length > 0 ? (
               <>
@@ -4437,8 +4597,14 @@ const CalendarPage: React.FC = () => {
         meeting={selectedStaffMeeting}
         onUpdate={() => {
           // Refresh staff meetings when updated
-          if (fromDate && toDate) {
-            fetchStaffMeetings(fromDate, toDate);
+          if (appliedFromDate && appliedToDate) {
+            fetchStaffMeetings(appliedFromDate, appliedToDate);
+          }
+        }}
+        onDelete={() => {
+          // Refresh staff meetings when deleted
+          if (appliedFromDate && appliedToDate) {
+            fetchStaffMeetings(appliedFromDate, appliedToDate);
           }
         }}
       />

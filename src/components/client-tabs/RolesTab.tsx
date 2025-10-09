@@ -41,11 +41,12 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Update roles when client data changes
   useEffect(() => {
-    const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
+    const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
       if (!employeeId || employeeId === '---') return '---';
       // For legacy leads, the IDs should match tenants_employee table
+      // Convert both to string for comparison since employeeId might be bigint
       const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
-      return employee ? employee.display_name : employeeId; // Fallback to ID if not found
+      return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
     };
 
     const updatedRoles = [
@@ -132,14 +133,21 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const handleSaveRoles = async () => {
     try {
+      // Helper function to convert display name back to employee ID
+      const getEmployeeIdFromDisplayName = (displayName: string) => {
+        if (displayName === '---') return null;
+        const employee = allEmployees.find((emp: any) => emp.display_name === displayName);
+        return employee ? employee.id : null;
+      };
+
       // Prepare update object with all role changes
       const updateData: any = {};
       roles.forEach(role => {
         if (isLegacyLead && role.legacyFieldName) {
-          // For legacy leads, use the legacy field names
-          updateData[role.legacyFieldName] = role.assignee === '---' ? null : role.assignee;
+          // For legacy leads, convert display name back to employee ID
+          updateData[role.legacyFieldName] = getEmployeeIdFromDisplayName(role.assignee);
         } else {
-          // For new leads, use the standard field names
+          // For new leads, use the standard field names (these might still be strings)
           updateData[role.fieldName] = role.assignee === '---' ? null : role.assignee;
         }
       });
@@ -261,7 +269,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {roles.map((role, idx) => {
           const hasAssignee = role.assignee && role.assignee !== '---';
           const initials = hasAssignee
-            ? role.assignee.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+            ? String(role.assignee).split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
             : '';
           
           return (

@@ -94,22 +94,59 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
 
   const fetchEmployees = async () => {
     try {
-      const { data, error } = await supabase
+      
+      // First, let's try a simpler approach - fetch employees and users separately
+      const { data: employeesData, error: employeesError } = await supabase
         .from('tenants_employee')
         .select('id, display_name')
         .not('display_name', 'is', null)
         .order('display_name');
       
-      if (error) {
-        console.error('Error fetching employees:', error);
+      if (employeesError) {
         toast.error('Failed to load employees');
         return;
       }
       
-      setEmployees(data || []);
-      setFilteredEmployees(data || []);
+      // Get all employee IDs
+      const employeeIds = employeesData?.map(emp => emp.id) || [];
+      
+      if (employeeIds.length === 0) {
+        setEmployees([]);
+        setFilteredEmployees([]);
+        return;
+      }
+      
+      // Fetch emails from users table
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('employee_id, email')
+        .in('employee_id', employeeIds)
+        .not('email', 'is', null);
+      
+      if (usersError) {
+        toast.error('Failed to load employee emails');
+        return;
+      }
+      
+      // Create a map of employee_id to email
+      const emailMap = new Map();
+      usersData?.forEach(user => {
+        emailMap.set(user.employee_id, user.email);
+      });
+      
+      // Combine employee data with emails
+      const processedEmployees = employeesData
+        ?.filter(emp => emailMap.has(emp.id)) // Only include employees with emails
+        .map(emp => ({
+          id: emp.id,
+          display_name: emp.display_name,
+          email: emailMap.get(emp.id)
+        })) || [];
+      
+      
+      setEmployees(processedEmployees);
+      setFilteredEmployees(processedEmployees);
     } catch (error) {
-      console.error('Error fetching employees:', error);
       toast.error('Failed to load employees');
     }
   };
@@ -122,7 +159,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   };
 
   const addEmployeeToAttendees = (employee: any) => {
-    const email = `${employee.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+    const email = employee.email; // Use the actual email from the database
     if (!formData.attendees.includes(email)) {
       setFormData(prev => ({
         ...prev,
@@ -139,7 +176,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   };
 
   const selectAllEmployees = () => {
-    const allEmails = employees.map(emp => `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`);
+    const allEmails = employees.map(emp => emp.email); // Use actual emails from database
     setFormData(prev => ({
       ...prev,
       attendees: allEmails
@@ -156,8 +193,9 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    
     if (!formData.subject.trim()) {
-      toast.error('Please enter a meeting subject');
+      toast.error('Please enter a meeting subject', { duration: 5000 });
       return;
     }
 
@@ -166,21 +204,33 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
     try {
       const account = accounts[0];
       if (!account) {
-        toast.error('You must be signed in to create Teams meetings');
+        toast.error('You must be signed in to create Teams meetings', { duration: 5000 });
         return;
       }
 
+      // Use the shared staff calendar account for creating meetings
+      
       const accessToken = await getAccessTokenWithFallback(
         instance, 
-        loginRequest, 
+        {
+          ...loginRequest,
+          // Override the login request to use the shared calendar account
+          scopes: ['https://graph.microsoft.com/Calendars.ReadWrite', 'https://graph.microsoft.com/OnlineMeetings.ReadWrite'],
+          extraQueryParameters: {
+            // Force authentication for the shared calendar
+            login_hint: STAFF_CALENDAR_EMAIL
+          }
+        }, 
         account,
-        () => toast.loading('Opening Microsoft authentication popup...', { duration: 3000 })
+        () => toast.loading('Authenticating with shared calendar...', { duration: 3000 })
       );
+      
       if (!accessToken) {
-        toast.error('Failed to authenticate with Microsoft. Please try again.');
+        toast.error('Failed to authenticate with Microsoft. Please try again.', { duration: 5000 });
         setIsLoading(false);
         return;
       }
+      
 
       // Calculate start and end times - create in local timezone
       const startDateTime = new Date(`${formData.date}T${formData.time}:00`);
@@ -210,8 +260,27 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
       };
 
 
-      const result = await createStaffTeamsMeeting(accessToken, meetingDetails);
       
+      let result;
+      try {
+        result = await createStaffTeamsMeeting(accessToken, meetingDetails);
+        
+        if (!result || !result.id) {
+          throw new Error('Teams meeting creation returned invalid result - no meeting ID');
+        }
+        
+      } catch (outlookError) {
+        throw outlookError; // Re-throw to be caught by outer catch block
+      }
+      
+      // Get current user's auth ID for RLS policy compliance
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast.error('Authentication error. Please refresh and try again.', { duration: 5000 });
+        setIsLoading(false);
+        return;
+      }
+
       // Save meeting data to database
       const meetingData: OutlookTeamsMeeting = {
         teams_meeting_id: result.id,
@@ -224,45 +293,62 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
         attendees: formData.attendees,
         description: formData.description,
         location: formData.location,
-        created_by: account.username,
+        created_by: user.id, // Use Supabase auth user ID instead of email
         is_online_meeting: true,
         online_meeting_provider: 'teamsForBusiness'
       };
 
+      // Only proceed with database save if Outlook meeting was created successfully
+      if (!result || !result.id) {
+        toast.error('Failed to create Teams meeting in Outlook. Please try again.', { duration: 8000 });
+        setIsLoading(false);
+        return;
+      }
       const { error: saveError } = await saveOutlookTeamsMeeting(meetingData);
       
       if (saveError) {
-        console.error('Error saving meeting to database:', saveError);
-        toast.error('Meeting created in Teams but failed to save to database');
+        // Check if it's a policy/permission error
+        if (saveError.code === 'PGRST301' || saveError.message?.includes('policy') || saveError.message?.includes('permission')) {
+          toast.success('Teams meeting created successfully in Outlook! (Note: Database save failed due to permissions)', { duration: 8000 });
+        } else {
+          toast.error(`Meeting created in Teams but failed to save to database: ${saveError.message || 'Unknown error'}`, { duration: 8000 });
+        }
       } else {
-        toast.success('Teams meeting created successfully and saved to database!');
+        toast.success('Teams meeting created successfully and saved to database!', { duration: 5000 });
       }
       
-      console.log('Meeting created:', result);
-      console.log('Meeting saved to database:', meetingData);
       
-      // Reset form and close modal
-      setFormData({
-        subject: '',
-        date: new Date().toISOString().split('T')[0],
-        time: '09:00',
-        duration: '60',
-        attendees: [],
-        description: '',
-        location: 'Teams Meeting',
-        isRecurring: false,
-        recurrencePattern: 'weekly',
-        recurrenceInterval: 1,
-        recurrenceEndDate: ''
-      });
-      onClose();
+      // Only reset form and close modal if everything was successful
+      if (!saveError) {
+        setFormData({
+          subject: '',
+          date: new Date().toISOString().split('T')[0],
+          time: '09:00',
+          duration: '60',
+          attendees: [],
+          description: '',
+          location: 'Teams Meeting',
+          isRecurring: false,
+          recurrencePattern: 'weekly',
+          recurrenceInterval: 1,
+          recurrenceEndDate: ''
+        });
+        onClose();
+      }
       
     } catch (error) {
-      console.error('Error creating Teams meeting:', error);
+      
       if (error instanceof Error) {
-        toast.error(`Failed to create Teams meeting: ${error.message}`);
+        // Check for specific error types
+        if (error.message.includes('insufficient privileges') || error.message.includes('permission')) {
+          toast.error('Permission denied: You do not have access to create meetings in the shared calendar. Please contact your administrator.', { duration: 8000 });
+        } else if (error.message.includes('authentication') || error.message.includes('token')) {
+          toast.error('Authentication failed: Please try signing in again.', { duration: 8000 });
+        } else {
+          toast.error(`Failed to create Teams meeting: ${error.message}`, { duration: 8000 });
+        }
       } else {
-        toast.error('Failed to create Teams meeting');
+        toast.error('Failed to create Teams meeting: Unknown error occurred', { duration: 8000 });
       }
     } finally {
       setIsLoading(false);
@@ -502,7 +588,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                   </div>
                   <div className="max-h-40 overflow-y-auto space-y-1">
                     {filteredEmployees.map((employee) => {
-                      const email = `${employee.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+                      const email = employee.email; // Use actual email from database
                       const isSelected = formData.attendees.includes(email);
                       return (
                         <div
@@ -538,9 +624,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                   <p className="text-xs font-medium text-gray-700 mb-2">Selected attendees ({formData.attendees.length}):</p>
                   <div className="flex flex-wrap gap-1">
                     {formData.attendees.map((email) => {
-                      const employee = employees.find(emp => 
-                        `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il` === email
-                      );
+                      const employee = employees.find(emp => emp.email === email);
                       return (
                         <span
                           key={email}

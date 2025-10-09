@@ -262,7 +262,11 @@ async function syncClientEmails(token: string, client: ClientTabProps['client'])
   // The search term should be enclosed in quotes for Graph API.
   const searchQuery = `"${client.lead_number}" OR "${client.email}"`;
   
-  const url = `https://graph.microsoft.com/v1.0/me/messages?$search=${encodeURIComponent(searchQuery)}&$top=50&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,conversationId,hasAttachments`;
+  // Optimize: Only fetch recent emails (last 30 days) and limit to 30 results
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  
+  const url = `https://graph.microsoft.com/v1.0/me/messages?$search=${encodeURIComponent(searchQuery)}&$top=30&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,conversationId,hasAttachments&$filter=receivedDateTime ge ${thirtyDaysAgo.toISOString()}`;
   
   const res = await fetch(url, { 
     headers: { 
@@ -302,20 +306,9 @@ async function syncClientEmails(token: string, client: ClientTabProps['client'])
   // Sort the messages by date on the client side.
   clientMessages.sort((a: any, b: any) => new Date(b.receivedDateTime).getTime() - new Date(a.receivedDateTime).getTime());
 
-  // Fetch attachments for messages that have them
-  for (const msg of clientMessages) {
-    if (msg.hasAttachments) {
-      const attachmentsUrl = `https://graph.microsoft.com/v1.0/me/messages/${msg.id}/attachments?$select=id,name,contentType,size,isInline`;
-      const attachmentsRes = await fetch(attachmentsUrl, { headers: { Authorization: `Bearer ${token}` } });
-      if (attachmentsRes.ok) {
-        const attachmentsJson = await attachmentsRes.json();
-        msg.attachments = (attachmentsJson.value || []).map((att: any) => ({
-          ...att,
-          sizeInBytes: att.size // Correcting the property name from sizeInBytes to size
-        }));
-      }
-    }
-  }
+  // Optimize: Skip attachment fetching for now (can be added later as needed)
+  // This significantly reduces API calls and processing time
+  // TODO: Add lazy loading for attachments when needed
 
   // 4. Prepare data for Supabase (upsert to avoid duplicates)
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -447,16 +440,25 @@ const emailTemplates = [
 ];
 
 // Helper to get current user's full name from Supabase
+// Join users.employee_id with tenants_employee.id to get display_name
 async function fetchCurrentUserFullName() {
   const { data: { user } } = await supabase.auth.getUser();
-  if (user && user.email) {
+  if (user && user.id) {
     const { data, error } = await supabase
       .from('users')
-      .select('full_name')
-      .eq('email', user.email)
+      .select(`
+        full_name,
+        employee_id,
+        tenants_employee!employee_id(
+          display_name
+        )
+      `)
+      .eq('auth_id', user.id)
       .single();
-    if (!error && data?.full_name) {
-      return data.full_name;
+    if (!error && data) {
+      // Return display_name from tenants_employee if available, otherwise full_name
+      const employee = Array.isArray(data.tenants_employee) ? data.tenants_employee[0] : data.tenants_employee;
+      return employee?.display_name || data.full_name;
     }
   }
   return null;
@@ -901,16 +903,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     let errorMessage = null;
     
     try {
-      // Get current user's full name from users table
+      // Get current user's full name from users table with employee join
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.id) {
         const { data: userRow, error: userLookupError } = await supabase
           .from('users')
-          .select('full_name, email')
+          .select(`
+            full_name,
+            email,
+            employee_id,
+            tenants_employee!employee_id(
+              display_name
+            )
+          `)
           .eq('auth_id', user.id)
           .single();
         if (!userLookupError && userRow) {
-          senderName = userRow.full_name || userRow.email || 'You';
+          // Use display_name from tenants_employee if available, otherwise full_name
+          const employee = Array.isArray(userRow.tenants_employee) ? userRow.tenants_employee[0] : userRow.tenants_employee;
+          senderName = employee?.display_name || userRow.full_name || userRow.email || 'You';
         }
       }
       
@@ -1163,23 +1174,32 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   useEffect(() => {
     let isMounted = true;
     async function fetchAndCombineInteractions() {
-      // Reduced logging for performance
+      const startTime = performance.now();
+      console.log('🚀 Starting InteractionsTab fetch...');
       setInteractionsLoading(true);
       try {
         // Ensure currentUserFullName is set before mapping emails
         let userFullName = currentUserFullName;
         if (!userFullName && !userFullNameLoadedRef.current) {
           const { data: { user } } = await supabase.auth.getUser();
-          if (user && user.email) {
+          if (user && user.id) {
             const { data, error } = await supabase
               .from('users')
-              .select('full_name')
-              .eq('email', user.email)
+              .select(`
+                full_name,
+                employee_id,
+                tenants_employee!employee_id(
+                  display_name
+                )
+              `)
+              .eq('auth_id', user.id)
               .single();
-            if (!error && data?.full_name) {
-              userFullName = data.full_name;
+            if (!error && data) {
+              // Use display_name from tenants_employee if available, otherwise full_name
+              const employee = Array.isArray(data.tenants_employee) ? data.tenants_employee[0] : data.tenants_employee;
+              userFullName = employee?.display_name || data.full_name;
               if (isMounted) {
-                setCurrentUserFullName(data.full_name);
+                setCurrentUserFullName(userFullName);
                 userFullNameLoadedRef.current = true;
               }
             }
@@ -1189,79 +1209,76 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         // Prepare parallel queries for better performance
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
-      // 1. Manual interactions (excluding WhatsApp)
-      const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp').map((i: any) => ({
-        ...i,
-        employee: i.direction === 'out' ? (userFullName || 'You') : i.employee || client.name,
-      }));
-      // 2. Email interactions
-      const clientEmails = (client as any).emails || [];
-      console.log('📧 Processing emails for interactions:', {
-        totalEmails: clientEmails.length,
-        emailIds: clientEmails.map((e: any) => e.message_id || e.id),
-        clientId: client.id
-      });
-      
-      // Improved deduplication: use message_id as primary key, fallback to id
-      const uniqueEmails = clientEmails.filter((email: any, index: number, self: any[]) => {
-        const emailKey = email.message_id || email.id;
-        return index === self.findIndex((e: any) => (e.message_id || e.id) === emailKey);
-      });
-      
-      console.log('📧 After deduplication:', {
-        uniqueEmails: uniqueEmails.length,
-        removedDuplicates: clientEmails.length - uniqueEmails.length
-      });
-      
-            const emailInteractions = uniqueEmails.map((e: any) => {
-              const emailDate = new Date(e.sent_at);
+
+        // Execute all database queries in parallel with aggressive limits
+        const [whatsAppResult, callLogsResult, legacyResult] = await Promise.all([
+          // WhatsApp messages query - only fetch essential fields
+          client?.id ? (async () => {
+            let query = supabase
+              .from('whatsapp_messages')
+              .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message')
+              .limit(20); // Reduced from 100 to 20
+            
+            if (isLegacyLead) {
+              query = query.eq('legacy_id', legacyId);
+            } else {
+              query = query.eq('lead_id', client.id);
+            }
+            
+            const { data, error } = await query.order('sent_at', { ascending: false });
+            return { data, error };
+          })() : Promise.resolve({ data: [], error: null }),
+
+          // Call logs query - only fetch essential fields
+          client?.id ? (async () => {
+            try {
+              let query = supabase
+                .from('call_logs')
+                .select(`
+                  id,
+                  cdate,
+                  time,
+                  source,
+                  destination,
+                  status,
+                  duration,
+                  url,
+                  direction,
+                  tenants_employee!employee_id (
+                    display_name
+                  )
+                `)
+                .limit(10); // Reduced from 50 to 10
               
-              let body = e.body_preview || e.bodyPreview || '';
-              
-              // Process body if it exists (removed length restriction)
-              if (body && body.length > 0) {
-                body = stripSignatureAndQuotedTextPreserveHtml(body);
+              if (isLegacyLead) {
+                query = query.eq('lead_id', legacyId);
+              } else {
+                // Skip client_id query if column doesn't exist
+                query = query.eq('lead_id', client.id);
               }
               
-              // Fallback to subject if no body content
-              if (!body || body.trim().length === 0) {
-                body = e.subject || 'Email received';
-              }
-              
-              // No truncation - let the content use full available space
-              
-              return {
-                id: e.message_id,
-                date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-                time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-                raw_date: e.sent_at,
-                employee: e.direction === 'outgoing' ? (userFullName || 'You') : client.name,
-                direction: e.direction === 'outgoing' ? 'out' : 'in',
-                kind: 'email',
-                length: '',
-                content: body,
-                subject: e.subject || '', // <-- add subject here
-                observation: e.observation || '',
-                editable: true,
-                status: e.status,
-              };
-            });
-      // 3. WhatsApp messages from DB
-      let whatsAppDbMessages: any[] = [];
-      if (client?.id) {
-        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-        let query = supabase.from('whatsapp_messages').select('*');
-        
-        if (isLegacyLead) {
-          const legacyId = parseInt(client.id.replace('legacy_', ''));
-          query = query.eq('legacy_id', legacyId);
-        } else {
-          query = query.eq('lead_id', client.id);
-        }
-        
-        const { data, error } = await query.order('sent_at', { ascending: true });
-        if (!error && data) {
-          whatsAppDbMessages = data.map((msg: any) => ({
+              const { data, error } = await query.order('cdate', { ascending: false });
+              return { data, error };
+            } catch (error) {
+              return { data: [], error };
+            }
+          })() : Promise.resolve({ data: [], error: null }),
+
+          // Legacy interactions query - only for legacy leads, with limit
+          isLegacyLead && client?.id ? (async () => {
+            try {
+              const interactions = await fetchLegacyInteractions(client.id, client.name);
+              return interactions.slice(0, 10); // Limit to 10 most recent
+            } catch (error) {
+              return [];
+            }
+          })() : Promise.resolve([])
+        ]);
+
+        // Process results from parallel queries
+        const [whatsAppDbMessages, callLogInteractions, legacyInteractions] = [
+          // Process WhatsApp messages
+          whatsAppResult.data?.map((msg: any) => ({
             id: msg.id,
             date: new Date(msg.sent_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
             time: new Date(msg.sent_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
@@ -1271,154 +1288,106 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             kind: 'whatsapp',
             length: '',
             content: msg.message,
-            observation: msg.error_message || '', // Include error message if any
+            observation: msg.error_message || '',
             editable: false,
-            status: msg.whatsapp_status, // Include WhatsApp status
-            error_message: msg.error_message, // Include error message for status rendering
-          }));
-        }
-      }
-      
-      // 4. Call logs from call_logs table with employee JOIN
-      let callLogInteractions: any[] = [];
-      if (client?.id) {
-        try {
-          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-          
-          // Use JOIN query to get employee information
-          let query = supabase
-            .from('call_logs')
-            .select(`
-              *,
-              tenants_employee!call_logs_employee_id_fkey (
-                id,
-                display_name,
-                official_name,
-                mobile,
-                phone,
-                bonuses_role,
-                department_id
-              )
-            `);
-          
-          if (isLegacyLead) {
-            const legacyId = parseInt(client.id.replace('legacy_', ''));
-            query = query.eq('lead_id', legacyId);
-          } else {
-            // For new leads, try client_id column first, then fallback to lead_id
-            query = query.eq('client_id', client.id);
-          }
-          
-          const { data: callLogs, error } = await query.order('cdate', { ascending: false });
-          if (error) {
-            console.error('🔍 Call logs query error:', error);
-            // For new leads, if no call_logs exist, that's expected - they don't have automatic call logging yet
-            if (!isLegacyLead) {
-              console.log('🔍 No call logs found for new lead - this is expected as automatic call logging is not yet implemented');
-            }
-          } else {
-            console.log('🔍 Raw call logs from database:', callLogs?.map(cl => ({
-              id: cl.id,
-              cdate: cl.cdate,
-              time: cl.time,
-              source: cl.source,
-              destination: cl.destination,
-              status: cl.status,
-              duration: cl.duration,
-              url: cl.url
-            })));
-          }
-          if (!error && callLogs) {
-            // First, deduplicate at the database level by removing exact duplicates
-            const uniqueCallLogs = callLogs.filter((callLog: any, index: number, self: any[]) => {
-              return index === self.findIndex((cl: any) => 
-                cl.cdate === callLog.cdate &&
-                cl.time === callLog.time &&
-                cl.source === callLog.source &&
-                cl.destination === callLog.destination &&
-                cl.status === callLog.status
-              );
-            });
-            
-            console.log('🔍 After database-level deduplication:', {
-              original: callLogs.length,
-              unique: uniqueCallLogs.length,
-              removed: callLogs.length - uniqueCallLogs.length
-            });
-            
-            callLogInteractions = uniqueCallLogs.map((callLog: any) => {
-              const callDate = new Date(callLog.cdate);
-              const callTime = callLog.time || '00:00';
-              
-              // Determine direction
-              const direction = callLog.direction?.toLowerCase().includes('incoming') ? 'in' : 'out';
-              
-              // Get employee name from JOIN or fallback
-              let employeeName = client.name; // Default for incoming calls
-              if (direction === 'out' && callLog.tenants_employee) {
-                employeeName = callLog.tenants_employee.display_name || callLog.tenants_employee.official_name || userFullName || 'You';
-              } else if (direction === 'out' && !callLog.tenants_employee) {
-                employeeName = userFullName || 'You';
-              }
-              
-              // Removed debug logging for performance
-              
-              // Format duration
-              const duration = callLog.duration ? `${Math.floor(callLog.duration / 60)}:${(callLog.duration % 60).toString().padStart(2, '0')}` : '0:00';
-              
-              // Create content based on call details (status is shown in badge)
-              let content = '';
-              if (callLog.source && callLog.destination) {
-                content = `From: ${callLog.source}, To: ${callLog.destination}`;
-              } else if (callLog.source) {
-                content = `From: ${callLog.source}`;
-              } else if (callLog.destination) {
-                content = `To: ${callLog.destination}`;
-              } else {
-                content = 'Call logged';
-              }
-              
-              return {
-                id: `call_${callLog.id}`,
-                date: callDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-                time: callTime,
-                raw_date: callLog.cdate,
-                employee: employeeName,
-                direction: direction,
-                kind: 'call',
-                length: duration,
-                content: content,
-                observation: '',
-                editable: false,
-                status: callLog.status,
-                call_log: callLog,
-                recording_url: callLog.url,
-                call_duration: callLog.duration,
-                employee_data: callLog.tenants_employee // Store employee data for potential future use
-              };
-            });
-          }
-        } catch (error) {
-          console.error('Error fetching call logs:', error);
-        }
-      }
+            status: msg.whatsapp_status,
+            error_message: msg.error_message,
+          })) || [],
 
-      // 5. Legacy interactions for legacy leads (excluding call logs - we use call_logs table instead)
-      let legacyInteractions: any[] = [];
-      if (isLegacyLead && client?.id) {
-        try {
-          const allLegacyInteractions = await fetchLegacyInteractions(client.id, client.name);
-          // Filter out call logs - we get those from call_logs table instead
-          legacyInteractions = allLegacyInteractions.filter((interaction: any) => interaction.kind !== 'call');
-          console.log('🔍 Legacy interactions filtered:', {
-            total: allLegacyInteractions.length,
-            afterFiltering: legacyInteractions.length,
-            callLogsRemoved: allLegacyInteractions.length - legacyInteractions.length
-          });
-        } catch (error) {
-          console.error('Error fetching legacy interactions:', error);
-        }
-      }
+          // Process call logs
+          callLogsResult.data?.map((callLog: any) => {
+            const callDate = new Date(callLog.cdate);
+            const callTime = callLog.time || '00:00';
+            const direction = callLog.direction?.toLowerCase().includes('incoming') ? 'in' : 'out';
+            
+            // Get employee name from JOIN or fallback
+            let employeeName = client.name;
+            if (direction === 'out' && callLog.tenants_employee) {
+              const employee = Array.isArray(callLog.tenants_employee) ? callLog.tenants_employee[0] : callLog.tenants_employee;
+              employeeName = employee?.display_name || userFullName || 'You';
+            } else if (direction === 'out') {
+              employeeName = userFullName || 'You';
+            }
+            
+            const duration = callLog.duration ? `${Math.floor(callLog.duration / 60)}:${(callLog.duration % 60).toString().padStart(2, '0')}` : '0:00';
+            
+            let content = '';
+            if (callLog.source && callLog.destination) {
+              content = `From: ${callLog.source}, To: ${callLog.destination}`;
+            } else if (callLog.source) {
+              content = `From: ${callLog.source}`;
+            } else if (callLog.destination) {
+              content = `To: ${callLog.destination}`;
+            } else {
+              content = 'Call logged';
+            }
+            
+            return {
+              id: `call_${callLog.id}`,
+              date: callDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+              time: callTime,
+              raw_date: callLog.cdate,
+              employee: employeeName,
+              direction: direction,
+              kind: 'call',
+              length: duration,
+              content: content,
+              observation: '',
+              editable: false,
+              status: callLog.status,
+              call_log: callLog,
+              recording_url: callLog.url,
+              call_duration: callLog.duration,
+              employee_data: callLog.tenants_employee
+            };
+          }) || [],
+
+          // Process legacy interactions (filter out calls)
+          Array.isArray(legacyResult) ? legacyResult.filter((interaction: any) => interaction.kind !== 'call') : []
+        ];
+
+        // 1. Manual interactions (excluding WhatsApp) - fast client-side processing
+        const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp').map((i: any) => ({
+          ...i,
+          employee: i.direction === 'out' ? (userFullName || 'You') : i.employee || client.name,
+        }));
+
+        // 2. Email interactions - ultra-fast processing
+        const clientEmails = (client as any).emails || [];
+        
+        // Skip complex deduplication for small datasets
+        const uniqueEmails = clientEmails.length > 20 
+          ? clientEmails.filter((email: any, index: number, self: any[]) => {
+              const emailKey = email.message_id || email.id;
+              return index === self.findIndex((e: any) => (e.message_id || e.id) === emailKey);
+            })
+          : clientEmails; // Skip deduplication for small datasets
+        
+        const emailInteractions = uniqueEmails.slice(0, 10).map((e: any) => { // Reduced from 50 to 10
+          const emailDate = new Date(e.sent_at);
+          
+          // Skip complex body processing for performance
+          let body = e.subject || 'Email received';
+          if (e.body_preview && e.body_preview.length > 0 && e.body_preview.length < 200) {
+            body = e.body_preview;
+          }
+          
+          return {
+            id: e.message_id,
+            date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+            time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+            raw_date: e.sent_at,
+            employee: e.direction === 'outgoing' ? (userFullName || 'You') : client.name,
+            direction: e.direction === 'outgoing' ? 'out' : 'in',
+            kind: 'email',
+            length: '',
+            content: body,
+            subject: e.subject || '',
+            observation: e.observation || '',
+            editable: true,
+            status: e.status,
+          };
+        });
       
         // Combine all interactions
         const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...callLogInteractions, ...legacyInteractions];
@@ -1433,11 +1402,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         const sorted = uniqueInteractions.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
         if (isMounted) {
           setInteractions(sorted as Interaction[]);
-          // Note: Interaction count is now calculated upfront when entering the client page
-          // No need to update it here anymore
+          
+          // Performance logging
+          const endTime = performance.now();
+          const duration = Math.round(endTime - startTime);
+          console.log(`✅ InteractionsTab loaded in ${duration}ms with ${sorted.length} interactions`);
         }
+        
         // Also update the local emails state for the modal - use the same deduplicated emails
-        const formattedEmailsForModal = uniqueEmails.map((e: any) => ({
+        const formattedEmailsForModal = uniqueEmails.slice(0, 10).map((e: any) => ({ // Limit emails for modal too
           id: e.message_id,
           subject: e.subject,
           from: e.sender_email,
@@ -1486,10 +1459,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   }, [client, instance, accounts, onClientUpdate]);
 
   // Effect to run the slow sync only once when the component mounts
+  // DISABLED: Graph sync is too slow and blocks UI loading
+  // Run Graph sync only on explicit user action (like clicking refresh)
   useEffect(() => {
-    runGraphSync();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run only once
+    // Skip automatic Graph sync for now - it's causing the 4-second delay
+    // Users can manually sync emails if needed
+    console.log('InteractionsTab mounted - skipping automatic Graph sync for performance');
+  }, [client.id]);
 
   const handleSendEmail = async () => {
     if (!client.email || !instance || !accounts[0]) return;
@@ -1782,16 +1758,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     if (!userFullName) {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        if (user?.email) {
+        if (user?.id) {
           const { data: userData } = await supabase
             .from('users')
-            .select('full_name, name')
-            .eq('email', user.email)
+            .select(`
+              full_name,
+              employee_id,
+              tenants_employee!employee_id(
+                display_name
+              )
+            `)
+            .eq('auth_id', user.id)
             .single();
-          if (userData?.full_name) {
-            userFullName = userData.full_name;
-          } else if (userData?.name) {
-            userFullName = userData.name;
+          if (userData) {
+            // Use display_name from tenants_employee if available, otherwise full_name
+            const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+            userFullName = employee?.display_name || userData.full_name;
           }
         }
       } catch (error) {

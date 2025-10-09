@@ -10,6 +10,7 @@ interface StaffMeetingEditModalProps {
   onClose: () => void;
   meeting: any;
   onUpdate: () => void;
+  onDelete?: () => void;
 }
 
 interface Employee {
@@ -22,10 +23,13 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
   isOpen,
   onClose,
   meeting,
-  onUpdate
+  onUpdate,
+  onDelete
 }) => {
   const { instance, accounts } = useMsal();
   const [isLoading, setIsLoading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [showEmployeeSearch, setShowEmployeeSearch] = useState(false);
@@ -140,20 +144,63 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
 
   const fetchEmployees = async () => {
     try {
-      const { data, error } = await supabase
+      console.log('🔍 Fetching employees for edit modal...');
+      
+      // Fetch employees and users separately for better reliability
+      const { data: employeesData, error: employeesError } = await supabase
         .from('tenants_employee')
         .select('id, display_name')
         .not('display_name', 'is', null)
         .order('display_name');
 
-      if (error) throw error;
+      if (employeesError) {
+        console.error('Error fetching employees:', employeesError);
+        toast.error('Failed to fetch employees');
+        return;
+      }
       
-      // Process the data to construct email addresses like TeamsMeetingModal does
-      const processedEmployees = (data || []).map(emp => ({
-        id: emp.id,
-        display_name: emp.display_name,
-        email: `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`
-      }));
+      console.log('🔍 Edit modal - Employees fetched:', employeesData?.length || 0);
+      
+      // Get all employee IDs
+      const employeeIds = employeesData?.map(emp => emp.id) || [];
+      
+      if (employeeIds.length === 0) {
+        console.log('⚠️ Edit modal - No employees found');
+        setEmployees([]);
+        return;
+      }
+      
+      // Fetch emails from users table
+      const { data: usersData, error: usersError } = await supabase
+        .from('users')
+        .select('employee_id, email')
+        .in('employee_id', employeeIds)
+        .not('email', 'is', null);
+      
+      if (usersError) {
+        console.error('Error fetching user emails:', usersError);
+        toast.error('Failed to fetch employee emails');
+        return;
+      }
+      
+      console.log('🔍 Edit modal - User emails fetched:', usersData?.length || 0);
+      
+      // Create a map of employee_id to email
+      const emailMap = new Map();
+      usersData?.forEach(user => {
+        emailMap.set(user.employee_id, user.email);
+      });
+      
+      // Combine employee data with emails
+      const processedEmployees = employeesData
+        ?.filter(emp => emailMap.has(emp.id)) // Only include employees with emails
+        .map(emp => ({
+          id: emp.id,
+          display_name: emp.display_name,
+          email: emailMap.get(emp.id)
+        })) || [];
+      
+      console.log('🔍 Edit modal - Processed employees:', processedEmployees.length);
       
       setEmployees(processedEmployees);
     } catch (error) {
@@ -238,6 +285,115 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       toast.error('Failed to update staff meeting');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setIsDeleting(true);
+
+    try {
+      console.log('🗑️ Deleting meeting - full object:', meeting);
+      console.log('🗑️ Meeting ID type:', typeof meeting.id, 'Value:', meeting.id);
+      console.log('🗑️ Teams meeting ID:', meeting.teams_meeting_id);
+
+      const account = accounts[0];
+      if (!account) {
+        throw new Error('No active account');
+      }
+
+      const tokenResponse = await instance.acquireTokenSilent({
+        ...loginRequest,
+        account: account,
+      });
+
+      // Delete from Outlook first (if it exists there)
+      if (meeting.teams_meeting_id) {
+        try {
+          await deleteOutlookMeeting(tokenResponse.accessToken, meeting.teams_meeting_id);
+        } catch (outlookError) {
+          console.warn('Meeting not found in Outlook, continuing with database deletion:', outlookError);
+          // Continue with database deletion even if Outlook deletion fails
+        }
+      }
+
+      // Delete from database
+      // Extract the actual database ID (remove prefix if present)
+      let dbId = meeting.id;
+      if (typeof meeting.id === 'string' && meeting.id.includes('-')) {
+        // If it's a prefixed ID like "staff-AAMk...", we need to find the actual database record
+        console.log('🔍 Looking for database record with prefixed ID:', meeting.id);
+        
+        // Try to find by teams_meeting_id first
+        if (meeting.teams_meeting_id) {
+          const { data: existingMeeting, error: findError } = await supabase
+            .from('outlook_teams_meetings')
+            .select('id')
+            .eq('teams_meeting_id', meeting.teams_meeting_id)
+            .single();
+          
+          if (existingMeeting && !findError) {
+            dbId = existingMeeting.id;
+            console.log('✅ Found by teams_meeting_id:', dbId);
+          }
+        }
+        
+        // If still not found, try by subject and date
+        if (dbId === meeting.id && formData.subject) {
+          const meetingDate = formData.date;
+          const { data: existingMeeting, error: findError } = await supabase
+            .from('outlook_teams_meetings')
+            .select('id')
+            .eq('subject', formData.subject)
+            .gte('start_date_time', `${meetingDate}T00:00:00`)
+            .lte('start_date_time', `${meetingDate}T23:59:59`)
+            .single();
+          
+          if (existingMeeting && !findError) {
+            dbId = existingMeeting.id;
+            console.log('✅ Found by subject and date:', dbId);
+          }
+        }
+      }
+
+      console.log('🗑️ Using database ID for deletion:', dbId);
+
+      const { error: deleteError } = await supabase
+        .from('outlook_teams_meetings')
+        .delete()
+        .eq('id', dbId);
+
+      if (deleteError) throw deleteError;
+
+      toast.success('Staff meeting deleted successfully!');
+      if (onDelete) onDelete();
+      onClose();
+    } catch (error) {
+      console.error('Error deleting staff meeting:', error);
+      toast.error('Failed to delete staff meeting');
+    } finally {
+      setIsDeleting(false);
+      setShowDeleteConfirm(false);
+    }
+  };
+
+  const deleteOutlookMeeting = async (accessToken: string, meetingId: string) => {
+    const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events/${meetingId}`;
+    
+    const response = await fetch(url, {
+      method: 'DELETE',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new Error('Meeting not found in Outlook calendar');
+      }
+      const error = await response.json();
+      throw new Error(error.error?.message || `Failed to delete meeting: ${response.status}`);
     }
   };
 
@@ -454,31 +610,90 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
           </div>
 
           {/* Actions */}
-          <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+          <div className="flex justify-between pt-4 border-t border-gray-200">
+            {/* Delete button on the left */}
             <button
               type="button"
-              onClick={onClose}
-              className="btn btn-ghost"
-              disabled={isLoading}
+              onClick={() => setShowDeleteConfirm(true)}
+              className="btn btn-error btn-outline"
+              disabled={isLoading || isDeleting}
             >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={isLoading}
-            >
-              {isLoading ? (
+              {isDeleting ? (
                 <>
                   <span className="loading loading-spinner loading-sm"></span>
-                  Updating...
+                  Deleting...
                 </>
               ) : (
-                'Update Meeting'
+                'Delete Meeting'
               )}
             </button>
+
+            {/* Update and Cancel buttons on the right */}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={onClose}
+                className="btn btn-ghost"
+                disabled={isLoading || isDeleting}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={isLoading || isDeleting}
+              >
+                {isLoading ? (
+                  <>
+                    <span className="loading loading-spinner loading-sm"></span>
+                    Updating...
+                  </>
+                ) : (
+                  'Update Meeting'
+                )}
+              </button>
+            </div>
           </div>
         </form>
+
+        {/* Delete Confirmation Modal */}
+        {showDeleteConfirm && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Delete Meeting
+              </h3>
+              <p className="text-gray-600 mb-6">
+                Are you sure you want to delete "{formData.subject}"? This action cannot be undone and will remove the meeting from both the calendar and database.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteConfirm(false)}
+                  className="btn btn-ghost"
+                  disabled={isDeleting}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  className="btn btn-error"
+                  disabled={isDeleting}
+                >
+                  {isDeleting ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Deleting...
+                    </>
+                  ) : (
+                    'Delete Meeting'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
