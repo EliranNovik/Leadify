@@ -60,7 +60,7 @@ interface RMQMessage {
   message_type: 'text' | 'file' | 'image' | 'system';
   sent_at: string;
   sender: {
-    ids: string;
+    id: string;
     full_name: string;
     tenants_employee?: {
       display_name: string;
@@ -475,7 +475,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const { data: userData, error: userError } = await supabase
             .from('users')
             .select(`
-              ids,
+              id,
               full_name,
               email,
               employee_id,
@@ -519,48 +519,77 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               }
             });
 
-            // Also fetch all employees for the modal (simplified query to avoid JOIN issues)
+            // Also fetch all employees for the modal using the new pattern - only active users
             const { data: allEmployeesData, error: allEmployeesError } = await supabase
-              .from('tenants_employee')
+              .from('users')
               .select(`
                 id,
-                display_name,
-                bonuses_role,
-                department_id,
-                user_id,
-                photo_url,
-                photo,
-                phone,
-                mobile,
-                phone_ext
-              `);
+                full_name,
+                email,
+                employee_id,
+                is_active,
+                tenants_employee!employee_id(
+                  id,
+                  display_name,
+                  bonuses_role,
+                  department_id,
+                  user_id,
+                  photo_url,
+                  photo,
+                  phone,
+                  mobile,
+                  phone_ext,
+                  tenant_departement!department_id(
+                    id,
+                    name
+                  )
+                )
+              `)
+              .not('employee_id', 'is', null)
+              .eq('is_active', true);
 
             if (!allEmployeesError && allEmployeesData) {
-              // Fetch department and user data separately for better reliability
-              const departmentIds = [...new Set(allEmployeesData.map(emp => emp.department_id).filter(Boolean))];
-              const userIds = [...new Set(allEmployeesData.map(emp => emp.user_id).filter(Boolean))];
+              const processedEmployees = allEmployeesData
+                .filter(user => user.tenants_employee && user.email)
+                .map(user => {
+                  const employee = user.tenants_employee as any;
+                  return {
+                    id: employee.id,
+                    display_name: employee.display_name,
+                    bonuses_role: employee.bonuses_role,
+                    department_id: employee.department_id,
+                    user_id: employee.user_id,
+                    photo_url: employee.photo_url,
+                    photo: employee.photo,
+                    phone: employee.phone,
+                    mobile: employee.mobile,
+                    phone_ext: employee.phone_ext,
+                    department: employee.tenant_departement?.name || 'General',
+                    email: user.email
+                  };
+                });
+
+              // Deduplicate by employee ID to prevent duplicates
+              const uniqueEmployeesMap = new Map();
+              processedEmployees.forEach(emp => {
+                if (!uniqueEmployeesMap.has(emp.id)) {
+                  uniqueEmployeesMap.set(emp.id, emp);
+                }
+              });
+              const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
               
-              const [departmentData, usersData] = await Promise.all([
-                departmentIds.length > 0 ? supabase
-                  .from('tenant_departement')
-                  .select('id, name')
-                  .in('id', departmentIds) : Promise.resolve({ data: [] }),
-                userIds.length > 0 ? supabase
-                  .from('users')
-                  .select('ids, email')
-                  .in('ids', userIds) : Promise.resolve({ data: [] })
-              ]);
-
-              // Create lookup maps
-              const deptMap = new Map((departmentData.data || []).map(dept => [dept.id, dept.name]));
-              const userMap = new Map((usersData.data || []).map(user => [user.ids, user.email]));
-
-              const processedEmployees = allEmployeesData.map(emp => ({
-                ...emp,
-                department: deptMap.get(emp.department_id) || 'General',
-                email: userMap.get(emp.user_id) || ''
-              }));
-              setAllEmployees(processedEmployees);
+              console.log('🔍 Header - Employees loaded:', {
+                totalUsers: allEmployeesData?.length || 0,
+                processedEmployees: processedEmployees.length,
+                uniqueEmployees: uniqueEmployees.length,
+                sampleEmployee: uniqueEmployees[0] ? {
+                  id: uniqueEmployees[0].id,
+                  name: uniqueEmployees[0].display_name,
+                  email: uniqueEmployees[0].email
+                } : null
+              });
+              
+              setAllEmployees(uniqueEmployees);
             }
           } else {
             // Set current user even if no employee data
@@ -587,7 +616,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const { data: userConversations, error: convError } = await supabase
         .from('conversation_participants')
         .select('conversation_id')
-        .eq('user_id', currentUser.ids)
+        .eq('user_id', currentUser.id)
         .eq('is_active', true);
 
       if (convError) {
@@ -607,7 +636,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const { data: userParticipants, error: participantsError } = await supabase
         .from('conversation_participants')
         .select('conversation_id, last_read_at')
-        .eq('user_id', currentUser.ids)
+        .eq('user_id', currentUser.id)
         .in('conversation_id', conversationIds);
 
       if (participantsError) {
@@ -635,7 +664,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             message_type,
             sent_at,
             sender:users!sender_id(
-              ids,
+              id,
               full_name,
               tenants_employee!left(
                 display_name,
@@ -645,7 +674,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           `)
           .eq('conversation_id', convId)
           .eq('is_deleted', false)
-          .neq('sender_id', currentUser.ids); // Exclude user's own messages
+          .neq('sender_id', currentUser.id); // Exclude user's own messages
 
         // Only get messages sent after the user's last read timestamp
         if (lastReadAt) {
@@ -829,7 +858,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const { data: userConversations, error: convError } = await supabase
         .from('conversation_participants')
         .select('conversation_id')
-        .eq('user_id', currentUser.ids)
+        .eq('user_id', currentUser.id)
         .eq('is_active', true);
 
       if (convError) {
@@ -845,7 +874,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       for (const convId of conversationIds) {
         await supabase.rpc('mark_conversation_as_read', {
           conv_id: convId,
-          user_uuid: currentUser.ids
+          user_uuid: currentUser.id
         });
       }
 
@@ -1013,7 +1042,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       try {
         await supabase.rpc('mark_conversation_as_read', {
           conv_id: message.conversation_id,
-          user_uuid: currentUser.ids
+          user_uuid: currentUser.id
         });
       } catch (error) {
         console.error('Error marking conversation as read:', error);

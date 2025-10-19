@@ -25,11 +25,17 @@ interface Employee {
   mobile?: string;
   phone_ext?: string;
   performance_metrics?: {
-    total_meetings: number;
-    completed_meetings: number;
-    total_revenue: number;
-    average_rating: number;
-    last_activity: string;
+    total_meetings?: number;
+    completed_meetings?: number;
+    contracts_signed?: number;
+    cases_handled?: number;
+    total_revenue?: number;
+    total_bonus?: number;
+    average_rating?: number;
+    last_activity?: string;
+    performance_percentage?: number;
+    role_metrics?: { [key: string]: { signed: number; revenue: number } };
+    team_average?: { avgSigned: number; avgRevenue: number; totalEmployees: number; totalSigned: number; totalRevenue: number };
     // Role-specific metrics
     expert_opinions_completed?: number;
     feasibility_no_check?: number;
@@ -38,7 +44,6 @@ interface Employee {
     meetings_scheduled?: number;
     signed_agreements?: number;
     total_agreement_amount?: number;
-    cases_handled?: number;
     applicants_processed?: number;
     total_invoiced_amount?: number;
     // New role-specific metrics
@@ -50,6 +55,9 @@ interface Employee {
     contracts_managed?: number;
     signed_total?: number;
     total_due?: number;
+    // Bonus information
+    calculated_bonus?: number;
+    bonus_breakdown?: any[];
   };
 }
 
@@ -769,6 +777,9 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const [loadingRoleLeads, setLoadingRoleLeads] = useState(false);
   const [fromDate, setFromDate] = useState<string>('');
   const [toDate, setToDate] = useState<string>('');
+  const [appliedFromDate, setAppliedFromDate] = useState<string>('');
+  const [appliedToDate, setAppliedToDate] = useState<string>('');
+  const [isApplyingFilter, setIsApplyingFilter] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'availability' | 'tasks' | 'clients' | 'feedback' | 'salary' | 'bonus'>('overview');
 
   // Populate monthly bonus pools cache when modal opens
@@ -1186,6 +1197,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const fetchPerformanceData = React.useCallback(async () => {
     if (!employee) return;
     
+    console.log('🚀 FETCHING PERFORMANCE DATA for employee:', employee.display_name, 'ID:', employee.id);
     setLoadingPerformance(true);
     setPerformanceError(null);
     
@@ -1197,13 +1209,19 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       const defaultFromDate = new Date(today);
       defaultFromDate.setDate(today.getDate() - 30);
       
-      const fromDateValue = fromDate || defaultFromDate.toISOString().split('T')[0];
-      const toDateValue = toDate || today.toISOString().split('T')[0];
+      const fromDateValue = appliedFromDate || defaultFromDate.toISOString().split('T')[0];
+      const toDateValue = appliedToDate || today.toISOString().split('T')[0];
       
       console.log('📊 Fetching performance data for:', employee.display_name, 'from', fromDateValue, 'to', toDateValue);
+      console.log('📊 Date range:', { fromDateValue, toDateValue, appliedFromDate, appliedToDate });
+      console.log('📊 Today:', today.toISOString().split('T')[0]);
+      console.log('📊 Default from date (30 days ago):', defaultFromDate.toISOString().split('T')[0]);
       
       // Use Dashboard approach: Fetch signed stages first, then fetch corresponding leads
       console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for date range...');
+      console.log('📋 Date range query:', { fromDateValue, toDateValue, stage: 60 });
+      
+      // Now fetch with date filter
       const { data: signedStages, error: stagesError } = await supabase
         .from('leads_leadstage')
         .select(`
@@ -1425,6 +1443,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       let expertData = null;
       if (employee.bonuses_role?.toLowerCase() === 'e') {
         console.log('🔬 Fetching expert-specific data for:', employee.display_name, 'ID:', employee.id, 'Role:', employee.bonuses_role);
+        console.log('🔬 Employee ID type:', typeof employee.id, 'Employee ID value:', employee.id);
         
         // Fetch leads where employee is the expert (includes expert_examination column)
         const { data: expertLeads, error: expertLeadsError } = await supabase
@@ -1445,6 +1464,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
         } else {
           console.log('🔬 Expert leads found:', expertLeads?.length || 0);
           console.log('🔬 Sample expert lead:', expertLeads?.[0]);
+          console.log('🔬 Expert lead expert_id:', expertLeads?.[0]?.expert_id, 'Type:', typeof expertLeads?.[0]?.expert_id);
           if (expertLeads && expertLeads.length > 0) {
             console.log('🔬 Expert examination values:', expertLeads.map(lead => ({ 
               id: lead.id, 
@@ -1566,7 +1586,28 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     } finally {
       setLoadingPerformance(false);
     }
-  }, [employee, fromDate, toDate]);
+  }, [employee, appliedFromDate, appliedToDate]);
+
+  // Handle apply date filter
+  const handleApplyDateFilter = async () => {
+    setIsApplyingFilter(true);
+    try {
+      setAppliedFromDate(fromDate);
+      setAppliedToDate(toDate);
+      // The useEffect above will automatically trigger fetchPerformanceData when callCount changes
+    } finally {
+      setIsApplyingFilter(false);
+    }
+  };
+
+  // Handle clear date filter
+  const handleClearDateFilter = () => {
+    setFromDate('');
+    setToDate('');
+    setAppliedFromDate('');
+    setAppliedToDate('');
+    // This will trigger fetchPerformanceData with empty dates (default to last 30 days)
+  };
 
   // Fetch revenue data for the graph (employee-specific)
   const fetchRevenueGraphData = async (year: number, startMonth: number, endMonth: number) => {
@@ -1650,29 +1691,29 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
           const lead = leadsMap.get(stage.lead_id);
           if (lead) {
             // Check if this lead belongs to the current employee in their MAIN role only
-            const employeeIdStr = String(employee.id);
+            const employeeIdNum = Number(employee.id);
             const mainRole = employee.bonuses_role?.toLowerCase();
             let isEmployeeLead = false;
             
             switch (mainRole) {
               case 'h': // Handler
-                isEmployeeLead = lead.case_handler_id === employeeIdStr;
+                isEmployeeLead = Number(lead.case_handler_id) === employeeIdNum;
                 break;
               case 'c': // Closer
-                isEmployeeLead = lead.closer_id === employeeIdStr;
+                isEmployeeLead = Number(lead.closer_id) === employeeIdNum;
                 break;
               case 'e': // Expert
-                isEmployeeLead = lead.expert_id === employeeIdStr;
+                isEmployeeLead = Number(lead.expert_id) === employeeIdNum;
                 break;
               case 's': // Scheduler
-                isEmployeeLead = lead.meeting_scheduler_id === employeeIdStr;
+                isEmployeeLead = Number(lead.meeting_scheduler_id) === employeeIdNum;
                 break;
               case 'z': // Manager
               case 'Z': // Manager
-                isEmployeeLead = lead.meeting_manager_id === employeeIdStr;
+                isEmployeeLead = Number(lead.meeting_manager_id) === employeeIdNum;
                 break;
               case 'helper-closer': // Helper Closer
-                isEmployeeLead = lead.meeting_lawyer_id === employeeIdStr;
+                isEmployeeLead = Number(lead.meeting_lawyer_id) === employeeIdNum;
                 break;
               default:
                 // If no main role defined, don't count any revenue
@@ -1796,26 +1837,26 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
         const lead = leadsMap.get(meeting.legacy_lead_id);
         if (!lead) return false;
         
-        const employeeIdStr = String(employee.id);
-        return lead.case_handler_id === employeeIdStr ||
-               lead.closer_id === employeeIdStr ||
-               lead.expert_id === employeeIdStr ||
-               lead.meeting_scheduler_id === employeeIdStr ||
-               lead.meeting_manager_id === employeeIdStr ||
-               lead.meeting_lawyer_id === employeeIdStr;
+        const employeeIdNum = Number(employee.id);
+        return Number(lead.case_handler_id) === employeeIdNum ||
+               Number(lead.closer_id) === employeeIdNum ||
+               Number(lead.expert_id) === employeeIdNum ||
+               Number(lead.meeting_scheduler_id) === employeeIdNum ||
+               Number(lead.meeting_manager_id) === employeeIdNum ||
+               Number(lead.meeting_lawyer_id) === employeeIdNum;
       }) || [];
       
       const employeeLegacyMeetings = allLegacyMeetings?.filter(meeting => {
         const lead = leadsMap.get(meeting.id);
         if (!lead) return false;
         
-        const employeeIdStr = String(employee.id);
-        return lead.case_handler_id === employeeIdStr ||
-               lead.closer_id === employeeIdStr ||
-               lead.expert_id === employeeIdStr ||
-               lead.meeting_scheduler_id === employeeIdStr ||
-               lead.meeting_manager_id === employeeIdStr ||
-               lead.meeting_lawyer_id === employeeIdStr;
+        const employeeIdNum = Number(employee.id);
+        return Number(lead.case_handler_id) === employeeIdNum ||
+               Number(lead.closer_id) === employeeIdNum ||
+               Number(lead.expert_id) === employeeIdNum ||
+               Number(lead.meeting_scheduler_id) === employeeIdNum ||
+               Number(lead.meeting_manager_id) === employeeIdNum ||
+               Number(lead.meeting_lawyer_id) === employeeIdNum;
       }) || [];
       
       console.log(`📊 Found ${employeeRegularMeetings.length} employee regular meetings and ${employeeLegacyMeetings.length} employee legacy meetings`);
@@ -1992,14 +2033,14 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             const lead = leadsData?.find(l => l.id === stage.lead_id);
             if (!lead) return false;
             
-            const employeeIdStr = String(employee.id);
+            const employeeIdNum = Number(employee.id);
             const isEmployeeLead = 
-              lead.case_handler_id === employeeIdStr ||
-              lead.closer_id === employeeIdStr ||
-              lead.expert_id === employeeIdStr ||
-              lead.meeting_scheduler_id === employeeIdStr ||
-              lead.meeting_manager_id === employeeIdStr ||
-              lead.meeting_lawyer_id === employeeIdStr;
+              Number(lead.case_handler_id) === employeeIdNum ||
+              Number(lead.closer_id) === employeeIdNum ||
+              Number(lead.expert_id) === employeeIdNum ||
+              Number(lead.meeting_scheduler_id) === employeeIdNum ||
+              Number(lead.meeting_manager_id) === employeeIdNum ||
+              Number(lead.meeting_lawyer_id) === employeeIdNum;
             
             if (isEmployeeLead) {
               console.log(`✅ Found employee ${employee.display_name} (${employee.id}) in lead ${lead.id} with role`);
@@ -2058,10 +2099,55 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   // Function to process performance data
   const processPerformanceData = (signedLeads: any[], proformaInvoices: any[], employee: Employee, expertData?: any, closerData?: any) => {
     const employeeId = employee.id;
-    const employeeIdStr = String(employeeId); // Convert to string for comparison
-    console.log('🔍 Processing performance data for employee:', employee.display_name, 'ID:', employeeId, 'ID as string:', employeeIdStr);
+    const employeeIdNum = Number(employeeId); // Convert to number for comparison
+    console.log('🔍 Processing performance data for employee:', employee.display_name, 'ID:', employeeId, 'ID as number:', employeeIdNum);
+    console.log('🔍 Employee ID type:', typeof employeeId, 'Employee ID number type:', typeof employeeIdNum);
+    console.log('🔍 Employee object:', employee);
     console.log('🔍 Signed leads to process:', signedLeads.length);
     console.log('🔍 Sample signed lead:', signedLeads[0]);
+    console.log('🔍 First 3 lead IDs for comparison:', signedLeads.slice(0, 3).map(lead => ({
+      leadId: lead.id,
+      case_handler_id: lead.case_handler_id,
+      case_handler_type: typeof lead.case_handler_id,
+      closer_id: lead.closer_id,
+      closer_type: typeof lead.closer_id,
+      expert_id: lead.expert_id,
+      expert_type: typeof lead.expert_id,
+      meeting_scheduler_id: lead.meeting_scheduler_id,
+      meeting_manager_id: lead.meeting_manager_id,
+      meeting_lawyer_id: lead.meeting_lawyer_id
+    })));
+    
+    // Let's also check if there are any matches at all with detailed comparison
+    let hasAnyMatches = false;
+    signedLeads.slice(0, 10).forEach((lead, index) => {
+      console.log(`🔍 Lead ${index + 1} (ID: ${lead.id}) comparison:`, {
+        employeeIdNum,
+        case_handler_id: lead.case_handler_id,
+        closer_id: lead.closer_id,
+        expert_id: lead.expert_id,
+        meeting_scheduler_id: lead.meeting_scheduler_id,
+        meeting_manager_id: lead.meeting_manager_id,
+        meeting_lawyer_id: lead.meeting_lawyer_id,
+        caseHandlerMatch: Number(lead.case_handler_id) === employeeIdNum,
+        closerMatch: Number(lead.closer_id) === employeeIdNum,
+        expertMatch: Number(lead.expert_id) === employeeIdNum,
+        schedulerMatch: Number(lead.meeting_scheduler_id) === employeeIdNum,
+        managerMatch: Number(lead.meeting_manager_id) === employeeIdNum,
+        lawyerMatch: Number(lead.meeting_lawyer_id) === employeeIdNum
+      });
+      
+      if (Number(lead.case_handler_id) === employeeIdNum || 
+          Number(lead.closer_id) === employeeIdNum || 
+          Number(lead.expert_id) === employeeIdNum || 
+          Number(lead.meeting_scheduler_id) === employeeIdNum || 
+          Number(lead.meeting_manager_id) === employeeIdNum || 
+          Number(lead.meeting_lawyer_id) === employeeIdNum) {
+        hasAnyMatches = true;
+        console.log('🎯 FOUND MATCH in first 10 leads:', lead.id);
+      }
+    });
+    console.log('🔍 Has any matches in first 10 leads:', hasAnyMatches);
     
     const roleMetrics: any = {
       handler: { signed: 0, total: 0, invoiced: 0, cases: 0, applicants: 0 },
@@ -2098,35 +2184,35 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       });
       
       // Check each role and add to metrics if employee has that role
-      if (lead.case_handler_id === employeeIdStr) {
-        console.log('✅ Matched as Handler');
+      if (Number(lead.case_handler_id) === employeeIdNum) {
+        console.log('✅ Matched as Handler - Lead:', lead.id, 'Handler ID:', lead.case_handler_id, 'Employee ID:', employeeIdNum);
         roleMetrics.handler.signed += 1;
         roleMetrics.handler.total += leadTotalInNIS; // Use NIS amount
         roleMetrics.handler.cases += 1; // Each lead is a case
         roleMetrics.handler.applicants += parseInt(lead.no_of_applicants) || 0;
       }
-      if (lead.closer_id === employeeIdStr) {
-        console.log('✅ Matched as Closer');
+      if (Number(lead.closer_id) === employeeIdNum) {
+        console.log('✅ Matched as Closer - Lead:', lead.id, 'Closer ID:', lead.closer_id, 'Employee ID:', employeeIdNum);
         roleMetrics.closer.signed += 1;
         roleMetrics.closer.total += leadTotalInNIS; // Use NIS amount
       }
-      if (lead.expert_id === employeeIdStr) {
-        console.log('✅ Matched as Expert');
+      if (Number(lead.expert_id) === employeeIdNum) {
+        console.log('✅ Matched as Expert - Lead:', lead.id, 'Expert ID:', lead.expert_id, 'Employee ID:', employeeIdNum);
         roleMetrics.expert.signed += 1;
         roleMetrics.expert.total += leadTotalInNIS; // Use NIS amount
       }
-      if (lead.meeting_scheduler_id === employeeIdStr) {
-        console.log('✅ Matched as Scheduler');
+      if (Number(lead.meeting_scheduler_id) === employeeIdNum) {
+        console.log('✅ Matched as Scheduler - Lead:', lead.id, 'Scheduler ID:', lead.meeting_scheduler_id, 'Employee ID:', employeeIdNum);
         roleMetrics.scheduler.signed += 1;
         roleMetrics.scheduler.total += leadTotalInNIS; // Use NIS amount
       }
-      if (lead.meeting_manager_id === employeeIdStr) {
-        console.log('✅ Matched as Manager');
+      if (Number(lead.meeting_manager_id) === employeeIdNum) {
+        console.log('✅ Matched as Manager - Lead:', lead.id, 'Manager ID:', lead.meeting_manager_id, 'Employee ID:', employeeIdNum);
         roleMetrics.manager.signed += 1;
         roleMetrics.manager.total += leadTotalInNIS; // Use NIS amount
       }
-      if (lead.meeting_lawyer_id === employeeIdStr) {
-        console.log('✅ Matched as Helper Closer');
+      if (Number(lead.meeting_lawyer_id) === employeeIdNum) {
+        console.log('✅ Matched as Helper Closer - Lead:', lead.id, 'Helper ID:', lead.meeting_lawyer_id, 'Employee ID:', employeeIdNum);
         roleMetrics.helper_closer.signed += 1;
         roleMetrics.helper_closer.total += leadTotalInNIS; // Use NIS amount
       }
@@ -2139,22 +2225,22 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       // Find the corresponding lead to check roles
       const correspondingLead = signedLeads.find(lead => lead.id === invoice.lead_id);
       if (correspondingLead) {
-        if (correspondingLead.case_handler_id === employeeIdStr) {
+        if (Number(correspondingLead.case_handler_id) === employeeIdNum) {
           roleMetrics.handler.invoiced += invoiceAmount;
         }
-        if (correspondingLead.closer_id === employeeIdStr) {
+        if (Number(correspondingLead.closer_id) === employeeIdNum) {
           roleMetrics.closer.invoiced += invoiceAmount;
         }
-        if (correspondingLead.expert_id === employeeIdStr) {
+        if (Number(correspondingLead.expert_id) === employeeIdNum) {
           roleMetrics.expert.invoiced += invoiceAmount;
         }
-        if (correspondingLead.meeting_scheduler_id === employeeIdStr) {
+        if (Number(correspondingLead.meeting_scheduler_id) === employeeIdNum) {
           roleMetrics.scheduler.invoiced += invoiceAmount;
         }
-        if (correspondingLead.meeting_manager_id === employeeIdStr) {
+        if (Number(correspondingLead.meeting_manager_id) === employeeIdNum) {
           roleMetrics.manager.invoiced += invoiceAmount;
         }
-        if (correspondingLead.meeting_lawyer_id === employeeIdStr) {
+        if (Number(correspondingLead.meeting_lawyer_id) === employeeIdNum) {
           roleMetrics.helper_closer.invoiced += invoiceAmount;
         }
       }
@@ -2265,13 +2351,31 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       totalSignedAcrossAllRoles: totalSignedAcrossAllRoles, // Sum of signed totals across all roles
       expertMetrics: expertMetrics, // Expert-specific metrics
       closerMetrics: closerMetrics, // Closer-specific metrics
-      dateRange: { from: fromDate, to: toDate },
+      dateRange: { from: appliedFromDate, to: appliedToDate },
       signedLeads: signedLeads // Include signed leads for role filtering
     };
     
     console.log('🔍 Final role metrics:', result.roleMetrics);
     console.log('🔍 Total signed leads:', result.totalSigned);
     console.log('🔍 Total invoiced:', result.totalInvoiced);
+    console.log('🔍 Employee ID being matched:', employeeIdNum);
+    console.log('🔍 Sample lead for ID matching:', signedLeads[0] ? {
+      leadId: signedLeads[0].id,
+      case_handler_id: signedLeads[0].case_handler_id,
+      closer_id: signedLeads[0].closer_id,
+      expert_id: signedLeads[0].expert_id,
+      meeting_scheduler_id: signedLeads[0].meeting_scheduler_id,
+      meeting_manager_id: signedLeads[0].meeting_manager_id,
+      meeting_lawyer_id: signedLeads[0].meeting_lawyer_id
+    } : 'No leads');
+    
+    // CRITICAL DEBUG: Check if employee ID matching is working
+    console.log('🚨 CRITICAL DEBUG - Employee ID Matching Issue:');
+    console.log('🚨 Employee ID:', employeeIdNum, 'Type:', typeof employeeIdNum);
+    console.log('🚨 First lead closer_id:', signedLeads[0]?.closer_id, 'Type:', typeof signedLeads[0]?.closer_id);
+    console.log('🚨 First lead meeting_scheduler_id:', signedLeads[0]?.meeting_scheduler_id, 'Type:', typeof signedLeads[0]?.meeting_scheduler_id);
+    console.log('🚨 Are they equal?', Number(signedLeads[0]?.closer_id) === employeeIdNum);
+    console.log('🚨 Are they equal (scheduler)?', Number(signedLeads[0]?.meeting_scheduler_id) === employeeIdNum);
     
     return result;
   };
@@ -2288,7 +2392,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     if (activeTab === 'overview' && employee) {
       fetchPerformanceData();
     }
-  }, [activeTab, employee, fetchPerformanceData, fromDate, toDate]);
+  }, [activeTab, employee, fetchPerformanceData, appliedFromDate, appliedToDate]);
 
   // Fetch availability data when availability tab is selected
   React.useEffect(() => {
@@ -2318,6 +2422,21 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
 
   if (!employee) return null;
 
+  console.log('🔍 EmployeeModal UI - Employee data received:', {
+    employeeId: employee.id,
+    employeeIdType: typeof employee.id,
+    employeeDisplayName: employee.display_name,
+    employeeObject: employee
+  });
+
+  console.log('🔍 EmployeeModal UI - performanceData state:', {
+    performanceData: performanceData,
+    hasPerformanceData: !!performanceData,
+    roleMetrics: performanceData?.roleMetrics,
+    totalSigned: performanceData?.totalSigned,
+    totalInvoiced: performanceData?.totalInvoiced
+  });
+
   const metrics = employee.performance_metrics || {
     total_meetings: 0,
     completed_meetings: 0,
@@ -2326,8 +2445,8 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     last_activity: 'No activity'
   };
 
-  const completionRate = metrics.total_meetings > 0 
-    ? Math.round((metrics.completed_meetings / metrics.total_meetings) * 100) 
+  const completionRate = (metrics.total_meetings || 0) > 0 
+    ? Math.round(((metrics.completed_meetings || 0) / (metrics.total_meetings || 1)) * 100) 
     : 0;
 
   // Function to fetch leads for a specific role (only signed leads from performance data)
@@ -2341,7 +2460,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
 
       // Get the signed leads from our performance data
       const signedLeads = performanceData.signedLeads || [];
-      const employeeIdStr = String(employee.id);
+      const employeeIdNum = Number(employee.id);
       
       // Filter leads by role
       let roleLeads: any[] = [];
@@ -2349,26 +2468,26 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       switch (role.toLowerCase()) {
         case 'handler':
         case 'h':
-          roleLeads = signedLeads.filter((lead: any) => lead.case_handler_id === employeeIdStr);
+          roleLeads = signedLeads.filter((lead: any) => Number(lead.case_handler_id) === employeeIdNum);
           break;
         case 'closer':
         case 'c':
-          roleLeads = signedLeads.filter((lead: any) => lead.closer_id === employeeIdStr);
+          roleLeads = signedLeads.filter((lead: any) => Number(lead.closer_id) === employeeIdNum);
           break;
         case 'expert':
         case 'e':
-          roleLeads = signedLeads.filter((lead: any) => lead.expert_id === employeeIdStr);
+          roleLeads = signedLeads.filter((lead: any) => Number(lead.expert_id) === employeeIdNum);
           break;
         case 'scheduler':
         case 's':
-          roleLeads = signedLeads.filter((lead: any) => lead.meeting_scheduler_id === employeeIdStr);
+          roleLeads = signedLeads.filter((lead: any) => Number(lead.meeting_scheduler_id) === employeeIdNum);
           break;
         case 'manager':
         case 'z':
-          roleLeads = signedLeads.filter((lead: any) => lead.meeting_manager_id === employeeIdStr);
+          roleLeads = signedLeads.filter((lead: any) => Number(lead.meeting_manager_id) === employeeIdNum);
           break;
         case 'helper-closer':
-          roleLeads = signedLeads.filter((lead: any) => lead.meeting_lawyer_id === employeeIdStr);
+          roleLeads = signedLeads.filter((lead: any) => Number(lead.meeting_lawyer_id) === employeeIdNum);
           break;
         default:
           roleLeads = [];
@@ -2526,8 +2645,8 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     };
   };
 
-  const averageRevenuePerMeeting = metrics.completed_meetings > 0 
-    ? metrics.total_revenue / metrics.completed_meetings 
+  const averageRevenuePerMeeting = (metrics.completed_meetings || 0) > 0 
+    ? (metrics.total_revenue || 0) / (metrics.completed_meetings || 1) 
     : 0;
 
   // Helper function to get role metrics from performance data
@@ -3218,13 +3337,16 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                 />
               </div>
               <button
+                className="btn btn-primary btn-sm"
+                onClick={handleApplyDateFilter}
+                disabled={isApplyingFilter}
+                title="Apply date filter"
+              >
+                {isApplyingFilter ? 'Applying...' : 'Apply'}
+              </button>
+              <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  setFromDate('');
-                  setToDate('');
-                  // Reset to default (last 30 days) and refetch data
-                  fetchPerformanceData();
-                }}
+                onClick={handleClearDateFilter}
                 title="Clear filters and show last 30 days"
               >
                 Clear
@@ -3255,18 +3377,30 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
               />
             </div>
             <button
+              className="btn btn-primary btn-sm"
+              onClick={handleApplyDateFilter}
+              disabled={isApplyingFilter}
+              title="Apply date filter"
+            >
+              {isApplyingFilter ? 'Applying...' : 'Apply'}
+            </button>
+            <button
               className="btn btn-ghost btn-sm"
-              onClick={() => {
-                setFromDate('');
-                setToDate('');
-                // Reset to default (last 30 days) and refetch data
-                fetchPerformanceData();
-              }}
+              onClick={handleClearDateFilter}
               title="Clear filters and show last 30 days"
             >
               Clear
             </button>
           </div>
+          
+          {/* Active Filter Badge */}
+          {(appliedFromDate || appliedToDate) && (
+            <div className="mt-3">
+              <span className="badge badge-primary badge-sm">
+                Filtered: {appliedFromDate || 'All time'} to {appliedToDate || 'Today'}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Tab Navigation */}
@@ -3407,7 +3541,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
               <div className="space-y-4">
                 <div className="flex justify-between items-center">
                   <span className="text-sm">Total Revenue</span>
-                  <span className="font-semibold">{formatCurrency(metrics.total_revenue)}</span>
+                  <span className="font-semibold">{formatCurrency(metrics.total_revenue || 0)}</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm">Avg per Meeting</span>
@@ -4158,7 +4292,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                 <div className="w-2 h-2 bg-primary rounded-full"></div>
                 <div className="flex-1">
                   <div className="font-medium">Last Activity</div>
-                  <div className="text-sm text-gray-600">{formatDate(metrics.last_activity)}</div>
+                  <div className="text-sm text-gray-600">{formatDate(metrics.last_activity || 'No activity')}</div>
                 </div>
               </div>
               <div className="flex items-center gap-3 p-3 bg-white rounded-lg shadow-md hover:shadow-lg transition-shadow duration-200">
@@ -4172,7 +4306,7 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
                 <div className="w-2 h-2 bg-warning rounded-full"></div>
                 <div className="flex-1">
                   <div className="font-medium">Revenue Generated</div>
-                  <div className="text-sm text-gray-600">{formatCurrency(metrics.total_revenue)} total</div>
+                  <div className="text-sm text-gray-600">{formatCurrency(metrics.total_revenue || 0)} total</div>
                 </div>
               </div>
             </div>

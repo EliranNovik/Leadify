@@ -492,13 +492,44 @@ const NewCasesPage: React.FC = () => {
     const fetchEmployees = async () => {
       try {
         const { data, error } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name')
-          .not('display_name', 'is', null)
-          .order('display_name');
+          .from('users')
+          .select(`
+            id,
+            full_name,
+            email,
+            employee_id,
+            is_active,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
+          .not('employee_id', 'is', null)
+          .eq('is_active', true);
         
         if (error) throw error;
-        setEmployees(data || []);
+        
+        // Process the data to match the expected format
+        const processedEmployees = (data || [])
+          .filter(user => user.tenants_employee && user.email)
+          .map(user => {
+            const employee = user.tenants_employee as any;
+            return {
+              id: employee.id,
+              display_name: employee.display_name
+            };
+          });
+
+        // Deduplicate by employee ID to prevent duplicates
+        const uniqueEmployeesMap = new Map();
+        processedEmployees.forEach(emp => {
+          if (!uniqueEmployeesMap.has(emp.id)) {
+            uniqueEmployeesMap.set(emp.id, emp);
+          }
+        });
+        const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
+        
+        setEmployees(uniqueEmployees);
       } catch (error) {
         console.error('Error fetching employees:', error);
       }

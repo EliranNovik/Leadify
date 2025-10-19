@@ -149,17 +149,17 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
           const { data: userData, error: userError } = await supabase
             .from('users')
             .select(`
-              ids,
+              id,
               full_name,
               email,
               employee_id,
-              tenants_employee!users_employee_id_fkey(
+              tenants_employee!employee_id(
                 id,
                 display_name,
                 official_name,
                 bonuses_role,
                 department_id,
-                tenant_departement!tenants_employee_department_id_fkey(
+                tenant_departement!department_id(
                   id,
                   name
                 )

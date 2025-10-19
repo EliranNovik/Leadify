@@ -22,10 +22,11 @@ import {
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 
 interface User {
-  ids: string;
+  id: string;
   full_name: string;
   email: string;
   employee_id?: number;
+  is_active?: boolean;
   tenants_employee?: {
     display_name: string;
     bonuses_role: string;
@@ -62,6 +63,12 @@ interface ConversationParticipant {
   user: User;
 }
 
+interface MessageReaction {
+  user_id: string;
+  emoji: string;
+  timestamp: string;
+}
+
 interface Message {
   id: number;
   conversation_id: number;
@@ -76,7 +83,7 @@ interface Message {
   attachment_type?: string;
   attachment_size?: number;
   reply_to_message_id?: number;
-  reactions: any[];
+  reactions: MessageReaction[];
   sender: User;
   reply_to_message?: Message;
 }
@@ -117,6 +124,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Emoji picker state
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   
+  // Lead search state
+  const [isLeadSearchOpen, setIsLeadSearchOpen] = useState(false);
+  const [leadSearchQuery, setLeadSearchQuery] = useState('');
+  const [leadSearchResults, setLeadSearchResults] = useState<any[]>([]);
+  const [isSearchingLeads, setIsSearchingLeads] = useState(false);
+  const [selectedLead, setSelectedLead] = useState<any>(null);
+  
+  // Reactions state
+  const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
+  const [reactingMessageId, setReactingMessageId] = useState<number | null>(null);
+  
   // Typing indicators removed - causing too many issues
   
   // Refs
@@ -133,6 +151,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const getRoleDisplayName = (role: string): string => {
     const roleMap: { [key: string]: string } = {
       'pm': 'Project Manager',
+      'p': 'Partner',
       'se': 'Secretary',
       'dv': 'Developer',
       'dm': 'Department Manager',
@@ -144,7 +163,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       'l': 'Lawyer',
       'a': 'Administrator',
       's': 'Scheduler',
-      'c': 'Coordinator',
+      'c': 'Closer',
       'adv': 'Advocate',
       'advocate': 'Advocate',
       'handler': 'Handler',
@@ -153,14 +172,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       'lawyer': 'Lawyer',
       'admin': 'Administrator',
       'coordinator': 'Coordinator',
-      'scheduler': 'Scheduler'
+      'scheduler': 'Scheduler',
+      'n': 'Employee', // Common abbreviation for 'No Role' or 'New'
+      'ma': 'Marketing Assistant', // Marketing Assistant
+      'department manager': 'Department Manager',
+      'book keeper': 'Book Keeper',
+      'marketing': 'Marketing',
+      'sales': 'Sales'
     };
-    return roleMap[role?.toLowerCase()] || role || 'User';
+    
+    if (!role || role.trim() === '') return 'Employee';
+    
+    const cleanRole = role.toLowerCase().trim();
+    return roleMap[cleanRole] || role || 'Employee';
   };
 
   const getInitials = (name: string | null | undefined): string => {
     if (!name || name.trim() === '') return 'U';
-    return name.split(' ').map(n => n[0]).join('').toUpperCase().substring(0, 2);
+    const cleanName = name.trim();
+    const parts = cleanName.split(' ').filter(part => part.length > 0);
+    if (parts.length === 0) return 'U';
+    if (parts.length === 1) return parts[0][0].toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
   // Helper function to detect if message contains only emojis
@@ -174,6 +207,189 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
     
     return hasNonAscii && isShort;
+  };
+
+  // Helper function to render clickable links in messages
+  const renderMessageContent = (content: string, isOwn: boolean = false) => {
+    // Check if content contains markdown-style links
+    const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = linkRegex.exec(content)) !== null) {
+      // Add text before the link
+      if (match.index > lastIndex) {
+        parts.push(content.slice(lastIndex, match.index));
+      }
+      
+      // Add the clickable link with appropriate styling based on message ownership
+      parts.push(
+        <a
+          key={match.index}
+          href={match[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={isOwn ? "text-white hover:text-gray-200 underline" : "text-blue-600 hover:text-blue-800 underline"}
+        >
+          {match[1]}
+        </a>
+      );
+      
+      lastIndex = match.index + match[0].length;
+    }
+    
+    // Add remaining text after the last link
+    if (lastIndex < content.length) {
+      parts.push(content.slice(lastIndex));
+    }
+    
+    // If no links found, return original content
+    return parts.length > 0 ? parts : content;
+  };
+
+  // Lead search functionality
+  const searchLeads = async (query: string) => {
+    if (!query.trim() || query.length < 2) {
+      setLeadSearchResults([]);
+      return;
+    }
+
+    setIsSearchingLeads(true);
+    try {
+      // Search in both leads and leads_lead tables
+      const { data: leadsData, error: leadsError } = await supabase
+        .from('leads')
+        .select(`
+          id,
+          lead_number,
+          name,
+          email,
+          phone,
+          stage
+        `)
+        .or(`lead_number.ilike.%${query}%,name.ilike.%${query}%,email.ilike.%${query}%`)
+        .limit(10);
+
+      const { data: legacyLeadsData, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          lead_number,
+          name,
+          email,
+          phone,
+          stage
+        `)
+        .or(`lead_number.ilike.%${query}%,name.ilike.%${query}%,email.ilike.%${query}%`)
+        .limit(10);
+
+      if (leadsError) console.error('Error searching leads:', leadsError);
+      if (legacyError) console.error('Error searching legacy leads:', legacyError);
+
+      // Combine and deduplicate results
+      const allLeads = [...(leadsData || []), ...(legacyLeadsData || [])];
+      const uniqueLeads = allLeads.filter((lead, index, self) => 
+        index === self.findIndex(l => l.id === lead.id && l.lead_number === lead.lead_number)
+      );
+
+      setLeadSearchResults(uniqueLeads.slice(0, 10));
+    } catch (error) {
+      console.error('Error in lead search:', error);
+      setLeadSearchResults([]);
+    } finally {
+      setIsSearchingLeads(false);
+    }
+  };
+
+  // Handle lead selection
+  const handleLeadSelect = (lead: any) => {
+    setSelectedLead(lead);
+    setIsLeadSearchOpen(false);
+    setLeadSearchQuery('');
+    setLeadSearchResults([]);
+    
+    // Add lead link to message - use deployed domain
+    const deployedDomain = 'https://leadify-crm.onrender.com';
+    const leadLink = `[Lead #${lead.lead_number} - ${lead.name}](${deployedDomain}/clients/${lead.lead_number})`;
+    setNewMessage(prev => prev + leadLink + ' ');
+  };
+
+  // Reaction functions
+  const handleAddReaction = async (messageId: number, emoji: string) => {
+    if (!currentUser) return;
+    
+    try {
+      const { data, error } = await supabase.rpc('update_message_reaction', {
+        message_id_param: messageId,
+        user_id_param: currentUser.id,
+        emoji_param: emoji,
+        action_param: 'add'
+      });
+      
+      if (error) throw error;
+      
+      // Update local message state
+      setMessages(prev => 
+        prev.map(msg => 
+          msg.id === messageId 
+            ? { ...msg, reactions: data }
+            : msg
+        )
+      );
+      
+      setShowReactionPicker(null);
+      setReactingMessageId(null);
+    } catch (error) {
+      console.error('Error adding reaction:', error);
+      toast.error('Failed to add reaction');
+    }
+  };
+
+  const handleRemoveReaction = async (messageId: number, emoji: string) => {
+    if (!currentUser) return;
+    
+    try {
+      const { data, error } = await supabase.rpc('update_message_reaction', {
+        message_id_param: messageId,
+        user_id_param: currentUser.id,
+        emoji_param: emoji,
+        action_param: 'remove'
+      });
+      
+      if (error) throw error;
+      
+      // Update local message state
+      setMessages(prev => 
+        prev.map(msg => 
+          msg.id === messageId 
+            ? { ...msg, reactions: data }
+            : msg
+        )
+      );
+    } catch (error) {
+      console.error('Error removing reaction:', error);
+      toast.error('Failed to remove reaction');
+    }
+  };
+
+  // Get reactions grouped by emoji
+  const getReactionsByEmoji = (reactions: MessageReaction[]) => {
+    const grouped: { [emoji: string]: MessageReaction[] } = {};
+    reactions.forEach(reaction => {
+      if (!grouped[reaction.emoji]) {
+        grouped[reaction.emoji] = [];
+      }
+      grouped[reaction.emoji].push(reaction);
+    });
+    return grouped;
+  };
+
+  // Check if current user has reacted with specific emoji
+  const hasUserReacted = (reactions: MessageReaction[], emoji: string) => {
+    return reactions.some(reaction => 
+      reaction.user_id === currentUser?.id && reaction.emoji === emoji
+    );
   };
 
   const formatMessageTime = (timestamp: string): string => {
@@ -259,7 +475,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     
     // For direct conversations (exactly 2 participants)
     if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
-      const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.ids);
+      const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.id);
       if (otherParticipant?.user) {
         const name = otherParticipant.user.tenants_employee?.display_name || 
                      otherParticipant.user.full_name || 
@@ -276,7 +492,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const getConversationAvatar = (conversation: Conversation): JSX.Element => {
     // For direct conversations with exactly 2 participants
     if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
-      const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.ids);
+      const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.id);
       
       if (otherParticipant?.user) {
         const name = otherParticipant.user.tenants_employee?.display_name || 
@@ -334,7 +550,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const { data: userData, error } = await supabase
           .from('users')
           .select(`
-            ids,
+            id,
             full_name,
             email,
             employee_id,
@@ -363,7 +579,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         
         // Initialize WebSocket connection after user data is set
         if (userData && isOpen) {
-          websocketService.connect(userData.ids);
+          websocketService.connect(userData.id);
 
           websocketService.onConnect(() => {
             console.log('🔌 WebSocket connected');
@@ -399,7 +615,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const { data: userConversations, error: convError } = await supabase
         .from('conversation_participants')
         .select('conversation_id')
-        .eq('user_id', currentUser.ids)
+        .eq('user_id', currentUser.id)
         .eq('is_active', true);
 
       if (convError) {
@@ -435,10 +651,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             is_active,
             role,
             user:users!user_id(
-              ids,
+              id,
               full_name,
               email,
               employee_id,
+              is_active,
               tenants_employee!users_employee_id_fkey(
                 display_name,
                 bonuses_role,
@@ -465,7 +682,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         (conversationsData || []).map(async (conv: any) => {
           // Get unread count for this conversation
           const userParticipant = conv.conversation_participants.find(
-            (p: ConversationParticipant) => p.user_id === currentUser.ids
+            (p: ConversationParticipant) => p.user_id === currentUser.id
           );
           
           let unreadCount = 0;
@@ -475,19 +692,38 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               .select('id')
               .eq('conversation_id', conv.id)
               .gt('sent_at', userParticipant.last_read_at)
-              .neq('sender_id', currentUser.ids)
+              .neq('sender_id', currentUser.id)
               .eq('is_deleted', false);
             
             unreadCount = unreadMessages?.length || 0;
           }
 
-          // Remove duplicate participants and filter only active ones
-          const uniqueParticipants = conv.conversation_participants
-            .filter((participant: any) => participant.is_active)
-            .filter(
-              (participant: any, index: number, self: any[]) => 
-                index === self.findIndex(p => p.user_id === participant.user_id)
-            );
+          // Remove duplicate participants and filter only active ones (both participant and user must be active)
+          const activeParticipants = conv.conversation_participants.filter((participant: any) => {
+            const user = participant.user;
+            const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) && 
+                               (user?.full_name || user?.tenants_employee?.display_name).length > 1;
+            const isNotExplicitlyInactive = user?.is_active !== false;
+            return participant.is_active && 
+                   isNotExplicitlyInactive && 
+                   hasValidName;
+          });
+          const uniqueParticipants = activeParticipants.filter(
+            (participant: any, index: number, self: any[]) => 
+              index === self.findIndex(p => p.user_id === participant.user_id)
+          );
+
+          console.log('🔍 Conversation participants filtered:', {
+            conversationId: conv.id,
+            totalParticipants: conv.conversation_participants?.length || 0,
+            activeParticipants: activeParticipants.length,
+            uniqueParticipants: uniqueParticipants.length,
+            sampleParticipant: activeParticipants[0] ? {
+              user_id: activeParticipants[0].user_id,
+              name: activeParticipants[0].user?.full_name || activeParticipants[0].user?.tenants_employee?.display_name,
+              is_active: activeParticipants[0].user?.is_active
+            } : null
+          });
 
           return {
             ...conv,
@@ -513,7 +749,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const { data: userConversations, error: convError } = await supabase
         .from('conversation_participants')
         .select('conversation_id')
-        .eq('user_id', currentUser.ids)
+        .eq('user_id', currentUser.id)
         .eq('is_active', true);
 
       if (convError) {
@@ -551,10 +787,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             is_active,
             role,
             user:users!user_id(
-              ids,
+              id,
               full_name,
               email,
               employee_id,
+              is_active,
               tenants_employee!users_employee_id_fkey(
                 display_name,
                 bonuses_role,
@@ -592,7 +829,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           
           // Get unread count for this conversation
           const userParticipant = conv.conversation_participants.find(
-            (p: ConversationParticipant) => p.user_id === currentUser.ids
+            (p: ConversationParticipant) => p.user_id === currentUser.id
           );
           
           let unreadCount = 0;
@@ -602,19 +839,38 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               .select('id')
               .eq('conversation_id', conv.id)
               .gt('sent_at', userParticipant.last_read_at)
-              .neq('sender_id', currentUser.ids)
+              .neq('sender_id', currentUser.id)
               .eq('is_deleted', false);
             
             unreadCount = unreadMessages?.length || 0;
           }
 
-          // Remove duplicate participants and filter only active ones
-          const uniqueParticipants = conv.conversation_participants
-            .filter((participant: any) => participant.is_active)
-            .filter(
-              (participant: any, index: number, self: any[]) => 
-                index === self.findIndex(p => p.user_id === participant.user_id)
-            );
+          // Remove duplicate participants and filter only active ones (both participant and user must be active)
+          const activeParticipants = conv.conversation_participants.filter((participant: any) => {
+            const user = participant.user;
+            const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) && 
+                               (user?.full_name || user?.tenants_employee?.display_name).length > 1;
+            const isNotExplicitlyInactive = user?.is_active !== false;
+            return participant.is_active && 
+                   isNotExplicitlyInactive && 
+                   hasValidName;
+          });
+          const uniqueParticipants = activeParticipants.filter(
+            (participant: any, index: number, self: any[]) => 
+              index === self.findIndex(p => p.user_id === participant.user_id)
+          );
+
+          console.log('🔍 Conversation participants filtered:', {
+            conversationId: conv.id,
+            totalParticipants: conv.conversation_participants?.length || 0,
+            activeParticipants: activeParticipants.length,
+            uniqueParticipants: uniqueParticipants.length,
+            sampleParticipant: activeParticipants[0] ? {
+              user_id: activeParticipants[0].user_id,
+              name: activeParticipants[0].user?.full_name || activeParticipants[0].user?.tenants_employee?.display_name,
+              is_active: activeParticipants[0].user?.is_active
+            } : null
+          });
 
           const processedConv = {
             ...conv,
@@ -662,10 +918,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           reply_to_message_id,
           reactions,
           sender:users!sender_id(
-            ids,
+            id,
             full_name,
             email,
             employee_id,
+            is_active,
             tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
@@ -676,7 +933,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             id,
             content,
             sender:users!sender_id(
+              id,
               full_name,
+              is_active,
               tenants_employee!users_employee_id_fkey(display_name)
             )
           )
@@ -697,7 +956,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (currentUser) {
         await supabase.rpc('mark_conversation_as_read', {
           conv_id: conversationId,
-          user_uuid: currentUser.ids
+          user_uuid: currentUser.id
         });
         
         // Update local unread count
@@ -723,22 +982,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const { data: usersData, error } = await supabase
         .from('users')
         .select(`
-          ids,
+          id,
           full_name,
           email,
           employee_id,
-          tenants_employee!users_employee_id_fkey(
+          is_active,
+          tenants_employee!employee_id(
             display_name,
             bonuses_role,
             department_id,
             photo_url,
-            tenant_departement!tenants_employee_department_id_fkey(
+            tenant_departement!department_id(
               name
             )
           )
         `)
-        .eq('is_active', true)
-        .neq('ids', currentUser.ids)
+        .not('employee_id', 'is', null)
+        .neq('id', currentUser.id)
         .order('full_name', { ascending: true });
 
       if (error) {
@@ -747,6 +1007,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return;
       }
 
+      // Debug: Log all users to see what we're getting
+      console.log('🔍 RMQ Messages - Raw users data:', {
+        totalUsers: usersData?.length || 0,
+        sampleUsers: usersData?.slice(0, 3).map(user => ({
+          id: user.id,
+          full_name: user.full_name,
+          is_active: (user as any).is_active,
+          hasEmployee: !!user.tenants_employee
+        })) || []
+      });
+
       // Remove duplicates and filter out users without basic info
       const uniqueUsers = (usersData || []).filter((user, index, self) => {
         // Check if user has either full_name or display_name from employee
@@ -754,10 +1025,39 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           (Array.isArray(user.tenants_employee) ? user.tenants_employee[0] : user.tenants_employee) : 
           null;
         const hasName = user.full_name || empData?.display_name;
+        const isActive = (user as any).is_active === true;
         
-        return user.ids && 
-               hasName && 
-               index === self.findIndex(u => u.ids === user.ids);
+        // Include users with proper names, but exclude those explicitly marked as inactive
+        const isValidName = hasName && hasName.length > 1; // Filter out single-letter names
+        const isNotExplicitlyInactive = (user as any).is_active !== false; // Include if not explicitly false
+        const shouldInclude = user.id && isValidName && isNotExplicitlyInactive && index === self.findIndex(u => u.id === user.id);
+        
+        console.log('🔍 User filter check:', {
+          id: user.id,
+          full_name: user.full_name,
+          hasName: !!hasName,
+          isValidName: isValidName,
+          isActive: isActive,
+          isNotExplicitlyInactive: isNotExplicitlyInactive,
+          hasEmployee: !!user.tenants_employee,
+          passes: shouldInclude,
+          reason: shouldInclude ? 'user has valid name and not explicitly inactive' : 
+                  !isValidName ? 'user name is too short' : 
+                  !isNotExplicitlyInactive ? 'user is explicitly marked as inactive' : 
+                  'other filtering criteria'
+        });
+        
+        return shouldInclude;
+      });
+
+      console.log('🔍 RMQ Messages - Users loaded:', {
+        totalUsers: usersData?.length || 0,
+        activeUsers: uniqueUsers.length,
+        sampleUser: uniqueUsers[0] ? {
+          id: uniqueUsers[0].id,
+          name: uniqueUsers[0].full_name,
+          is_active: (uniqueUsers[0] as any).is_active
+        } : null
       });
 
       setAllUsers(uniqueUsers as unknown as User[]);
@@ -873,7 +1173,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .from('messages')
         .insert({
           conversation_id: selectedConversation.id,
-          sender_id: currentUser.ids,
+          sender_id: currentUser.id,
           content: file.name,
           message_type: messageType,
           attachment_url: fileUrl,
@@ -893,10 +1193,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           attachment_type,
           attachment_size,
           sender:users!sender_id(
-            ids,
+            id,
             full_name,
             email,
             employee_id,
+            is_active,
             tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
@@ -960,7 +1261,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .from('messages')
         .insert({
           conversation_id: selectedConversation.id,
-          sender_id: currentUser.ids,
+          sender_id: currentUser.id,
           content: newMessage.trim(),
           message_type: 'text'
         })
@@ -972,10 +1273,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           message_type,
           sent_at,
           sender:users!sender_id(
-            ids,
+            id,
             full_name,
             email,
             employee_id,
+            is_active,
             tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
@@ -1034,7 +1336,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         c.type === 'direct' && 
         c.participants?.length === 2 &&
         c.participants.some(p => p.user_id === userId) &&
-        c.participants.some(p => p.user_id === currentUser.ids)
+        c.participants.some(p => p.user_id === currentUser.id)
       );
       
       if (existingConv) {
@@ -1050,7 +1352,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const { data: conversationId, error } = await supabase.rpc(
         'create_direct_conversation',
         {
-          user1_uuid: currentUser.ids,
+          user1_uuid: currentUser.id,
           user2_uuid: userId
         }
       );
@@ -1064,31 +1366,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Wait a bit for the database to be consistent, then refresh conversations
       setTimeout(async () => {
-      await fetchConversations();
-      
-        // Find the newly created conversation
-          const newConv = conversations.find(c => c.id === conversationId);
+        // Fetch conversations and get the updated list
+        const updatedConversations = await getUpdatedConversations();
         console.log('🔍 Looking for new conversation with ID:', conversationId);
-        console.log('🔍 Available conversations:', conversations.map(c => ({ id: c.id, type: c.type, participants: c.participants?.length || 0 })));
+        console.log('🔍 Available conversations:', updatedConversations.map(c => ({ id: c.id, type: c.type, participants: c.participants?.length || 0 })));
+        
+        // Find the newly created conversation in the updated list
+        const newConv = updatedConversations.find(c => c.id === conversationId);
           
-          if (newConv) {
+        if (newConv) {
           console.log('🔍 Found new conversation:', newConv);
-            setSelectedConversation(newConv);
-            fetchMessages(newConv.id);
-            setShowMobileConversations(false);
-            setActiveTab('chats');
+          setSelectedConversation(newConv);
+          fetchMessages(newConv.id);
+          setShowMobileConversations(false);
+          setActiveTab('chats');
           toast.success('Direct conversation started');
-          } else {
+        } else {
           console.error('🔍 Could not find created conversation, trying again...');
           // Try one more time after a longer delay
           setTimeout(async () => {
-            await fetchConversations();
-            const retryConv = conversations.find(c => c.id === conversationId);
+            const retryConversations = await getUpdatedConversations();
+            const retryConv = retryConversations.find(c => c.id === conversationId);
             if (retryConv) {
               setSelectedConversation(retryConv);
               fetchMessages(retryConv.id);
               setShowMobileConversations(false);
               setActiveTab('chats');
+              toast.success('Direct conversation started');
             } else {
               toast.error('Failed to find the created conversation');
             }
@@ -1155,7 +1459,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .insert({
           title: newGroupTitle.trim(),
           type: 'group',
-          created_by: currentUser.ids,
+          created_by: currentUser.id,
           description: newGroupDescription.trim() || null
         })
         .select()
@@ -1165,7 +1469,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       // Add participants (including creator)
       const participantsToAdd = [
-        { conversation_id: conversationData.id, user_id: currentUser.ids, role: 'admin' },
+        { conversation_id: conversationData.id, user_id: currentUser.id, role: 'admin' },
         ...selectedUsers.map(userId => ({
           conversation_id: conversationData.id,
           user_id: userId,
@@ -1196,7 +1500,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           const tempConversation = {
             ...conversationData,
             participants: [
-              { user_id: currentUser.ids, user: currentUser },
+              { user_id: currentUser.id, user: currentUser },
               ...selectedUsers.map(userId => ({ user_id: userId }))
             ]
           };
@@ -1337,7 +1641,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }, 50);
   };
 
-  // Close emoji picker when clicking outside
+  // Close emoji picker, lead search, and reaction picker when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (isEmojiPickerOpen) {
@@ -1352,13 +1656,40 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           setIsEmojiPickerOpen(false);
         }
       }
+      
+      if (isLeadSearchOpen) {
+        const target = event.target as Element;
+        
+        // Check if click is inside lead search dropdown or plus button
+        const isInsideLeadSearch = target.closest('.lead-search-dropdown') ||
+                                  target.closest('button[title="Attach Lead"]');
+        
+        if (!isInsideLeadSearch) {
+          setIsLeadSearchOpen(false);
+          setLeadSearchQuery('');
+          setLeadSearchResults([]);
+        }
+      }
+      
+      if (showReactionPicker) {
+        const target = event.target as Element;
+        
+        // Check if click is inside reaction picker or on a message bubble
+        const isInsideReactionPicker = target.closest('button[title^="React with"]') ||
+                                      target.closest('[data-message-id]');
+        
+        if (!isInsideReactionPicker) {
+          setShowReactionPicker(null);
+          setReactingMessageId(null);
+        }
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEmojiPickerOpen]);
+  }, [isEmojiPickerOpen, isLeadSearchOpen, showReactionPicker]);
 
   // WebSocket message handler - separate from initialization
   useEffect(() => {
@@ -1386,12 +1717,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           }
           
           // Enhance WebSocket message with real user data from conversation participants
-          const enhancedMessage = { ...message } as Message;
+          const enhancedMessage = { ...message } as unknown as Message;
           
           // Find the sender in the conversation participants to get real user data
           const senderParticipant = selectedConversation.participants.find(p => p.user_id === message.sender_id);
           if (senderParticipant && senderParticipant.user) {
-            enhancedMessage.sender = senderParticipant.user;
+            // Ensure the sender has the correct id field
+            const senderUser = {
+              ...senderParticipant.user,
+              id: (senderParticipant.user as any).id || (senderParticipant.user as any).ids
+            } as User;
+            enhancedMessage.sender = senderUser;
           }
           
           // Ensure attachment fields are properly set
@@ -1438,7 +1774,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (selectedConversation && currentUser) {
       console.log('🔌 Joining conversation room:', selectedConversation.id);
       websocketService.joinConversation(selectedConversation.id);
-      websocketService.markAsRead(selectedConversation.id, currentUser.ids);
+      websocketService.markAsRead(selectedConversation.id, currentUser.id);
     }
     
     return () => {
@@ -1447,7 +1783,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         websocketService.leaveConversation(selectedConversation.id);
       }
     };
-  }, [selectedConversation?.id, currentUser?.ids]); // Only depend on IDs to prevent constant re-joining
+  }, [selectedConversation?.id, currentUser?.id]); // Only depend on IDs to prevent constant re-joining
 
   // Typing indicators removed - no cleanup needed
 
@@ -1630,37 +1966,58 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               </div>
             ) : (
               filteredUsers.map((user) => {
-                const userName = user.tenants_employee?.display_name || user.full_name || 'Unknown User';
-                const userRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
-                const userDept = user.tenants_employee?.tenant_departement?.name;
+                // More robust name handling
+                const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
+                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
+                  ? rawDisplayName.trim() 
+                  : `User ${user.id.slice(-4)}`;
+                
+                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
+                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
+                const userDept = user.tenants_employee?.tenant_departement?.name || '';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
 
+                // Debug logging to help identify the issue
+                console.log('🔍 Contact rendering:', {
+                  userId: user.id,
+                  userName: userName,
+                  userRole: userRole,
+                  userDept: userDept,
+                  hasEmployee: !!user.tenants_employee,
+                  displayName: user.tenants_employee?.display_name,
+                  fullName: user.full_name,
+                  hasPhoto: !!userPhoto,
+                  initials: getInitials(userName)
+                });
+
                 return (
                   <div
-                    key={user.ids}
-                    onClick={() => startDirectConversation(user.ids)}
+                    key={user.id}
+                    onClick={() => startDirectConversation(user.id)}
                     className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors"
                   >
                     <div className="flex items-center gap-3">
                       {userPhoto && userPhoto.trim() !== '' ? (
-                        <img
-                          src={userPhoto}
-                          alt={userName}
-                          className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
-                          onError={(e) => {
-                            // Replace with colored circle if image fails to load
-                            const target = e.target as HTMLImageElement;
-                            const parent = target.parentElement;
-                            if (parent) {
-                              parent.innerHTML = `
-                                <div class="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
-                                  ${getInitials(userName)}
-                                </div>
-                              `;
-                            }
-                          }}
-                        />
+                        <div className="w-12 h-12 rounded-full border-2 border-gray-200 overflow-hidden">
+                          <img
+                            src={userPhoto}
+                            alt={userName}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              // Replace with colored circle if image fails to load
+                              const target = e.target as HTMLImageElement;
+                              const container = target.parentElement;
+                              if (container) {
+                                container.innerHTML = `
+                                  <div class="w-full h-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
+                                    ${getInitials(userName)}
+                                  </div>
+                                `;
+                              }
+                            }}
+                          />
+                        </div>
                       ) : (
                         <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
                           {getInitials(userName)}
@@ -1669,7 +2026,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-gray-900 truncate">
-                          {userName}
+                          {userName || `User ${user.id.slice(-4)}`}
                           {!hasCompleteInfo && (
                             <span className="ml-2 text-xs text-orange-500 bg-orange-100 px-2 py-1 rounded-full">
                               Incomplete Profile
@@ -1678,7 +2035,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         </div>
                         <div className="text-sm text-gray-500 truncate">
                           {userRole} {userDept && `• ${userDept}`}
-                          {!hasCompleteInfo && !userRole && !userDept && (
+                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
                             <span className="text-orange-500">Profile setup needed</span>
                           )}
                         </div>
@@ -1827,37 +2184,45 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               </div>
             ) : (
               filteredUsers.map((user) => {
-                const userName = user.tenants_employee?.display_name || user.full_name || 'Unknown User';
-                const userRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
-                const userDept = user.tenants_employee?.tenant_departement?.name;
+                // More robust name handling
+                const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
+                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
+                  ? rawDisplayName.trim() 
+                  : `User ${user.id.slice(-4)}`;
+                
+                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
+                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
+                const userDept = user.tenants_employee?.tenant_departement?.name || '';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
 
                 return (
                   <div
-                    key={user.ids}
-                    onClick={() => startDirectConversation(user.ids)}
+                    key={user.id}
+                    onClick={() => startDirectConversation(user.id)}
                     className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100"
                   >
                     <div className="flex items-center gap-3">
                       {userPhoto && userPhoto.trim() !== '' ? (
-                        <img
-                          src={userPhoto}
-                          alt={userName}
-                          className="w-12 h-12 rounded-full object-cover border-2 border-gray-200"
-                          onError={(e) => {
-                            // Replace with colored circle if image fails to load
-                            const target = e.target as HTMLImageElement;
-                            const parent = target.parentElement;
-                            if (parent) {
-                              parent.innerHTML = `
-                                <div class="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
-                                  ${getInitials(userName)}
-                                </div>
-                              `;
-                            }
-                          }}
-                        />
+                        <div className="w-12 h-12 rounded-full border-2 border-gray-200 overflow-hidden">
+                          <img
+                            src={userPhoto}
+                            alt={userName}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              // Replace with colored circle if image fails to load
+                              const target = e.target as HTMLImageElement;
+                              const container = target.parentElement;
+                              if (container) {
+                                container.innerHTML = `
+                                  <div class="w-full h-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
+                                    ${getInitials(userName)}
+                                  </div>
+                                `;
+                              }
+                            }}
+                          />
+                        </div>
                       ) : (
                         <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
                           {getInitials(userName)}
@@ -1866,7 +2231,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-gray-900 truncate">
-                          {userName}
+                          {userName || `User ${user.id.slice(-4)}`}
                           {!hasCompleteInfo && (
                             <span className="ml-1 text-xs text-orange-500 bg-orange-100 px-1 py-0.5 rounded">
                               Incomplete
@@ -1875,7 +2240,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         </div>
                         <div className="text-sm text-gray-500 truncate">
                           {userRole} {userDept && `• ${userDept}`}
-                          {!hasCompleteInfo && !userRole && !userDept && (
+                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
                             <span className="text-orange-500">Setup needed</span>
                           )}
                         </div>
@@ -1915,7 +2280,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <p className="text-sm text-gray-500">
                       {selectedConversation.type === 'direct' ? (
                         (() => {
-                          const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.ids);
+                          const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
                           if (otherParticipant?.user?.tenants_employee) {
                             const role = getRoleDisplayName(otherParticipant.user.tenants_employee.bonuses_role || '');
                             const department = otherParticipant.user.tenants_employee.tenant_departement?.name || '';
@@ -1953,7 +2318,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
               ) : (
                 messages.map((message, index) => {
-                  const isOwn = message.sender_id === currentUser?.ids;
+                  const isOwn = message.sender_id === currentUser?.id;
                   const senderName = message.sender?.tenants_employee?.display_name || 
                                    message.sender?.full_name || 
                                    'Unknown User';
@@ -1975,7 +2340,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       )}
                       
                       <div
-                        className={`flex gap-3 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                        className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
                       >
                       
                       <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
@@ -1985,25 +2350,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </span>
                         )}
                         
-                        <div
-                          className={`px-4 py-2 rounded-2xl shadow-sm ${
-                            isOwn
-                              ? 'text-white rounded-br-md'
-                              : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
-                          }`}
-                          style={isOwn ? { backgroundColor: '#3e2bcd' } : {}}
-                        >
+                        <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                          <div
+                            data-message-id={message.id}
+                            onClick={() => {
+                              setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
+                              setReactingMessageId(message.id);
+                            }}
+                            className={`px-4 py-3 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow ${
+                              isOwn
+                                ? isEmojiOnly(message.content) 
+                                  ? 'bg-white text-gray-900 rounded-br-md'
+                                  : 'text-white rounded-br-md'
+                                : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
+                            }`}
+                            style={isOwn && !isEmojiOnly(message.content) ? { backgroundColor: '#3e2bcd' } : {}}
+                          >
                           {/* Message content */}
                           {message.content && (
                             <p className="break-words">
                               <span 
                                 className="emoji-message" 
                                 style={{ 
-                                  fontSize: isEmojiOnly(message.content) ? '4em' : '1em',
+                                  fontSize: isEmojiOnly(message.content) ? '4em' : '1.1em',
                                   lineHeight: isEmojiOnly(message.content) ? '1.2' : 'normal'
                                 }}
                               >
-                                {message.content}
+                                {renderMessageContent(message.content, isOwn)}
                               </span>
                             </p>
                           )}
@@ -2081,7 +2454,50 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               )}
                             </div>
                           )}
+                          </div>
+                          
+                          {/* Reaction picker */}
+                          {showReactionPicker === message.id && (
+                            <div className={`absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
+                              {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
+                                <button
+                                  key={emoji}
+                                  onClick={() => handleAddReaction(message.id, emoji)}
+                                  className="p-2 hover:bg-gray-100 rounded transition-colors"
+                                  title={`React with ${emoji}`}
+                                >
+                                  <span className="text-lg">{emoji}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
+                        
+                        {/* Reactions */}
+                        {message.reactions && message.reactions.length > 0 && (
+                          <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                            {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
+                              <button
+                                key={emoji}
+                                onClick={() => {
+                                  if (hasUserReacted(message.reactions, emoji)) {
+                                    handleRemoveReaction(message.id, emoji);
+                                  } else {
+                                    handleAddReaction(message.id, emoji);
+                                  }
+                                }}
+                                className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${
+                                  hasUserReacted(message.reactions, emoji)
+                                    ? 'bg-blue-100 border-blue-300 text-blue-700'
+                                    : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
+                                }`}
+                              >
+                                <span>{emoji}</span>
+                                <span>{reactions.length}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                         
                         <span className={`text-xs text-gray-400 mt-1 px-2 ${isOwn ? 'text-right' : 'text-left'}`}>
                           {formatMessageTime(message.sent_at)}
@@ -2119,6 +2535,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             {/* Message Input - Desktop Only */}
             <div className="hidden lg:block p-4 border-t border-gray-200 bg-white">
               <div className="flex items-end gap-3 relative">
+                <button
+                  onClick={() => setIsLeadSearchOpen(!isLeadSearchOpen)}
+                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-green-600"
+                  title="Attach Lead"
+                >
+                  <PlusIcon className="w-5 h-5" />
+                </button>
+                
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isUploadingFile || isSending}
@@ -2159,6 +2583,80 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         }}
                         lazyLoadEmojis={false}
                       />
+                    </div>
+                  )}
+                  
+                  {/* Lead Search Dropdown */}
+                  {isLeadSearchOpen && (
+                    <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg w-80 max-h-96 overflow-hidden lead-search-dropdown">
+                      <div className="p-3 border-b border-gray-200">
+                        <h3 className="text-sm font-semibold text-gray-900 mb-2">Attach Lead</h3>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            placeholder="Search by lead number, name, or email..."
+                            className="input input-bordered w-full input-sm"
+                            value={leadSearchQuery}
+                            onChange={(e) => {
+                              setLeadSearchQuery(e.target.value);
+                              searchLeads(e.target.value);
+                            }}
+                            autoFocus
+                          />
+                          {isSearchingLeads && (
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                              <div className="loading loading-spinner loading-xs"></div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="max-h-64 overflow-y-auto">
+                        {leadSearchResults.length > 0 ? (
+                          leadSearchResults.map((lead) => (
+                            <div
+                              key={`${lead.id}-${lead.lead_number}`}
+                              onClick={() => handleLeadSelect(lead)}
+                              className="p-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-medium text-sm text-gray-900 truncate">
+                                    #{lead.lead_number} - {lead.name}
+                                  </div>
+                                  <div className="text-xs text-gray-500 truncate">
+                                    {lead.email} • {lead.phone}
+                                  </div>
+                                </div>
+                                <div className="text-xs text-gray-400 ml-2">
+                                  {lead.stage || 'Unknown'}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        ) : leadSearchQuery.length >= 2 ? (
+                          <div className="p-3 text-center text-gray-500 text-sm">
+                            No leads found
+                          </div>
+                        ) : (
+                          <div className="p-3 text-center text-gray-400 text-sm">
+                            Type at least 2 characters to search
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="p-2 border-t border-gray-200">
+                        <button
+                          onClick={() => {
+                            setIsLeadSearchOpen(false);
+                            setLeadSearchQuery('');
+                            setLeadSearchResults([]);
+                          }}
+                          className="btn btn-ghost btn-xs w-full"
+                        >
+                          Cancel
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -2236,7 +2734,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <p className="text-sm text-gray-500">
                     {selectedConversation.type === 'direct' ? (
                       (() => {
-                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.ids);
+                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
                         if (otherParticipant?.user?.tenants_employee) {
                           const role = getRoleDisplayName(otherParticipant.user.tenants_employee.bonuses_role || '');
                           const department = otherParticipant.user.tenants_employee.tenant_departement?.name || '';
@@ -2266,7 +2764,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
             >
               {messages.map((message, index) => {
-                  const isOwn = message.sender_id === currentUser?.ids;
+                  const isOwn = message.sender_id === currentUser?.id;
                   const senderName = message.sender?.tenants_employee?.display_name || 
                                    message.sender?.full_name || 
                                    'Unknown User';
@@ -2287,29 +2785,37 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     )}
                     
                     <div
-                      className={`flex gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
+                      className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
                     >
                     
                     <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
-                      <div
-                        className={`px-3 py-2 rounded-2xl text-sm ${
-                          isOwn
-                            ? 'text-white rounded-br-md'
-                            : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
-                        }`}
-                        style={isOwn ? { backgroundColor: '#3e2bcd' } : {}}
-                      >
+                      <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                        <div
+                          data-message-id={message.id}
+                          onClick={() => {
+                            setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
+                            setReactingMessageId(message.id);
+                          }}
+                          className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow ${
+                            isOwn
+                              ? isEmojiOnly(message.content) 
+                                ? 'bg-white text-gray-900 rounded-br-md'
+                                : 'text-white rounded-br-md'
+                              : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
+                          }`}
+                          style={isOwn && !isEmojiOnly(message.content) ? { backgroundColor: '#3e2bcd' } : {}}
+                        >
                         {/* Message content */}
                         {message.content && (
                           <p className="break-words">
                             <span 
                               className="emoji-message" 
                                 style={{ 
-                                  fontSize: isEmojiOnly(message.content) ? '3.5em' : '1em',
+                                  fontSize: isEmojiOnly(message.content) ? '4em' : '1.1em',
                                   lineHeight: isEmojiOnly(message.content) ? '1.2' : 'normal'
                                 }}
                             >
-                              {message.content}
+                              {renderMessageContent(message.content, isOwn)}
                             </span>
                           </p>
                         )}
@@ -2331,7 +2837,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   <img
                                     src={message.attachment_url}
                                     alt={message.attachment_name}
-                                    className="max-w-full max-h-64 rounded-lg object-cover w-full transition-transform group-hover:scale-105"
+                                    className="max-w-full max-h-80 rounded-lg object-cover w-full transition-transform group-hover:scale-105"
                                   />
                                   <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                     <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2386,7 +2892,51 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             )}
                           </div>
                         )}
+                        </div>
+                        
+                        {/* Reaction picker - Mobile */}
+                        {showReactionPicker === message.id && (
+                          <div className={`absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
+                            {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
+                              <button
+                                key={emoji}
+                                onClick={() => handleAddReaction(message.id, emoji)}
+                                className="p-2 hover:bg-gray-100 rounded transition-colors"
+                                title={`React with ${emoji}`}
+                              >
+                                <span className="text-lg">{emoji}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
+                      
+                      {/* Reactions - Mobile */}
+                      {message.reactions && message.reactions.length > 0 && (
+                        <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                          {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
+                            <button
+                              key={emoji}
+                              onClick={() => {
+                                if (hasUserReacted(message.reactions, emoji)) {
+                                  handleRemoveReaction(message.id, emoji);
+                                } else {
+                                  handleAddReaction(message.id, emoji);
+                                }
+                              }}
+                              className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${
+                                hasUserReacted(message.reactions, emoji)
+                                  ? 'bg-blue-100 border-blue-300 text-blue-700'
+                                  : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
+                              }`}
+                            >
+                              <span>{emoji}</span>
+                              <span>{reactions.length}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      
                       <span className="text-xs text-gray-400 mt-1 px-2">
                         {formatMessageTime(message.sent_at)}
                       </span>
@@ -2402,8 +2952,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Mobile Message Input - Mobile Only */}
-            <div className="lg:hidden p-4 border-t border-gray-200 bg-white">
-              <div className="flex items-end gap-2 relative">
+            <div className="lg:hidden p-3 border-t border-gray-200 bg-white">
+              <div className="flex items-center gap-2 relative">
+                <button
+                  onClick={() => setIsLeadSearchOpen(!isLeadSearchOpen)}
+                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-green-600"
+                  title="Attach Lead"
+                >
+                  <PlusIcon className="w-5 h-5" />
+                </button>
+                
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   disabled={isUploadingFile || isSending}
@@ -2413,7 +2971,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   {isUploadingFile ? (
                     <div className="loading loading-spinner loading-sm"></div>
                   ) : (
-                    <PaperClipIcon className="w-4 h-4" />
+                    <PaperClipIcon className="w-5 h-5" />
                   )}
                 </button>
                 
@@ -2421,10 +2979,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <button
                     onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
                     disabled={isSending}
-                    className="btn btn-ghost btn-circle btn-sm text-gray-500 disabled:opacity-50"
+                    className="btn btn-circle btn-sm bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50"
                     title="Add emoji"
                   >
-                    <FaceSmileIcon className="w-4 h-4" />
+                    <FaceSmileIcon className="w-5 h-5" />
                   </button>
                   
                   
@@ -2446,6 +3004,80 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       />
                     </div>
                   )}
+                  
+                  {/* Mobile Lead Search Dropdown */}
+                  {isLeadSearchOpen && (
+                    <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg w-72 max-h-80 overflow-hidden lead-search-dropdown">
+                      <div className="p-3 border-b border-gray-200">
+                        <h3 className="text-sm font-semibold text-gray-900 mb-2">Attach Lead</h3>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            placeholder="Search by lead number, name, or email..."
+                            className="input input-bordered w-full input-sm"
+                            value={leadSearchQuery}
+                            onChange={(e) => {
+                              setLeadSearchQuery(e.target.value);
+                              searchLeads(e.target.value);
+                            }}
+                            autoFocus
+                          />
+                          {isSearchingLeads && (
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                              <div className="loading loading-spinner loading-xs"></div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="max-h-48 overflow-y-auto">
+                        {leadSearchResults.length > 0 ? (
+                          leadSearchResults.map((lead) => (
+                            <div
+                              key={`${lead.id}-${lead.lead_number}`}
+                              onClick={() => handleLeadSelect(lead)}
+                              className="p-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-medium text-sm text-gray-900 truncate">
+                                    #{lead.lead_number} - {lead.name}
+                                  </div>
+                                  <div className="text-xs text-gray-500 truncate">
+                                    {lead.email} • {lead.phone}
+                                  </div>
+                                </div>
+                                <div className="text-xs text-gray-400 ml-2">
+                                  {lead.stage || 'Unknown'}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        ) : leadSearchQuery.length >= 2 ? (
+                          <div className="p-3 text-center text-gray-500 text-sm">
+                            No leads found
+                          </div>
+                        ) : (
+                          <div className="p-3 text-center text-gray-400 text-sm">
+                            Type at least 2 characters to search
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="p-2 border-t border-gray-200">
+                        <button
+                          onClick={() => {
+                            setIsLeadSearchOpen(false);
+                            setLeadSearchQuery('');
+                            setLeadSearchResults([]);
+                          }}
+                          className="btn btn-ghost btn-xs w-full"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 
                 <div className="flex-1">
@@ -2454,7 +3086,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     onChange={handleMessageInputChange}
                     onKeyPress={handleKeyPress}
                     placeholder="Type a message..."
-                    className="textarea textarea-bordered w-full resize-none text-sm"
+                    className="textarea textarea-bordered w-full resize-none text-sm min-h-[36px] max-h-20"
                     rows={1}
                     disabled={isSending}
                   />
@@ -2465,7 +3097,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   disabled={!newMessage.trim() || isSending}
                   className="btn btn-primary btn-circle btn-sm"
                 >
-                  <PaperAirplaneIcon className="w-4 h-4" />
+                  <PaperAirplaneIcon className="w-5 h-5" />
                 </button>
               </div>
             </div>
@@ -2532,7 +3164,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 
                 <div className="space-y-2 max-h-60 overflow-y-auto border border-gray-200 rounded-lg p-3">
                   {allUsers.map((user) => {
-                    const isSelected = selectedUsers.includes(user.ids);
+                    const isSelected = selectedUsers.includes(user.id);
                     const userName = user.tenants_employee?.display_name || user.full_name || 'Unknown User';
                     const userRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
                     const userDept = user.tenants_employee?.tenant_departement?.name;
@@ -2540,12 +3172,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                     return (
                       <div
-                        key={user.ids}
+                        key={user.id}
                         onClick={() => {
                           setSelectedUsers(prev => 
                             isSelected 
-                              ? prev.filter(id => id !== user.ids)
-                              : [...prev, user.ids]
+                              ? prev.filter(id => id !== user.id)
+                              : [...prev, user.id]
                           );
                         }}
                         className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all ${

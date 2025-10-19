@@ -200,7 +200,7 @@ const Dashboard: React.FC = () => {
       const { data: userData, error: userDataError } = await supabase
         .from('users')
         .select(`
-          ids,
+          id,
           full_name,
           employee_id,
           tenants_employee!employee_id(
@@ -227,7 +227,7 @@ const Dashboard: React.FC = () => {
       }
 
       // Use display_name from employee table or full_name from users table
-      const userFullName = userData.tenants_employee?.display_name || userData.full_name;
+      const userFullName = (userData.tenants_employee as any)?.display_name || userData.full_name;
       const userEmployeeId = userData.employee_id;
       
       if (!userFullName) {
@@ -252,8 +252,8 @@ const Dashboard: React.FC = () => {
       if (newLeadsError) throw newLeadsError;
 
       // Fetch legacy leads (using employee ID for efficient filtering)
-      let legacyLeadsData = [];
-      let legacyLeadsError = null;
+      let legacyLeadsData: any[] = [];
+      let legacyLeadsError: any = null;
       
       if (userEmployeeId) {
         const { data, error } = await supabase
@@ -267,7 +267,7 @@ const Dashboard: React.FC = () => {
           .or(`expert_id.eq."${userEmployeeId}",meeting_manager_id.eq."${userEmployeeId}"`)
           .limit(fetchAll ? 1000 : 12);
         
-        legacyLeadsData = data;
+        legacyLeadsData = data || [];
         legacyLeadsError = error;
       }
 
@@ -470,7 +470,7 @@ const Dashboard: React.FC = () => {
         const { data: userData, error: userDataError } = await supabase
           .from('users')
           .select(`
-            ids,
+            id,
             full_name,
             employee_id,
             tenants_employee!employee_id(
@@ -499,7 +499,7 @@ const Dashboard: React.FC = () => {
         }
 
         // Use display_name from employee table or full_name from users table
-        const userFullName = userData.tenants_employee?.display_name || userData.full_name;
+        const userFullName = (userData.tenants_employee as any)?.display_name || userData.full_name;
         const userEmployeeId = userData.employee_id;
         
         if (!userFullName) {
@@ -560,7 +560,7 @@ const Dashboard: React.FC = () => {
         console.log('🔍 Dashboard - Fetching user leads for auth_id:', user.id);
         const { data: userLeads, error: userLeadsError } = await supabase
           .from('users')
-          .select('ids')
+          .select('id')
           .eq('auth_id', user.id)
           .single();
 

@@ -659,6 +659,9 @@ const CalendarPage: React.FC = () => {
     setIsLegacyLoading(true);
     
     try {
+      console.log('🔍 Fetching legacy leads with proper JOINs for date range:', fromDate, 'to', toDate);
+      
+      // Use proper JOINs with foreign keys to make the query more efficient
       const { data: legacyData, error: legacyError } = await supabase
         .from('leads_lead')
         .select(`
@@ -669,59 +672,128 @@ const CalendarPage: React.FC = () => {
             id, name, parent_id,
             misc_maincategory!parent_id(
               id, name, department_id,
-              tenant_departement!department_id(id, name)
+              tenant_departement!department_id(
+                id, name
+              )
             )
+          ),
+          meeting_manager:tenants_employee!meeting_manager_id(
+            id, display_name
+          ),
+          meeting_lawyer:tenants_employee!meeting_lawyer_id(
+            id, display_name
+          ),
+          expert:tenants_employee!expert_id(
+            id, display_name
           )
         `)
         .gte('meeting_date', fromDate)
         .lte('meeting_date', toDate)
         .not('meeting_date', 'is', null)
-        .not('name', 'is', null);
+        .not('name', 'is', null)
+        .limit(20) // Start with a reasonable limit
+        .order('meeting_date', { ascending: true });
+      
+      console.log('🔍 Legacy query with JOINs result:', { dataCount: legacyData?.length, error: legacyError });
 
       if (legacyError) {
-        // Don't return, just continue with empty data
+        console.error('Error fetching legacy leads with JOINs:', legacyError);
+        // If JOINs fail, try without them
+        console.log('🔍 Trying without JOINs...');
+        const { data: simpleData, error: simpleError } = await supabase
+          .from('leads_lead')
+          .select('id, name, meeting_date, meeting_time, lead_number, stage, meeting_manager_id, meeting_lawyer_id, expert_id, total, meeting_total_currency_id, phone, email, mobile')
+          .gte('meeting_date', fromDate)
+          .lte('meeting_date', toDate)
+          .not('meeting_date', 'is', null)
+          .not('name', 'is', null)
+          .limit(10);
+        
+        if (simpleError) {
+          console.error('Even simple query fails:', simpleError);
+          setLegacyLoadingDisabled(true);
+          return;
+        }
+        
+        // Use simple data without JOINs
+        const processedLegacyMeetings = simpleData.map((legacyLead: any) => {
+          const meeting = {
+            id: `legacy_${legacyLead.id}`,
+            created_at: legacyLead.meeting_date || new Date().toISOString(),
+            meeting_date: legacyLead.meeting_date,
+            meeting_time: legacyLead.meeting_time || '09:00',
+            meeting_manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
+            helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+            meeting_location: 'Teams',
+            meeting_location_id: null,
+            teams_meeting_url: null,
+            meeting_brief: null,
+            meeting_amount: parseFloat(legacyLead.total || '0'),
+            meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                             legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                             legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+            meeting_complexity: 'Simple',
+            meeting_car_no: null,
+            meeting_paid: false,
+            meeting_confirmation: false,
+            meeting_scheduling_notes: '',
+            status: null,
+            lead: {
+              id: `legacy_${legacyLead.id}`,
+              lead_number: legacyLead.lead_number || legacyLead.id?.toString() || 'Unknown',
+              name: legacyLead.name || 'Legacy Lead',
+              email: legacyLead.email || '',
+              phone: legacyLead.phone || '',
+              mobile: legacyLead.mobile || '',
+              topic: '',
+              stage: legacyLead.stage || 'Unknown',
+              manager: legacyLead.meeting_manager?.display_name || getEmployeeDisplayName(legacyLead.meeting_manager_id),
+              helper: legacyLead.meeting_lawyer?.display_name || getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+              balance: parseFloat(legacyLead.total || '0'),
+              balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+              expert: legacyLead.expert?.display_name || getEmployeeDisplayName(legacyLead.expert_id),
+              expert_examination: '',
+              probability: 0,
+              category: 'Unassigned',
+              language: null,
+              onedrive_folder_link: '',
+              expert_notes: '',
+              manual_interactions: [],
+              lead_type: 'legacy' as const,
+              department_name: 'Unassigned',
+              department_id: null
+            }
+          };
+          return meeting;
+        });
+        
+        // Add legacy meetings to the current meetings
+        setMeetings(prevMeetings => {
+          const filteredMeetings = prevMeetings.filter(meeting => 
+            !(meeting.lead?.lead_type === 'legacy' && meeting.meeting_date >= fromDate && meeting.meeting_date <= toDate)
+          );
+          const allMeetings = [...filteredMeetings, ...processedLegacyMeetings];
+          return allMeetings;
+        });
+        
         return;
       }
 
       if (legacyData && legacyData.length > 0) {
+        console.log('🔍 Processing legacy data with JOINs...');
         
-        // Get unique location IDs from legacy data
-        const locationIds = [...new Set(legacyData
-          .map((lead: any) => lead.meeting_location_id)
-          .filter((id: any) => id !== null && id !== undefined)
-        )];
-        
-        // Fetch location names from tenants_meetinglocation table
-        let locationMap: { [key: number]: string } = {};
-        if (locationIds.length > 0) {
-          try {
-            const { data: locationData, error: locationError } = await supabase
-              .from('tenants_meetinglocation')
-              .select('id, name')
-              .in('id', locationIds);
-            
-            if (!locationError && locationData) {
-              locationMap = locationData.reduce((acc: { [key: number]: string }, loc: any) => {
-                acc[loc.id] = loc.name;
-                return acc;
-              }, {});
-            } else {
-            }
-          } catch (error) {
-          }
-        }
-        
-        // Process legacy meetings for this specific date
+        // Process legacy meetings with JOIN data
         const processedLegacyMeetings = legacyData.map((legacyLead: any) => {
           const meeting = {
             id: `legacy_${legacyLead.id}`,
             created_at: legacyLead.meeting_date || new Date().toISOString(),
             meeting_date: legacyLead.meeting_date,
             meeting_time: legacyLead.meeting_time || '09:00',
-            meeting_manager: legacyLead.meeting_manager_id,
-            helper: legacyLead.meeting_lawyer_id,
-            meeting_location: legacyLead.meeting_location_id ? 
-              (locationMap[legacyLead.meeting_location_id] || 'Unknown Location') : 'Teams',
+            meeting_manager: legacyLead.meeting_manager?.display_name || getEmployeeDisplayName(legacyLead.meeting_manager_id),
+            helper: legacyLead.meeting_lawyer?.display_name || getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+            meeting_location: 'Teams', // Default location since foreign key doesn't exist
             meeting_location_id: legacyLead.meeting_location_id,
             teams_meeting_url: null,
             meeting_brief: null,
@@ -735,55 +807,48 @@ const CalendarPage: React.FC = () => {
             meeting_confirmation: false,
             meeting_scheduling_notes: '',
             status: null,
-              lead: {
-                id: `legacy_${legacyLead.id}`,
-                lead_number: legacyLead.lead_number || legacyLead.id?.toString() || 'Unknown',
-                name: legacyLead.name || 'Legacy Lead',
-                email: legacyLead.email || '',
-                phone: legacyLead.phone || '',
-                mobile: legacyLead.mobile || '',
-                topic: '',
-                stage: legacyLead.stage || 'Unknown',
-                manager: legacyLead.meeting_manager_id,
-                helper: legacyLead.meeting_lawyer_id,
-                balance: parseFloat(legacyLead.total || '0'),
-                balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                                 legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                                 legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
-                expert: legacyLead.expert_id,
-                expert_examination: legacyLead.expert_examination,
-                probability: parseFloat(legacyLead.probability || '0'),
-                category: legacyLead.category || legacyLead.category_id,
-                language: null,
-                onedrive_folder_link: '',
-                expert_notes: '',
-                manual_interactions: [],
-                lead_type: 'legacy' as const,
-                // Add department info from JOINs
-                department_name: legacyLead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
-                department_id: legacyLead.misc_category?.misc_maincategory?.department_id
-              }
+            lead: {
+              id: `legacy_${legacyLead.id}`,
+              lead_number: legacyLead.lead_number || legacyLead.id?.toString() || 'Unknown',
+              name: legacyLead.name || 'Legacy Lead',
+              email: legacyLead.email || '',
+              phone: legacyLead.phone || '',
+              mobile: legacyLead.mobile || '',
+              topic: '',
+              stage: legacyLead.stage || 'Unknown',
+              manager: legacyLead.meeting_manager?.display_name || getEmployeeDisplayName(legacyLead.meeting_manager_id),
+              helper: legacyLead.meeting_lawyer?.display_name || getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+              balance: parseFloat(legacyLead.total || '0'),
+              balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+              expert: legacyLead.expert?.display_name || getEmployeeDisplayName(legacyLead.expert_id),
+              expert_examination: legacyLead.expert_examination || '',
+              probability: parseFloat(legacyLead.probability || '0'),
+              category: legacyLead.misc_category?.name || legacyLead.category || 'Unassigned',
+              language: null,
+              onedrive_folder_link: '',
+              expert_notes: '',
+              manual_interactions: [],
+              lead_type: 'legacy' as const,
+              department_name: legacyLead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
+              department_id: legacyLead.misc_category?.misc_maincategory?.department_id || null
+            }
           };
           return meeting;
         });
 
         // Add legacy meetings to the current meetings
         setMeetings(prevMeetings => {
-          // Remove any existing legacy meetings for this date range first
           const filteredMeetings = prevMeetings.filter(meeting => 
             !(meeting.lead?.lead_type === 'legacy' && meeting.meeting_date >= fromDate && meeting.meeting_date <= toDate)
           );
-          
-          // Add new legacy meetings
           const allMeetings = [...filteredMeetings, ...processedLegacyMeetings];
-          
-          
           return allMeetings;
         });
-      } else {
       }
     } catch (error) {
-      // Disable legacy loading after multiple failures to prevent repeated timeouts
+      console.error('Error in loadLegacyForDateRange:', error);
       if (error instanceof Error && error.message.includes('timeout')) {
         setLegacyLoadingDisabled(true);
       }
@@ -799,14 +864,48 @@ const CalendarPage: React.FC = () => {
       setIsLoading(true);
       
       try {
-        // Fetch all employees for name lookup
+        // Fetch all employees for name lookup - only active users
         const { data: employeesData, error: employeesError } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name, bonuses_role')
-          .order('display_name', { ascending: true });
+          .from('users')
+          .select(`
+            id,
+            full_name,
+            email,
+            employee_id,
+            is_active,
+            tenants_employee!employee_id(
+              id,
+              display_name,
+              bonuses_role
+            )
+          `)
+          .not('employee_id', 'is', null)
+          .eq('is_active', true)
+          .order('tenants_employee.display_name', { ascending: true });
         
         if (!employeesError && employeesData) {
-          setAllEmployees(employeesData);
+          // Process the data to match the expected format
+          const processedEmployees = employeesData
+            .filter(user => user.tenants_employee && user.email)
+            .map(user => {
+              const employee = user.tenants_employee as any;
+              return {
+                id: employee.id,
+                display_name: employee.display_name,
+                bonuses_role: employee.bonuses_role
+              };
+            });
+
+          // Deduplicate by employee ID to prevent duplicates
+          const uniqueEmployeesMap = new Map();
+          processedEmployees.forEach(emp => {
+            if (!uniqueEmployeesMap.has(emp.id)) {
+              uniqueEmployeesMap.set(emp.id, emp);
+            }
+          });
+          const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
+          
+          setAllEmployees(uniqueEmployees);
         }
 
         // Fetch all categories with their parent main category names using JOINs
@@ -972,11 +1071,11 @@ const CalendarPage: React.FC = () => {
             lead: meeting.legacy_lead ? {
                 ...meeting.legacy_lead,
                 lead_type: 'legacy',
-                manager: meeting.legacy_lead.meeting_manager_id,
-                helper: meeting.legacy_lead.meeting_lawyer_id,
+                manager: getEmployeeDisplayName(meeting.legacy_lead.meeting_manager_id),
+                helper: getEmployeeDisplayName(meeting.legacy_lead.meeting_lawyer_id),
                 balance: meeting.legacy_lead.total,
                 balance_currency: meeting.legacy_lead.meeting_total_currency_id,
-                expert: meeting.legacy_lead.expert_id,
+                expert: getEmployeeDisplayName(meeting.legacy_lead.expert_id),
                 category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
                 lead_number: meeting.legacy_lead.id?.toString(),
                 manual_interactions: [],
@@ -1083,11 +1182,11 @@ const CalendarPage: React.FC = () => {
                 leadData = {
                   ...meeting.legacy_lead,
                   lead_type: 'legacy',
-                  manager: meeting.legacy_lead.meeting_manager_id,
-                  helper: meeting.legacy_lead.meeting_lawyer_id,
+                  manager: getEmployeeDisplayName(meeting.legacy_lead.meeting_manager_id),
+                  helper: getEmployeeDisplayName(meeting.legacy_lead.meeting_lawyer_id),
                   balance: meeting.legacy_lead.total,
                   balance_currency: meeting.legacy_lead.meeting_total_currency_id,
-                  expert: meeting.legacy_lead.expert_id,
+                  expert: getEmployeeDisplayName(meeting.legacy_lead.expert_id),
                   category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
                   lead_number: meeting.legacy_lead.id?.toString(),
                   // Add department info from JOINs
@@ -1879,11 +1978,11 @@ const CalendarPage: React.FC = () => {
             ...meeting.legacy_lead,
             lead_type: 'legacy',
             // Map legacy column names to new structure
-            manager: meeting.legacy_lead.meeting_manager_id,
-            helper: meeting.legacy_lead.lawyer_id,
+            manager: getEmployeeDisplayName(meeting.legacy_lead.meeting_manager_id),
+            helper: getEmployeeDisplayName(meeting.legacy_lead.lawyer_id),
             balance: meeting.legacy_lead.total,
             balance_currency: meeting.legacy_lead.meeting_total_currency_id,
-            expert: meeting.legacy_lead.expert_id,
+            expert: getEmployeeDisplayName(meeting.legacy_lead.expert_id),
             // Use category_id if category is null
             category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
             // Map language_id to language for consistency
@@ -1930,8 +2029,8 @@ const CalendarPage: React.FC = () => {
             created_at: legacyLead.meeting_date || new Date().toISOString(),
             meeting_date: legacyLead.meeting_date,
             meeting_time: legacyLead.meeting_time,
-            meeting_manager: legacyLead.meeting_manager_id,
-            helper: legacyLead.meeting_lawyer_id,
+            meeting_manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
+            helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
             meeting_location: legacyLead.meeting_location_old || getLegacyMeetingLocation(legacyLead.meeting_location_id) || 'Teams',
             meeting_location_id: legacyLead.meeting_location_id,
             teams_meeting_url: legacyLead.meeting_url,
@@ -1957,14 +2056,14 @@ const CalendarPage: React.FC = () => {
               mobile: legacyLead.mobile || '',
               topic: legacyLead.topic || '',
               stage: legacyLead.stage,
-              manager: legacyLead.meeting_manager_id,
-              helper: legacyLead.meeting_lawyer_id,
+              manager: (legacyLead as any).meeting_manager?.display_name || getEmployeeDisplayName(legacyLead.meeting_manager_id),
+              helper: (legacyLead as any).meeting_lawyer?.display_name || getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
               balance: parseFloat(legacyLead.total || '0'),
               balance_currency: legacyLead.meeting_total_currency_id ? 
                 (legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
                  legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
                  legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS') : 'NIS',
-              expert: legacyLead.expert_id,
+              expert: (legacyLead as any).expert?.display_name || getEmployeeDisplayName(legacyLead.expert_id),
               probability: parseFloat(legacyLead.probability || '0'),
               category: legacyLead.category || legacyLead.category_id,
               language: legacyLead.language_id,

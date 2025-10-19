@@ -39,7 +39,6 @@ interface Employee {
     meetings_scheduled?: number;
     signed_agreements?: number;
     total_agreement_amount?: number;
-    cases_handled?: number;
     applicants_processed?: number;
     total_invoiced_amount?: number;
     // New role-specific metrics
@@ -73,6 +72,7 @@ interface SubdepartmentGroup {
   total_meetings: number;
   total_revenue: number;
   average_performance: number;
+  total_signed_contracts?: number;
 }
 
 // Helper function to generate initials from display name
@@ -347,6 +347,9 @@ const EmployeePerformancePage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [dateFrom, setDateFrom] = useState<string>('');
   const [dateTo, setDateTo] = useState<string>('');
+  const [appliedDateFrom, setAppliedDateFrom] = useState<string>('');
+  const [appliedDateTo, setAppliedDateTo] = useState<string>('');
+  const [isApplyingFilter, setIsApplyingFilter] = useState(false);
   const [viewMode, setViewMode] = useState<'department' | 'subdepartment'>('department');
   const [selectedSubdepartment, setSelectedSubdepartment] = useState<string>('all');
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
@@ -501,10 +504,11 @@ const EmployeePerformancePage: React.FC = () => {
             continue;
           }
           
-          // Count meetings by department
-          if (leadsWithDept) {
-            leadsWithDept.forEach(lead => {
-              const departmentName = lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
+              // Count meetings by department
+              if (leadsWithDept) {
+                leadsWithDept.forEach(lead => {
+                  const leadData = lead as any;
+                  const departmentName = leadData.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
               
               // Count how many meetings this lead has
               let meetingCount = 0;
@@ -610,7 +614,8 @@ const EmployeePerformancePage: React.FC = () => {
             monthContracts += 1;
             
             // Get department name
-            const departmentName = lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
+            const leadData = lead as any;
+            const departmentName = leadData.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
             contractsByDept.set(departmentName, (contractsByDept.get(departmentName) || 0) + 1);
           });
         }
@@ -985,11 +990,11 @@ const EmployeePerformancePage: React.FC = () => {
   // Fetch employees and their performance data
   useEffect(() => {
     const fetchEmployeePerformance = async () => {
-      // Only fetch if both dates are selected, or if no dates are selected (use default)
-      const shouldFetch = (!dateFrom && !dateTo) || (dateFrom && dateTo);
+      // Only fetch if both applied dates are selected, or if no applied dates are selected (use default)
+      const shouldFetch = (!appliedDateFrom && !appliedDateTo) || (appliedDateFrom && appliedDateTo);
       
       if (!shouldFetch) {
-        console.log('📅 Skipping fetch - waiting for both dates to be selected');
+        console.log('📅 Skipping fetch - waiting for both applied dates to be selected');
         return;
       }
 
@@ -997,31 +1002,41 @@ const EmployeePerformancePage: React.FC = () => {
       setError(null);
 
       try {
-        // Get basic employee data
+        // Get employee data using the new pattern with users table join - only active users
         const { data: allEmployeesData, error: allEmployeesDataError } = await supabase
-          .from('tenants_employee')
+          .from('users')
           .select(`
             id,
-            display_name,
-            bonuses_role,
-            department_id,
-            user_id,
-            photo_url,
-            photo,
-            phone,
-            mobile,
-            phone_ext
-          `);
+            full_name,
+            email,
+            employee_id,
+            is_active,
+            tenants_employee!employee_id(
+              id,
+              display_name,
+              bonuses_role,
+              department_id,
+              user_id,
+              photo_url,
+              photo,
+              phone,
+              mobile,
+              phone_ext,
+              tenant_departement!department_id(
+                id,
+                name
+              )
+            )
+          `)
+          .not('employee_id', 'is', null)
+          .eq('is_active', true);
 
         if (allEmployeesDataError) {
           console.error('Error fetching all employees:', allEmployeesDataError);
           throw allEmployeesDataError;
         }
 
-        // Filter to only those with user_id
-        const employeesData = allEmployeesData?.filter(emp => emp.user_id) || [];
-
-        // Fetch departments for mapping
+        // Fetch departments for mapping (fallback)
         const { data: departmentsData, error: departmentsError } = await supabase
           .from('tenant_departement')
           .select('id, name');
@@ -1036,63 +1051,34 @@ const EmployeePerformancePage: React.FC = () => {
           departmentMap.set(dept.id, dept.name);
         });
 
-        // Get auth user data for each employee
-        const activeEmployees = await Promise.all(
-          employeesData.map(async (employee) => {
-            try {
-              const { data: authUserData, error: authUserError } = await supabase
-                .from('auth_user')
-                .select('id, email, is_active')
-                .eq('id', employee.user_id)
-                .single();
+        // Process employees data with deduplication
+        const processedEmployees = (allEmployeesData || [])
+          .filter(user => user.tenants_employee && user.email)
+          .map(user => {
+            const employee = user.tenants_employee as any;
+            return {
+              id: employee.id,
+              display_name: employee.display_name,
+              bonuses_role: employee.bonuses_role,
+              department: employee.tenant_departement?.name || (employee.department_id ? departmentMap.get(employee.department_id) || 'Unknown' : 'General'),
+              email: user.email,
+              is_active: true, // All users with employee_id are considered active
+              photo_url: employee.photo_url,
+              photo: employee.photo,
+              phone: employee.phone,
+              mobile: employee.mobile,
+              phone_ext: employee.phone_ext
+            };
+          });
 
-              if (authUserError) {
-                return {
-                  id: employee.id,
-                  display_name: employee.display_name,
-                  bonuses_role: employee.bonuses_role,
-                  department: employee.department_id ? departmentMap.get(employee.department_id) || 'Unknown' : 'General',
-                  email: 'N/A',
-                  is_active: false,
-                  photo_url: employee.photo_url,
-                  photo: employee.photo,
-                  phone: employee.phone,
-                  mobile: employee.mobile,
-                  phone_ext: employee.phone_ext
-                };
-              }
-
-              return {
-                id: employee.id,
-                display_name: employee.display_name,
-                bonuses_role: employee.bonuses_role,
-                department: employee.department_id ? departmentMap.get(employee.department_id) || 'Unknown' : 'General',
-                email: authUserData?.email || 'N/A',
-                is_active: authUserData?.is_active || false,
-                photo_url: employee.photo_url,
-                photo: employee.photo,
-                phone: employee.phone,
-                mobile: employee.mobile,
-                phone_ext: employee.phone_ext
-              };
-            } catch (error) {
-              console.error(`Error fetching auth user for employee ${employee.display_name}:`, error);
-              return {
-                id: employee.id,
-                display_name: employee.display_name,
-                bonuses_role: employee.bonuses_role,
-                department: employee.department_id ? departmentMap.get(employee.department_id) || 'Unknown' : 'General',
-                email: 'N/A',
-                is_active: false,
-                photo_url: employee.photo_url,
-                photo: employee.photo,
-                phone: employee.phone,
-                mobile: employee.mobile,
-                phone_ext: employee.phone_ext
-              };
-            }
-          })
-        );
+        // Deduplicate by employee ID to prevent duplicates
+        const uniqueEmployeesMap = new Map();
+        processedEmployees.forEach(emp => {
+          if (!uniqueEmployeesMap.has(emp.id)) {
+            uniqueEmployeesMap.set(emp.id, emp);
+          }
+        });
+        const activeEmployees = Array.from(uniqueEmployeesMap.values());
 
         // Filter to only active employees and exclude specific employees
         const excludedEmployees = ['FINANCE', 'INTERNS', 'NO SCHEDULER', 'Mango Test', 'pink', 'Interns'];
@@ -1101,13 +1087,41 @@ const EmployeePerformancePage: React.FC = () => {
         );
 
         console.log('🔍 Employee Performance - Active employees loaded:', {
-          totalEmployees: employeesData?.length || 0,
-          activeEmployees: filteredActiveEmployees.length,
-          departmentsFound: departmentsData?.length || 0
+          totalUsers: allEmployeesData?.length || 0,
+          processedEmployees: processedEmployees.length,
+          uniqueEmployees: activeEmployees.length,
+          finalFilteredEmployees: filteredActiveEmployees.length,
+          departmentsFound: departmentsData?.length || 0,
+          sampleEmployee: filteredActiveEmployees[0] ? {
+            id: filteredActiveEmployees[0].id,
+            name: filteredActiveEmployees[0].display_name,
+            email: filteredActiveEmployees[0].email,
+            bonuses_role: filteredActiveEmployees[0].bonuses_role
+          } : null,
+          allEmployees: filteredActiveEmployees.map(emp => ({
+            id: emp.id,
+            name: emp.display_name,
+            role: emp.bonuses_role
+          }))
         });
 
         // Fetch comprehensive performance data
-        const performanceData = await fetchComprehensivePerformanceData(dateFrom, dateTo);
+        const performanceData = await fetchComprehensivePerformanceData(appliedDateFrom, appliedDateTo);
+        
+        console.log('🔍 Employee Performance - Performance data fetched:', {
+          signedLeadsCount: performanceData.signedLeads.length,
+          allLeadsCount: performanceData.allLeads.length,
+          proformaInvoicesCount: performanceData.proformaInvoices.length,
+          dateRange: performanceData.dateRange,
+          sampleSignedLead: performanceData.signedLeads[0] ? {
+            id: performanceData.signedLeads[0].id,
+            name: performanceData.signedLeads[0].name,
+            closer_id: performanceData.signedLeads[0].closer_id,
+            case_handler_id: performanceData.signedLeads[0].case_handler_id,
+            expert_id: performanceData.signedLeads[0].expert_id,
+            total: performanceData.signedLeads[0].total
+          } : null
+        });
         
         // Calculate team averages
         const teamAverages = calculateTeamAverages(
@@ -1119,7 +1133,8 @@ const EmployeePerformancePage: React.FC = () => {
         // Process performance metrics for each employee (include ALL employees, even those without data)
         const employeesWithMetrics = filteredActiveEmployees.map((employee) => {
           const employeeIdStr = String(employee.id);
-              const role = employee.bonuses_role?.toLowerCase();
+          const employeeIdNum = Number(employee.id);
+          const role = employee.bonuses_role?.toLowerCase();
               
           // Initialize metrics - all employees start with 0 values
           let totalMeetings = 0;
@@ -1139,9 +1154,14 @@ const EmployeePerformancePage: React.FC = () => {
               const leadDate = lead.cdate;
               
               // Check if employee participated in the meeting (only meeting roles)
+              // Convert lead IDs to numbers for comparison
+              const meetingManagerId = lead.meeting_manager_id ? Number(lead.meeting_manager_id) : null;
+              const meetingLawyerId = lead.meeting_lawyer_id ? Number(lead.meeting_lawyer_id) : null;
+              const meetingSchedulerId = lead.meeting_scheduler_id ? Number(lead.meeting_scheduler_id) : null;
+              
               const isEmployeeInMeeting = 
-                lead.meeting_manager_id === employeeIdStr ||
-                lead.meeting_lawyer_id === employeeIdStr;
+                meetingManagerId === employeeIdNum ||
+                meetingLawyerId === employeeIdNum;
               
               if (isEmployeeInMeeting) {
                 totalMeetings++;
@@ -1152,7 +1172,7 @@ const EmployeePerformancePage: React.FC = () => {
               }
               
               // Check if employee scheduled this meeting
-              if (lead.meeting_scheduler_id === employeeIdStr) {
+              if (meetingSchedulerId === employeeIdNum) {
                 scheduledMeetings++;
               }
               
@@ -1166,34 +1186,49 @@ const EmployeePerformancePage: React.FC = () => {
               const leadTotal = parseFloat(lead.total) || 0;
               const leadTotalInNIS = convertToNIS(leadTotal, lead.currency_id);
               
+              // Convert all lead role IDs to numbers for proper comparison
+              const caseHandlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
+              const closerId = lead.closer_id ? Number(lead.closer_id) : null;
+              const expertId = lead.expert_id ? Number(lead.expert_id) : null;
+              const meetingSchedulerId = lead.meeting_scheduler_id ? Number(lead.meeting_scheduler_id) : null;
+              const meetingManagerId = lead.meeting_manager_id ? Number(lead.meeting_manager_id) : null;
+              const meetingLawyerId = lead.meeting_lawyer_id ? Number(lead.meeting_lawyer_id) : null;
+              
               // Debug currency conversion
               console.log(`🔍 EmployeePerformancePage Employee Metrics - Lead ${lead.id}:`, {
                 originalAmount: leadTotal,
                 currencyId: lead.currency_id,
                 convertedAmount: leadTotalInNIS,
-                conversionRate: leadTotal > 0 ? leadTotalInNIS / leadTotal : 1
+                conversionRate: leadTotal > 0 ? leadTotalInNIS / leadTotal : 1,
+                employeeId: employeeIdNum,
+                caseHandlerId,
+                closerId,
+                expertId,
+                meetingSchedulerId,
+                meetingManagerId,
+                meetingLawyerId
               });
               
               // Check if employee appears in ANY role for this signed lead
               let isEmployeeInAnyRole = false;
               let actualRole = '';
               
-              if (lead.case_handler_id === employeeIdStr) {
+              if (caseHandlerId === employeeIdNum) {
                 isEmployeeInAnyRole = true;
                 actualRole = 'h';
-              } else if (lead.closer_id === employeeIdStr) {
+              } else if (closerId === employeeIdNum) {
                 isEmployeeInAnyRole = true;
                 actualRole = 'c';
-              } else if (lead.expert_id === employeeIdStr) {
+              } else if (expertId === employeeIdNum) {
                 isEmployeeInAnyRole = true;
                 actualRole = 'e';
-              } else if (lead.meeting_scheduler_id === employeeIdStr) {
+              } else if (meetingSchedulerId === employeeIdNum) {
                 isEmployeeInAnyRole = true;
                 actualRole = 's';
-              } else if (lead.meeting_manager_id === employeeIdStr) {
+              } else if (meetingManagerId === employeeIdNum) {
                 isEmployeeInAnyRole = true;
                 actualRole = 'z';
-              } else if (lead.meeting_lawyer_id === employeeIdStr) {
+              } else if (meetingLawyerId === employeeIdNum) {
                 isEmployeeInAnyRole = true;
                 actualRole = 'helper-closer';
               }
@@ -1208,21 +1243,39 @@ const EmployeePerformancePage: React.FC = () => {
                 
                 contractsSigned++; // Count actual contracts signed
                 totalRevenue += leadTotalInNIS; // Use NIS amount
+                
+                console.log(`✅ Employee ${employee.display_name} matched in role ${actualRole} for lead ${lead.id}`);
               }
               
               // Count cases handled (only from signed leads)
-              if (lead.case_handler_id === employeeIdStr) {
+              if (caseHandlerId === employeeIdNum) {
                 casesHandled++;
               }
             });
           }
           
-          // Calculate performance percentage based on team average (capped at 100%)
+          // Calculate performance percentage based on role average (average = 100%, capped at 100%)
           const teamAvg = teamAverages[role];
           const employeeSigned = roleMetrics[role]?.signed || 0;
-          const performancePercentage = teamAvg && teamAvg.avgSigned > 0 
-            ? Math.min(100, Math.round((employeeSigned / teamAvg.avgSigned) * 100))
-            : 0;
+          let performancePercentage = 0;
+          
+          if (teamAvg && teamAvg.avgSigned > 0) {
+            // Calculate percentage where average performance = 100%
+            // If employee has same as average, they get 100%
+            // If employee has more than average, they get 100% (capped)
+            // If employee has less than average, they get proportionally less
+            performancePercentage = Math.min(100, Math.round((employeeSigned / teamAvg.avgSigned) * 100));
+          } else if (teamAvg && teamAvg.avgSigned === 0 && employeeSigned > 0) {
+            // If average is 0 but employee has performance, give them 100%
+            performancePercentage = 100;
+          }
+          
+          console.log(`📊 Performance calculation for ${employee.display_name} (${role}):`, {
+            employeeSigned,
+            teamAvgSigned: teamAvg?.avgSigned || 0,
+            performancePercentage,
+            roleMetrics: roleMetrics[role]
+          });
 
           return {
             ...employee,
@@ -1241,6 +1294,22 @@ const EmployeePerformancePage: React.FC = () => {
               team_average: teamAvg
             }
           };
+        });
+
+        console.log('🔍 Employee Performance - Final metrics calculated:', {
+          totalEmployees: employeesWithMetrics.length,
+          employeesWithStats: employeesWithMetrics.filter(emp => 
+            emp.performance_metrics && 
+            (emp.performance_metrics.contracts_signed > 0 || emp.performance_metrics.total_revenue > 0)
+          ).length,
+          sampleEmployeeMetrics: employeesWithMetrics[0] ? {
+            name: employeesWithMetrics[0].display_name,
+            id: employeesWithMetrics[0].id,
+            role: employeesWithMetrics[0].bonuses_role,
+            contractsSigned: employeesWithMetrics[0].performance_metrics?.contracts_signed || 0,
+            totalRevenue: employeesWithMetrics[0].performance_metrics?.total_revenue || 0,
+            totalMeetings: employeesWithMetrics[0].performance_metrics?.total_meetings || 0
+          } : null
         });
 
         // Calculate bonuses for all employees
@@ -1376,13 +1445,13 @@ const EmployeePerformancePage: React.FC = () => {
                     conversionRate: amount > 0 ? amountInNIS / amount : 1
                   });
                   
-                  // Get department ID from the JOIN (same as Dashboard logic)
-                  let departmentId = null;
-                  // Dashboard treats misc_category and misc_maincategory as single objects, not arrays
-                  const leadData = lead as any;
-                  if (leadData.misc_category?.misc_maincategory?.department_id) {
-                    departmentId = leadData.misc_category.misc_maincategory.department_id;
-                  }
+              // Get department ID from the JOIN (same as Dashboard logic)
+              let departmentId = null;
+              // Dashboard treats misc_category and misc_maincategory as single objects, not arrays
+              const leadData = lead as any;
+              if (leadData.misc_category && leadData.misc_category.misc_maincategory && leadData.misc_category.misc_maincategory.department_id) {
+                departmentId = leadData.misc_category.misc_maincategory.department_id;
+              }
                   
                   // Get department name from the mapping
                   const departmentName = departmentId ? departmentMap[departmentId] || 'Unknown' : 'General';
@@ -1679,7 +1748,7 @@ const EmployeePerformancePage: React.FC = () => {
     };
 
     fetchEmployeePerformance();
-  }, [dateFrom, dateTo]); // Add dateFrom and dateTo as dependencies
+  }, [appliedDateFrom, appliedDateTo]); // Add appliedDateFrom and appliedDateTo as dependencies
 
   // Fetch graph data when graph parameters change
   useEffect(() => {
@@ -1743,6 +1812,34 @@ const EmployeePerformancePage: React.FC = () => {
   const handleModalClose = () => {
     setIsModalOpen(false);
     setSelectedEmployee(null);
+  };
+
+  const handleApplyDateFilter = async () => {
+    if (!dateFrom || !dateTo) {
+      alert('Please select both from and to dates');
+      return;
+    }
+    
+    setIsApplyingFilter(true);
+    
+    try {
+      // Set the applied dates
+      setAppliedDateFrom(dateFrom);
+      setAppliedDateTo(dateTo);
+      
+      // The useEffect will handle the actual data fetching
+    } catch (error) {
+      console.error('Error applying date filter:', error);
+    } finally {
+      setIsApplyingFilter(false);
+    }
+  };
+
+  const handleClearDateFilter = () => {
+    setAppliedDateFrom('');
+    setAppliedDateTo('');
+    setDateFrom('');
+    setDateTo('');
   };
 
   // Format date
@@ -2581,6 +2678,35 @@ const EmployeePerformancePage: React.FC = () => {
               ) : null}
             </div>
 
+            {/* Date Filter Actions */}
+            <div className="form-control">
+              <div className="label">
+                <span className="label-text font-semibold text-xs sm:text-sm">Date Filter Actions</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleApplyDateFilter}
+                  className="btn btn-primary btn-xs sm:btn-sm flex-1"
+                  disabled={isApplyingFilter}
+                >
+                  {isApplyingFilter ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs"></span>
+                      Applying...
+                    </>
+                  ) : (
+                    'Apply Filter'
+                  )}
+                </button>
+                <button
+                  onClick={handleClearDateFilter}
+                  className="btn btn-outline btn-xs sm:btn-sm flex-1"
+                >
+                  Clear Filter
+                </button>
+              </div>
+            </div>
+
             {/* Actions */}
             <div className="form-control">
               <div className="label">
@@ -2608,6 +2734,8 @@ const EmployeePerformancePage: React.FC = () => {
                     setSearchQuery('');
                     setDateFrom('');
                     setDateTo('');
+                    setAppliedDateFrom('');
+                    setAppliedDateTo('');
                   }}
                   title="Clear all filters"
                 >
@@ -2760,13 +2888,10 @@ const EmployeePerformancePage: React.FC = () => {
                           )}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <div className="font-semibold text-sm sm:text-base truncate">{employee.display_name}</div>
-                            <span className="text-xs max-w-full truncate inline-block px-1.5 sm:px-2 py-0.5 rounded-full text-white font-medium bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 shadow-sm flex-shrink-0">
-                              {getRoleDisplayName(employee.bonuses_role)}
-                            </span>
-                          </div>
-                          <div className="text-sm sm:text-base text-gray-500 truncate">{employee.email}</div>
+                          <div className="font-semibold text-sm sm:text-base truncate">{employee.display_name}</div>
+                          <span className="text-sm max-w-full truncate inline-block px-2 sm:px-3 py-1 rounded-full text-white font-medium bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 shadow-sm flex-shrink-0 mt-1">
+                            {getRoleDisplayName(employee.bonuses_role)}
+                          </span>
                         </div>
                       </div>
                     </td>

@@ -1258,7 +1258,7 @@ const PipelinePage: React.FC = () => {
           const { data: userData, error: userError } = await supabase
             .from('users')
             .select(`
-              ids,
+              id,
               full_name,
               email,
               employee_id,
@@ -1278,14 +1278,14 @@ const PipelinePage: React.FC = () => {
           
           if (userData?.full_name) {
             setCurrentUserFullName(userData.full_name);
-          } else if (userData?.tenants_employee?.display_name) {
-            setCurrentUserFullName(userData.tenants_employee.display_name);
+          } else if (userData?.tenants_employee && Array.isArray(userData.tenants_employee) && userData.tenants_employee.length > 0) {
+            setCurrentUserFullName(userData.tenants_employee[0].display_name);
           } else {
             setCurrentUserFullName('Eliran');
           }
           
           // Store employee ID for efficient filtering
-          if (userData?.employee_id) {
+          if (userData?.employee_id && typeof userData.employee_id === 'number') {
             setCurrentUserEmployeeId(userData.employee_id);
           } else {
             setCurrentUserEmployeeId(null);
@@ -1970,7 +1970,7 @@ const PipelinePage: React.FC = () => {
             sortedLeads.map((lead) => (
               <div
                 key={lead.id}
-                ref={el => (mainCardRefs.current[lead.id] = el)}
+                ref={el => (mainCardRefs.current[Number(lead.id)] = el)}
                 className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16"
               >
                 <div onClick={() => handleRowClick(lead)} className="flex-1 cursor-pointer flex flex-col">
@@ -2259,7 +2259,7 @@ const PipelinePage: React.FC = () => {
               <div className="relative">
                 <button
                   className="btn btn-xs btn-outline btn-primary"
-                  onClick={() => setLabelDropdownOpen(labelDropdownOpen === selectedLead.id ? null : selectedLead.id)}
+                  onClick={() => setLabelDropdownOpen(labelDropdownOpen === selectedLead.id ? null : Number(selectedLead.id))}
                   disabled={labelSubmitting}
                 >
                   {selectedLead.label ? 'Edit Label' : 'Add Label'}
@@ -2900,7 +2900,7 @@ const PipelinePage: React.FC = () => {
                   <div
                     className="bg-white rounded-2xl shadow-lg border-2 border-primary/30 hover:shadow-2xl hover:border-primary/60 transition-all duration-200 cursor-pointer flex flex-col gap-2 relative p-4 group"
                     style={{ minHeight: 120, flex: 1 }}
-                    onClick={() => handleHighlightCardClick(lead.id)}
+                    onClick={() => handleHighlightCardClick(Number(lead.id))}
                   >
                     {/* Label on top */}
                     {lead.label && (
@@ -2939,7 +2939,7 @@ const PipelinePage: React.FC = () => {
                   <button
                     className="btn btn-xs btn-error mt-2"
                     title="Remove from highlights"
-                    onClick={e => { e.stopPropagation(); handleRemoveHighlight(String(lead.id)); }}
+                    onClick={e => { e.stopPropagation(); handleRemoveHighlight(lead.id.toString()); }}
                   >
                     <XMarkIcon className="w-4 h-4" />
                   </button>
