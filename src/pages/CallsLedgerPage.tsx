@@ -2,13 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { 
   PhoneIcon,
-  CalendarIcon,
-  ClockIcon,
   UserIcon,
   MagnifyingGlassIcon,
-  PlayIcon,
-  PauseIcon,
-  StopIcon,
   MicrophoneIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
@@ -18,6 +13,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { onecomSyncApi } from '../lib/onecomSyncApi';
+import AudioPlayerModal from '../components/AudioPlayerModal';
 
 interface CallLog {
   id: number;
@@ -51,8 +47,6 @@ const CallsLedgerPage: React.FC = () => {
   const [appliedToDate, setAppliedToDate] = useState<string>('');
   const [totalCalls, setTotalCalls] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
-  const [playingRecording, setPlayingRecording] = useState<string | null>(null);
-  const [audioRef, setAudioRef] = useState<HTMLAudioElement | null>(null);
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmployee, setSelectedEmployee] = useState<string>('');
   const [isSyncing, setIsSyncing] = useState(false);
@@ -62,6 +56,12 @@ const CallsLedgerPage: React.FC = () => {
     total: number;
     errors: number;
   } | null>(null);
+  
+  // Audio player modal state
+  const [isAudioModalOpen, setIsAudioModalOpen] = useState(false);
+  const [currentRecordingUrl, setCurrentRecordingUrl] = useState<string>('');
+  const [currentCallId, setCurrentCallId] = useState<string>('');
+  const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
 
   // Fetch employees for dropdown
   const fetchEmployees = async () => {
@@ -223,17 +223,8 @@ const CallsLedgerPage: React.FC = () => {
     }
   };
 
-  const handlePlayRecording = async (recordingUrl: string, callId: string) => {
-    let hasShownError = false; // Flag to prevent duplicate toast notifications
-    
+  const handlePlayRecording = async (recordingUrl: string, callId: string, employeeName?: string) => {
     try {
-      
-      // Stop current audio if playing
-      if (audioRef && !audioRef.paused) {
-        audioRef.pause();
-        audioRef.currentTime = 0;
-      }
-
       // Validate and clean the recording URL
       let cleanUrl = recordingUrl;
       
@@ -259,10 +250,10 @@ const CallsLedgerPage: React.FC = () => {
         try {
           // Extract call ID from the URL
           const urlParams = new URL(decodedUrl).searchParams;
-          const callId = urlParams.get('id');
+          const extractedCallId = urlParams.get('id');
           const tenant = urlParams.get('tenant');
           
-          if (!callId) {
+          if (!extractedCallId) {
             console.error('Could not extract call ID from URL:', decodedUrl);
             toast.error('Invalid recording URL format');
             return;
@@ -270,7 +261,7 @@ const CallsLedgerPage: React.FC = () => {
           
           // Use our backend proxy to avoid CORS issues
           const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
-          cleanUrl = `${backendUrl}/api/call-recording/${callId}${tenant ? `?tenant=${tenant}` : ''}`;
+          cleanUrl = `${backendUrl}/api/call-recording/${extractedCallId}${tenant ? `?tenant=${tenant}` : ''}`;
         } catch (error) {
           console.error('Error parsing 1com URL:', error);
           toast.error('Failed to parse recording URL');
@@ -278,86 +269,22 @@ const CallsLedgerPage: React.FC = () => {
         }
       }
 
-      // First, check if this is a 2024 recording that might not be available
-      const isOldRecording = callId.startsWith('pbx24-') || decodedUrl.includes('pbx24-');
-      if (isOldRecording) {
-        // Make a GET request to check if the recording is available
-        try {
-          const checkResponse = await fetch(cleanUrl);
-          if (!checkResponse.ok) {
-            const errorData = await checkResponse.json().catch(() => null);
-            if (errorData?.isOldRecording) {
-              if (!hasShownError) {
-                hasShownError = true;
-                toast.error('This recording is from 2024 and may no longer be accessible. 1com typically archives older recordings.');
-              }
-              return;
-            }
-          } else {
-            // Check if the response is actually audio
-            const contentType = checkResponse.headers.get('content-type') || '';
-            if (contentType.includes('application/json')) {
-              // The backend returned JSON instead of audio, likely an error
-              const errorData = await checkResponse.json().catch(() => null);
-              if (errorData?.isOldRecording) {
-                if (!hasShownError) {
-                  hasShownError = true;
-                  toast.error('This recording is from 2024 and may no longer be accessible. 1com typically archives older recordings.');
-                }
-                return;
-              }
-            }
-          }
-        } catch (checkError) {
-          // Continue with normal playback attempt
-        }
-      }
-
-      // Create new audio element
-      const audio = new Audio(cleanUrl);
-      setAudioRef(audio);
-      setPlayingRecording(callId);
-
-      audio.onended = () => {
-        setPlayingRecording(null);
-        setAudioRef(null);
-      };
-
-      audio.onerror = (error) => {
-        console.error('Audio playback error:', error);
-        console.error('Failed URL:', cleanUrl);
-        if (!hasShownError) {
-          hasShownError = true;
-          // Check if this is a 2024 recording for a more specific error message
-          if (isOldRecording) {
-            toast.error('This recording is from 2024 and may no longer be accessible. 1com typically archives older recordings.');
-          } else {
-            toast.error('Recording is not available');
-          }
-        }
-        setPlayingRecording(null);
-        setAudioRef(null);
-      };
-
-      await audio.play();
+      // Open the audio player modal
+      setCurrentRecordingUrl(cleanUrl);
+      setCurrentCallId(callId);
+      setCurrentEmployeeName(employeeName || '');
+      setIsAudioModalOpen(true);
     } catch (error) {
-      console.error('Error playing recording:', error);
-      if (!hasShownError) {
-        hasShownError = true;
-        toast.error('Recording is not available');
-      }
-      setPlayingRecording(null);
-      setAudioRef(null);
+      console.error('Error preparing recording:', error);
+      toast.error('Failed to load recording');
     }
   };
 
-  const handleStopRecording = () => {
-    if (audioRef && !audioRef.paused) {
-      audioRef.pause();
-      audioRef.currentTime = 0;
-    }
-    setPlayingRecording(null);
-    setAudioRef(null);
+  const handleCloseAudioModal = () => {
+    setIsAudioModalOpen(false);
+    setCurrentRecordingUrl('');
+    setCurrentCallId('');
+    setCurrentEmployeeName('');
   };
 
   const handleSyncFromOneCom = async () => {
@@ -740,21 +667,11 @@ const CallsLedgerPage: React.FC = () => {
                           <span className="text-sm">{call.employee?.display_name || '---'}</span>
                           {call.url && (
                             <button
-                              className="btn btn-ghost btn-sm flex items-center justify-center"
-                              onClick={() => {
-                                if (playingRecording === (call.call_id || String(call.id))) {
-                                  handleStopRecording();
-                                } else {
-                                  handlePlayRecording(call.url!, call.call_id || String(call.id));
-                                }
-                              }}
-                              title={playingRecording === (call.call_id || String(call.id)) ? "Stop Recording" : "Play Recording"}
+                              className="btn btn-ghost btn-sm flex items-center justify-center hover:bg-purple-50"
+                              onClick={() => handlePlayRecording(call.url!, call.call_id || String(call.id), call.employee?.display_name)}
+                              title="Play Recording"
                             >
-                              {playingRecording === (call.call_id || String(call.id)) ? (
-                                <StopIcon className="w-5 h-5" />
-                              ) : (
-                                <MicrophoneIcon className="w-5 h-5" />
-                              )}
+                              <MicrophoneIcon className="w-5 h-5 text-purple-600" />
                             </button>
                           )}
                         </div>
@@ -766,6 +683,15 @@ const CallsLedgerPage: React.FC = () => {
             </table>
           </div>
         </div>
+
+        {/* Audio Player Modal */}
+        <AudioPlayerModal
+          isOpen={isAudioModalOpen}
+          onClose={handleCloseAudioModal}
+          audioUrl={currentRecordingUrl}
+          callId={currentCallId}
+          employeeName={currentEmployeeName}
+        />
     </div>
   );
 };

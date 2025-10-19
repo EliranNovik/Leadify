@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { ExclamationTriangleIcon, CurrencyDollarIcon, CalendarIcon, DocumentTextIcon, Squares2X2Icon, Bars3Icon, PrinterIcon, EnvelopeIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { ExclamationTriangleIcon, CurrencyDollarIcon, CalendarIcon, DocumentTextIcon, Squares2X2Icon, Bars3Icon, PrinterIcon, EnvelopeIcon, XMarkIcon, EyeIcon, BanknotesIcon } from '@heroicons/react/24/outline';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { useNavigate } from 'react-router-dom';
 import FinancesTab from '../components/client-tabs/FinancesTab'; // If not already imported
@@ -34,6 +34,8 @@ const CollectionPage: React.FC = () => {
   const [showContractModal, setShowContractModal] = useState(false);
   const [showProformaModal, setShowProformaModal] = useState(false);
   const [selectedProforma, setSelectedProforma] = useState<any>(null);
+  const [showFinanceModal, setShowFinanceModal] = useState(false);
+  const [selectedFinanceClient, setSelectedFinanceClient] = useState<any>(null);
 
   // Add state for mock data arrays for all tabs
   const [awaitingPayments, setAwaitingPayments] = useState<any[]>([]);
@@ -484,6 +486,62 @@ const CollectionPage: React.FC = () => {
   // Add state for total paid this month
   const [totalPaidThisMonth, setTotalPaidThisMonth] = useState<number>(0);
 
+  // Handler to open finance modal with full client data
+  const handleOpenFinanceModal = async (row: any) => {
+    try {
+      // Fetch full client data based on lead type
+      let clientData = null;
+      
+      if (row.source === 'legacy') {
+        // Fetch from leads_lead table
+        const { data, error } = await supabase
+          .from('leads_lead')
+          .select('*')
+          .eq('id', row.lead_id)
+          .single();
+        
+        if (error) {
+          console.error('Error fetching legacy client:', error);
+          toast.error('Failed to load client data');
+          return;
+        }
+        
+        // Transform to match client structure
+        clientData = {
+          ...data,
+          id: `legacy_${data.id}`,
+          lead_type: 'legacy',
+          lead_number: data.id?.toString() || '',
+          balance_currency: data.currency_id // Will need to map this
+        };
+      } else {
+        // Fetch from leads table
+        const { data, error } = await supabase
+          .from('leads')
+          .select('*')
+          .eq('id', row.lead_id)
+          .single();
+        
+        if (error) {
+          console.error('Error fetching new client:', error);
+          toast.error('Failed to load client data');
+          return;
+        }
+        
+        clientData = {
+          ...data,
+          lead_type: 'new'
+        };
+      }
+      
+      setSelectedFinanceClient(clientData);
+      setShowFinanceModal(true);
+    } catch (error) {
+      console.error('Error opening finance modal:', error);
+      toast.error('Failed to open finance plan');
+    }
+  };
+
   // Add handler to remove payment from awaitingPayments
   const handlePaymentMarkedPaid = async (paymentId: string | number) => {
     let paidBy = 'Unknown';
@@ -612,9 +670,9 @@ const CollectionPage: React.FC = () => {
     const fetchAwaitingPayments = async () => {
       setLoading(true);
       
-      // Fetch legacy payment plan rows where actual_date IS NULL (payment hasn't been made yet)
+      // Fetch legacy payment plan rows where actual_date IS NULL (payment hasn't been made yet) and ready_to_pay = true
       console.log('🔍 Fetching awaiting payments from finances_paymentplanrow (legacy)...');
-      console.log('🔍 Filtering: paid=false, actual_date IS NULL, date NOT NULL, due_date NOT NULL');
+      console.log('🔍 Filtering: paid=false, actual_date IS NULL, ready_to_pay=true, date NOT NULL, due_date NOT NULL');
       const { data: legacyData, error: legacyError } = await supabase
         .from('finances_paymentplanrow')
         .select(`
@@ -628,9 +686,11 @@ const CollectionPage: React.FC = () => {
           vat_value_base,
           "order",
           notes,
-          currency_id
+          currency_id,
+          ready_to_pay
         `)
         .is('actual_date', null) // Payment hasn't been made yet
+        .eq('ready_to_pay', true) // Only fetch payments marked as ready to pay
         .not('date', 'is', null) // Payment is scheduled
         .not('due_date', 'is', null) // Only fetch payment plans with a due date
         .order('date', { ascending: true });
@@ -644,9 +704,9 @@ const CollectionPage: React.FC = () => {
       
       console.log('✅ Legacy payment plans fetched:', legacyData?.length || 0);
       
-      // Now fetch new payment plans from payment_plans table where paid = false
+      // Now fetch new payment plans from payment_plans table where paid = false and ready_to_pay = true
       console.log('🔍 Fetching awaiting payments from payment_plans (new)...');
-      console.log('🔍 Filtering: paid=false, due_date NOT NULL');
+      console.log('🔍 Filtering: paid=false, ready_to_pay=true, due_date NOT NULL');
       const { data: newData, error: newError } = await supabase
         .from('payment_plans')
         .select(`
@@ -664,9 +724,11 @@ const CollectionPage: React.FC = () => {
           client_name,
           payment_order,
           proforma,
-          currency
+          currency,
+          ready_to_pay
         `)
         .eq('paid', false) // Payment hasn't been made yet
+        .eq('ready_to_pay', true) // Only fetch payments marked as ready to pay
         .not('due_date', 'is', null) // Only fetch payment plans with a due date
         .order('date', { ascending: true });
       
@@ -698,10 +760,30 @@ const CollectionPage: React.FC = () => {
         return;
       }
       
-      // Now fetch the lead information for these payment plans
+      // Now fetch the lead information and proformas for these payment plans
       if (allPaymentPlans && allPaymentPlans.length > 0) {
         const leadIds = [...new Set(allPaymentPlans.map(row => row.lead_id))];
         console.log('🔍 Fetching lead information for payment plan lead_ids:', leadIds.slice(0, 10));
+        
+        // Fetch legacy proformas for legacy payment plans
+        const legacyPaymentIds = allPaymentPlans
+          .filter(row => row.source === 'legacy')
+          .map(row => row.id);
+        
+        let legacyProformas: any[] = [];
+        if (legacyPaymentIds.length > 0) {
+          const { data: proformaData, error: proformaError } = await supabase
+            .from('proformainvoice')
+            .select('id, ppr_id, lead_id')
+            .in('ppr_id', legacyPaymentIds);
+          
+          if (!proformaError && proformaData) {
+            legacyProformas = proformaData;
+            console.log('✅ Legacy proformas fetched:', legacyProformas.length);
+          } else {
+            console.log('❌ Error fetching legacy proformas:', proformaError);
+          }
+        }
         
         // Log some sample currency_ids to see what we're working with
         const sampleCurrencyIds = allPaymentPlans.slice(0, 10).map(row => row.currency_id).filter(Boolean);
@@ -814,7 +896,11 @@ const CollectionPage: React.FC = () => {
             // Try to find the lead information from the fetched leads
             lead = leadMap.get(String(row.lead_id));
             contactName = lead?.name || 'Unknown Lead';
-            proformaName = 'Payment Plan';
+            
+            // Find matching proforma for this payment plan row
+            const matchingProforma = legacyProformas.find(p => p.ppr_id === row.id);
+            proformaName = matchingProforma ? `Proforma ${matchingProforma.id}` : null;
+            
             order = getOrderDescription(row.order) || '';
           } else {
             // New payment plan from payment_plans table
@@ -824,7 +910,19 @@ const CollectionPage: React.FC = () => {
             // For new payment plans, try to get lead info first, fallback to client_name
             lead = leadMap.get(String(row.lead_id));
             contactName = lead?.name || row.client_name || 'Unknown Client';
-            proformaName = row.proforma || 'Payment Plan';
+            
+            // For new leads, get proforma name from the stored proforma JSON
+            if (row.proforma && row.proforma.trim() !== '') {
+              try {
+                const proformaData = JSON.parse(row.proforma);
+                proformaName = proformaData.proformaName || null;
+              } catch {
+                proformaName = null;
+              }
+            } else {
+              proformaName = null;
+            }
+            
             order = row.payment_order || getOrderDescription(row.order) || '';
           }
           
@@ -835,19 +933,21 @@ const CollectionPage: React.FC = () => {
           if (row.id <= 5) { // Only log first 5 for debugging
             console.log(`🔍 Payment plan ${row.id} (${row.source}): lead_id=${row.lead_id}, contact: ${contactName}`);
             console.log(`🔍 Payment plan ${row.id}: currency_id=${row.currency_id}, found currency:`, currency ? `${currency.name} (${currency.iso_code})` : 'NOT FOUND');
+            console.log(`🔍 Payment plan ${row.id}: date=${row.date}, due_date=${row.due_date}, final_date=${row.source === 'legacy' ? (row.date || row.due_date) : (row.due_date || row.date)}`);
           }
           
           return {
             id: row.id,
-            lead_number: row.source === 'legacy' ? (lead ? `L${lead.id}` : `L${row.lead_id}`) : `N${row.id}`,
+            lead_number: row.source === 'legacy' ? (lead ? `L${lead.id}` : `L${row.lead_id}`) : (lead?.lead_number || `N${row.id}`),
             name: row.source === 'legacy' ? (lead?.name || 'Unknown Lead') : row.client_name || 'Unknown Client',
             contact_name: contactName,
-            date: row.date || row.due_date,
+            date: row.source === 'legacy' ? (row.date || row.due_date) : (row.due_date || row.date), // Prioritize due_date for new leads
             total_amount: totalAmount,
             total_amount_base: totalAmountBase,
             currency_symbol: currency?.name || '₪',
             currency_code: currency?.iso_code || 'ILS',
-            proformaName: proformaName,
+            proforma: proformaName,
+            proforma_id: row.source === 'legacy' ? (legacyProformas.find(p => p.ppr_id === row.id)?.id || null) : (row.id), // Store proforma/payment ID for navigation
             order: order,
             currency_id: row.currency_id,
             notes: row.notes || '',
@@ -1030,7 +1130,7 @@ const CollectionPage: React.FC = () => {
         (row.lead_number && row.lead_number.toLowerCase().includes(q)) ||
         (row.name && row.name.toLowerCase().includes(q)) ||
         (row.contact_name && row.contact_name.toLowerCase().includes(q)) ||
-        (row.proformaName && row.proformaName.toLowerCase().includes(q))
+        (row.proforma && row.proforma.toLowerCase().includes(q))
       );
     }
     return statusMatch && dateMatch && searchMatch;
@@ -1541,6 +1641,7 @@ const CollectionPage: React.FC = () => {
                     <th className="text-lg font-bold">Total Amount</th>
                     <th className="text-lg font-bold">Label</th>
                     <th className="text-lg font-bold">Comments</th>
+                    <th className="text-lg font-bold">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="text-base">
@@ -1553,6 +1654,16 @@ const CollectionPage: React.FC = () => {
                       <td>{lead.balance ? `₪${lead.balance.toLocaleString()}` : '-'}</td>
                       <td>{lead.collection_label || '-'}</td>
                       <td>{Array.isArray(lead.collection_comments) && lead.collection_comments.length > 0 ? lead.collection_comments[lead.collection_comments.length - 1].text : '-'}</td>
+                      <td>
+                        <button
+                          className="btn btn-xs btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                          title="View Client"
+                          onClick={() => navigate(`/clients/${lead.lead_number}`)}
+                          style={{ padding: 0 }}
+                        >
+                          <EyeIcon className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1624,8 +1735,21 @@ const CollectionPage: React.FC = () => {
                         </span>
                       </div>
                     </div>
+                    {/* Eye icon button */}
+                    <div className="absolute bottom-5 right-5">
+                      <button
+                        className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-lg"
+                        title="View Client"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/clients/${lead.lead_number}`);
+                        }}
+                      >
+                        <EyeIcon className="w-5 h-5" />
+                      </button>
+                    </div>
                     {lead.collection_comments && lead.collection_comments.length > 0 && (
-                      <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
+                      <div className="absolute left-5 bottom-5 max-w-[60%] flex items-end">
                         <div className="flex items-start gap-2">
                           <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
@@ -1734,8 +1858,7 @@ const CollectionPage: React.FC = () => {
                     <th className="text-lg font-bold">Date</th>
                     <th className="text-lg font-bold">Total Amount</th>
                     <th className="text-lg font-bold">Order</th>
-                    <th className="text-lg font-bold">Payment Plan</th>
-                    <th className="text-lg font-bold">Source</th>
+                    <th className="text-lg font-bold">Proforma</th>
                     <th className="text-lg font-bold">Actions</th>
                   </tr>
                 </thead>
@@ -1750,33 +1873,58 @@ const CollectionPage: React.FC = () => {
                       <td className="font-bold text-primary">{row.lead_number}</td>
                       <td>{row.name}</td>
                       <td className="font-semibold text-purple-600">{row.contact_name}</td>
-                      <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
+                      <td>{row.date ? new Date(row.date).toLocaleDateString('en-GB') : '-'}</td>
                       <td>{row.total_amount ? `${row.currency_symbol || '₪'}${row.total_amount.toLocaleString()}` : '-'}</td>
                       <td>{row.order || '-'}</td>
                       <td>
-                        <span className="text-sm font-bold text-blue-600">
-                          {row.proformaName}
-                        </span>
+                        {row.proforma && row.proforma_id ? (
+                          <button
+                            className="text-sm font-bold text-blue-600 hover:text-blue-800 underline cursor-pointer"
+                            onClick={() => {
+                              if (row.source === 'legacy') {
+                                navigate(`/proforma-legacy/${row.proforma_id}`);
+                              } else {
+                                navigate(`/proforma/${row.proforma_id}`);
+                              }
+                            }}
+                            title="View Proforma"
+                          >
+                            {row.proforma}
+                          </button>
+                        ) : (
+                          <span className="text-sm text-gray-400">N/A</span>
+                        )}
                       </td>
                       <td>
-                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${
-                          row.source === 'legacy' 
-                            ? 'bg-orange-100 text-orange-700 border border-orange-200' 
-                            : 'bg-blue-100 text-blue-700 border border-blue-200'
-                        }`}>
-                          {row.source === 'legacy' ? 'Legacy' : 'New'}
-                        </span>
-                      </td>
-                      <td>
-                        {/* Dollar icon button to mark as paid and remove row */}
-                        <button
-                          className="btn btn-xs btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
-                          title="Mark as Paid"
-                          onClick={() => handlePaymentMarkedPaid(row.id)}
-                          style={{ padding: 0 }}
-                        >
-                          <CurrencyDollarIcon className="w-4 h-4" />
-                        </button>
+                        <div className="flex gap-2 items-center">
+                          {/* Eye icon button to view client */}
+                          <button
+                            className="btn btn-xs btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                            title="View Client"
+                            onClick={() => navigate(`/clients/${row.lead_number}`)}
+                            style={{ padding: 0 }}
+                          >
+                            <EyeIcon className="w-4 h-4" />
+                          </button>
+                          {/* Hook icon button to view finance plan */}
+                          <button
+                            className="btn btn-xs btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                            title="View Finance Plan"
+                            onClick={() => handleOpenFinanceModal(row)}
+                            style={{ padding: 0 }}
+                          >
+                            <BanknotesIcon className="w-4 h-4" />
+                          </button>
+                          {/* Dollar icon button to mark as paid and remove row */}
+                          <button
+                            className="btn btn-xs btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                            title="Mark as Paid"
+                            onClick={() => handlePaymentMarkedPaid(row.id)}
+                            style={{ padding: 0 }}
+                          >
+                            <CurrencyDollarIcon className="w-4 h-4" />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1810,7 +1958,7 @@ const CollectionPage: React.FC = () => {
                       {/* Date */}
                       <div className="flex justify-between items-center py-1">
                         <span className="text-xs font-semibold text-gray-500">Date</span>
-                        <span className="text-sm font-bold text-gray-800 ml-2">{row.date ? new Date(row.date).toLocaleDateString() : '-'}</span>
+                        <span className="text-sm font-bold text-gray-800 ml-2">{row.date ? new Date(row.date).toLocaleDateString('en-GB') : '-'}</span>
                       </div>
                       {/* Total Amount */}
                       <div className="flex justify-between items-center py-1">
@@ -1824,24 +1972,51 @@ const CollectionPage: React.FC = () => {
                         <span className="text-xs font-semibold text-gray-500">Order</span>
                         <span className="text-sm font-bold text-gray-800 ml-2">{row.order || '-'}</span>
                       </div>
-                      {/* Payment Plan */}
+                      {/* Proforma */}
                       <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Payment Plan</span>
-                        <span className="text-sm font-bold text-blue-600 ml-2">
-                          {row.proformaName}
-                        </span>
+                        <span className="text-xs font-semibold text-gray-500">Proforma</span>
+                        {row.proforma && row.proforma_id ? (
+                          <button
+                            className="text-sm font-bold text-blue-600 hover:text-blue-800 underline cursor-pointer ml-2"
+                            onClick={(e) => {
+                              e.stopPropagation(); // Prevent card click
+                              if (row.source === 'legacy') {
+                                navigate(`/proforma-legacy/${row.proforma_id}`);
+                              } else {
+                                navigate(`/proforma/${row.proforma_id}`);
+                              }
+                            }}
+                            title="View Proforma"
+                          >
+                            {row.proforma}
+                          </button>
+                        ) : (
+                          <span className="text-sm text-gray-400 ml-2">N/A</span>
+                        )}
                       </div>
-                      {/* Source */}
-                      <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Source</span>
-                        <span className={`px-2 py-1 rounded-full text-xs font-bold ${
-                          row.source === 'legacy' 
-                            ? 'bg-orange-100 text-orange-700 border border-orange-200' 
-                            : 'bg-blue-100 text-blue-700 border border-blue-200'
-                        }`}>
-                          {row.source === 'legacy' ? 'Legacy' : 'New'}
-                        </span>
-                      </div>
+                    </div>
+                    {/* Action buttons */}
+                    <div className="absolute bottom-5 right-5 flex gap-2">
+                      <button
+                        className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-lg"
+                        title="View Client"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/clients/${row.lead_number}`);
+                        }}
+                      >
+                        <EyeIcon className="w-5 h-5" />
+                      </button>
+                      <button
+                        className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-lg"
+                        title="View Finance Plan"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleOpenFinanceModal(row);
+                        }}
+                      >
+                        <BanknotesIcon className="w-5 h-5" />
+                      </button>
                     </div>
                   </div>
                 </div>
@@ -1865,6 +2040,7 @@ const CollectionPage: React.FC = () => {
                     <th className="text-lg font-bold">Date</th>
                     <th className="text-lg font-bold">Total</th>
                     <th className="text-lg font-bold">Details</th>
+                    <th className="text-lg font-bold">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="text-base">
@@ -1881,9 +2057,19 @@ const CollectionPage: React.FC = () => {
                       </td>
                       <td className="font-bold text-primary">{row.lead_number}</td>
                       <td>{row.name}</td>
-                      <td>{row.date ? new Date(row.date).toLocaleDateString() : '-'}</td>
+                      <td>{row.date ? new Date(row.date).toLocaleDateString('en-GB') : '-'}</td>
                       <td>{row.total ? `₪${row.total.toLocaleString()}` : '-'}</td>
                       <td>{row.details}</td>
+                      <td>
+                        <button
+                          className="btn btn-xs btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                          title="View Client"
+                          onClick={() => navigate(`/clients/${row.lead_number}`)}
+                          style={{ padding: 0 }}
+                        >
+                          <EyeIcon className="w-4 h-4" />
+                        </button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1937,9 +2123,22 @@ const CollectionPage: React.FC = () => {
                         <span className="text-sm font-bold text-gray-800 ml-2">{row.details}</span>
                       </div>
                     </div>
+                    {/* Eye icon button */}
+                    <div className="absolute bottom-5 right-5">
+                      <button
+                        className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-lg"
+                        title="View Client"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/clients/${row.lead_number}`);
+                        }}
+                      >
+                        <EyeIcon className="w-5 h-5" />
+                      </button>
+                    </div>
                   </div>
                   {row.collection_comments && row.collection_comments.length > 0 && (
-                    <div className="absolute left-5 bottom-5 max-w-[85%] flex items-end">
+                    <div className="absolute left-5 bottom-5 max-w-[60%] flex items-end">
                       <div className="flex items-start gap-2">
                         <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
@@ -2048,6 +2247,7 @@ const CollectionPage: React.FC = () => {
                 <th className="text-lg font-bold">Amount (with VAT)</th>
                 <th className="text-lg font-bold">Order</th>
                 <th className="text-lg font-bold">Invoice</th>
+                <th className="text-lg font-bold">Actions</th>
               </tr>
             </thead>
                 <tbody className="text-base">
@@ -2061,10 +2261,20 @@ const CollectionPage: React.FC = () => {
                         <td className="font-bold text-primary">{row.leads?.lead_number}</td>
                         <td>{row.leads?.name}</td>
                         <td className="font-semibold text-purple-600">{row.client_name}</td>
-                        <td>{row.paid_at ? new Date(row.paid_at).toLocaleDateString() : '-'}</td>
+                        <td>{row.paid_at ? new Date(row.paid_at).toLocaleDateString('en-GB') : '-'}</td>
                         <td>₪{(Number(row.value) + Number(row.value_vat)).toLocaleString()}</td>
                         <td>{row.payment_order || '-'}</td>
                         <td className="text-blue-600 font-bold">{proforma?.proformaName || 'N/A'}</td>
+                        <td>
+                          <button
+                            className="btn btn-xs btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                            title="View Client"
+                            onClick={() => navigate(`/clients/${row.leads?.lead_number}`)}
+                            style={{ padding: 0 }}
+                          >
+                            <EyeIcon className="w-4 h-4" />
+                          </button>
+                        </td>
                       </tr>
                     );
                   })}
@@ -2094,7 +2304,7 @@ const CollectionPage: React.FC = () => {
                         </div>
                         <div className="flex justify-between items-center py-1">
                           <span className="text-xs font-semibold text-gray-500">Date Paid</span>
-                          <span className="text-sm font-bold text-gray-800 ml-2">{row.paid_at ? new Date(row.paid_at).toLocaleDateString() : '-'}</span>
+                          <span className="text-sm font-bold text-gray-800 ml-2">{row.paid_at ? new Date(row.paid_at).toLocaleDateString('en-GB') : '-'}</span>
                         </div>
                         <div className="flex justify-between items-center py-1">
                           <span className="text-xs font-semibold text-gray-500">Amount (with VAT)</span>
@@ -2108,6 +2318,19 @@ const CollectionPage: React.FC = () => {
                           <span className="text-xs font-semibold text-gray-500">Invoice</span>
                           <span className="text-sm font-bold text-blue-600 ml-2">{proforma?.proformaName || 'N/A'}</span>
                         </div>
+                      </div>
+                      {/* Eye icon button */}
+                      <div className="absolute bottom-5 right-5">
+                        <button
+                          className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-lg"
+                          title="View Client"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            navigate(`/clients/${row.leads?.lead_number}`);
+                          }}
+                        >
+                          <EyeIcon className="w-5 h-5" />
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -2351,6 +2574,45 @@ const CollectionPage: React.FC = () => {
                 }
               }
             `}</style>
+          </div>
+        </div>
+      )}
+      
+      {/* Finance Plan Modal */}
+      {showFinanceModal && selectedFinanceClient && (
+        <div className="fixed inset-0 z-[100] bg-white">
+          <div className="w-full h-full flex flex-col overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-gradient-to-r from-purple-600 to-blue-600 text-white">
+              <div>
+                <h2 className="text-2xl font-bold">Finance Plan</h2>
+                <p className="text-white/80 text-sm mt-1">
+                  {selectedFinanceClient.name} - {selectedFinanceClient.lead_number}
+                </p>
+              </div>
+              <button
+                className="btn btn-ghost btn-circle text-white hover:bg-white/20"
+                onClick={() => {
+                  setShowFinanceModal(false);
+                  setSelectedFinanceClient(null);
+                }}
+                title="Close"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto">
+              <FinancesTab 
+                client={selectedFinanceClient}
+                onClientUpdate={async () => {
+                  // Optionally refresh the client data after updates
+                  console.log('Client updated in finance modal');
+                }}
+                hideTimelineHistory={true}
+              />
+            </div>
           </div>
         </div>
       )}

@@ -19,6 +19,7 @@ import {
   PlayIcon,
   StopIcon,
   SpeakerWaveIcon,
+  MagnifyingGlassIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useMsal } from '@azure/msal-react';
@@ -35,6 +36,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../../lib/api';
 import { fetchLegacyInteractions, testLegacyInteractionsAccess } from '../../lib/legacyInteractionsApi';
+import { appendEmailSignature } from '../../lib/emailSignature';
 
 interface Attachment {
   id: string;
@@ -504,6 +506,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const { instance, accounts } = useMsal();
   const [emails, setEmails] = useState<any[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
+  const [emailSearchQuery, setEmailSearchQuery] = useState('');
   const [interactionsLoading, setInteractionsLoading] = useState(true);
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
@@ -1352,7 +1355,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           employee: i.direction === 'out' ? (userFullName || 'You') : i.employee || client.name,
         }));
 
-        // 2. Email interactions - ultra-fast processing
+        // 2. Email interactions - use client emails from props for now (will be updated by separate email fetch)
         const clientEmails = (client as any).emails || [];
         
         // Skip complex deduplication for small datasets
@@ -1366,9 +1369,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         const emailInteractions = uniqueEmails.slice(0, 10).map((e: any) => { // Reduced from 50 to 10
           const emailDate = new Date(e.sent_at);
           
-          // Skip complex body processing for performance
+          // Use body_html instead of body_preview for better content
           let body = e.subject || 'Email received';
-          if (e.body_preview && e.body_preview.length > 0 && e.body_preview.length < 200) {
+          if (e.body_html && e.body_html.length > 0) {
+            body = e.body_html;
+          } else if (e.body_preview && e.body_preview.length > 0 && e.body_preview.length < 200) {
             body = e.body_preview;
           }
           
@@ -1416,7 +1421,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           from: e.sender_email,
           to: e.recipient_list,
           date: e.sent_at,
-          bodyPreview: e.body_preview || e.subject,
+          bodyPreview: e.body_html || e.body_preview || e.subject, // Use body_html first, then body_preview
           direction: e.direction,
           attachments: e.attachments,
         }));
@@ -1436,6 +1441,61 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   }, [client.id]); // Only run when client changes
 
 
+  // Function to fetch emails from database for the modal
+  const fetchEmailsForModal = useCallback(async () => {
+    if (!client.id) return;
+    
+    setEmailsLoading(true);
+    try {
+      // Fetch emails from database for this specific client
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      let emailQuery;
+      
+      if (isLegacyLead) {
+        const legacyId = parseInt(client.id.replace('legacy_', ''));
+        emailQuery = supabase
+          .from('emails')
+          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, sent_at, direction, attachments')
+          .eq('legacy_id', legacyId)
+          .order('sent_at', { ascending: true });
+      } else {
+        emailQuery = supabase
+          .from('emails')
+          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, sent_at, direction, attachments')
+          .eq('client_id', client.id)
+          .order('sent_at', { ascending: true });
+      }
+      
+      const { data: emailData, error: emailError } = await emailQuery;
+      
+      if (emailError) {
+        console.error('❌ Error fetching emails for InteractionsTab:', emailError);
+      } else {
+        const clientEmails = emailData || [];
+        console.log(`📧 InteractionsTab fetched ${clientEmails.length} emails for client ${client.id}`);
+        
+        // Format emails for modal display
+        const formattedEmailsForModal = clientEmails.map((e: any) => ({
+          id: e.message_id,
+          subject: e.subject,
+          from: e.sender_email,
+          to: e.recipient_list,
+          date: e.sent_at,
+          bodyPreview: e.body_html || e.body_preview || e.subject,
+          direction: e.direction,
+          attachments: e.attachments,
+        }));
+        
+        setEmails(formattedEmailsForModal);
+      }
+    } catch (error) {
+      console.error('❌ Error in fetchEmailsForModal:', error);
+      setEmails([]);
+    } finally {
+      setEmailsLoading(false);
+    }
+  }, [client]);
+
   // This function now ONLY syncs with Graph and then triggers a full refresh
   const runGraphSync = useCallback(async () => {
     if (!client.email || !instance || !accounts[0]) return;
@@ -1450,6 +1510,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         await onClientUpdate(); // Refresh all client data from parent
         console.log('📧 Client update completed');
       }
+      // Also refresh the emails in the modal
+      await fetchEmailsForModal();
     } catch (e) {
       console.error("Graph sync failed:", e);
       toast.error("Failed to sync new emails from server.");
@@ -1476,11 +1538,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       const tokenResponse = await acquireToken(instance, account);
       const senderName = account?.name || 'Your Team';
 
-      // 1. Send email via Graph API.
+      // 1. Add signature to email content
+      const emailContentWithSignature = await appendEmailSignature(composeBody);
+
+      // 2. Send email via Graph API.
       const sentEmail = await sendClientEmail(
         tokenResponse.accessToken, 
         composeSubject, 
-        composeBody, 
+        emailContentWithSignature, 
         client, 
         senderName,
         composeAttachments
@@ -1488,7 +1553,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       
       console.log('📧 Email sent via Graph API:', sentEmail.id);
       
-      // 2. Immediately save the sent email to our database
+      // 3. Immediately save the sent email to our database
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const emailToSave = {
         message_id: sentEmail.id,
@@ -1499,7 +1564,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         sender_email: account?.username || 'unknown@lawoffice.org.il',
         recipient_list: client.email,
         subject: composeSubject,
-        body_preview: composeBody,
+        body_html: emailContentWithSignature, // Use body_html with signature
         sent_at: new Date().toISOString(),
         direction: 'outgoing',
         attachments: composeAttachments.length > 0 ? composeAttachments.map(att => ({
@@ -1520,12 +1585,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       
       toast.success('Email sent and saved!');
 
-      // 3. Trigger a sync to get any other new emails from Graph
+      // 4. Trigger a sync to get any other new emails from Graph
       setTimeout(async () => {
         await runGraphSync();
       }, 1000); // Reduced wait time since we already saved the email
       
-      // 4. Force refresh the client data to get updated emails
+      // 5. Force refresh the client data to get updated emails
       if (onClientUpdate) {
         console.log('🔄 Triggering client data refresh after email send');
         await onClientUpdate();
@@ -1620,8 +1685,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     if (isEmailModalOpen) {
       const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
       setComposeSubject(prev => prev && prev.trim() ? prev : defaultSubject);
+      
+      // Fetch emails when modal opens (like EmailThreadModal)
+      console.log('📧 Email modal opened, fetching emails...');
+      fetchEmailsForModal();
     }
-  }, [isEmailModalOpen, client]);
+  }, [isEmailModalOpen, client, fetchEmailsForModal]);
 
   // Update openEditDrawer to return a Promise and always fetch latest data for manual interactions
   const openEditDrawer = async (idx: number) => {
@@ -2000,25 +2069,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               <div className="absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-accent to-secondary shadow-lg" style={{ zIndex: 0 }} />
               
               <div className="space-y-8 md:space-y-10 lg:space-y-12">
-            {/* Info message for new leads about call logs */}
-            {!isLegacyLead && sortedInteractions.filter(i => i.kind === 'call').length === 0 && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0">
-                    <svg className="w-5 h-5 text-blue-600 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-medium text-blue-800">Call Logs Information</h3>
-                    <p className="text-sm text-blue-700 mt-1">
-                      For new leads, call logs are not automatically created by the system yet. 
-                      You can manually add call logs using the "Add Contact" button above.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
             {sortedInteractions.map((row, idx) => {
               // Date formatting
               const dateObj = new Date(row.raw_date);
@@ -2303,6 +2353,33 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       {/* Email Thread Modal */}
       {isEmailModalOpen && createPortal(
         <div className="fixed inset-0 bg-white z-[9999]">
+          {/* CSS to ensure email content displays fully */}
+          <style>{`
+            .email-content .email-body {
+              max-width: none !important;
+              overflow: visible !important;
+              word-wrap: break-word !important;
+              white-space: pre-wrap !important;
+            }
+            .email-content .email-body * {
+              max-width: none !important;
+              overflow: visible !important;
+            }
+            .email-content .email-body img {
+              max-width: 100% !important;
+              height: auto !important;
+            }
+            .email-content .email-body table {
+              width: 100% !important;
+              border-collapse: collapse !important;
+            }
+            .email-content .email-body p, 
+            .email-content .email-body div, 
+            .email-content .email-body span {
+              white-space: pre-wrap !important;
+              word-wrap: break-word !important;
+            }
+          `}</style>
           <div className="h-full flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
@@ -2315,16 +2392,42 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                   </span>
                 </div>
               </div>
-              <button
-                onClick={() => setIsEmailModalOpen(false)}
-                className="btn btn-ghost btn-circle"
-              >
-                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsEmailModalOpen(false)}
+                  className="btn btn-ghost btn-circle"
+                >
+                  <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+                </button>
+              </div>
+            </div>
+
+            {/* Search Bar */}
+            <div className="px-4 md:px-6 py-3 border-b border-gray-200 bg-gray-50">
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
+                </div>
+                <input
+                  type="text"
+                  className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 sm:text-sm"
+                  placeholder="Search emails by keywords, sender name, or recipient..."
+                  value={emailSearchQuery}
+                  onChange={(e) => setEmailSearchQuery(e.target.value)}
+                />
+                {emailSearchQuery && (
+                  <button
+                    onClick={() => setEmailSearchQuery('')}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  >
+                    <XMarkIcon className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                  </button>
+                )}
+              </div>
             </div>
 
             {/* Email Thread */}
-            <div className="flex-1 overflow-y-auto p-3 md:p-6">
+            <div className="flex-1 overflow-y-auto p-3 md:p-6 bg-white">
               {emailsLoading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="loading loading-spinner loading-lg text-purple-500"></div>
@@ -2337,79 +2440,180 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                       </svg>
                     </div>
-                    <p className="text-lg font-medium">No messages yet</p>
-                    <p className="text-sm">Start a conversation with {client.name}</p>
+                    <p className="text-lg font-medium">No emails available</p>
+                    <p className="text-sm">No emails found for {client.name}. Try syncing or send a new email.</p>
+                  </div>
+                </div>
+              ) : emails.filter((message) => {
+                if (!emailSearchQuery.trim()) return true;
+                
+                const searchTerm = emailSearchQuery.toLowerCase();
+                
+                // Search in subject
+                if (message.subject && message.subject.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in email body content
+                if (message.bodyPreview && message.bodyPreview.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in sender name (from field)
+                if (message.from && message.from.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in recipient (to field)
+                if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in sender name (display name)
+                const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name;
+                if (senderName.toLowerCase().includes(searchTerm)) return true;
+                
+                return false;
+              }).length === 0 ? (
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <MagnifyingGlassIcon className="w-8 h-8 text-gray-400" />
+                    </div>
+                    <p className="text-lg font-medium">No emails found</p>
+                    <p className="text-sm">No emails match your search for "{emailSearchQuery}". Try a different search term.</p>
+                    <button
+                      onClick={() => setEmailSearchQuery('')}
+                      className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
+                    >
+                      Clear search
+                    </button>
                   </div>
                 </div>
               ) : (
-                <div className="space-y-4 md:space-y-6">
+                <div className="space-y-6">
                   {[...emails]
+                    .filter((message) => {
+                      if (!emailSearchQuery.trim()) return true;
+                      
+                      const searchTerm = emailSearchQuery.toLowerCase();
+                      
+                      // Search in subject
+                      if (message.subject && message.subject.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in email body content
+                      if (message.bodyPreview && message.bodyPreview.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in sender name (from field)
+                      if (message.from && message.from.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in recipient (to field)
+                      if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in sender name (display name)
+                      const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name;
+                      if (senderName.toLowerCase().includes(searchTerm)) return true;
+                      
+                      return false;
+                    })
                     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
                     .map((message, index) => (
-                      <div
-                        key={message.id}
-                        data-email-id={message.id}
-                        className={`flex flex-col ${message.direction === 'outgoing' ? 'items-end' : 'items-start'}`}
-                      >
-                        {/* Message Label */}
-                        <div className={`mb-2 px-3 py-1 rounded-full text-xs font-semibold ${
-                          message.direction === 'outgoing'
-                            ? 'bg-gradient-to-r from-purple-500 via-pink-500 to-purple-600 text-white'
-                            : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
-                        }`}>
-                          {message.direction === 'outgoing' ? 'Team' : 'Client'}
-                        </div>
-                        
-                        {/* Message Bubble */}
-                        <div
-                          className={`max-w-[90%] sm:max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl ${
+                      <div key={message.id} className="space-y-2">
+                        {/* Email Header */}
+                        <div className="flex items-center gap-3">
+                          <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
                             message.direction === 'outgoing'
-                              ? 'bg-[#3E28CD] text-white'
-                              : 'bg-gray-100 text-gray-900'
-                          } rounded-2xl px-3 md:px-4 py-2 md:py-3 shadow-sm`}
-                        >
-                          <div className="flex items-center gap-2 mb-2 flex-wrap">
-                            <span className="font-semibold text-xs sm:text-sm">
-                              {message.direction === 'outgoing' ? (currentUserFullName || 'You') : client.name}
-                            </span>
-                            <span className="text-xs opacity-70">
+                              ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                              : 'bg-pink-100 text-pink-700 border border-pink-200'
+                          }`}>
+                            {message.direction === 'outgoing' ? 'Team' : 'Client'}
+                          </div>
+                          <div>
+                            <div className="font-semibold text-gray-900 text-sm">
+                              {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name}
+                            </div>
+                            <div className="text-xs text-gray-500">
                               {new Date(message.date).toLocaleString('en-US', {
                                 month: 'short',
                                 day: 'numeric',
+                                year: 'numeric',
                                 hour: '2-digit',
                                 minute: '2-digit'
                               })}
-                            </span>
-                          </div>
-                          {message.subject && (
-                            <div className="font-medium mb-2 text-xs sm:text-sm">
-                              {message.subject}
                             </div>
-                          )}
-                          <div className="text-xs sm:text-sm whitespace-pre-wrap">
-                            <div dangerouslySetInnerHTML={{ 
-                              __html: sanitizeEmailHtml(stripSignatureAndQuotedTextPreserveHtml(message.bodyPreview || '')) 
-                            }} />
                           </div>
+                        </div>
+                        
+                        {/* Complete Email Content */}
+                        <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-lg hover:shadow-xl transition-shadow duration-300" style={{
+                          boxShadow: '0 10px 25px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05)'
+                        }}>
+                          {/* Email Header */}
+                          <div className="mb-4 pb-4 border-b border-gray-200">
+                            <div className="text-sm text-gray-600 space-y-1">
+                              <div><strong>From:</strong> {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name} &lt;{message.from}&gt;</div>
+                              <div><strong>To:</strong> {message.to || (message.direction === 'outgoing' ? `${client.name} <${client.email}>` : `eliran@lawoffice.org.il`)}</div>
+                              <div><strong>Date:</strong> {new Date(message.date).toLocaleString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}</div>
+                              {message.subject && (
+                                <div><strong>Subject:</strong> {message.subject}</div>
+                              )}
+                            </div>
+                          </div>
+                          
+                          {/* Complete Email Body - Full Content */}
+                          <div className="email-content">
+                            {message.bodyPreview ? (
+                              <div 
+                                dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(message.bodyPreview) }}
+                                className="prose prose-sm max-w-none email-body"
+                                style={{
+                                  fontFamily: 'inherit',
+                                  lineHeight: '1.6',
+                                  color: '#374151'
+                                }}
+                              />
+                            ) : (
+                              <div className="text-gray-500 italic p-4 bg-gray-50 rounded">
+                                No email content available
+                              </div>
+                            )}
+                          </div>
+                          
                           {/* Attachments */}
                           {message.attachments && message.attachments.length > 0 && (
-                            <div className="mt-3 pt-3 border-t border-gray-200">
-                              <div className="text-xs opacity-70 mb-2">Attachments:</div>
-                              <div className="flex flex-wrap gap-2">
+                            <div className="mt-6 pt-4 border-t border-gray-200">
+                              <div className="text-sm font-medium text-gray-700 mb-3">Attachments:</div>
+                              <div className="space-y-2">
                                 {message.attachments.map((attachment: Attachment, idx: number) => (
-                                  <button 
-                                    key={attachment.id}
-                                    className="btn btn-outline btn-xs gap-1"
-                                    onClick={() => handleDownloadAttachment(message.id, attachment)}
-                                    disabled={downloadingAttachments[attachment.id]}
-                                  >
-                                    {downloadingAttachments[attachment.id] ? (
-                                      <span className="loading loading-spinner loading-xs" />
-                                    ) : (
-                                      <PaperClipIcon className="w-3 h-3" />
-                                    )}
-                                    <span className="truncate max-w-[100px]">{attachment.name}</span>
-                                  </button>
+                                  <div key={attachment.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+                                    <PaperClipIcon className="w-5 h-5 text-gray-400" />
+                                    <div className="flex-1">
+                                      <div className="font-medium text-gray-900">{attachment.name}</div>
+                                      {attachment.sizeInBytes && (
+                                        <div className="text-sm text-gray-500">
+                                          {(attachment.sizeInBytes / 1024).toFixed(1)} KB
+                                        </div>
+                                      )}
+                                      {attachment.contentType && (
+                                        <div className="text-xs text-gray-400">
+                                          {attachment.contentType}
+                                        </div>
+                                      )}
+                                    </div>
+                                    <button
+                                      onClick={() => handleDownloadAttachment(message.id, attachment)}
+                                      disabled={downloadingAttachments[attachment.id]}
+                                      className="btn btn-sm btn-outline btn-primary"
+                                      title="Download attachment"
+                                    >
+                                      {downloadingAttachments[attachment.id] ? (
+                                        <span className="loading loading-spinner loading-xs" />
+                                      ) : (
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                      )}
+                                      Download
+                                    </button>
+                                  </div>
                                 ))}
                               </div>
                             </div>

@@ -18,8 +18,8 @@ const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: R
     {/* Google Fonts link for Inter */}
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
     <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 56 }}>
-      <div style={{ background: '#f3f4f6', border: '1px solid #e5e7eb', width: 64, height: 64, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <span style={{ color: '#3b28c7', fontWeight: 700, fontSize: 32, fontFamily: 'Inter, Arial, sans-serif' }}>RMQ</span>
+      <div style={{ width: 64, height: 64, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        <img src="/dpl_logo2.jpg" alt="DPL Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
       </div>
       <div>
         <div style={{ color: '#18181b', fontWeight: 800, fontSize: 32, letterSpacing: '-0.02em', fontFamily: 'Inter, Arial, sans-serif' }}>Proforma Invoice</div>
@@ -28,10 +28,11 @@ const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: R
     </div>
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32, marginBottom: 32 }}>
       <div style={{ marginBottom: 16 }}>
-        <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Rainmaker Queen</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>123 Main St, Tel Aviv</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>+972-3-1234567</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>info@rainmakerqueen.com</div>
+        <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Decker Pex Levi Law office</div>
+        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>Yad Haruzim 10, Jerusalem;</div>
+        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>150 Begin Rd. Tel-Aviv, Israel</div>
+        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>+972737895444, +972262914009</div>
+        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>PaymentReport3@lawoffice.org.il</div>
         <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 24, width: '100%' }}>
           <div><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Proforma #:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.proformaName}</span></div>
           <div style={{ textAlign: 'right' }}><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Date:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{new Date(proforma.createdAt).toLocaleDateString()}</span></div>
@@ -41,6 +42,9 @@ const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: R
       <div>
         <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Bill To:</div>
         <div style={{ color: '#18181b', fontWeight: 700, fontSize: 18, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client}</div>
+        {proforma.lead_number && (
+          <div style={{ color: '#4b5563', fontSize: 14, fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Lead #: {proforma.lead_number}</div>
+        )}
         {proforma.phone && (
           <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.phone}</div>
         )}
@@ -88,7 +92,7 @@ const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: R
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 22, marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 16, fontWeight: 800 }}>
           <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>Total</span>
-          <span style={{ color: '#3b28c7', fontWeight: 800, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.currency} {proforma.totalWithVat}</span>
+          <span style={{ color: '#006BB1', fontWeight: 800, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.currency} {proforma.totalWithVat}</span>
         </div>
       </div>
     </div>
@@ -128,16 +132,17 @@ const ProformaViewPage: React.FC = () => {
       }
       try {
         let parsed = JSON.parse(data.proforma);
-        // Patch: If email/phone missing, fetch from leads
-        if ((!parsed.email || !parsed.phone) && parsed.clientId) {
+        // Patch: If email/phone/lead_number missing, fetch from leads
+        if ((!parsed.email || !parsed.phone || !parsed.lead_number) && parsed.clientId) {
           const { data: leadData } = await supabase
             .from('leads')
-            .select('email, phone')
+            .select('email, phone, lead_number')
             .eq('id', parsed.clientId)
             .single();
           if (leadData) {
             if (!parsed.email) parsed.email = leadData.email || '';
             if (!parsed.phone) parsed.phone = leadData.phone || '';
+            if (!parsed.lead_number) parsed.lead_number = leadData.lead_number || '';
           }
         }
         // Patch: If addVat true, currency is NIS/ILS/₪, and vat is 0, recalc vat
@@ -306,18 +311,53 @@ const ProformaViewPage: React.FC = () => {
     <div className="max-w-3xl mx-auto bg-white shadow-2xl rounded-2xl p-8 mt-10 print:bg-white print:shadow-none print:p-2">
       {/* Inline style override for html2pdf/html2canvas color compatibility */}
       <style>{`
-        #invoice-print-area, #invoice-print-area * {
-          color: #222 !important;
-          background: #fff !important;
-          background-color: #fff !important;
-          box-shadow: none !important;
+        @media print {
+          body * {
+            visibility: hidden !important;
+          }
+          #invoice-print-area, #invoice-print-area * {
+            visibility: visible !important;
+            color: #222 !important;
+            background: transparent !important;
+            background-color: transparent !important;
+            box-shadow: none !important;
+          }
+          #invoice-print-area {
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100vw !important;
+            min-height: 100vh !important;
+            background: white !important;
+            padding: 20px !important;
+            margin: 0 !important;
+          }
+          #invoice-print-area .text-primary, #invoice-print-area .text-purple-700, #invoice-print-area .text-primary-content {
+            color: #006BB1 !important;
+          }
+          #invoice-print-area .bg-primary, #invoice-print-area .bg-purple-700, #invoice-print-area .bg-primary-content {
+            background: #006BB1 !important;
+            background-color: #006BB1 !important;
+          }
+          #invoice-print-area .bg-gray-50 {
+            background: #f9fafb !important;
+            background-color: #f9fafb !important;
+          }
+          #invoice-print-area .border {
+            border: 1px solid #e5e7eb !important;
+          }
+          .print-hide {
+            display: none !important;
+          }
         }
-        #invoice-print-area .text-primary, #invoice-print-area .text-purple-700, #invoice-print-area .text-primary-content {
-          color: #3b28c7 !important;
-        }
-        #invoice-print-area .bg-primary, #invoice-print-area .bg-purple-700, #invoice-print-area .bg-primary-content {
-          background: #3b28c7 !important;
-          background-color: #3b28c7 !important;
+        @media screen {
+          #invoice-print-area .text-primary, #invoice-print-area .text-purple-700, #invoice-print-area .text-primary-content {
+            color: #006BB1 !important;
+          }
+          #invoice-print-area .bg-primary, #invoice-print-area .bg-purple-700, #invoice-print-area .bg-primary-content {
+            background: #006BB1 !important;
+            background-color: #006BB1 !important;
+          }
         }
       `}</style>
       {/* Header with action buttons, visible on screen only */}
@@ -335,8 +375,8 @@ const ProformaViewPage: React.FC = () => {
       <div ref={invoiceRef} id="invoice-print-area" className="bg-white max-w-[1100px] w-full mx-auto p-8 rounded-2xl shadow border overflow-hidden">
         {/* Logo and Title for print and PDF */}
         <div className="flex items-center gap-4 mb-14">
-          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center border border-gray-200">
-            <span className="text-2xl font-bold text-primary">RMQ</span>
+          <div className="w-16 h-16 rounded-lg flex items-center justify-center overflow-hidden">
+            <img src="/dpl_logo2.jpg" alt="DPL Logo" className="w-full h-full object-contain" />
           </div>
           <div>
             <div className="text-3xl font-extrabold text-gray-900 tracking-tight leading-tight">Proforma Invoice</div>
@@ -347,10 +387,11 @@ const ProformaViewPage: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
           {/* Company Info and Proforma Number/Date Row */}
           <div className="mb-4">
-            <div className="font-semibold text-gray-700 mb-1">Rainmaker Queen</div>
-            <div className="text-sm text-gray-500">123 Main St, Tel Aviv</div>
-            <div className="text-sm text-gray-500">+972-3-1234567</div>
-            <div className="text-sm text-gray-500">info@rainmakerqueen.com</div>
+            <div className="font-semibold text-gray-700 mb-1">Decker Pex Levi Law office</div>
+            <div className="text-sm text-gray-500">Yad Haruzim 10, Jerusalem;</div>
+            <div className="text-sm text-gray-500">150 Begin Rd. Tel-Aviv, Israel</div>
+            <div className="text-sm text-gray-500">+972737895444, +972262914009</div>
+            <div className="text-sm text-gray-500">PaymentReport3@lawoffice.org.il</div>
             <div className="flex flex-row justify-between items-center mt-6 w-full">
               <div><span className="font-semibold text-gray-700">Proforma #:</span> <span className="text-gray-900">{proforma.proformaName}</span></div>
               <div className="text-right"><span className="font-semibold text-gray-700">Date:</span> <span className="text-gray-900">{new Date(proforma.createdAt).toLocaleDateString()}</span></div>
@@ -360,6 +401,9 @@ const ProformaViewPage: React.FC = () => {
           <div>
             <div className="font-semibold text-gray-700 mb-1">Bill To:</div>
             <div className="text-lg font-bold text-gray-900">{proforma.client}</div>
+            {proforma.lead_number && (
+              <div className="text-sm text-gray-600 font-semibold">Lead #: {proforma.lead_number}</div>
+            )}
             {proforma.phone && (
               <div className="text-sm text-gray-500">{proforma.phone}</div>
             )}

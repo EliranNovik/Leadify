@@ -134,6 +134,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isRmqModalOpen, setIsRmqModalOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
 
   const unreadCount = rmqUnreadCount;
 
@@ -160,6 +161,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       label: 'Lead Search',
       path: '/lead-search',
       icon: MagnifyingGlassIcon,
+    },
+    {
+      label: 'Assign Leads',
+      path: '/new-cases',
+      icon: UserGroupIcon,
     },
     {
       label: 'Reports',
@@ -223,29 +229,32 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }, 100); // Small delay to prevent accidental closures
     };
 
-    const handleMouseDown = (event: Event) => {
-      // Only handle mousedown for notifications and quick actions
+    const handleDropdownClickOutside = (event: Event) => {
+      const target = event.target as HTMLElement;
+      
+      // Close notifications when clicking outside
       if (
         notificationsRef.current &&
-        !notificationsRef.current.contains(event.target as Node)
+        !notificationsRef.current.contains(target as Node)
       ) {
         setShowNotifications(false);
       }
+      
       // Close quick actions dropdown when clicking outside
       const quickActionsDropdown = document.querySelector('[data-quick-actions-dropdown]');
       const dropdownMenu = document.querySelector('[data-dropdown-menu]');
-      if (quickActionsDropdown && !quickActionsDropdown.contains(event.target as Node) && 
-          dropdownMenu && !dropdownMenu.contains(event.target as Node)) {
+      
+      // Only close if dropdowns are actually open
+      if ((showQuickActionsDropdown || showMobileQuickActionsDropdown) &&
+          quickActionsDropdown && !quickActionsDropdown.contains(target as Node) && 
+          dropdownMenu && !dropdownMenu.contains(target as Node)) {
         setShowQuickActionsDropdown(false);
         setShowMobileQuickActionsDropdown(false);
       }
     };
 
-    // Use click events for search bar (more reliable for scrolling)
-    document.addEventListener('click', handleClickOutside);
-    // Use mousedown for other elements
-    document.addEventListener('mousedown', handleMouseDown);
-    document.addEventListener('touchstart', handleMouseDown);
+    // Use click events for all dropdowns
+    document.addEventListener('click', handleDropdownClickOutside);
     // Add scroll listener to prevent closing during scroll
     document.addEventListener('scroll', handleScroll, true);
     
@@ -253,9 +262,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (clickTimeout) {
         clearTimeout(clickTimeout);
       }
-      document.removeEventListener('click', handleClickOutside);
-      document.removeEventListener('mousedown', handleMouseDown);
-      document.removeEventListener('touchstart', handleMouseDown);
+      document.removeEventListener('click', handleDropdownClickOutside);
       document.removeEventListener('scroll', handleScroll, true);
     };
   }, [showFilterDropdown]);
@@ -574,7 +581,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       return;
     }
 
-    console.log('🔔 Fetching RMQ messages for user:', currentUser.ids);
 
     try {
       // Get conversations where the current user participates
@@ -677,14 +683,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         })
       );
 
-      console.log('🔔 RMQ Messages fetched:', messagesWithConversations.length);
-      console.log('🔔 Last read timestamps:', Object.fromEntries(lastReadMap));
-      console.log('🔔 Messages data:', messagesWithConversations.map(m => ({
-        id: m.id,
-        convId: m.conversation_id,
-        sentAt: m.sent_at,
-        sender: m.sender?.tenants_employee?.display_name || m.sender?.full_name
-      })));
       
       setRmqMessages(messagesWithConversations);
 
@@ -692,6 +690,53 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setRmqUnreadCount(messagesWithConversations.length);
     } catch (error) {
       console.error('Error in fetchRmqMessages:', error);
+    }
+  };
+
+  // Fetch new leads count
+  const fetchNewLeadsCount = async () => {
+    try {
+      // Fetch leads with stage = 'created' (text-based)
+      const { data: textBasedLeads } = await supabase
+        .from('leads')
+        .select('id')
+        .eq('stage', 'created');
+
+      // Fetch leads with stage = 11 (ID-based)
+      const { data: idBasedLeads } = await supabase
+        .from('leads')
+        .select('id')
+        .eq('stage', 11);
+
+      // Fetch leads with stage = 'scheduler_assigned' but no scheduler assigned
+      const { data: schedulerAssignedNoSchedulerLeads } = await supabase
+        .from('leads')
+        .select('id')
+        .eq('stage', 'scheduler_assigned')
+        .or('scheduler.is.null,scheduler.eq.');
+
+      // Fetch leads with stage = 10 (ID-based) but no scheduler assigned
+      const { data: schedulerAssignedNoSchedulerIdLeads } = await supabase
+        .from('leads')
+        .select('id')
+        .eq('stage', 10)
+        .or('scheduler.is.null,scheduler.eq.');
+
+      // Combine all results and remove duplicates
+      const allLeads = [
+        ...(textBasedLeads || []), 
+        ...(idBasedLeads || []),
+        ...(schedulerAssignedNoSchedulerLeads || []),
+        ...(schedulerAssignedNoSchedulerIdLeads || [])
+      ];
+      const uniqueLeads = allLeads.filter((lead, index, self) => 
+        index === self.findIndex(l => l.id === lead.id)
+      );
+
+      setNewLeadsCount(uniqueLeads.length);
+    } catch (error) {
+      console.error('Error fetching new leads count:', error);
+      setNewLeadsCount(0);
     }
   };
 
@@ -704,6 +749,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       return () => clearInterval(interval);
     }
   }, [currentUser]);
+
+  // Fetch new leads count when component mounts and every 30 seconds
+  useEffect(() => {
+    fetchNewLeadsCount();
+    const interval = setInterval(fetchNewLeadsCount, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     if (isSearchActive && searchContainerRef.current) {
@@ -801,7 +853,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setRmqMessages([]);
       setRmqUnreadCount(0);
       
-      console.log('✅ Marked all conversations as read');
     } catch (error) {
       console.error('Error marking all conversations as read:', error);
     }
@@ -855,13 +906,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const handleSignOut = async () => {
     try {
-      console.log('Signing out from header...');
       const { error } = await supabase.auth.signOut();
       if (error) {
         console.error('Error signing out:', error);
         toast.error('Failed to sign out');
       } else {
-        console.log('Successfully signed out from header');
         toast.success('Signed out successfully');
         // Navigate to login page instead of reload
         window.location.href = '/login';
@@ -966,7 +1015,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           conv_id: message.conversation_id,
           user_uuid: currentUser.ids
         });
-        console.log('✅ Marked conversation', message.conversation_id, 'as read');
       } catch (error) {
         console.error('Error marking conversation as read:', error);
       }
@@ -996,7 +1044,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           {/* Quick Actions Dropdown - Mobile only */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
-              onClick={() => setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
+              }}
               className="flex items-center gap-1 px-3 py-2 rounded-lg font-medium transition-all duration-300 shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
             >
               <BoltIcon className="w-4 h-4 text-white" />
@@ -1013,6 +1064,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   left: '8px',
                   right: '8px'
                 }}
+                onClick={(e) => e.stopPropagation()}
               >
                 {/* RMQ Messages Option - COMMENTED OUT */}
                 {/* <button
@@ -1032,6 +1084,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 <button
                   onClick={() => {
                     setShowMobileQuickActionsDropdown(false);
+                    setShowQuickActionsDropdown(false);
                     if (currentUserEmployee) {
                       setIsEmployeeModalOpen(true);
                     } else {
@@ -1046,12 +1099,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 
                 {navTabs.map(tab => {
                   const Icon = tab.icon;
+                  const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
                   if (false) { // Removed action check
                     return (
                       <button
                         key={tab.label}
                         onClick={() => {
                           setShowMobileQuickActionsDropdown(false);
+                          setShowQuickActionsDropdown(false);
                           if (onOpenEmailThread) {
                             onOpenEmailThread();
                           }
@@ -1069,6 +1124,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         key={tab.label}
                         onClick={() => {
                           setShowMobileQuickActionsDropdown(false);
+                          setShowQuickActionsDropdown(false);
                           if (onOpenWhatsApp) {
                             onOpenWhatsApp();
                           }
@@ -1084,11 +1140,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     <Link
                       key={tab.path || tab.label}
                       to={tab.path || '/'}
-                      onClick={() => setShowMobileQuickActionsDropdown(false)}
+                      onClick={() => {
+                        setShowMobileQuickActionsDropdown(false);
+                        setShowQuickActionsDropdown(false);
+                      }}
                       className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
                     >
                       <Icon className="w-5 h-5 text-gray-500" />
                       <span className="text-sm font-medium">{tab.label}</span>
+                      {showCount && (
+                        <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                          {newLeadsCount}
+                        </span>
+                      )}
                     </Link>
                   );
                 })}
@@ -1106,7 +1170,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           <div className="hidden md:block relative ml-4" data-quick-actions-dropdown>
             <button
               ref={buttonRef}
-              onClick={() => setShowQuickActionsDropdown(!showQuickActionsDropdown)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowQuickActionsDropdown(!showQuickActionsDropdown);
+              }}
               className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
             >
               <BoltIcon className="w-5 h-5 text-white" />
@@ -1123,6 +1190,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   top: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().bottom + 8}px` : '0px',
                   left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
                 }}
+                onClick={(e) => e.stopPropagation()}
               >
                 {/* RMQ Messages Option - COMMENTED OUT */}
                 {/* <button
@@ -1142,6 +1210,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 <button
                   onClick={() => {
                     setShowQuickActionsDropdown(false);
+                    setShowMobileQuickActionsDropdown(false);
                     if (currentUserEmployee) {
                       setIsEmployeeModalOpen(true);
                     } else {
@@ -1156,12 +1225,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 
                 {navTabs.map(tab => {
                   const Icon = tab.icon;
+                  const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
                   if (false) { // Removed action check
                     return (
                       <button
                         key={tab.label}
                         onClick={() => {
                           setShowQuickActionsDropdown(false);
+                          setShowMobileQuickActionsDropdown(false);
                           if (onOpenEmailThread) {
                             onOpenEmailThread();
                           }
@@ -1179,6 +1250,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         key={tab.label}
                         onClick={() => {
                           setShowQuickActionsDropdown(false);
+                          setShowMobileQuickActionsDropdown(false);
                           if (onOpenWhatsApp) {
                             onOpenWhatsApp();
                           }
@@ -1194,11 +1266,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     <Link
                       key={tab.path || tab.label}
                       to={tab.path || '/'}
-                      onClick={() => setShowQuickActionsDropdown(false)}
+                      onClick={() => {
+                        setShowQuickActionsDropdown(false);
+                        setShowMobileQuickActionsDropdown(false);
+                      }}
                       className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
                     >
                       <Icon className="w-5 h-5 text-gray-500" />
                       <span className="text-sm font-medium">{tab.label}</span>
+                      {showCount && (
+                        <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                          {newLeadsCount}
+                        </span>
+                      )}
                     </Link>
                   );
                 })}
@@ -1533,7 +1613,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     <button className="btn btn-primary btn-sm" onClick={async () => {
                       setIsAdvancedSearching(true);
                       try {
-                        console.log('[Filter] Applying filters:', advancedFilters);
                         
                       // Search both legacy and new leads with filters
                       const [legacyPromise, newPromise] = await Promise.allSettled([
@@ -1544,14 +1623,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                             .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id')
                             .limit(50);
                           
-                          console.log('[Filter] Legacy filters:', {
-                            category: advancedFilters.category,
-                            stage: advancedFilters.stage,
-                            fromDate: advancedFilters.fromDate,
-                            toDate: advancedFilters.toDate,
-                            fileId: advancedFilters.fileId,
-                            topic: advancedFilters.topic
-                          });
                           
                           // Apply filters to legacy leads
                         if (advancedFilters.category) {
@@ -1559,32 +1630,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         }
                           if (advancedFilters.stage) {
                             // For now, skip stage filtering for legacy leads since we need to map stage names to IDs
-                            console.log('[Filter] Stage filtering for legacy leads temporarily disabled - need stage name to ID mapping');
                           }
                           if (advancedFilters.language) {
                             // For now, skip language filtering for legacy leads since we need to map language names to IDs
-                            console.log('[Filter] Language filtering for legacy leads temporarily disabled - need language name to ID mapping');
                           }
-                          // Test with a simple query first to see if cdate field exists
-                          console.log('[Filter] Testing legacy query without date filters first...');
-                          const testQuery = supabase
-                            .from('leads_lead')
-                            .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id')
-                            .limit(5);
-                          
-                          const testResult = await testQuery;
-                          console.log('[Filter] Test query result:', testResult);
                           
                           if (advancedFilters.fromDate && advancedFilters.toDate) {
                             // Try a different approach - use filter with date range
                             legacyQuery = legacyQuery.filter('cdate', 'gte', advancedFilters.fromDate).filter('cdate', 'lte', advancedFilters.toDate);
-                            console.log('[Filter] Legacy date range filter applied:', advancedFilters.fromDate, 'to', advancedFilters.toDate);
                           } else if (advancedFilters.fromDate) {
                             legacyQuery = legacyQuery.filter('cdate', 'gte', advancedFilters.fromDate);
-                            console.log('[Filter] Legacy fromDate filter applied:', advancedFilters.fromDate);
                           } else if (advancedFilters.toDate) {
                             legacyQuery = legacyQuery.filter('cdate', 'lte', advancedFilters.toDate);
-                            console.log('[Filter] Legacy toDate filter applied:', advancedFilters.toDate);
                           }
                           if (advancedFilters.fileId) {
                             legacyQuery = legacyQuery.ilike('id', `%${advancedFilters.fileId}%`);
@@ -1594,10 +1651,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           }
                           
                           const result = await legacyQuery.order('cdate', { ascending: false });
-                          console.log('[Filter] Legacy query result:', result);
-                          if (result.error) {
-                            console.error('[Filter] Legacy query error details:', result.error);
-                          }
                           return result;
                         })(),
                         
@@ -1608,15 +1661,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                             .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
                             .limit(50);
                           
-                          console.log('[Filter] New leads filters:', {
-                            category: advancedFilters.category,
-                            stage: advancedFilters.stage,
-                            status: advancedFilters.status,
-                            fromDate: advancedFilters.fromDate,
-                            toDate: advancedFilters.toDate,
-                            fileId: advancedFilters.fileId,
-                            topic: advancedFilters.topic
-                          });
                           
                           // Apply filters to new leads
                           if (advancedFilters.category) {
@@ -1630,13 +1674,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           }
                           if (advancedFilters.fromDate && advancedFilters.toDate) {
                             newQuery = newQuery.gte('created_at', advancedFilters.fromDate).lte('created_at', advancedFilters.toDate);
-                            console.log('[Filter] New leads date range filter applied:', advancedFilters.fromDate, 'to', advancedFilters.toDate);
                           } else if (advancedFilters.fromDate) {
                             newQuery = newQuery.gte('created_at', advancedFilters.fromDate);
-                            console.log('[Filter] New leads fromDate filter applied:', advancedFilters.fromDate);
                           } else if (advancedFilters.toDate) {
                             newQuery = newQuery.lte('created_at', advancedFilters.toDate);
-                            console.log('[Filter] New leads toDate filter applied:', advancedFilters.toDate);
                         }
                         if (advancedFilters.fileId) {
                             newQuery = newQuery.ilike('lead_number', `%${advancedFilters.fileId}%`);
@@ -1646,7 +1687,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           }
                           
                           const result = await newQuery.order('created_at', { ascending: false });
-                          console.log('[Filter] New leads query result:', result);
                           return result;
                         })()
                       ]);
@@ -1735,7 +1775,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         results.push(...transformedNewLeads);
                       }
                       
-                      console.log('[Filter] Combined results:', results.length);
                       
                       setSearchResults(results);
                       setIsSearchActive(true);

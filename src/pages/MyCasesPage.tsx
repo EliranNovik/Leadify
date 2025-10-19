@@ -10,6 +10,7 @@ interface Case {
   category: string;
   stage: string;
   assigned_date: string;
+  applicants_count: number | null;
 }
 
 const MyCasesPage: React.FC = () => {
@@ -19,6 +20,9 @@ const MyCasesPage: React.FC = () => {
   const [otherCases, setOtherCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedStage, setSelectedStage] = useState<string>('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('');
 
   useEffect(() => {
     if (user?.id) {
@@ -97,7 +101,8 @@ const MyCasesPage: React.FC = () => {
           name,
           stage,
           category_id,
-          cdate
+          cdate,
+          no_of_applicants
         `)
         .eq('case_handler_id', employeeId)
         // Remove status filter - let's see all leads assigned to this handler
@@ -173,11 +178,12 @@ const MyCasesPage: React.FC = () => {
 
         return {
           id: lead.id,
-          lead_number: String(leadNumber),
+          lead_number: String(leadNumber), // Keep the full lead number including sub-leads for display
           client_name: lead.name || 'Unknown',
           category,
           stage,
-          assigned_date: lead.cdate
+          assigned_date: lead.cdate,
+          applicants_count: lead.no_of_applicants
         };
       });
 
@@ -206,34 +212,96 @@ const MyCasesPage: React.FC = () => {
   };
 
   const handleCaseClick = (caseItem: Case) => {
-    navigate(`/clients/${caseItem.lead_number}`);
+    // Navigate using the actual database ID, not the manual_id
+    // The manual_id (like "150667/3") is just for display
+    // The actual lead ID (like "172517") is used for navigation
+    navigate(`/clients/${caseItem.id}`);
+  };
+
+  // Fuzzy search function
+  const fuzzySearch = (text: string, query: string): boolean => {
+    if (!query) return true;
+    
+    const textLower = text.toLowerCase();
+    const queryLower = query.toLowerCase().trim();
+    
+    // Direct substring match
+    if (textLower.includes(queryLower)) return true;
+    
+    // Fuzzy match - check if all characters in query appear in order in text
+    let queryIndex = 0;
+    for (let i = 0; i < textLower.length && queryIndex < queryLower.length; i++) {
+      if (textLower[i] === queryLower[queryIndex]) {
+        queryIndex++;
+      }
+    }
+    return queryIndex === queryLower.length;
+  };
+
+  // Filter cases based on search query, stage, and category
+  const filterCases = (cases: Case[]): Case[] => {
+    return cases.filter(caseItem => {
+      // Search filter
+      const matchesSearch = !searchQuery.trim() || 
+        fuzzySearch(caseItem.lead_number, searchQuery) ||
+        fuzzySearch(caseItem.client_name, searchQuery);
+      
+      // Stage filter
+      const matchesStage = !selectedStage || caseItem.stage === selectedStage;
+      
+      // Category filter
+      const matchesCategory = !selectedCategory || caseItem.category === selectedCategory;
+      
+      return matchesSearch && matchesStage && matchesCategory;
+    });
+  };
+
+  const filteredNewCases = filterCases(newCases);
+  const filteredOtherCases = filterCases(otherCases);
+
+  // Get unique stages and categories from all cases
+  const allCases = [...newCases, ...otherCases];
+  const uniqueStages = Array.from(new Set(allCases.map(c => c.stage))).sort();
+  const uniqueCategories = Array.from(new Set(allCases.map(c => c.category))).sort();
+
+  // Check if any filter is active
+  const hasActiveFilters = searchQuery.trim() || selectedStage || selectedCategory;
+
+  // Clear all filters function
+  const clearAllFilters = () => {
+    setSearchQuery('');
+    setSelectedStage('');
+    setSelectedCategory('');
   };
 
   const renderTable = (cases: Case[], title: string, emptyMessage: string) => (
     <div className="bg-white rounded-lg shadow-sm border">
-      <div className="px-6 py-4 border-b">
-        <h2 className="text-lg font-semibold text-gray-900">{title}</h2>
+      <div className="px-3 sm:px-6 py-2 sm:py-4 border-b">
+        <h2 className="text-base sm:text-lg font-semibold text-gray-900">{title}</h2>
       </div>
       
       {cases.length === 0 ? (
-        <div className="px-6 py-12 text-center">
-          <p className="text-gray-500">{emptyMessage}</p>
+        <div className="px-3 sm:px-6 py-8 sm:py-12 text-center">
+          <p className="text-sm sm:text-base text-gray-500">{emptyMessage}</p>
         </div>
       ) : (
         <div className="overflow-x-auto">
-          <table className="table w-full">
+          <table className="table w-full table-compact sm:table-normal">
             <thead>
               <tr className="bg-gray-50">
-                <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Case
                 </th>
-                <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Client Name
+                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Client
                 </th>
-                <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Category
                 </th>
-                <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-center text-[10px] sm:text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Applicants
+                </th>
+                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Stage
                 </th>
               </tr>
@@ -245,19 +313,31 @@ const MyCasesPage: React.FC = () => {
                   className="hover:bg-gray-50 cursor-pointer"
                   onClick={() => handleCaseClick(caseItem)}
                 >
-                  <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                    <span className="text-blue-600 hover:text-blue-800 font-medium">
+                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
+                    <span className="text-blue-600 hover:text-blue-800 font-medium text-xs sm:text-sm">
                       {caseItem.lead_number}
                     </span>
                   </td>
-                  <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                    {caseItem.client_name}
+                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                    <div className="whitespace-nowrap">
+                      {caseItem.client_name}
+                    </div>
+                    <div className="md:hidden text-[10px] text-gray-500 mt-0.5 whitespace-nowrap">
+                      {caseItem.category}
+                    </div>
                   </td>
-                  <td className="px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                    {caseItem.category}
+                  <td className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                    <div className="max-w-[150px] lg:max-w-none truncate lg:whitespace-nowrap">
+                      {caseItem.category}
+                    </div>
                   </td>
-                  <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                    <span className="badge" style={{ backgroundColor: '#391bcb', color: 'white' }}>
+                  <td className="px-1 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-center text-gray-900 text-xs sm:text-sm">
+                    <span className="inline-flex items-center px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-full text-xs sm:text-sm font-medium bg-gray-100 text-gray-800">
+                      {caseItem.applicants_count || 0}
+                    </span>
+                  </td>
+                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right">
+                    <span className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1" style={{ backgroundColor: '#391bcb', color: 'white' }}>
                       {caseItem.stage}
                     </span>
                   </td>
@@ -315,21 +395,94 @@ const MyCasesPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Search Bar and Filters */}
+      <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-3 sm:py-6">
+        <div className="flex flex-col sm:flex-row gap-2 sm:gap-4">
+          {/* Search Input */}
+          <div className="relative flex-1 max-w-md">
+            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+              <svg className="h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z" clipRule="evenodd" />
+              </svg>
+            </div>
+            <input
+              type="text"
+              className="input input-bordered w-full pl-10"
+              placeholder="Search by lead number or client name..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery && (
+              <button
+                className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                onClick={() => setSearchQuery('')}
+              >
+                <svg className="h-5 w-5 text-gray-400 hover:text-gray-600" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+              </button>
+            )}
+          </div>
+
+          {/* Stage Filter */}
+          <div className="w-full sm:w-48">
+            <select
+              className="select select-bordered w-full"
+              value={selectedStage}
+              onChange={(e) => setSelectedStage(e.target.value)}
+            >
+              <option value="">All Stages</option>
+              {uniqueStages.map(stage => (
+                <option key={stage} value={stage}>
+                  {stage}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Category Filter */}
+          <div className="w-full sm:w-64">
+            <select
+              className="select select-bordered w-full"
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+            >
+              <option value="">All Categories</option>
+              {uniqueCategories.map(category => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Clear Filters Button */}
+          {hasActiveFilters && (
+            <button
+              className="btn btn-ghost btn-sm sm:btn-md"
+              onClick={clearAllFilters}
+            >
+              Clear Filters
+            </button>
+          )}
+        </div>
+      </div>
+
       {/* Content */}
-      <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="space-y-8">
+      <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 pb-4 sm:pb-8">
+        <div className="space-y-3 sm:space-y-8">
           {/* New Cases Table */}
           {renderTable(
-            newCases, 
-            `New Cases (${newCases.length})`, 
-            "No new cases assigned in the last week."
+            filteredNewCases, 
+            `New Cases (${filteredNewCases.length}${hasActiveFilters ? ` of ${newCases.length}` : ''})`, 
+            hasActiveFilters ? "No matching new cases found." : "No new cases assigned in the last week."
           )}
 
           {/* Other Cases Table */}
           {renderTable(
-            otherCases, 
-            `Other Cases (${otherCases.length})`, 
-            "No other cases found."
+            filteredOtherCases, 
+            `Other Cases (${filteredOtherCases.length}${hasActiveFilters ? ` of ${otherCases.length}` : ''})`, 
+            hasActiveFilters ? "No matching cases found." : "No other cases found."
           )}
         </div>
       </div>

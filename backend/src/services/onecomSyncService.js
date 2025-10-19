@@ -224,8 +224,50 @@ class OneComSyncService {
       return source.replace(/-decker$/, '').replace(/-tenant$/, '').replace(/-pbx$/, '');
     };
 
+    // Clean destination field by removing #019# prefix and other unwanted characters
+    const cleanDestination = (field) => {
+      if (!field) return '';
+      return field.toString()
+        .replace(/^#019#/, '')  // Remove #019# prefix
+        .replace(/-decker$/, '')
+        .replace(/-tenant$/, '')
+        .replace(/-pbx$/, '')
+        .trim();
+    };
+
+    // Clean incoming DID by removing duplicate numbers and extracting phone number from formatted strings
+    const cleanIncomingDid = (field) => {
+      if (!field) return '';
+      let cleaned = field.toString().trim();
+      
+      // Extract phone number from formatted strings like "דויד" <+15854307664> or "Name" <phone>
+      const phoneMatch = cleaned.match(/<([^>]+)>/);
+      if (phoneMatch) {
+        cleaned = phoneMatch[1];
+      }
+      
+      // Remove any remaining non-numeric characters except + at the beginning
+      cleaned = cleaned.replace(/[^\d+]/g, '');
+      
+      // Check if the number appears to be doubled (e.g., "123456123456" where "123456" is repeated)
+      if (cleaned.length % 2 === 0 && cleaned.length >= 6) {
+        const halfLength = cleaned.length / 2;
+        const firstHalf = cleaned.substring(0, halfLength);
+        const secondHalf = cleaned.substring(halfLength);
+        
+        // If both halves are identical, remove the duplicate
+        if (firstHalf === secondHalf) {
+          cleaned = firstHalf;
+          console.log(`🔧 Cleaned duplicate incoming DID: ${field} -> ${cleaned}`);
+        }
+      }
+      
+      return cleaned;
+    };
+
     const cleanSourceField = cleanSource(onecomRecord.realsrc || onecomRecord.src || '');
-    const cleanDestinationField = cleanSource(onecomRecord.lastdst || onecomRecord.dst || '');
+    const cleanDestinationField = cleanDestination(onecomRecord.lastdst || onecomRecord.dst || '');
+    const cleanIncomingDidField = cleanIncomingDid(onecomRecord.clid || '');
 
     // Map direction based on 1com documentation and actual data
     let direction = 'unknown';
@@ -282,8 +324,11 @@ class OneComSyncService {
       status = 'redirected';
     }
 
-    // Map employee_id from cleaned source extension
-    const employeeId = await this.mapExtensionToEmployeeId(cleanSourceField);
+    // Map employee_id from cleaned source extension and incoming DID
+    const employeeId = await this.mapExtensionToEmployeeId(cleanSourceField, cleanIncomingDidField);
+    
+    // Map lead_id from destination number
+    const leadId = await this.mapDestinationToLeadId(cleanDestinationField);
 
     // Try to get recording URL if available
     let recordingUrl = '';
@@ -307,7 +352,7 @@ class OneComSyncService {
       time: time,
       source: cleanSourceField,
       destination: cleanDestinationField,
-      incomingdid: onecomRecord.clid || '',
+      incomingdid: cleanIncomingDidField,
       direction: direction,
       status: status,
       duration: onecomRecord.duration || 0,
@@ -315,6 +360,8 @@ class OneComSyncService {
       action: onecomRecord.disposition || '',
       // Map employee_id from cleaned source extension
       employee_id: employeeId,
+      // Map lead_id from destination number
+      lead_id: leadId,
       // Store original 1com data for reference
       onecom_uniqueid: onecomRecord.uniqueid,
       onecom_te_id: onecomRecord.call_id?.toString() || '', // Convert to string to avoid integer overflow
@@ -379,60 +426,208 @@ class OneComSyncService {
 
   /**
    * Map extension/phone number to employee_id automatically
+   * Cross-matches ALL employee phone/mobile/extension fields against BOTH source and incoming DID
    * @param {string} source - Extension or phone number from 1com
+   * @param {string} incomingDid - Incoming DID from 1com call log
    * @returns {Promise<number|null>}
    */
-  async mapExtensionToEmployeeId(source) {
+  async mapExtensionToEmployeeId(source, incomingDid = null) {
     if (!source || source === '---') {
       return null;
     }
 
     try {
-      // First try to match directly with employee phone_ext
-      let { data, error } = await supabase
+      const searchTerms = [source.toString()];
+      
+      // Add incoming DID to search terms if it's different from source
+      if (incomingDid && incomingDid !== '---' && incomingDid !== source) {
+        searchTerms.push(incomingDid.toString());
+      }
+
+      console.log(`🔍 Cross-matching employee mapping with terms: ${searchTerms.join(', ')}`);
+
+      // Get all employees first, then do comprehensive matching in JavaScript
+      // This allows us to do more complex cross-matching logic
+      const { data: allEmployees, error: empError } = await supabase
         .from('tenants_employee')
-        .select('id, display_name, phone_ext, phone')
-        .eq('phone_ext', source.toString())
-        .single();
+        .select('id, display_name, phone_ext, phone, mobile, mobile_ext')
+        .not('id', 'is', null);  // Just check that ID exists, not display_name
 
-      if (!error && data) {
-        console.log(`✅ Auto-mapped extension ${source} to employee ${data.display_name} (ID: ${data.id}) via phone_ext`);
-        return data.id;
+      if (empError) {
+        console.error('Error fetching employees:', empError);
+        return null;
       }
 
-      // If not found by phone_ext, try by phone number
-      if (error && error.code === 'PGRST116') { // No rows returned
-        const { data: phoneData, error: phoneError } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name, phone_ext, phone')
-          .eq('phone', source.toString())
-          .single();
+      if (!allEmployees || allEmployees.length === 0) {
+        console.log('No employees found in database');
+        return null;
+      }
 
-        if (!phoneError && phoneData) {
-          console.log(`✅ Auto-mapped phone ${source} to employee ${phoneData.display_name} (ID: ${phoneData.id}) via phone`);
-          return phoneData.id;
+      // Comprehensive matching logic: 3 digits = extension, 4+ digits = phone number
+      console.log(`🔍 Starting matching process with ${allEmployees.length} employees`);
+      
+      for (const employee of allEmployees) {
+        console.log(`\n👤 Checking employee: ${employee.display_name} (ID: ${employee.id})`);
+        
+        const employeeFields = [
+          { value: employee.phone_ext, type: 'phone_ext' },
+          { value: employee.phone, type: 'phone' },
+          { value: employee.mobile, type: 'mobile' },
+          { value: employee.mobile_ext, type: 'mobile_ext' }
+        ].filter(field => field.value && field.value !== '' && field.value !== '\\N');
+
+        console.log(`  Available fields: ${employeeFields.map(f => `${f.type}="${f.value}"`).join(', ')}`);
+
+        for (const searchTerm of searchTerms) {
+          console.log(`\n  🔍 Searching for: "${searchTerm}"`);
+          
+          // Clean the search term (remove formatting)
+          const cleanSearch = searchTerm.replace(/[^\d]/g, '');
+          console.log(`    Cleaned search: "${cleanSearch}" (length: ${cleanSearch.length})`);
+          
+          // Determine if this is an extension (3 digits) or phone number (4+ digits)
+          const isExtension = cleanSearch.length === 3;
+          console.log(`    Type: ${isExtension ? 'EXTENSION (3 digits)' : 'PHONE NUMBER (4+ digits)'}`);
+          
+          for (const field of employeeFields) {
+            const cleanField = field.value.replace(/[^\d]/g, '');
+            console.log(`    Testing ${field.type}: "${field.value}" -> cleaned: "${cleanField}" (length: ${cleanField.length})`);
+            
+            if (isExtension) {
+              // Extension matching: 3 digits, exact match with ANY field that has 3 digits
+              if (cleanField.length === 3 && cleanSearch === cleanField) {
+                console.log(`      ✅ EXTENSION EXACT MATCH: "${searchTerm}" matches "${field.value}"`);
+                console.log(`✅ Extension exact match: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                return employee.id;
+              } else if (cleanField.length === 3) {
+                console.log(`      ❌ Extension no match: "${cleanSearch}" !== "${cleanField}"`);
+              } else {
+                console.log(`      ⏭️ Skipping ${field.type} (not 3 digits: length ${cleanField.length})`);
+              }
+            } else {
+              // Phone number matching: 4+ digits, match last 4 digits with ANY field that has 4+ digits
+              if (cleanField.length >= 4) {
+                const searchLast4 = cleanSearch.slice(-4);
+                const fieldLast4 = cleanField.slice(-4);
+                console.log(`      Comparing last 4: "${searchLast4}" vs "${fieldLast4}"`);
+                
+                if (searchLast4 === fieldLast4) {
+                  console.log(`      ✅ PHONE NUMBER MATCH: "${searchTerm}" matches "${field.value}"`);
+                  console.log(`✅ Phone number match (last 4 digits): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                  return employee.id;
+                } else {
+                  console.log(`      ❌ Phone number no match: "${searchLast4}" !== "${fieldLast4}"`);
+                }
+              } else {
+                console.log(`      ⏭️ Skipping ${field.type} (too short: length ${cleanField.length})`);
+              }
+            }
+          }
         }
       }
 
-      // If still not found, try partial matching (last 7 digits for phone numbers)
-      if (source.match(/^[0-9]+$/) && source.length >= 7) {
-        const last7Digits = source.slice(-7);
-        const { data: partialData, error: partialError } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name, phone_ext, phone')
-          .or(`phone.like.%${last7Digits},phone_ext.eq.${last7Digits}`)
-          .single();
-
-        if (!partialError && partialData) {
-          console.log(`✅ Auto-mapped ${source} (partial match) to employee ${partialData.display_name} (ID: ${partialData.id})`);
-          return partialData.id;
-        }
-      }
-
-      console.log(`❌ No automatic mapping found for ${source}`);
+      console.log(`❌ No automatic mapping found for ${source} (searched ${searchTerms.length} terms across ${allEmployees.length} employees)`);
       return null;
     } catch (error) {
       console.error(`Error mapping ${source}:`, error);
+      return null;
+    }
+  }
+
+  /**
+   * Map destination phone number to lead_id
+   * @param {string} destination - Destination phone number from 1com
+   * @returns {Promise<number|null>}
+   */
+  async mapDestinationToLeadId(destination) {
+    if (!destination || destination === '---') {
+      return null;
+    }
+
+    try {
+      // Clean the destination number (remove formatting)
+      const cleanDestination = destination.replace(/[^\d]/g, '');
+      console.log(`🔍 Mapping destination "${destination}" -> cleaned: "${cleanDestination}"`);
+
+      if (cleanDestination.length < 9) {
+        console.log(`❌ Destination too short for phone matching (need 9+ digits): ${cleanDestination}`);
+        return null;
+      }
+
+      // Get the last 9 digits for matching (stricter matching)
+      const last9Digits = cleanDestination.slice(-9);
+      console.log(`  Last 9 digits: ${last9Digits}`);
+
+      // Find contacts with matching phone numbers
+      const { data: contacts, error: contactsError } = await supabase
+        .from('leads_contact')
+        .select('id, name, mobile, phone, additional_phones')
+        .or(
+          `mobile.like.%${last9Digits},` +
+          `phone.like.%${last9Digits},` +
+          `additional_phones.like.%${last9Digits}`
+        );
+
+      if (contactsError) {
+        console.error('Error fetching contacts:', contactsError);
+        return null;
+      }
+
+      if (!contacts || contacts.length === 0) {
+        console.log(`❌ No contacts found with phone numbers ending in ${last9Digits}`);
+        return null;
+      }
+
+      console.log(`📞 Found ${contacts.length} potential contacts`);
+
+      // For each contact, check if any phone number matches
+      for (const contact of contacts) {
+        console.log(`  👤 Checking contact: ${contact.name} (ID: ${contact.id})`);
+        
+        const phoneNumbers = [
+          contact.mobile,
+          contact.phone,
+          contact.additional_phones
+        ].filter(phone => phone && phone !== '' && phone !== '\\N');
+
+        for (const phone of phoneNumbers) {
+          if (phone) {
+            const cleanPhone = phone.replace(/[^\d]/g, '');
+            const phoneLast9 = cleanPhone.slice(-9);
+            
+            console.log(`    Phone: "${phone}" -> cleaned: "${cleanPhone}" -> last 9: "${phoneLast9}"`);
+            
+            if (phoneLast9 === last9Digits) {
+              console.log(`    ✅ Phone match found!`);
+              
+              // Find the lead for this contact
+              const { data: leadContacts, error: leadError } = await supabase
+                .from('lead_leadcontact')
+                .select('lead_id')
+                .eq('contact_id', contact.id)
+                .limit(1);
+
+              if (leadError) {
+                console.error('Error fetching lead for contact:', leadError);
+                continue;
+              }
+
+              if (leadContacts && leadContacts.length > 0) {
+                const leadId = leadContacts[0].lead_id;
+                console.log(`✅ Lead mapping: destination "${destination}" -> contact "${contact.name}" -> lead_id ${leadId}`);
+                return leadId;
+              } else {
+                console.log(`    ❌ No lead found for contact ${contact.id}`);
+              }
+            }
+          }
+        }
+      }
+
+      console.log(`❌ No lead mapping found for destination "${destination}"`);
+      return null;
+    } catch (error) {
+      console.error(`Error mapping destination "${destination}":`, error);
       return null;
     }
   }

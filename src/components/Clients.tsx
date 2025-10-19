@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
+import BalanceEditModal from './BalanceEditModal';
 import {
   PencilIcon,
   TrashIcon,
@@ -227,6 +228,7 @@ const Clients: React.FC<ClientsProps> = ({
     return employee ? employee.display_name : employeeId; // Fallback to ID if not found
   };
 
+
   // Helper function to get category name from ID with main category
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
     console.log('🔍 getCategoryName called with categoryId:', categoryId, 'type:', typeof categoryId, 'fallbackCategory:', fallbackCategory);
@@ -296,6 +298,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [activeTab, setActiveTab] = useState('info');
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
+  const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
   const { instance } = useMsal();
   const { isAdmin, isLoading: isAdminLoading } = useAdminRole();
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
@@ -382,7 +385,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [localLoading, setLocalLoading] = useState(true);
   const [backgroundLoading, setBackgroundLoading] = useState(false);
 
-  // Fetch all employees and categories for name lookup
+  // Fetch all employees, categories, and currencies for name lookup
   useEffect(() => {
     const fetchEmployees = async () => {
       const { data, error } = await supabase
@@ -395,6 +398,7 @@ const Clients: React.FC<ClientsProps> = ({
         setAllEmployees(data);
       }
     };
+
 
     const fetchCategories = async () => {
       try {
@@ -479,7 +483,7 @@ const Clients: React.FC<ClientsProps> = ({
       const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
       const isUnactivated = isLegacy ? 
         (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
-        ((unactivationReason && unactivationReason.trim() !== '') || false);
+        (String(selectedClient.stage) === '91' || String(selectedClient.stage) === 91 || (unactivationReason && unactivationReason.trim() !== ''));
       
       
       setIsUnactivatedView(isUnactivated);
@@ -541,6 +545,7 @@ const Clients: React.FC<ClientsProps> = ({
   ];
   const [payments, setPayments] = useState<any[]>([]);
   const [showAddPayment, setShowAddPayment] = useState(false);
+  const [nextDuePayment, setNextDuePayment] = useState<any>(null);
   const [newPayment, setNewPayment] = useState({
     client: '',
     order: 'Intermediate Payment',
@@ -774,8 +779,8 @@ const Clients: React.FC<ClientsProps> = ({
             // Add missing fields with defaults
             client_country: null,
             emails: legacyEmails || [],
-            closer: null,
-            handler: null,
+            closer: data.closer_id, // Use closer_id from legacy table
+            handler: data.case_handler_id, // Use case_handler_id from legacy table
             unactivation_reason: null,
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
@@ -3274,6 +3279,86 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, []);
 
+  // Function to fetch next due payment
+  const fetchNextDuePayment = useCallback(async (clientId: string) => {
+    if (!clientId) return;
+    
+    try {
+      const isLegacyLead = clientId.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        // For legacy leads, fetch from finances_paymentplanrow table
+        const legacyId = clientId.toString().replace('legacy_', '');
+        
+        const { data, error } = await supabase
+          .from('finances_paymentplanrow')
+          .select(`
+            *,
+            accounting_currencies!finances_paymentplanrow_currency_id_fkey (
+              name,
+              iso_code
+            )
+          `)
+          .eq('lead_id', legacyId)
+          .is('cancel_date', null) // Only active payments
+          .order('due_date', { ascending: true })
+          .limit(1);
+        
+        if (error) throw error;
+        
+        if (data && data.length > 0) {
+          const payment = data[0];
+          const today = new Date();
+          const dueDate = new Date(payment.due_date);
+          
+          // Only show if payment is due today or in the future
+          if (dueDate >= today) {
+            setNextDuePayment({
+              ...payment,
+              isLegacy: true
+            });
+          } else {
+            setNextDuePayment(null);
+          }
+        } else {
+          setNextDuePayment(null);
+        }
+      } else {
+        // For new leads, fetch from payment_plans table
+        const { data, error } = await supabase
+          .from('payment_plans')
+          .select('*')
+          .eq('lead_id', clientId)
+          .eq('paid', false) // Only unpaid payments
+          .order('due_date', { ascending: true })
+          .limit(1);
+        
+        if (error) throw error;
+        
+        if (data && data.length > 0) {
+          const payment = data[0];
+          const today = new Date();
+          const dueDate = new Date(payment.due_date);
+          
+          // Only show if payment is due today or in the future
+          if (dueDate >= today) {
+            setNextDuePayment({
+              ...payment,
+              isLegacy: false
+            });
+          } else {
+            setNextDuePayment(null);
+          }
+        } else {
+          setNextDuePayment(null);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching next due payment:', error);
+      setNextDuePayment(null);
+    }
+  }, []);
+
   // Fetch sub-leads when client changes
   useEffect(() => {
     if (selectedClient?.lead_number && !selectedClient.lead_number.includes('/')) {
@@ -3283,6 +3368,15 @@ const Clients: React.FC<ClientsProps> = ({
       setIsMasterLead(false);
     }
   }, [selectedClient?.lead_number, fetchSubLeads]);
+
+  // Fetch next due payment when client changes
+  useEffect(() => {
+    if (selectedClient?.id) {
+      fetchNextDuePayment(selectedClient.id.toString());
+    } else {
+      setNextDuePayment(null);
+    }
+  }, [selectedClient?.id, fetchNextDuePayment]);
 
   if (!localLoading && !selectedClient) {
     return (
@@ -3849,12 +3943,99 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Amount badge + stage badge + applicants */}
           <div className="w-full flex flex-col items-center">
-            <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg px-5 py-3 mb-3 w-full max-w-xs">
+            {/* Next Payment Due Indicator */}
+            {nextDuePayment && (
+              <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-xl shadow-lg px-4 py-2 mb-2 w-full max-w-xs">
+                <div className="text-center">
+                  <div className="text-white text-xs font-semibold mb-1">Next Payment Due</div>
+                  <div className="text-white text-sm font-bold">
+                    {(() => {
+                      const dueDate = new Date(nextDuePayment.due_date);
+                      const today = new Date();
+                      const diffTime = dueDate.getTime() - today.getTime();
+                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                      
+                      let dateText = dueDate.toLocaleDateString('en-GB');
+                      if (diffDays === 0) {
+                        dateText = 'Today';
+                      } else if (diffDays === 1) {
+                        dateText = 'Tomorrow';
+                      } else if (diffDays < 0) {
+                        dateText = `${Math.abs(diffDays)} days overdue`;
+                      }
+                      
+                      const currency = nextDuePayment.isLegacy 
+                        ? (nextDuePayment.accounting_currencies?.iso_code === 'ILS' ? '₪' : nextDuePayment.accounting_currencies?.iso_code || '₪')
+                        : (nextDuePayment.currency || '₪');
+                      
+                      const amount = nextDuePayment.isLegacy 
+                        ? (Number(nextDuePayment.value) + Number(nextDuePayment.vat_value || 0))
+                        : (Number(nextDuePayment.value) + Number(nextDuePayment.value_vat || 0));
+                      
+                      return `${currency}${Number(amount.toFixed(2)).toLocaleString()} - ${dateText}`;
+                    })()}
+                  </div>
+                </div>
+              </div>
+            )}
+            
+            <div 
+              className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg px-5 py-3 mb-3 w-full max-w-xs cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
+              onClick={() => setIsBalanceModalOpen(true)}
+              title="Click to edit balance"
+            >
               <div className="text-center">
                 <div className="text-white text-2xl font-bold">
-                  {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
-                  {(selectedClient?.balance || 0).toLocaleString()}
+                  {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                  {(() => {
+                    const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                    const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                    // Show base amount minus subcontractor fee
+                    const mainAmount = baseAmount - subcontractorFee;
+                    return Number(mainAmount.toFixed(2)).toLocaleString();
+                  })()}
                 </div>
+                {(() => {
+                  // Calculate VAT for legacy leads or use stored VAT for new leads
+                  let vatAmount = 0;
+                  if (selectedClient?.id?.toString().startsWith('legacy_')) {
+                    // For legacy leads, always calculate VAT dynamically to ensure consistency
+                    // For legacy leads, calculate VAT dynamically (18% for ILS currency)
+                    // Use the same base amount as BalanceEditModal (total field from leads_lead table)
+                    const baseAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                    const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                    if (currency === '₪' || currency === 'ILS') {
+                      vatAmount = baseAmount * 0.18;
+                    }
+                  } else {
+                    // For new leads, calculate VAT dynamically or use stored VAT value
+                    const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                    const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                    
+                    if (currency === '₪' || currency === 'ILS') {
+                      // Calculate VAT dynamically for ILS currency
+                      vatAmount = baseAmount * 0.18;
+                    } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                      // Use stored VAT value for other currencies
+                      vatAmount = Number(selectedClient.vat_value);
+                    }
+                  }
+                  return vatAmount > 0 ? (
+                    <div className="text-white text-sm opacity-90 mt-1">
+                      +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
+                    </div>
+                  ) : null;
+                })()}
+                {Number(selectedClient?.subcontractor_fee ?? 0) > 0 && (
+                  <div className="text-white text-sm opacity-90 mt-1">
+                    Total: {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                    {(() => {
+                      const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                      // Show original base amount as total
+                      return Number(baseAmount.toFixed(2)).toLocaleString();
+                    })()}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -3958,12 +4139,99 @@ const Clients: React.FC<ClientsProps> = ({
                 <ClientInformationBox selectedClient={selectedClient} />
               </div>
               <div className="w-full lg:w-48 flex flex-col items-center">
-                <div className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg p-4 mb-3">
+                {/* Next Payment Due Indicator */}
+                {nextDuePayment && (
+                  <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-xl shadow-lg px-4 py-2 mb-2 w-full max-w-xs">
+                    <div className="text-center">
+                      <div className="text-white text-xs font-semibold mb-1">Next Payment Due</div>
+                      <div className="text-white text-sm font-bold">
+                        {(() => {
+                          const dueDate = new Date(nextDuePayment.due_date);
+                          const today = new Date();
+                          const diffTime = dueDate.getTime() - today.getTime();
+                          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                          
+                          let dateText = dueDate.toLocaleDateString('en-GB');
+                          if (diffDays === 0) {
+                            dateText = 'Today';
+                          } else if (diffDays === 1) {
+                            dateText = 'Tomorrow';
+                          } else if (diffDays < 0) {
+                            dateText = `${Math.abs(diffDays)} days overdue`;
+                          }
+                          
+                          const currency = nextDuePayment.isLegacy 
+                            ? (nextDuePayment.accounting_currencies?.iso_code === 'ILS' ? '₪' : nextDuePayment.accounting_currencies?.iso_code || '₪')
+                            : (nextDuePayment.currency || '₪');
+                          
+                          const amount = nextDuePayment.isLegacy 
+                            ? (Number(nextDuePayment.value) + Number(nextDuePayment.vat_value || 0))
+                            : (Number(nextDuePayment.value) + Number(nextDuePayment.value_vat || 0));
+                          
+                          return `${currency}${Number(amount.toFixed(2)).toLocaleString()} - ${dateText}`;
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                <div 
+                  className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg p-4 mb-3 cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
+                  onClick={() => setIsBalanceModalOpen(true)}
+                  title="Click to edit balance"
+                >
                   <div className="text-center">
                     <div className="text-white text-2xl font-bold">
-                      {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency)}
-                      {(selectedClient?.balance || 0).toLocaleString()}
+                      {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                      {(() => {
+                        const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                        const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                        // Show base amount minus subcontractor fee
+                        const mainAmount = baseAmount - subcontractorFee;
+                        return Number(mainAmount.toFixed(2)).toLocaleString();
+                      })()}
                     </div>
+                    {(() => {
+                      // Calculate VAT for legacy leads or use stored VAT for new leads
+                      let vatAmount = 0;
+                      if (selectedClient?.id?.toString().startsWith('legacy_')) {
+                        // For legacy leads, always calculate VAT dynamically to ensure consistency
+                        // For legacy leads, calculate VAT dynamically (18% for ILS currency)
+                        // Use the same base amount as BalanceEditModal (total field from leads_lead table)
+                        const baseAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                        const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                        if (currency === '₪' || currency === 'ILS') {
+                          vatAmount = baseAmount * 0.18;
+                        }
+                      } else {
+                        // For new leads, calculate VAT dynamically or use stored VAT value
+                        const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                        const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                        
+                        if (currency === '₪' || currency === 'ILS') {
+                          // Calculate VAT dynamically for ILS currency
+                          vatAmount = baseAmount * 0.18;
+                        } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                          // Use stored VAT value for other currencies
+                          vatAmount = Number(selectedClient.vat_value);
+                        }
+                      }
+                      return vatAmount > 0 ? (
+                        <div className="text-white text-sm opacity-90 mt-1">
+                          +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
+                        </div>
+                      ) : null;
+                    })()}
+                    {Number(selectedClient?.subcontractor_fee ?? 0) > 0 && (
+                      <div className="text-white text-sm opacity-90 mt-1">
+                        Total: {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                        {(() => {
+                          const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                          // Show original base amount as total
+                          return Number(baseAmount.toFixed(2)).toLocaleString();
+                        })()}
+                      </div>
+                    )}
                   </div>
                 </div>
                 
@@ -5932,6 +6200,14 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
+
+      {/* Balance Edit Modal */}
+      <BalanceEditModal
+        isOpen={isBalanceModalOpen}
+        onClose={() => setIsBalanceModalOpen(false)}
+        selectedClient={selectedClient}
+        onUpdate={(clientId) => refreshClientData(clientId || selectedClient?.id)}
+      />
     </div>
   );
 };

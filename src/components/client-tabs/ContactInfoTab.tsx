@@ -300,7 +300,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     { code: '+48', country: 'PL', name: 'Poland' },
     { code: '+420', country: 'CZ', name: 'Czech Republic' },
     { code: '+36', country: 'HU', name: 'Hungary' },
-    { code: '+43', country: 'AT', name: 'Austria' },
     { code: '+40', country: 'RO', name: 'Romania' },
     { code: '+380', country: 'UA', name: 'Ukraine' },
     { code: '+7', country: 'RU', name: 'Russia' },
@@ -686,7 +685,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       }
     })();
     return () => { mounted = false; };
-  }, [client?.id, contacts, contractTemplates]);
+  }, [client?.id]); // Removed contacts and contractTemplates to prevent infinite loops
 
   // Update contacts when client data changes
   useEffect(() => {
@@ -703,7 +702,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         console.log('🔍 Legacy ID for contacts:', legacyId);
         
         try {
-          // First, get the lead-contact relationships
+          // Process contacts from lead_leadcontact and leads_contact tables
+          const contactEntries: ContactEntry[] = [];
+          
+          // For legacy leads, we should NOT add the main contact from leads_lead table
+          // because it's already in the leads_contact table and linked via lead_leadcontact
+          // This prevents duplicate entries
+          
+          // Then get additional contacts from lead-contact relationships
           const { data: leadContacts, error: leadContactsError } = await supabase
             .from('lead_leadcontact')
             .select(`
@@ -720,9 +726,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             console.error('❌ Error fetching legacy lead contacts:', leadContactsError);
             return;
           }
-          
-          // Process contacts from lead_leadcontact and leads_contact tables
-          const contactEntries: ContactEntry[] = [];
           
           if (leadContacts && leadContacts.length > 0) {
             console.log('🔍 Processing lead contacts:', leadContacts);
@@ -788,6 +791,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               isMain: true,
             };
             contactEntries.push(fallbackContact);
+          } else {
+            console.log('🔍 Found', contactEntries.length, 'contacts in database, no fallback needed');
           }
           
           console.log('🔍 Final contacts list:', contactEntries);
@@ -1043,11 +1048,25 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           // Update existing contact in leads_contact table
           // Find the contact_id from the current contacts list
           const contactToUpdate = contacts.find(c => c.id === id);
+          
           if (!contactToUpdate) {
-            throw new Error('Contact not found');
+            console.error('Contact not found for update');
+            return;
           }
           
-          // For now, just update local state since we need to find the contact_id
+          // Update the contact in leads_contact table using the contact ID
+          const { error: updateError } = await supabase
+            .from('leads_contact')
+            .update({
+              name: contact.name,
+              mobile: contact.mobile,
+              phone: contact.phone,
+              email: contact.email,
+              udate: new Date().toISOString().split('T')[0]
+            })
+            .eq('id', contactToUpdate.id);
+          
+          if (updateError) throw updateError;
           setContacts(contacts.map(c => 
             c.id === id ? { ...contact, isEditing: false } : c
           ));
@@ -1692,7 +1711,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 }}
                               >
                                 {countryCodes.map((code) => (
-                                  <option key={code.code} value={code.code}>
+                                  <option key={`${code.code}-${code.country}`} value={code.code}>
                                     {code.code}
                                   </option>
                                 ))}
@@ -1725,7 +1744,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 }}
                               >
                                 {countryCodes.map((code) => (
-                                  <option key={code.code} value={code.code}>
+                                  <option key={`${code.code}-${code.country}`} value={code.code}>
                                     {code.code}
                                   </option>
                                 ))}
@@ -1771,7 +1790,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 }}
                               >
                                 {countryCodes.map((code) => (
-                                  <option key={code.code} value={code.code}>
+                                  <option key={`${code.code}-${code.country}`} value={code.code}>
                                     {code.code}
                                   </option>
                                 ))}
@@ -1804,7 +1823,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 }}
                               >
                                 {countryCodes.map((code) => (
-                                  <option key={code.code} value={code.code}>
+                                  <option key={`${code.code}-${code.country}`} value={code.code}>
                                     {code.code}
                                   </option>
                                 ))}

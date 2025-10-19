@@ -56,7 +56,8 @@ const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClien
         </div>
 
         {/* Handler (if applicable) */}
-        {selectedClient?.stage === 'handler_assigned' && (
+        {(selectedClient?.stage === 'handler_assigned' || 
+          (selectedClient?.lead_type === 'legacy' && selectedClient?.handler)) && (
           <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
             <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Handler</p>
             <p className="text-sm text-gray-900 text-right">

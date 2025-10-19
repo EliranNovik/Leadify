@@ -34,6 +34,8 @@ import WhatsAppModal from './components/WhatsAppModal';
 import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
 import ProformaViewPage from './pages/ProformaViewPage';
+import ProformaLegacyViewPage from './pages/ProformaLegacyViewPage';
+import ProformaLegacyCreatePage from './pages/ProformaLegacyCreatePage';
 import ReportsPage from './pages/ReportsPage';
 import MasterLeadPage from './components/MasterLeadPage';
 import SettingsPage from './pages/SettingsPage';
@@ -288,6 +290,8 @@ const AppContentInner: React.FC = () => {
                     <Route path="/performance" element={<MyPerformancePage />} />
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />
                     <Route path="/proforma/create/:paymentId" element={<ProformaCreatePage />} />
+                    <Route path="/proforma-legacy/:id" element={<ProformaLegacyViewPage />} />
+                    <Route path="/proforma-legacy/create/:leadId" element={<ProformaLegacyCreatePage />} />
                     <Route path="/reports" element={<ReportsPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
                     <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
