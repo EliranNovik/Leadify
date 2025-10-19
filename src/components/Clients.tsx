@@ -2436,7 +2436,10 @@ const Clients: React.FC<ClientsProps> = ({
           updateData.probability = probabilityValue;
         }
         if (editLeadData.next_followup !== selectedClient.next_followup) {
-          updateData.next_followup = editLeadData.next_followup;
+          // Handle empty follow-up date - provide a default date if empty
+          const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
+            new Date().toISOString().split('T')[0] : editLeadData.next_followup;
+          updateData.next_followup = followupValue;
         }
         if (editLeadData.balance !== selectedClient.balance) {
           // Handle empty string for balance field
@@ -2506,7 +2509,10 @@ const Clients: React.FC<ClientsProps> = ({
           updateData.balance = balanceValue;
         }
         if (editLeadData.next_followup !== selectedClient.next_followup) {
-          updateData.next_followup = editLeadData.next_followup;
+          // Handle empty follow-up date - provide a default date if empty
+          const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
+            new Date().toISOString().split('T')[0] : editLeadData.next_followup;
+          updateData.next_followup = followupValue;
         }
         if (editLeadData.balance_currency !== selectedClient.balance_currency) {
           updateData.balance_currency = editLeadData.balance_currency;
@@ -5231,19 +5237,30 @@ const Clients: React.FC<ClientsProps> = ({
                 <label className="block font-semibold mb-1">Balance Currency</label>
                 <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
                   {currencies.length > 0 ? (
-                    currencies.map((currency) => (
-                      <option key={currency.id} value={currency.name}>
-                        {currency.name} ({currency.iso_code})
-                      </option>
-                    ))
+                    <>
+                      {/* Show current currency first */}
+                      {currencies
+                        .filter(currency => currency.name === editLeadData.balance_currency)
+                        .map((currency) => (
+                          <option key={`current-${currency.id}`} value={currency.name}>
+                            {currency.name} ({currency.iso_code})
+                          </option>
+                        ))
+                      }
+                      {/* Show other currencies */}
+                      {currencies
+                        .filter(currency => currency.name !== editLeadData.balance_currency)
+                        .map((currency) => (
+                          <option key={currency.id} value={currency.name}>
+                            {currency.name} ({currency.iso_code})
+                          </option>
+                        ))
+                      }
+                    </>
                   ) : (
                     <option value="">Loading currencies...</option>
                   )}
                 </select>
-                {/* Debug info */}
-                <div className="text-xs text-gray-500 mt-1">
-                  Debug: {currencies.length} currencies loaded
-                </div>
               </div>
             </div>
             <div className="mt-6 flex justify-end">
