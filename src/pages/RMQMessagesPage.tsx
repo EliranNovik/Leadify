@@ -17,7 +17,9 @@ import {
   ArrowLeftIcon,
   CheckIcon,
   ExclamationTriangleIcon,
-  InformationCircleIcon
+  InformationCircleIcon,
+  MicrophoneIcon,
+  StopIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 
@@ -74,7 +76,7 @@ interface Message {
   conversation_id: number;
   sender_id: string;
   content: string;
-  message_type: 'text' | 'file' | 'image' | 'system';
+  message_type: 'text' | 'file' | 'image' | 'system' | 'voice';
   sent_at: string;
   edited_at?: string;
   is_deleted: boolean;
@@ -86,6 +88,9 @@ interface Message {
   reactions: MessageReaction[];
   sender: User;
   reply_to_message?: Message;
+  voice_duration?: number;
+  voice_waveform?: any;
+  is_voice_message?: boolean;
 }
 
 interface MessagingModalProps {
@@ -134,6 +139,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Reactions state
   const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
   const [reactingMessageId, setReactingMessageId] = useState<number | null>(null);
+  
+  // Voice recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [voiceSessionToken, setVoiceSessionToken] = useState<string | null>(null);
+  const [recordingStartTime, setRecordingStartTime] = useState<number | null>(null);
+  
+  // Voice playback state
+  const [playingVoiceId, setPlayingVoiceId] = useState<number | null>(null);
+  const [voiceAudio, setVoiceAudio] = useState<HTMLAudioElement | null>(null);
+  const [voiceProgress, setVoiceProgress] = useState<{ [key: number]: number }>({});
   
   // Typing indicators removed - causing too many issues
   
@@ -313,6 +331,296 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const deployedDomain = 'https://leadify-crm.onrender.com';
     const leadLink = `[Lead #${lead.lead_number} - ${lead.name}](${deployedDomain}/clients/${lead.lead_number})`;
     setNewMessage(prev => prev + leadLink + ' ');
+  };
+
+  // Voice recording functions
+  const startVoiceRecording = async () => {
+    if (!selectedConversation || !currentUser) return;
+    
+    try {
+      // Request microphone permission
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // Create voice message session
+      const { data: sessionData, error: sessionError } = await supabase.rpc('create_voice_message_session', {
+        p_user_id: currentUser.id,
+        p_conversation_id: selectedConversation.id
+      });
+      
+      if (sessionError) throw sessionError;
+      
+      setVoiceSessionToken(sessionData.session_token);
+      
+      // Create MediaRecorder
+      const recorder = new MediaRecorder(stream, {
+        mimeType: 'audio/webm;codecs=opus'
+      });
+      
+      const chunks: Blob[] = [];
+      
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      
+      recorder.onstop = async () => {
+        // Stop all tracks
+        stream.getTracks().forEach(track => track.stop());
+        
+        if (chunks.length > 0) {
+          await uploadVoiceMessage(chunks, sessionData.session_token);
+        }
+      };
+      
+      recorder.start(1000); // Record in 1-second chunks
+      setMediaRecorder(recorder);
+      setAudioChunks(chunks);
+      setIsRecording(true);
+      setRecordingStartTime(Date.now());
+      setRecordingDuration(0);
+      
+      // Start duration timer
+      const timer = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000);
+      
+      // Store timer reference for cleanup
+      (recorder as any).timer = timer;
+      
+    } catch (error) {
+      console.error('Error starting voice recording:', error);
+      toast.error('Failed to start recording. Please check microphone permissions.');
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      
+      // Clear timer
+      if ((mediaRecorder as any).timer) {
+        clearInterval((mediaRecorder as any).timer);
+      }
+    }
+  };
+
+  const cancelVoiceRecording = async () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      
+      // Clear timer
+      if ((mediaRecorder as any).timer) {
+        clearInterval((mediaRecorder as any).timer);
+      }
+    }
+    
+    // Cancel session if we have a token
+    if (voiceSessionToken) {
+      try {
+        await supabase.rpc('cancel_voice_message_session', {
+          p_session_token: voiceSessionToken
+        });
+      } catch (error) {
+        console.error('Error cancelling voice session:', error);
+      }
+    }
+    
+    // Reset state
+    setAudioChunks([]);
+    setVoiceSessionToken(null);
+    setRecordingDuration(0);
+    setRecordingStartTime(null);
+  };
+
+  const uploadVoiceMessage = async (chunks: Blob[], sessionToken: string) => {
+    try {
+      setIsSending(true);
+      
+      // Combine chunks into single audio blob
+      const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+      
+      // Upload chunks to database
+      const chunkSize = 64 * 1024; // 64KB chunks
+      const totalChunks = Math.ceil(audioBlob.size / chunkSize);
+      
+      for (let i = 0; i < totalChunks; i++) {
+        const start = i * chunkSize;
+        const end = Math.min(start + chunkSize, audioBlob.size);
+        const chunk = audioBlob.slice(start, end);
+        
+        // Convert blob to base64 for database storage
+        const arrayBuffer = await chunk.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const base64 = btoa(String.fromCharCode(...uint8Array));
+        
+        const { error } = await supabase.rpc('upload_voice_chunk', {
+          p_session_token: sessionToken,
+          p_chunk_number: i,
+          p_chunk_data: base64,
+          p_chunk_size: chunk.size
+        });
+        
+        if (error) throw error;
+      }
+      
+      // Finalize voice message
+      const duration = recordingDuration;
+      const { data: finalizeData, error: finalizeError } = await supabase.rpc('finalize_voice_message', {
+        p_session_token: sessionToken,
+        p_duration: duration,
+        p_waveform_data: null // We can add waveform generation later
+      });
+      
+      if (finalizeError) throw finalizeError;
+      
+      // Send via WebSocket for real-time delivery
+      if (websocketService.isSocketConnected()) {
+        websocketService.sendMessage(
+          selectedConversation!.id, 
+          'Voice message', 
+          'file', // Use 'file' type for WebSocket compatibility
+          `voice_message_${finalizeData.message_id}.webm`,
+          'audio/webm',
+          audioBlob.size
+        );
+      }
+      
+      toast.success('Voice message sent!');
+      
+      // Reset state
+      setAudioChunks([]);
+      setVoiceSessionToken(null);
+      setRecordingDuration(0);
+      setRecordingStartTime(null);
+      
+    } catch (error) {
+      console.error('Error uploading voice message:', error);
+      toast.error('Failed to send voice message');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const formatRecordingDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Voice playback functions
+  const playVoiceMessage = async (messageId: number) => {
+    if (!currentUser) return;
+
+    try {
+      // If already playing this message, pause it
+      if (playingVoiceId === messageId && voiceAudio) {
+        voiceAudio.pause();
+        setPlayingVoiceId(null);
+        setVoiceAudio(null);
+        return;
+      }
+
+      // If playing a different message, stop it first
+      if (voiceAudio) {
+        voiceAudio.pause();
+        setPlayingVoiceId(null);
+        setVoiceAudio(null);
+      }
+
+      // Get voice message chunks from database
+      const { data: chunksData, error } = await supabase.rpc('get_voice_message_chunks', {
+        p_message_id: messageId,
+        p_user_id: currentUser.id
+      });
+
+      if (error) throw error;
+
+      if (!chunksData || chunksData.length === 0) {
+        toast.error('Voice message not found or access denied');
+        return;
+      }
+
+      // Sort chunks by chunk_number and combine them
+      const sortedChunks = chunksData.sort((a: any, b: any) => a.chunk_number - b.chunk_number);
+      
+      // Convert base64 chunks back to binary data
+      const binaryChunks = sortedChunks.map((chunk: any) => {
+        const binaryString = atob(chunk.chunk_data);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes;
+      });
+
+      // Combine all chunks into a single Uint8Array
+      const totalLength = binaryChunks.reduce((sum: number, chunk: Uint8Array) => sum + chunk.length, 0);
+      const combinedArray = new Uint8Array(totalLength);
+      let offset = 0;
+      for (const chunk of binaryChunks) {
+        combinedArray.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      // Create blob from combined data
+      const audioBlob = new Blob([combinedArray], { type: 'audio/webm' });
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      // Create audio element and play
+      const audio = new Audio(audioUrl);
+      audio.preload = 'metadata';
+      
+      audio.onloadedmetadata = () => {
+        setPlayingVoiceId(messageId);
+        setVoiceAudio(audio);
+        audio.play();
+      };
+
+      audio.onplay = () => {
+        setPlayingVoiceId(messageId);
+      };
+
+      audio.onpause = () => {
+        setPlayingVoiceId(null);
+      };
+
+      audio.onended = () => {
+        setPlayingVoiceId(null);
+        setVoiceAudio(null);
+        setVoiceProgress(prev => ({ ...prev, [messageId]: 0 }));
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      audio.ontimeupdate = () => {
+        if (audio.duration) {
+          const progress = (audio.currentTime / audio.duration) * 100;
+          setVoiceProgress(prev => ({ ...prev, [messageId]: progress }));
+        }
+      };
+
+      audio.onerror = (e) => {
+        console.error('Audio playback error:', e);
+        toast.error('Failed to play voice message');
+        setPlayingVoiceId(null);
+        setVoiceAudio(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+    } catch (error) {
+      console.error('Error playing voice message:', error);
+      toast.error('Failed to play voice message');
+    }
+  };
+
+  const pauseVoiceMessage = () => {
+    if (voiceAudio) {
+      voiceAudio.pause();
+      setPlayingVoiceId(null);
+      setVoiceAudio(null);
+    }
   };
 
   // Reaction functions
@@ -1575,6 +1883,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   }, [selectedConversation?.id]);
 
+  // Cleanup audio when conversation changes or component unmounts
+  useEffect(() => {
+    return () => {
+      if (voiceAudio) {
+        voiceAudio.pause();
+        setPlayingVoiceId(null);
+        setVoiceAudio(null);
+      }
+    };
+  }, [selectedConversation?.id]);
+
+  // Cleanup audio on unmount
+  useEffect(() => {
+    return () => {
+      if (voiceAudio) {
+        voiceAudio.pause();
+      }
+    };
+  }, []);
+
   // Fetch conversations and users when user is loaded
   useEffect(() => {
     const loadData = async () => {
@@ -2388,7 +2716,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 ? 'bg-white/10 border-white/20' 
                                 : 'bg-gray-50 border-gray-200'
                             }`}>
-                              {message.message_type === 'image' ? (
+                              {message.message_type === 'voice' ? (
+                                // Voice message player
+                                <div className="p-3 flex items-center gap-3">
+                                  <button
+                                    onClick={() => playVoiceMessage(message.id)}
+                                    className={`p-2 rounded-full transition-all ${
+                                      isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
+                                    }`}
+                                    title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
+                                  >
+                                    {playingVoiceId === message.id ? (
+                                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                                      </svg>
+                                    ) : (
+                                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M8 5v14l11-7z"/>
+                                      </svg>
+                                    )}
+                                  </button>
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2">
+                                      <div className={`flex-1 h-2 rounded-full ${
+                                        isOwn ? 'bg-white/30' : 'bg-gray-200'
+                                      }`}>
+                                        <div 
+                                          className={`h-full rounded-full transition-all duration-100 ${
+                                            isOwn ? 'bg-white' : 'bg-purple-500'
+                                          }`}
+                                          style={{ width: `${voiceProgress[message.id] || 0}%` }}
+                                        ></div>
+                                      </div>
+                                      <span className={`text-sm font-mono ${
+                                        isOwn ? 'text-white/80' : 'text-gray-600'
+                                      }`}>
+                                        {message.voice_duration ? `${message.voice_duration}s` : '0s'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : message.message_type === 'image' ? (
                                 // Image preview
                                 <div className="space-y-2">
                                   <div 
@@ -2557,14 +2925,46 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
                 
                 <div className="relative">
+                <button
+                  onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                  disabled={isSending}
+                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-purple-600 disabled:opacity-50"
+                  title="Add emoji"
+                >
+                  <FaceSmileIcon className="w-5 h-5" />
+                </button>
+                
+                {/* Voice Recording Button */}
+                {!isRecording ? (
                   <button
-                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                    onClick={startVoiceRecording}
                     disabled={isSending}
-                    className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-purple-600 disabled:opacity-50"
-                    title="Add emoji"
+                    className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-red-600 disabled:opacity-50"
+                    title="Record voice message"
                   >
-                    <FaceSmileIcon className="w-5 h-5" />
+                    <MicrophoneIcon className="w-5 h-5" />
                   </button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={stopVoiceRecording}
+                      className="btn btn-circle btn-sm bg-red-500 hover:bg-red-600 text-white"
+                      title="Send voice message"
+                    >
+                      <StopIcon className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={cancelVoiceRecording}
+                      className="btn btn-circle btn-sm bg-gray-500 hover:bg-gray-600 text-white"
+                      title="Cancel recording"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                    <span className="text-sm text-red-600 font-mono min-w-[40px]">
+                      {formatRecordingDuration(recordingDuration)}
+                    </span>
+                  </div>
+                )}
                   
                   
                   {/* Emoji Picker */}
@@ -2827,7 +3227,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               ? 'bg-white/10 border-white/20' 
                               : 'bg-gray-50 border-gray-200'
                           }`}>
-                            {message.message_type === 'image' ? (
+                            {message.message_type === 'voice' ? (
+                              // Mobile voice message player
+                              <div className="p-2 flex items-center gap-2">
+                                <button
+                                  onClick={() => playVoiceMessage(message.id)}
+                                  className={`p-2 rounded-full transition-all ${
+                                    isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
+                                  }`}
+                                  title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
+                                >
+                                  {playingVoiceId === message.id ? (
+                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                      <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z"/>
+                                    </svg>
+                                  ) : (
+                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                      <path d="M8 5v14l11-7z"/>
+                                    </svg>
+                                  )}
+                                </button>
+                                <div className="flex-1">
+                                  <div className="flex items-center gap-2">
+                                    <div className={`flex-1 h-2 rounded-full ${
+                                      isOwn ? 'bg-white/30' : 'bg-gray-200'
+                                    }`}>
+                                      <div 
+                                        className={`h-full rounded-full transition-all duration-100 ${
+                                          isOwn ? 'bg-white' : 'bg-purple-500'
+                                        }`}
+                                        style={{ width: `${voiceProgress[message.id] || 0}%` }}
+                                      ></div>
+                                    </div>
+                                    <span className={`text-xs font-mono ${
+                                      isOwn ? 'text-white/80' : 'text-gray-600'
+                                    }`}>
+                                      {message.voice_duration ? `${message.voice_duration}s` : '0s'}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            ) : message.message_type === 'image' ? (
                               // Image preview
                               <div className="space-y-2">
                                 <div 
@@ -2984,6 +3424,38 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   >
                     <FaceSmileIcon className="w-5 h-5" />
                   </button>
+                  
+                  {/* Mobile Voice Recording Button */}
+                  {!isRecording ? (
+                    <button
+                      onClick={startVoiceRecording}
+                      disabled={isSending}
+                      className="btn btn-circle btn-sm bg-white border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                      title="Record voice message"
+                    >
+                      <MicrophoneIcon className="w-5 h-5" />
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={stopVoiceRecording}
+                        className="btn btn-circle btn-sm bg-red-500 hover:bg-red-600 text-white"
+                        title="Send voice message"
+                      >
+                        <StopIcon className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={cancelVoiceRecording}
+                        className="btn btn-circle btn-sm bg-gray-500 hover:bg-gray-600 text-white"
+                        title="Cancel recording"
+                      >
+                        <XMarkIcon className="w-4 h-4" />
+                      </button>
+                      <span className="text-xs text-red-600 font-mono min-w-[30px]">
+                        {formatRecordingDuration(recordingDuration)}
+                      </span>
+                    </div>
+                  )}
                   
                   
                   {/* Mobile Emoji Picker */}

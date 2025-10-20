@@ -229,6 +229,28 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
 
+  // Helper function to get currency symbol from currency ID or currency name
+  const getCurrencySymbol = (currencyId: string | number | null | undefined, fallbackCurrency?: string) => {
+    if (!currencyId || currencyId === '---') {
+      // If no currency_id but we have a fallback currency, use it
+      if (fallbackCurrency && fallbackCurrency.trim() !== '') {
+        return fallbackCurrency;
+      }
+      // Default to NIS - use the same format as dropdown expects
+      return '₪'; // Default to NIS
+    }
+    
+    // Find currency in loaded currencies
+    const currency = currencies.find((curr: any) => curr.id.toString() === currencyId.toString());
+    
+    if (currency) {
+      // For dropdown compatibility, return the name field which matches the dropdown values
+      return currency.name || currency.front_name || currency.iso_code || '₪';
+    }
+    
+    return '₪'; // Default fallback - matches dropdown format
+  };
+
   // Helper function to get category name from ID with main category
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
     console.log('🔍 getCategoryName called with categoryId:', categoryId, 'type:', typeof categoryId, 'fallbackCategory:', fallbackCategory);
@@ -483,7 +505,7 @@ const Clients: React.FC<ClientsProps> = ({
       const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
       const isUnactivated = isLegacy ? 
         (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
-        (String(selectedClient.stage) === '91' || String(selectedClient.stage) === 91 || (unactivationReason && unactivationReason.trim() !== ''));
+        (String(selectedClient.stage) === '91' || String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== ''));
       
       
       setIsUnactivatedView(isUnactivated);
@@ -2336,6 +2358,12 @@ const Clients: React.FC<ClientsProps> = ({
 
   useEffect(() => {
     if (selectedClient) {
+      // Get the correct currency for this lead (handles both new and legacy leads)
+      const currentCurrency = getCurrencySymbol(
+        selectedClient?.currency_id || selectedClient?.meeting_total_currency_id,
+        selectedClient?.balance_currency
+      );
+      
       setEditLeadData({
         tags: selectedClient.tags || '',
         source: selectedClient.source || '',
@@ -2347,25 +2375,25 @@ const Clients: React.FC<ClientsProps> = ({
         probability: selectedClient.probability || 0,
         number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || '',
         potential_applicants_meeting: selectedClient.potential_applicants_meeting || '',
-        balance: selectedClient.balance || '',
+        balance: selectedClient.balance || selectedClient.total || '',
         next_followup: selectedClient.next_followup || '',
-        balance_currency: selectedClient.balance_currency || '₪',
+        balance_currency: currentCurrency,
       });
     }
-  }, [selectedClient]);
+  }, [selectedClient, currencies]);
 
   const handleEditLeadChange = (field: string, value: any) => {
-    // Special handling for category field - extract just the category name from formatted string
-    if (field === 'category' && typeof value === 'string') {
-      // If the value contains " (", extract just the part before it
-      const categoryName = value.includes(' (') ? value.split(' (')[0] : value;
-      setEditLeadData(prev => ({ ...prev, [field]: categoryName }));
-    } else {
-      setEditLeadData(prev => ({ ...prev, [field]: value }));
-    }
+    // For category field, keep the full formatted string (subcategory + main category)
+    setEditLeadData(prev => ({ ...prev, [field]: value }));
   };
 
   const openEditLeadDrawer = () => {
+    // Get the correct currency for this lead (handles both new and legacy leads)
+    const currentCurrency = getCurrencySymbol(
+      selectedClient?.currency_id || selectedClient?.meeting_total_currency_id,
+      selectedClient?.balance_currency
+    );
+    
     // Reset the edit form data with current client data
     setEditLeadData({
       tags: selectedClient?.tags || '',
@@ -2378,9 +2406,9 @@ const Clients: React.FC<ClientsProps> = ({
       probability: selectedClient?.probability || 0,
       number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
       potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
-      balance: selectedClient?.balance || '',
+      balance: selectedClient?.balance || selectedClient?.total || '',
       next_followup: selectedClient?.next_followup || '',
-      balance_currency: selectedClient?.balance_currency || '₪',
+      balance_currency: currentCurrency,
     });
     setShowEditLeadDrawer(true);
   };
@@ -2449,6 +2477,35 @@ const Clients: React.FC<ClientsProps> = ({
         if (editLeadData.balance_currency !== selectedClient.balance_currency) {
           updateData.currency_id = currencyNameToId(editLeadData.balance_currency); // Map currency name to ID
         }
+        if (editLeadData.category !== selectedClient.category) {
+          // Find the exact category ID from the formatted category name for legacy leads
+          // We need to match both the subcategory name AND the main category name
+          const fullCategoryString = editLeadData.category;
+          const foundCategory = allCategories.find((cat: any) => {
+            const expectedFormat = cat.misc_maincategory?.name 
+              ? `${cat.name} (${cat.misc_maincategory.name})`
+              : cat.name;
+            return expectedFormat === fullCategoryString;
+          });
+          
+          if (foundCategory) {
+            updateData.category_id = foundCategory.id;
+            updateData.category = foundCategory.name; // Save just the subcategory name
+          } else {
+            // Fallback: try to find by subcategory name only (less precise)
+            const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
+            const fallbackCategory = allCategories.find((cat: any) => 
+              cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
+            );
+            
+            if (fallbackCategory) {
+              updateData.category_id = fallbackCategory.id;
+              updateData.category = categoryName;
+            } else {
+              updateData.category = editLeadData.category; // Final fallback
+            }
+          }
+        }
       } else {
         // For regular leads, check each field and only include if it has changed
         if (editLeadData.tags !== selectedClient.tags) {
@@ -2464,7 +2521,33 @@ const Clients: React.FC<ClientsProps> = ({
           updateData.language = editLeadData.language;
         }
         if (editLeadData.category !== selectedClient.category) {
-          updateData.category = editLeadData.category;
+          // Find the exact category ID from the formatted category name
+          // We need to match both the subcategory name AND the main category name
+          const fullCategoryString = editLeadData.category;
+          const foundCategory = allCategories.find((cat: any) => {
+            const expectedFormat = cat.misc_maincategory?.name 
+              ? `${cat.name} (${cat.misc_maincategory.name})`
+              : cat.name;
+            return expectedFormat === fullCategoryString;
+          });
+          
+          if (foundCategory) {
+            updateData.category_id = foundCategory.id;
+            updateData.category = foundCategory.name; // Save just the subcategory name
+          } else {
+            // Fallback: try to find by subcategory name only (less precise)
+            const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
+            const fallbackCategory = allCategories.find((cat: any) => 
+              cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
+            );
+            
+            if (fallbackCategory) {
+              updateData.category_id = fallbackCategory.id;
+              updateData.category = categoryName;
+            } else {
+              updateData.category = editLeadData.category; // Final fallback
+            }
+          }
         }
         if (editLeadData.topic !== selectedClient.topic) {
           updateData.topic = editLeadData.topic;
@@ -2527,8 +2610,11 @@ const Clients: React.FC<ClientsProps> = ({
       const fieldMapping: { [key: string]: string } = isLegacyLead ? {
         'total': 'balance',
         'currency_id': 'balance_currency',
-        'notes': 'special_notes'
-      } : {};
+        'notes': 'special_notes',
+        'category_id': 'category'
+      } : {
+        'category_id': 'category'
+      };
       
       for (const field of fieldsToTrack) {
         // For legacy leads, map the field names to match the client data structure
