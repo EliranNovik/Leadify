@@ -85,13 +85,24 @@ const WhatsAppLeadsPage: React.FC = () => {
         }
 
         console.log('📨 Raw incoming messages:', incomingMessages?.length || 0);
+        console.log('📨 Sample message data:', incomingMessages?.slice(0, 3));
 
         // Group messages by phone number and identify unconnected ones
         const leadMap = new Map<string, WhatsAppLead>();
         
         incomingMessages?.forEach((message) => {
-          // Extract phone number from sender_name or use message content
-          const phoneNumber = extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
+          // Use phone_number field directly from database, fallback to extraction if not available
+          const phoneNumber = message.phone_number || extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
+          
+          console.log('🔍 Processing message:', {
+            id: message.id,
+            sender_name: message.sender_name,
+            phone_number: message.phone_number,
+            extractedPhone: phoneNumber,
+            lead_id: message.lead_id,
+            legacy_id: message.legacy_id,
+            hasLeads: !!message.leads
+          });
           
           if (!leadMap.has(phoneNumber)) {
             // Consider connected if linked to a new lead via FK or legacy_id present
@@ -131,6 +142,13 @@ const WhatsAppLeadsPage: React.FC = () => {
 
         console.log('📊 Unconnected leads found:', unconnectedLeads.length);
         console.log('📋 Sample unconnected leads:', unconnectedLeads.slice(0, 3));
+        console.log('📋 All unconnected leads details:', unconnectedLeads.map(lead => ({
+          phone_number: lead.phone_number,
+          sender_name: lead.sender_name,
+          message: lead.message,
+          is_connected: lead.is_connected,
+          message_count: lead.message_count
+        })));
         setLeads(unconnectedLeads);
 
       } catch (error) {

@@ -214,6 +214,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     let messageData = {
       lead_id: lead ? lead.id : null, // null for unknown leads
       sender_name: senderName,
+      phone_number: phoneNumber, // Store the original phone number from WhatsApp
       direction: 'in',
       sent_at: new Date(parseInt(timestamp) * 1000).toISOString(),
       whatsapp_message_id: whatsappMessageId,
