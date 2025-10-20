@@ -271,6 +271,34 @@ const WhatsAppLeadsPage: React.FC = () => {
         console.log('📨 Messages fetched for lead:', data?.length || 0);
         setMessages(data || []);
         
+        // Mark incoming messages as read when viewing the conversation
+        if (currentUser && data && data.length > 0) {
+          const incomingMessageIds = data
+            .filter(msg => msg.direction === 'in' && (!msg.is_read || msg.is_read === false))
+            .map(msg => msg.id);
+          
+          if (incomingMessageIds.length > 0) {
+            try {
+              const { error } = await supabase
+                .from('whatsapp_messages')
+                .update({ 
+                  is_read: true, 
+                  read_at: new Date().toISOString(),
+                  read_by: currentUser.id 
+                })
+                .in('id', incomingMessageIds);
+              
+              if (error) {
+                console.error('Error marking messages as read:', error);
+              } else {
+                console.log(`✅ Marked ${incomingMessageIds.length} messages as read`);
+              }
+            } catch (error) {
+              console.error('Error marking messages as read:', error);
+            }
+          }
+        }
+        
         // Auto-scroll to bottom
         setTimeout(() => {
           messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

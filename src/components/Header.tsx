@@ -131,12 +131,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   // RMQ Messages state
   const [rmqMessages, setRmqMessages] = useState<RMQMessage[]>([]);
   const [rmqUnreadCount, setRmqUnreadCount] = useState(0);
+  const [whatsappLeadsMessages, setWhatsappLeadsMessages] = useState<any[]>([]);
+  const [whatsappLeadsUnreadCount, setWhatsappLeadsUnreadCount] = useState(0);
   const [isRmqModalOpen, setIsRmqModalOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
 
-  const unreadCount = rmqUnreadCount;
+  const unreadCount = rmqUnreadCount + whatsappLeadsUnreadCount;
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
@@ -722,6 +724,65 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
+  // Fetch WhatsApp leads messages (unread messages from new leads)
+  const fetchWhatsappLeadsMessages = async () => {
+    try {
+      // Fetch incoming WhatsApp messages from numbers not connected to existing clients
+      // These are messages where lead_id is null and direction is 'in' and not read yet
+      const { data: whatsappMessages, error } = await supabase
+        .from('whatsapp_messages')
+        .select('*')
+        .is('lead_id', null)
+        .eq('direction', 'in')
+        .or('is_read.is.null,is_read.eq.false')
+        .order('sent_at', { ascending: false })
+        .limit(10); // Get latest 10 unread messages
+
+      if (error) {
+        console.error('Error fetching WhatsApp leads messages:', error);
+        return;
+      }
+
+      if (!whatsappMessages) {
+        setWhatsappLeadsMessages([]);
+        setWhatsappLeadsUnreadCount(0);
+        return;
+      }
+
+      // Group messages by phone number to avoid duplicates
+      const groupedMessages = whatsappMessages.reduce((acc, message) => {
+        const phoneNumber = message.phone_number || message.sender_name;
+        if (!acc[phoneNumber]) {
+          acc[phoneNumber] = {
+            phone_number: phoneNumber,
+            sender_name: message.sender_name,
+            latest_message: message.message,
+            latest_message_time: message.sent_at,
+            message_count: 1,
+            id: message.id // Use the latest message ID as the group ID
+          };
+        } else {
+          acc[phoneNumber].message_count++;
+          // Keep the latest message
+          if (new Date(message.sent_at) > new Date(acc[phoneNumber].latest_message_time)) {
+            acc[phoneNumber].latest_message = message.message;
+            acc[phoneNumber].latest_message_time = message.sent_at;
+            acc[phoneNumber].id = message.id;
+          }
+        }
+        return acc;
+      }, {} as Record<string, any>);
+
+      const groupedMessagesArray = Object.values(groupedMessages);
+      setWhatsappLeadsMessages(groupedMessagesArray);
+      setWhatsappLeadsUnreadCount(groupedMessagesArray.length);
+    } catch (error) {
+      console.error('Error in fetchWhatsappLeadsMessages:', error);
+      setWhatsappLeadsMessages([]);
+      setWhatsappLeadsUnreadCount(0);
+    }
+  };
+
   // Fetch new leads count
   const fetchNewLeadsCount = async () => {
     try {
@@ -769,12 +830,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
-  // Fetch RMQ messages when user is loaded
+  // Fetch RMQ messages and WhatsApp leads messages when user is loaded
   useEffect(() => {
     if (currentUser) {
       fetchRmqMessages();
+      fetchWhatsappLeadsMessages();
       // Refresh messages every 60 seconds
-      const interval = setInterval(fetchRmqMessages, 60000);
+      const interval = setInterval(() => {
+        fetchRmqMessages();
+        fetchWhatsappLeadsMessages();
+      }, 60000);
       return () => clearInterval(interval);
     }
   }, [currentUser]);
@@ -844,9 +909,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const newShowState = !showNotifications;
     setShowNotifications(newShowState);
     
-    // Fetch RMQ messages when opening notifications
+    // Fetch RMQ messages and WhatsApp leads messages when opening notifications
     if (newShowState && currentUser) {
       fetchRmqMessages();
+      fetchWhatsappLeadsMessages();
     }
   };
 
@@ -881,6 +947,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Clear all RMQ messages from notifications
       setRmqMessages([]);
       setRmqUnreadCount(0);
+      
+      // Mark all WhatsApp leads messages as read
+      const whatsappMessageIds = whatsappLeadsMessages.map(m => m.id);
+      if (whatsappMessageIds.length > 0) {
+        const { error: whatsappError } = await supabase
+          .from('whatsapp_messages')
+          .update({ 
+            is_read: true, 
+            read_at: new Date().toISOString(),
+            read_by: currentUser.id 
+          })
+          .in('id', whatsappMessageIds);
+
+        if (whatsappError) {
+          console.error('Error marking WhatsApp messages as read:', whatsappError);
+        }
+      }
+
+      // Clear WhatsApp leads messages from notifications
+      setWhatsappLeadsMessages([]);
+      setWhatsappLeadsUnreadCount(0);
       
     } catch (error) {
       console.error('Error marking all conversations as read:', error);
@@ -1055,6 +1142,40 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const messagesFromThisConv = rmqMessages.filter(m => m.conversation_id === message.conversation_id);
       return Math.max(0, prev - messagesFromThisConv.length);
     });
+  };
+
+  const handleWhatsappLeadsClick = () => {
+    // Close notifications dropdown
+    setShowNotifications(false);
+    // Navigate to WhatsApp Leads page
+    navigate('/whatsapp-leads');
+  };
+
+  const handleWhatsappMessageRead = async (message: any) => {
+    try {
+      // Mark the specific message as read
+      const { error } = await supabase
+        .from('whatsapp_messages')
+        .update({ 
+          is_read: true, 
+          read_at: new Date().toISOString(),
+          read_by: currentUser?.id 
+        })
+        .eq('id', message.id);
+
+      if (error) {
+        console.error('Error marking WhatsApp message as read:', error);
+        return;
+      }
+
+      // Remove this message from the notifications
+      setWhatsappLeadsMessages(prev => prev.filter(m => m.id !== message.id));
+      setWhatsappLeadsUnreadCount(prev => Math.max(0, prev - 1));
+
+      console.log('✅ WhatsApp message marked as read');
+    } catch (error) {
+      console.error('Error marking WhatsApp message as read:', error);
+    }
   };
 
   return (
@@ -1969,8 +2090,70 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     </div>
                   )}
                   
+                  {/* WhatsApp Leads Messages Section */}
+                  {whatsappLeadsMessages.length > 0 && (
+                    <div className="border-b border-base-200">
+                      <div className="p-3 bg-green-50 border-b border-green-100">
+                        <div className="flex items-center gap-2">
+                          <FaWhatsapp className="w-4 h-4 text-green-600" />
+                          <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
+                        </div>
+                      </div>
+                      {whatsappLeadsMessages.map((message) => (
+                        <button
+                          key={message.id}
+                          onClick={handleWhatsappLeadsClick}
+                          className="w-full p-4 text-left hover:bg-green-50 transition-colors duration-200 border-b border-green-100"
+                        >
+                          <div className="flex gap-3">
+                            <div className="flex-shrink-0">
+                              <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                                <PhoneIcon className="w-4 h-4 text-green-600" />
+                              </div>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between">
+                                <p className="text-sm font-semibold text-gray-900 truncate">
+                                  {message.sender_name && message.sender_name !== message.phone_number && !message.sender_name.match(/^\d+$/) 
+                                    ? message.sender_name 
+                                    : message.phone_number}
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <p className="text-xs text-gray-500">
+                                    {new Date(message.latest_message_time).toLocaleTimeString([], { 
+                                      hour: '2-digit', 
+                                      minute: '2-digit' 
+                                    })}
+                                  </p>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleWhatsappMessageRead(message);
+                                    }}
+                                    className="btn btn-ghost btn-xs text-green-600 hover:bg-green-100"
+                                    title="Mark as read"
+                                  >
+                                    ✓
+                                  </button>
+                                </div>
+                              </div>
+                              <p className="text-xs text-gray-600 mt-1 truncate">
+                                {message.latest_message}
+                              </p>
+                              {message.message_count > 1 && (
+                                <p className="text-xs text-green-600 mt-1">
+                                  {message.message_count} messages
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  
                   {/* Empty state - only show if no messages at all */}
-                  {rmqMessages.length === 0 && !currentUser && (
+                  {rmqMessages.length === 0 && whatsappLeadsMessages.length === 0 && !currentUser && (
                     <div className="p-8 text-center text-gray-500">
                       <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
                       <p className="font-medium">No new messages</p>
