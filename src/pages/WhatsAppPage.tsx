@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
 import { fetchWhatsAppTemplates, filterTemplates, testDatabaseAccess, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import EmojiPicker from 'emoji-picker-react';
 import {
   MagnifyingGlassIcon,
   PaperAirplaneIcon,
@@ -70,6 +71,11 @@ const WhatsAppPage: React.FC = () => {
   const [sending, setSending] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadingMedia, setUploadingMedia] = useState(false);
+
+  // Debug selectedFile state changes
+  useEffect(() => {
+    console.log('📁 selectedFile state changed:', selectedFile);
+  }, [selectedFile]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [allMessages, setAllMessages] = useState<WhatsAppMessage[]>([]);
@@ -85,6 +91,9 @@ const WhatsAppPage: React.FC = () => {
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const [isChatHeaderGlass, setIsChatHeaderGlass] = useState(false);
   const [isChatFooterGlass, setIsChatFooterGlass] = useState(false);
+  
+  // Emoji picker state
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
 
   // Helper function to get document icon based on MIME type
   const getDocumentIcon = (mimeType?: string) => {
@@ -97,6 +106,19 @@ const WhatsAppPage: React.FC = () => {
     if (mimeType.includes('audio/')) return MusicalNoteIcon;
     
     return DocumentTextIcon;
+  };
+
+  // Helper function to detect if message contains only emojis
+  const isEmojiOnly = (text: string): boolean => {
+    // Simple approach: check if the text length is very short and contains emoji-like characters
+    const cleanText = text.trim();
+    if (cleanText.length === 0) return false;
+    
+    // Check if the message is very short (likely emoji-only) and contains non-ASCII characters
+    const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
+    const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
+    
+    return hasNonAscii && isShort;
   };
 
   // Helper function to render WhatsApp-style message status
@@ -230,6 +252,13 @@ const WhatsAppPage: React.FC = () => {
         setIsLoadingTemplates(true);
         const fetchedTemplates = await fetchWhatsAppTemplates();
         console.log('📦 Templates loaded:', fetchedTemplates.length, 'templates');
+        console.log('📋 Available templates:', fetchedTemplates.map(t => ({
+          id: t.id,
+          title: t.title,
+          name360: t.name360,
+          params: t.params,
+          active: t.active
+        })));
         setTemplates(fetchedTemplates);
       } catch (error) {
         console.error('❌ Error loading templates:', error);
@@ -338,6 +367,23 @@ const WhatsAppPage: React.FC = () => {
     }
   }, [messages, shouldAutoScroll]);
 
+  // Handle click outside to close emoji picker
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (isEmojiPickerOpen) {
+        const target = event.target as HTMLElement;
+        if (!target.closest('.emoji-picker-container') && !target.closest('button[type="button"]')) {
+          setIsEmojiPickerOpen(false);
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isEmojiPickerOpen]);
+
   // Filter clients based on search term
   const filteredClients = clients.filter(client =>
     client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -353,15 +399,18 @@ const WhatsAppPage: React.FC = () => {
     if (!newMessage.trim() || !selectedClient || !currentUser) return;
 
     setSending(true);
-    try {
-      // Get phone number from client
-      const phoneNumber = selectedClient.phone || selectedClient.mobile;
-      if (!phoneNumber) {
-        toast.error('No phone number found for this client');
-        return;
-      }
+    
+    // Get phone number from client
+    const phoneNumber = selectedClient.phone || selectedClient.mobile;
+    if (!phoneNumber) {
+      toast.error('No phone number found for this client');
+      setSending(false);
+      return;
+    }
 
-      const senderName = currentUser.full_name || currentUser.email;
+    const senderName = currentUser.full_name || currentUser.email;
+    
+    try {
 
       // Prepare message payload
       const messagePayload: any = {
@@ -375,12 +424,20 @@ const WhatsAppPage: React.FC = () => {
         messagePayload.isTemplate = true;
         messagePayload.templateName = selectedTemplate.name360;
         messagePayload.templateLanguage = 'en_US';
-        messagePayload.templateParameters = [
-          {
-            type: 'text',
-            text: newMessage.trim()
-          }
-        ];
+        
+        // Only add parameters if the template requires them
+        if (selectedTemplate.params === '1' && newMessage.trim()) {
+          messagePayload.templateParameters = [
+            {
+              type: 'text',
+              text: newMessage.trim()
+            }
+          ];
+        } else if (selectedTemplate.params === '0') {
+          // Template doesn't require parameters, send without them
+          messagePayload.templateParameters = [];
+        }
+        
         messagePayload.message = newMessage.trim(); // Always include message for validation
       } else {
         messagePayload.message = newMessage.trim();
@@ -403,6 +460,9 @@ const WhatsAppPage: React.FC = () => {
       if (!response.ok) {
         if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
           throw new Error('⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity. The customer needs to reply first to reset the timer.');
+        }
+        if (result.error && result.error.includes('Template name does not exist')) {
+          throw new Error('❌ Template Error: The selected template does not exist in your WhatsApp Business Account. Please select a different template or contact your administrator.');
         }
         throw new Error(result.error || 'Failed to send message');
       }
@@ -430,6 +490,66 @@ const WhatsAppPage: React.FC = () => {
       toast.success('Message sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending message:', error);
+      
+      // If template sending failed, offer to send as regular message
+      if (selectedTemplate && error instanceof Error && error.message.includes('Template')) {
+        const shouldSendAsRegular = window.confirm(
+          `Template sending failed: ${error.message}\n\nWould you like to send this as a regular message instead?`
+        );
+        
+        if (shouldSendAsRegular) {
+          // Send as regular message without template
+          const regularPayload = {
+            leadId: selectedClient.id,
+            phoneNumber: phoneNumber,
+            sender_name: senderName,
+            message: newMessage.trim()
+          };
+          
+          try {
+            const regularResponse = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(regularPayload),
+            });
+
+            const regularResult = await regularResponse.json();
+
+            if (regularResponse.ok) {
+              // Add message to local state
+              const newMsg: WhatsAppMessage = {
+                id: Date.now(),
+                lead_id: selectedClient.id,
+                sender_id: currentUser.id,
+                sender_name: senderName,
+                direction: 'out',
+                message: newMessage.trim(),
+                sent_at: new Date().toISOString(),
+                status: 'sent',
+                message_type: 'text',
+                whatsapp_status: 'sent',
+                whatsapp_message_id: regularResult.messageId
+              };
+
+              setMessages(prev => [...prev, newMsg]);
+              setShouldAutoScroll(true);
+              setNewMessage('');
+              setSelectedTemplate(null); // Clear template selection
+              toast.success('Message sent as regular text (template failed)');
+              return;
+            } else {
+              throw new Error(regularResult.error || 'Failed to send regular message');
+            }
+          } catch (regularError) {
+            console.error('Error sending regular message:', regularError);
+            toast.error('Failed to send as regular message: ' + (regularError as Error).message);
+            return;
+          }
+        }
+      }
+      
       toast.error('Failed to send message: ' + (error as Error).message);
     } finally {
       setSending(false);
@@ -486,14 +606,38 @@ const WhatsAppPage: React.FC = () => {
   // Handle file selection
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    console.log('📁 File selected:', file);
     if (file) {
+      console.log('📁 File details:', {
+        name: file.name,
+        size: file.size,
+        type: file.type
+      });
       setSelectedFile(file);
     }
   };
 
+  // Handle emoji selection
+  const handleEmojiClick = (emojiObject: any) => {
+    const emoji = emojiObject.emoji;
+    setNewMessage(prev => prev + emoji);
+    setIsEmojiPickerOpen(false);
+  };
+
   // Send media message
   const handleSendMedia = async () => {
-    if (!selectedFile || !selectedClient || !currentUser) return;
+    if (!selectedFile || !selectedClient || !currentUser) {
+      console.log('❌ Cannot send media - missing file, client, or user:', { selectedFile, selectedClient, currentUser });
+      return;
+    }
+
+    console.log('📤 Starting to send media:', {
+      fileName: selectedFile.name,
+      fileSize: selectedFile.size,
+      fileType: selectedFile.type,
+      clientId: selectedClient.id,
+      clientName: selectedClient.name
+    });
 
     setUploadingMedia(true);
     try {
@@ -838,13 +982,19 @@ const WhatsAppPage: React.FC = () => {
                     <div
                       className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
                         message.direction === 'out'
-                          ? 'bg-green-600 text-white'
+                          ? isEmojiOnly(message.message)
+                            ? 'bg-white text-gray-900'
+                            : 'bg-green-600 text-white'
                           : 'bg-white text-gray-900 border border-gray-200'
                       }`}
                     >
                       {/* Message content based on type */}
                       {message.message_type === 'text' && (
-                        <p className="text-sm break-words">{message.message}</p>
+                        <p className={`break-words ${
+                          isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
+                        }`}>
+                          {message.message}
+                        </p>
                       )}
                       
                       {message.message_type === 'image' && (
@@ -1101,7 +1251,7 @@ const WhatsAppPage: React.FC = () => {
                   onClick={() => setShowTemplateSelector(!showTemplateSelector)}
                   className={`btn btn-sm ${selectedTemplate ? 'btn-primary' : 'btn-outline'}`}
                 >
-                  {selectedTemplate ? `Template: ${selectedTemplate.title}` : 'Use Template'}
+                  {selectedTemplate ? `Template: ${selectedTemplate.title}` : `Use Template (${templates.length})`}
                 </button>
                 
                 {selectedTemplate && (
@@ -1113,6 +1263,20 @@ const WhatsAppPage: React.FC = () => {
                     Clear
                   </button>
                 )}
+                
+                {/* Debug button to show template info */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    console.log('📋 Current templates:', templates);
+                    console.log('📋 Selected template:', selectedTemplate);
+                    toast.success(`Loaded ${templates.length} templates. Check console for details.`);
+                  }}
+                  className="btn btn-ghost btn-sm text-blue-500"
+                  title="Debug template info"
+                >
+                  Debug
+                </button>
               </div>
               
               {/* Template Dropdown */}
@@ -1155,16 +1319,32 @@ const WhatsAppPage: React.FC = () => {
                                 : 'bg-white border-gray-200 hover:bg-gray-50'
                             }`}
                           >
-                            <div className="font-medium text-gray-900">{template.title}</div>
+                            <div className="flex items-center justify-between">
+                              <div className="font-medium text-gray-900">{template.title}</div>
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs text-gray-500 font-mono">{template.name360}</span>
+                                {template.active === 't' && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                    Active
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                             <div className="text-sm text-gray-500 mt-1">
                               {template.params === '1' && (
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800 mb-2">
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800 mb-2">
                                   Requires Parameter
+                                </span>
+                              )}
+                              {template.params === '0' && (
+                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mb-2">
+                                  No Parameters
                                 </span>
                               )}
                               {template.content && template.content !== 'EMPTY' && (
                                 <div className="text-xs text-gray-600 mt-1 bg-gray-50 p-2 rounded">
-                                  <strong>Template:</strong> {template.content}
+                                  <strong>Template Name:</strong> {template.name360}<br/>
+                                  <strong>Content:</strong> {template.content}
                                 </div>
                               )}
                             </div>
@@ -1174,6 +1354,12 @@ const WhatsAppPage: React.FC = () => {
                         {filterTemplates(templates, templateSearchTerm).length === 0 && (
                           <div className="text-center text-gray-500 py-4">
                             {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                            {templates.length === 0 && (
+                              <div className="mt-2 text-xs">
+                                <p>Debug: No templates loaded from database.</p>
+                                <p>Check if templates exist in whatsapp_whatsapptemplate table.</p>
+                              </div>
+                            )}
                           </div>
                         )}
                       </>
@@ -1183,12 +1369,40 @@ const WhatsAppPage: React.FC = () => {
               )}
               
               <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                <button type="button" className="btn btn-ghost btn-circle">
-                  <FaceSmileIcon className="w-6 h-6 text-gray-500" />
-                </button>
+                <div className="relative">
+                  <button 
+                    type="button" 
+                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                    className="btn btn-ghost btn-circle"
+                  >
+                    <FaceSmileIcon className="w-6 h-6 text-gray-500" />
+                  </button>
+                  
+                  {/* Emoji Picker */}
+                  {isEmojiPickerOpen && (
+                    <div className="absolute bottom-12 left-0 z-50 emoji-picker-container">
+                      <EmojiPicker
+                        onEmojiClick={handleEmojiClick}
+                        width={350}
+                        height={400}
+                        skinTonesDisabled={false}
+                        searchDisabled={false}
+                        previewConfig={{
+                          showPreview: true,
+                          defaultEmoji: '1f60a',
+                          defaultCaption: 'Choose your emoji!'
+                        }}
+                        lazyLoadEmojis={false}
+                      />
+                    </div>
+                  )}
+                </div>
                 
                 {/* File upload button */}
-                <label className="btn btn-ghost btn-circle cursor-pointer">
+                <label 
+                  className="btn btn-ghost btn-circle cursor-pointer"
+                  onClick={() => console.log('📁 File upload button clicked')}
+                >
                   <PaperClipIcon className="w-6 h-6 text-gray-500" />
                   <input
                     type="file"

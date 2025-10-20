@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, Fragment, useMemo } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
+import EmojiPicker from 'emoji-picker-react';
 import {
   ChatBubbleLeftRightIcon,
   EnvelopeIcon,
@@ -531,12 +532,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadingMedia, setUploadingMedia] = useState(false);
+
+  // Debug selectedFile state changes
+  useEffect(() => {
+    console.log('📁 selectedFile state changed:', selectedFile);
+  }, [selectedFile]);
   const [showAiSummary, setShowAiSummary] = useState(false);
   const location = useLocation();
   const lastEmailRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   // 1. Add state for WhatsApp messages from DB
   const [whatsAppMessages, setWhatsAppMessages] = useState<any[]>([]);
+  
+  // Emoji picker state
+  const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   
   // Audio playback state for call recordings
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
@@ -798,6 +807,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     localStorage.removeItem('whatsAppFromCalendar');
   }, [client.id]);
 
+  // Handle click outside to close emoji picker
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (isEmojiPickerOpen) {
+        const target = event.target as HTMLElement;
+        if (!target.closest('.emoji-picker-container') && !target.closest('button[type="button"]')) {
+          setIsEmojiPickerOpen(false);
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isEmojiPickerOpen]);
+
   // Handle WhatsApp modal close and navigation back to Calendar
   const handleWhatsAppClose = () => {
     setIsWhatsAppOpen(false);
@@ -1047,14 +1073,51 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   // Handle file selection for WhatsApp
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    console.log('📁 File selected:', file);
     if (file) {
+      console.log('📁 File details:', {
+        name: file.name,
+        size: file.size,
+        type: file.type
+      });
       setSelectedFile(file);
     }
   };
 
+  // Handle emoji selection
+  const handleEmojiClick = (emojiObject: any) => {
+    const emoji = emojiObject.emoji;
+    setWhatsAppInput(prev => prev + emoji);
+    setIsEmojiPickerOpen(false);
+  };
+
+  // Helper function to detect if message contains only emojis
+  const isEmojiOnly = (text: string): boolean => {
+    // Simple approach: check if the text length is very short and contains emoji-like characters
+    const cleanText = text.trim();
+    if (cleanText.length === 0) return false;
+    
+    // Check if the message is very short (likely emoji-only) and contains non-ASCII characters
+    const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
+    const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
+    
+    return hasNonAscii && isShort;
+  };
+
   // Send media message via WhatsApp
   const handleSendMedia = async () => {
-    if (!selectedFile || !client) return;
+    if (!selectedFile || !client) {
+      console.log('❌ Cannot send media - missing file or client:', { selectedFile, client });
+      return;
+    }
+
+    console.log('📤 Starting to send media:', {
+      fileName: selectedFile.name,
+      fileSize: selectedFile.size,
+      fileType: selectedFile.type,
+      clientId: client.id,
+      clientName: client.name
+    });
 
     // Clear any previous errors
     setWhatsAppError(null);
@@ -2852,13 +2915,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     <div
                       className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
                         message.direction === 'out'
-                          ? 'bg-green-600 text-white'
+                          ? isEmojiOnly(message.message)
+                            ? 'bg-white text-gray-900'
+                            : 'bg-green-600 text-white'
                           : 'bg-white text-gray-900 border border-gray-200'
                       }`}
                     >
                       {/* Message content based on type */}
                       {message.message_type === 'text' && (
-                        <p className="text-sm break-words">{message.message}</p>
+                        <p className={`break-words ${
+                          isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
+                        }`}>
+                          {message.message}
+                        </p>
                       )}
                       
                       {message.message_type === 'image' && (
@@ -2981,12 +3050,40 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             {/* Message Input - Fixed */}
             <div className="flex-shrink-0 p-4 bg-white border-t border-gray-200">
               <form onSubmit={handleSendWhatsApp} className="flex items-center gap-2">
-                <button type="button" className="btn btn-ghost btn-circle">
-                  <FaceSmileIcon className="w-6 h-6 text-gray-500" />
-                </button>
+                <div className="relative">
+                  <button 
+                    type="button" 
+                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                    className="btn btn-ghost btn-circle"
+                  >
+                    <FaceSmileIcon className="w-6 h-6 text-gray-500" />
+                  </button>
+                  
+                  {/* Emoji Picker */}
+                  {isEmojiPickerOpen && (
+                    <div className="absolute bottom-12 left-0 z-50 emoji-picker-container">
+                      <EmojiPicker
+                        onEmojiClick={handleEmojiClick}
+                        width={350}
+                        height={400}
+                        skinTonesDisabled={false}
+                        searchDisabled={false}
+                        previewConfig={{
+                          showPreview: true,
+                          defaultEmoji: '1f60a',
+                          defaultCaption: 'Choose your emoji!'
+                        }}
+                        lazyLoadEmojis={false}
+                      />
+                    </div>
+                  )}
+                </div>
                 
                 {/* File upload button */}
-                <label className="btn btn-ghost btn-circle cursor-pointer">
+                <label 
+                  className="btn btn-ghost btn-circle cursor-pointer"
+                  onClick={() => console.log('📁 File upload button clicked')}
+                >
                   <PaperClipIcon className="w-6 h-6 text-gray-500" />
                   <input
                     type="file"

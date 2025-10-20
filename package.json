@@ -31,6 +31,7 @@
     "@tiptap/starter-kit": "^3.0.0-next.3",
     "@types/react-router-dom": "^5.3.3",
     "autoprefixer": "^10.4.21",
+    "axios": "^1.12.2",
     "daisyui": "^5.0.43",
     "date-fns": "^4.1.0",
     "dotenv": "^16.4.5",

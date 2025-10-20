@@ -30,6 +30,7 @@ import DoubleLeadsPage from './pages/DoubleLeadsPage';
 import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
 import WhatsAppPage from './pages/WhatsAppPage';
+import WhatsAppLeadsPage from './pages/WhatsAppLeadsPage';
 import WhatsAppModal from './components/WhatsAppModal';
 import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
@@ -286,6 +287,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/teams" element={<TeamsPage />} />
                     <Route path="/employee-performance" element={<EmployeePerformancePage />} />
                     <Route path="/whatsapp" element={<WhatsAppPage />} />
+                    <Route path="/whatsapp-leads" element={<WhatsAppLeadsPage />} />
                     <Route path="/collection" element={<CollectionPage />} />
                     <Route path="/performance" element={<MyPerformancePage />} />
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />

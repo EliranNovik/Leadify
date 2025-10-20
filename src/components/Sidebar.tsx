@@ -67,6 +67,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
+  { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
@@ -94,6 +95,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
   { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
+  { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
   { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },

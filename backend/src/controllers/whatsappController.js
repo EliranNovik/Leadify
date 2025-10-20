@@ -151,14 +151,10 @@ const processIncomingMessage = async (message) => {
       }
     }
 
-    if (!lead) {
-      return;
-    }
-
-    // Prepare message data with actual lead information
+    // Prepare message data - handle both known and unknown leads
     let messageData = {
-      lead_id: lead.id,
-      sender_name: lead.name || 'Unknown Client', // Use actual client name
+      lead_id: lead ? lead.id : null, // null for unknown leads
+      sender_name: lead ? (lead.name || 'Unknown Client') : phoneNumber, // Use phone number for unknown leads
       direction: 'in',
       sent_at: new Date(parseInt(timestamp) * 1000).toISOString(),
       whatsapp_message_id: whatsappMessageId,
@@ -174,8 +170,8 @@ const processIncomingMessage = async (message) => {
       caption: null
     };
     
-    // Update the lead's phone number if it doesn't match exactly
-    if (lead.phone !== phoneNumber && lead.mobile !== phoneNumber) {
+    // Update the lead's phone number if it's a known lead and doesn't match exactly
+    if (lead && lead.phone !== phoneNumber && lead.mobile !== phoneNumber) {
       await supabase
         .from('leads')
         .update({ phone: phoneNumber })
@@ -195,8 +191,8 @@ const processIncomingMessage = async (message) => {
         messageData.media_mime_type = image.mime_type;
         messageData.media_size = image.file_size;
         messageData.caption = image.caption;
-        // Download and store image
-        await downloadAndStoreMedia(image.id, 'image', lead.id);
+        // Download and store image (use phone number as fallback for unknown leads)
+        await downloadAndStoreMedia(image.id, 'image', lead ? lead.id : phoneNumber);
         break;
       
       case 'document':
@@ -206,8 +202,8 @@ const processIncomingMessage = async (message) => {
         messageData.media_filename = document.filename;
         messageData.media_mime_type = document.mime_type;
         messageData.media_size = document.file_size;
-        // Download and store document
-        await downloadAndStoreMedia(document.id, 'document', lead.id);
+        // Download and store document (use phone number as fallback for unknown leads)
+        await downloadAndStoreMedia(document.id, 'document', lead ? lead.id : phoneNumber);
         break;
       
       case 'audio':
@@ -216,7 +212,7 @@ const processIncomingMessage = async (message) => {
         messageData.media_url = audio.id; // Set media_url to WhatsApp media ID
         messageData.media_mime_type = audio.mime_type;
         messageData.media_size = audio.file_size;
-        await downloadAndStoreMedia(audio.id, 'audio', lead.id);
+        await downloadAndStoreMedia(audio.id, 'audio', lead ? lead.id : phoneNumber);
         break;
       
       case 'video':
@@ -226,7 +222,7 @@ const processIncomingMessage = async (message) => {
         messageData.media_mime_type = video.mime_type;
         messageData.media_size = video.file_size;
         messageData.caption = video.caption;
-        await downloadAndStoreMedia(video.id, 'video', lead.id);
+        await downloadAndStoreMedia(video.id, 'video', lead ? lead.id : phoneNumber);
         break;
       
       case 'location':
@@ -248,7 +244,11 @@ const processIncomingMessage = async (message) => {
     if (insertError) {
       console.error('Error saving incoming message:', insertError);
     } else {
-  
+      if (lead) {
+        console.log(`✅ Saved message from known lead: ${lead.name} (${phoneNumber})`);
+      } else {
+        console.log(`🆕 Saved message from NEW LEAD: ${phoneNumber} - This will appear on WhatsApp Leads page!`);
+      }
     }
 
   } catch (error) {
