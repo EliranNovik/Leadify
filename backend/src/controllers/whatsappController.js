@@ -48,14 +48,41 @@ const handleWebhook = async (req, res) => {
   try {
     const body = req.body;
     
+    // Log webhook structure for debugging
+    console.log('🔍 Webhook received:', {
+      object: body.object,
+      hasEntry: !!body.entry,
+      entryLength: body.entry?.length
+    });
+    
     if (body.object === 'whatsapp_business_account') {
       const entry = body.entry[0];
       const changes = entry.changes[0];
       const value = changes.value;
       
+      // Log webhook value structure
+      console.log('🔍 Webhook value structure:', {
+        hasMessages: !!value.messages,
+        messagesLength: value.messages?.length,
+        hasContacts: !!value.contacts,
+        contactsLength: value.contacts?.length,
+        hasStatuses: !!value.statuses,
+        statusesLength: value.statuses?.length
+      });
+      
       if (value.messages && value.messages.length > 0) {
         const message = value.messages[0];
-        await processIncomingMessage(message);
+        const contacts = value.contacts || [];
+        
+        // Log contacts for debugging
+        if (contacts.length > 0) {
+          console.log('🔍 Webhook contacts:', contacts.map(c => ({
+            wa_id: c.wa_id,
+            profileName: c.profile?.name
+          })));
+        }
+        
+        await processIncomingMessage(message, contacts);
       }
       
       if (value.statuses && value.statuses.length > 0) {
@@ -72,7 +99,7 @@ const handleWebhook = async (req, res) => {
 };
 
 // Process incoming message
-const processIncomingMessage = async (message) => {
+const processIncomingMessage = async (message, webhookContacts = []) => {
   try {
     const {
       from: phoneNumber,
@@ -85,8 +112,7 @@ const processIncomingMessage = async (message) => {
       audio,
       video,
       location,
-      contacts,
-      profile
+      contacts
     } = message;
 
     // Find lead by phone number (handle various formats)
@@ -152,12 +178,16 @@ const processIncomingMessage = async (message) => {
       }
     }
 
+    // Find the contact profile for this phone number from webhook contacts
+    const contactProfile = webhookContacts.find(contact => contact.wa_id === phoneNumber);
+    const profileName = contactProfile?.profile?.name;
+
     // Log profile information for debugging
     console.log('🔍 WhatsApp message profile info:', {
       phoneNumber,
-      profile,
-      hasProfile: !!profile,
-      profileName: profile?.name,
+      webhookContacts: webhookContacts.length,
+      contactProfile: !!contactProfile,
+      profileName,
       leadFound: !!lead,
       leadName: lead?.name
     });
@@ -168,36 +198,15 @@ const processIncomingMessage = async (message) => {
       // For known leads, prefer the lead's name from database
       senderName = lead.name || 'Unknown Client';
     } else {
-      // For unknown leads, try to get the WhatsApp profile name
-      if (profile && profile.name) {
-        senderName = profile.name;
-        console.log('✅ Using WhatsApp profile name:', profile.name);
+      // For unknown leads, try to get the WhatsApp profile name from webhook
+      if (profileName) {
+        senderName = profileName;
+        console.log('✅ Using WhatsApp profile name from webhook:', profileName);
       } else {
-        // Try to fetch profile name from WhatsApp API if not in webhook
-        try {
-          const profileResponse = await axios.get(
-            `https://graph.facebook.com/v19.0/${phoneNumber}?fields=profile_picture,name`,
-            {
-              headers: {
-                'Authorization': `Bearer ${ACCESS_TOKEN}`,
-                'Content-Type': 'application/json'
-              }
-            }
-          );
-          
-          if (profileResponse.data && profileResponse.data.name) {
-            senderName = profileResponse.data.name;
-            console.log('✅ Fetched WhatsApp profile name from API:', profileResponse.data.name);
-          } else {
-            senderName = phoneNumber;
-            console.log('⚠️ No profile name available from API, using phone number:', phoneNumber);
-          }
-        } catch (profileError) {
-          // Fallback to phone number if profile fetch fails
-          senderName = phoneNumber;
-          console.log('⚠️ Failed to fetch profile name, using phone number:', phoneNumber);
-          console.log('Profile fetch error:', profileError.message);
-        }
+        // Fallback: use a more user-friendly format for the phone number
+        const formattedPhone = phoneNumber.replace(/^972/, '0').replace(/(\d{3})(\d{3})(\d{4})/, '$1-$2-$3');
+        senderName = `WhatsApp User (${formattedPhone})`;
+        console.log('⚠️ No profile name available, using formatted phone:', formattedPhone);
       }
     }
 
