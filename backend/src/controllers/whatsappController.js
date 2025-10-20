@@ -85,7 +85,8 @@ const processIncomingMessage = async (message) => {
       audio,
       video,
       location,
-      contacts
+      contacts,
+      profile
     } = message;
 
     // Find lead by phone number (handle various formats)
@@ -151,10 +152,59 @@ const processIncomingMessage = async (message) => {
       }
     }
 
+    // Log profile information for debugging
+    console.log('🔍 WhatsApp message profile info:', {
+      phoneNumber,
+      profile,
+      hasProfile: !!profile,
+      profileName: profile?.name,
+      leadFound: !!lead,
+      leadName: lead?.name
+    });
+
+    // Determine the best sender name to use
+    let senderName;
+    if (lead) {
+      // For known leads, prefer the lead's name from database
+      senderName = lead.name || 'Unknown Client';
+    } else {
+      // For unknown leads, try to get the WhatsApp profile name
+      if (profile && profile.name) {
+        senderName = profile.name;
+        console.log('✅ Using WhatsApp profile name:', profile.name);
+      } else {
+        // Try to fetch profile name from WhatsApp API if not in webhook
+        try {
+          const profileResponse = await axios.get(
+            `https://graph.facebook.com/v19.0/${phoneNumber}?fields=profile_picture,name`,
+            {
+              headers: {
+                'Authorization': `Bearer ${ACCESS_TOKEN}`,
+                'Content-Type': 'application/json'
+              }
+            }
+          );
+          
+          if (profileResponse.data && profileResponse.data.name) {
+            senderName = profileResponse.data.name;
+            console.log('✅ Fetched WhatsApp profile name from API:', profileResponse.data.name);
+          } else {
+            senderName = phoneNumber;
+            console.log('⚠️ No profile name available from API, using phone number:', phoneNumber);
+          }
+        } catch (profileError) {
+          // Fallback to phone number if profile fetch fails
+          senderName = phoneNumber;
+          console.log('⚠️ Failed to fetch profile name, using phone number:', phoneNumber);
+          console.log('Profile fetch error:', profileError.message);
+        }
+      }
+    }
+
     // Prepare message data - handle both known and unknown leads
     let messageData = {
       lead_id: lead ? lead.id : null, // null for unknown leads
-      sender_name: lead ? (lead.name || 'Unknown Client') : phoneNumber, // Use phone number for unknown leads
+      sender_name: senderName,
       direction: 'in',
       sent_at: new Date(parseInt(timestamp) * 1000).toISOString(),
       whatsapp_message_id: whatsappMessageId,
@@ -247,7 +297,7 @@ const processIncomingMessage = async (message) => {
       if (lead) {
         console.log(`✅ Saved message from known lead: ${lead.name} (${phoneNumber})`);
       } else {
-        console.log(`🆕 Saved message from NEW LEAD: ${phoneNumber} - This will appear on WhatsApp Leads page!`);
+        console.log(`🆕 Saved message from NEW LEAD: ${senderName} (${phoneNumber}) - This will appear on WhatsApp Leads page!`);
       }
     }
 

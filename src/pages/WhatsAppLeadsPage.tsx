@@ -152,8 +152,9 @@ const WhatsAppLeadsPage: React.FC = () => {
   const extractPhoneNumber = (senderName: string): string | null => {
     if (!senderName) return null;
     
-    // Try to extract phone number from various formats
-    const phoneRegex = /(\+?972|0?5[0-9]{8})/;
+    // Try to extract full phone number from various formats
+    // Israeli phone numbers: +972501234567, 972501234567, 0501234567, 501234567
+    const phoneRegex = /(\+?9725[0-9]{8}|05[0-9]{8}|5[0-9]{8})/;
     const match = senderName.match(phoneRegex);
     return match ? match[1] : null;
   };
@@ -162,8 +163,9 @@ const WhatsAppLeadsPage: React.FC = () => {
   const extractPhoneFromMessage = (message: string): string | null => {
     if (!message) return null;
     
-    // Try to extract phone number from message content
-    const phoneRegex = /(\+?972|0?5[0-9]{8})/;
+    // Try to extract full phone number from message content
+    // Israeli phone numbers: +972501234567, 972501234567, 0501234567, 501234567
+    const phoneRegex = /(\+?9725[0-9]{8}|05[0-9]{8}|5[0-9]{8})/;
     const match = message.match(phoneRegex);
     return match ? match[1] : null;
   };
@@ -183,11 +185,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         const { data, error } = await supabase
           .from('whatsapp_messages')
           .select('*')
-          .or(`
-            sender_name.ilike.%${selectedLead.phone_number}%,
-            sender_name.ilike.%${selectedLead.sender_name}%,
-            message.ilike.%${selectedLead.phone_number}%
-          `)
+          .or(`sender_name.ilike.%${selectedLead.phone_number}%,sender_name.ilike.%${selectedLead.sender_name}%,message.ilike.%${selectedLead.phone_number}%`)
           .order('sent_at', { ascending: true });
 
         if (error) {
@@ -242,12 +240,76 @@ const WhatsAppLeadsPage: React.FC = () => {
   // Convert lead to client
   const handleConvertToLead = async (lead: WhatsAppLead) => {
     try {
-      // For now, we'll just show a success message
-      // In a real implementation, you'd create a new lead record
-      toast.success('Lead converted successfully! (Feature coming soon)');
+      setLoading(true);
+      console.log('🔄 Converting WhatsApp lead to new lead:', lead);
+
+      // Get current user information
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.email) {
+        toast.error('User not authenticated');
+        return;
+      }
+
+      // Extract name from phone number or use a default
+      const leadName = lead.phone_number || 'WhatsApp Lead';
+      
+      // Create the new lead using the database function
+      const { data, error } = await supabase.rpc('create_new_lead_v3', {
+        p_lead_name: leadName,
+        p_lead_email: null, // We don't have email from WhatsApp
+        p_lead_phone: lead.phone_number,
+        p_lead_topic: 'WhatsApp Inquiry', // Default topic
+        p_lead_language: 'English', // Default language
+        p_lead_source: 'WhatsApp', // Source is WhatsApp
+        p_created_by: user.email,
+        p_balance_currency: 'NIS', // Default currency
+        p_proposal_currency: 'NIS' // Default currency
+      });
+
+      if (error) {
+        console.error('Error creating lead:', error);
+        toast.error('Failed to create lead');
+        return;
+      }
+
+      const newLead = data?.[0];
+      if (!newLead) {
+        toast.error('Could not create lead');
+        return;
+      }
+
+      console.log('✅ Created new lead:', newLead);
+
+      // Update the WhatsApp messages to link them to the new lead
+      const { error: updateError } = await supabase
+        .from('whatsapp_messages')
+        .update({ 
+          lead_id: newLead.id,
+          legacy_id: null // Clear legacy_id since this is a new lead
+        })
+        .or(`sender_name.ilike.%${lead.phone_number}%,sender_name.ilike.%${lead.sender_name}%,message.ilike.%${lead.phone_number}%`);
+
+      if (updateError) {
+        console.error('Error linking messages to lead:', updateError);
+        // Don't fail the whole process, just log the error
+      } else {
+        console.log('✅ Linked WhatsApp messages to new lead');
+      }
+
+      toast.success(`Lead ${newLead.lead_number} created successfully!`);
+      
+      // Refresh the leads list to remove the converted lead
+      setLeads(prevLeads => prevLeads.filter(l => l.id !== lead.id));
+      setSelectedLead(null);
+
+      // Navigate to the new lead's page
+      window.location.href = `/clients/${newLead.lead_number}`;
+
     } catch (error) {
       console.error('Error converting lead:', error);
       toast.error('Failed to convert lead');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -347,15 +409,30 @@ const WhatsAppLeadsPage: React.FC = () => {
                       <div className="flex items-start gap-3">
                         {/* Avatar */}
                         <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
-                          <PhoneIcon className="w-5 h-5 md:w-6 md:h-6 text-green-600" />
+                          {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) ? (
+                            <span className="text-green-600 font-semibold text-sm md:text-lg">
+                              {lead.sender_name.charAt(0).toUpperCase()}
+                            </span>
+                          ) : (
+                            <PhoneIcon className="w-5 h-5 md:w-6 md:h-6 text-green-600" />
+                          )}
                         </div>
 
                         {/* Lead Info */}
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between mb-1">
-                            <h3 className="font-semibold text-gray-900 truncate">
-                              {lead.phone_number || 'Unknown Number'}
-                            </h3>
+                            <div className="flex flex-col">
+                              <h3 className="font-semibold text-gray-900 truncate">
+                                {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) 
+                                  ? lead.sender_name 
+                                  : lead.phone_number || 'Unknown Number'}
+                              </h3>
+                              {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) && (
+                                <p className="text-xs text-gray-500 truncate">
+                                  {lead.phone_number}
+                                </p>
+                              )}
+                            </div>
                             <div className="flex items-center gap-1 flex-shrink-0">
                               <span className="text-xs text-gray-500">
                                 {formatTime(lead.last_message_at)}
@@ -407,12 +484,25 @@ const WhatsAppLeadsPage: React.FC = () => {
                       </button>
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
-                          <PhoneIcon className="w-4 h-4 text-green-600" />
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
+                            <span className="text-green-600 font-semibold text-sm">
+                              {selectedLead.sender_name.charAt(0).toUpperCase()}
+                            </span>
+                          ) : (
+                            <PhoneIcon className="w-4 h-4 text-green-600" />
+                          )}
                         </div>
                         <div>
                           <h3 className="font-semibold text-gray-900 text-sm">
-                            {selectedLead.phone_number || 'Unknown Number'}
+                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
+                              ? selectedLead.sender_name 
+                              : selectedLead.phone_number || 'Unknown Number'}
                           </h3>
+                          <p className="text-xs text-gray-500">
+                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
+                              ? selectedLead.phone_number 
+                              : ''}
+                          </p>
                           <p className="text-xs text-gray-500">
                             {selectedLead.message_count} messages
                           </p>
@@ -434,12 +524,25 @@ const WhatsAppLeadsPage: React.FC = () => {
                   <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                        <PhoneIcon className="w-5 h-5 text-green-600" />
+                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
+                          <span className="text-green-600 font-semibold text-lg">
+                            {selectedLead.sender_name.charAt(0).toUpperCase()}
+                          </span>
+                        ) : (
+                          <PhoneIcon className="w-5 h-5 text-green-600" />
+                        )}
                       </div>
                       <div>
                         <h3 className="font-semibold text-gray-900">
-                          {selectedLead.phone_number || 'Unknown Number'}
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
+                            ? selectedLead.sender_name 
+                            : selectedLead.phone_number || 'Unknown Number'}
                         </h3>
+                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) && (
+                          <p className="text-sm text-gray-500">
+                            {selectedLead.phone_number}
+                          </p>
+                        )}
                         <p className="text-sm text-gray-500">
                           {selectedLead.message_count} messages • Last message {formatTime(selectedLead.last_message_at)}
                         </p>

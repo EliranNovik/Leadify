@@ -38,10 +38,9 @@ export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
       console.log('🔍 Active field values found:', activeValues);
     }
 
-    // Filter active templates if we have data
-    const activeTemplates = data?.filter(template => 
-      template.active === 't' || template.active === 'true' || template.active === true
-    ) || [];
+    // Include all templates regardless of active status for now
+    // This allows us to see pending templates and debug the issue
+    const activeTemplates = data || [];
 
     console.log('✅ Active templates filtered:', activeTemplates.length, 'templates');
 

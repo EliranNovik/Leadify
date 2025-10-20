@@ -396,7 +396,22 @@ const WhatsAppPage: React.FC = () => {
   // Send new message via WhatsApp API
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !selectedClient || !currentUser) return;
+    console.log('🚀 Send button clicked!', { 
+      newMessage: newMessage.trim(), 
+      selectedTemplate: selectedTemplate?.title, 
+      selectedClient: selectedClient?.name,
+      currentUser: currentUser?.email 
+    });
+    
+    if ((!newMessage.trim() && !selectedTemplate) || !selectedClient || !currentUser) {
+      console.log('❌ Send blocked:', { 
+        hasMessage: !!newMessage.trim(), 
+        hasTemplate: !!selectedTemplate, 
+        hasClient: !!selectedClient, 
+        hasUser: !!currentUser 
+      });
+      return;
+    }
 
     setSending(true);
     
@@ -462,7 +477,7 @@ const WhatsAppPage: React.FC = () => {
           throw new Error('⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity. The customer needs to reply first to reset the timer.');
         }
         if (result.error && result.error.includes('Template name does not exist')) {
-          throw new Error('❌ Template Error: The selected template does not exist in your WhatsApp Business Account. Please select a different template or contact your administrator.');
+          throw new Error('❌ Template Error: The selected template does not exist in your WhatsApp Business Account. Please check Meta Business Manager to see which templates are actually available, or use a different template.');
         }
         throw new Error(result.error || 'Failed to send message');
       }
@@ -1270,6 +1285,7 @@ const WhatsAppPage: React.FC = () => {
                   onClick={() => {
                     console.log('📋 Current templates:', templates);
                     console.log('📋 Selected template:', selectedTemplate);
+                    console.log('📋 Template names:', templates.map(t => ({ title: t.title, name360: t.name360, active: t.active })));
                     toast.success(`Loaded ${templates.length} templates. Check console for details.`);
                   }}
                   className="btn btn-ghost btn-sm text-blue-500"
@@ -1309,6 +1325,10 @@ const WhatsAppPage: React.FC = () => {
                             key={template.id}
                             type="button"
                             onClick={() => {
+                              if (template.active !== 't') {
+                                toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
+                                return;
+                              }
                               setSelectedTemplate(template);
                               setShowTemplateSelector(false);
                               setTemplateSearchTerm('');
@@ -1326,6 +1346,11 @@ const WhatsAppPage: React.FC = () => {
                                 {template.active === 't' && (
                                   <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
                                     Active
+                                  </span>
+                                )}
+                                {template.active !== 't' && (
+                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                    Pending
                                   </span>
                                 )}
                               </div>
@@ -1460,7 +1485,16 @@ const WhatsAppPage: React.FC = () => {
                 ) : (
                   <button
                     type="submit"
-                    disabled={!newMessage.trim() || sending}
+                    disabled={(() => {
+                      const isDisabled = (!newMessage.trim() && !selectedTemplate) || sending;
+                      console.log('🔘 Send button state:', { 
+                        newMessage: newMessage.trim(), 
+                        selectedTemplate: selectedTemplate?.title, 
+                        sending, 
+                        isDisabled 
+                      });
+                      return isDisabled;
+                    })()}
                     className="btn btn-primary btn-circle"
                   >
                     {sending ? (
