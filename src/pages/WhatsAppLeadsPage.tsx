@@ -49,7 +49,36 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [sending, setSending] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Fetch current user info
+  useEffect(() => {
+    const fetchCurrentUser = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user?.email) {
+        // Try to find user in users table by email
+        const { data: userRow } = await supabase
+          .from('users')
+          .select('id, full_name, email')
+          .eq('email', user.email)
+          .single();
+        
+        if (userRow) {
+          setCurrentUser(userRow);
+        } else {
+          // Fallback: create a user object with available data
+          const fallbackUser = {
+            id: user.id,
+            full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
+            email: user.email
+          };
+          setCurrentUser(fallbackUser);
+        }
+      }
+    };
+    fetchCurrentUser();
+  }, []);
 
   // Mobile detection
   useEffect(() => {
@@ -200,11 +229,38 @@ const WhatsAppLeadsPage: React.FC = () => {
         console.log('🔄 Fetching messages for lead:', selectedLead.phone_number);
         
         // Fetch messages that match the phone number or sender name
-        const { data, error } = await supabase
-          .from('whatsapp_messages')
-          .select('*')
-          .or(`sender_name.ilike.%${selectedLead.phone_number}%,sender_name.ilike.%${selectedLead.sender_name}%,message.ilike.%${selectedLead.phone_number}%`)
-          .order('sent_at', { ascending: true });
+        // Use separate queries to avoid special character parsing issues
+        const [phoneQuery, nameQuery] = await Promise.all([
+          supabase
+            .from('whatsapp_messages')
+            .select('*')
+            .eq('phone_number', selectedLead.phone_number)
+            .order('sent_at', { ascending: true }),
+          supabase
+            .from('whatsapp_messages')
+            .select('*')
+            .eq('sender_name', selectedLead.sender_name)
+            .order('sent_at', { ascending: true })
+        ]);
+
+        // Combine results and remove duplicates
+        const phoneMessages = phoneQuery.data || [];
+        const nameMessages = nameQuery.data || [];
+        const allMessages = [...phoneMessages, ...nameMessages];
+        
+        console.log('🔍 Query results:', {
+          phoneMessages: phoneMessages.length,
+          nameMessages: nameMessages.length,
+          totalMessages: allMessages.length
+        });
+        
+        // Remove duplicates based on message ID
+        const uniqueMessages = allMessages.filter((message, index, self) => 
+          index === self.findIndex(m => m.id === message.id)
+        );
+        
+        const data = uniqueMessages;
+        const error = phoneQuery.error || nameQuery.error;
 
         if (error) {
           console.error('Error fetching messages:', error);
@@ -239,17 +295,62 @@ const WhatsAppLeadsPage: React.FC = () => {
   // Send reply message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !selectedLead) return;
+    if (!newMessage.trim() || !selectedLead || !currentUser) return;
 
     setSending(true);
     try {
-      // For now, we'll just show a success message
-      // In a real implementation, you'd send via WhatsApp API
-      toast.success('Reply sent! (Feature coming soon)');
+      console.log('🚀 Sending reply message:', {
+        message: newMessage.trim(),
+        to: selectedLead.phone_number,
+        sender: currentUser.full_name || currentUser.email
+      });
+
+      // Send message via WhatsApp API
+      const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leadId: null, // No lead ID for new WhatsApp leads
+          phoneNumber: selectedLead.phone_number,
+          message: newMessage.trim(),
+          sender_name: currentUser.full_name || currentUser.email
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send message');
+      }
+
+      // Add message to local state
+      const newMsg = {
+        id: Date.now(), // Temporary ID
+        phone_number: selectedLead.phone_number,
+        sender_name: currentUser.full_name || currentUser.email,
+        direction: 'out',
+        message: newMessage.trim(),
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+        message_type: 'text',
+        whatsapp_status: 'sent',
+        whatsapp_message_id: result.messageId
+      };
+
+      setMessages(prev => [...prev, newMsg]);
       setNewMessage('');
+      
+      // Auto-scroll to bottom
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+
+      toast.success('Reply sent successfully!');
     } catch (error) {
       console.error('Error sending message:', error);
-      toast.error('Failed to send message');
+      toast.error('Failed to send message: ' + (error as Error).message);
     } finally {
       setSending(false);
     }
@@ -467,14 +568,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                             {getMessagePreview(lead.message)}
                           </p>
                           
-                          <div className="flex items-center gap-2">
-                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                              New Lead
-                            </span>
-                            <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
-                              {lead.message_type}
-                            </span>
-                          </div>
                         </div>
                       </div>
                     </div>
@@ -593,6 +686,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                         {message.direction === 'in' && (
                           <span className="text-xs text-gray-500 mb-1 ml-2">
                             {message.sender_name}
+                          </span>
+                        )}
+                        {message.direction === 'out' && (
+                          <span className="text-xs text-gray-500 mb-1 mr-2">
+                            You
                           </span>
                         )}
                         <div

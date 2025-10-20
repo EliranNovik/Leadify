@@ -439,12 +439,21 @@ const sendMessage = async (req, res) => {
       return res.status(400).json({ error: 'Message and phone number are required' });
     }
 
-    // Check if this is a legacy lead
-    const isLegacyLead = leadId.toString().startsWith('legacy_');
+    // Handle different lead types
     let lead = null;
+    let isLegacyLead = false;
     
-    if (isLegacyLead) {
+    if (leadId === null) {
+      // This is a new WhatsApp lead (no lead ID yet)
+      console.log('📱 Sending message to new WhatsApp lead (no lead ID)');
+      lead = {
+        id: null,
+        name: 'WhatsApp Lead',
+        lead_number: phoneNumber
+      };
+    } else if (leadId && leadId.toString().startsWith('legacy_')) {
       // For legacy leads, get from leads_lead table
+      isLegacyLead = true;
       const legacyId = parseInt(leadId.replace('legacy_', ''));
       const { data: legacyLead, error: legacyError } = await supabase
         .from('leads_lead')
@@ -556,8 +565,9 @@ const sendMessage = async (req, res) => {
 
     // Save message to database
     const messageData = {
-      lead_id: isLegacyLead ? null : leadId, // Set to null for legacy leads
+      lead_id: leadId === null ? null : (isLegacyLead ? null : leadId), // Set to null for new WhatsApp leads and legacy leads
       legacy_id: isLegacyLead ? lead.id : null, // Set legacy_id for legacy leads
+      phone_number: phoneNumber, // Store phone number for new WhatsApp leads
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
       message: isTemplate ? `[Template: ${templateName}] ${templateParameters?.[0]?.text || ''}` : message,
@@ -614,12 +624,21 @@ const sendMedia = async (req, res) => {
       return res.status(400).json({ error: 'Media URL and phone number are required' });
     }
 
-    // Check if this is a legacy lead
-    const isLegacyLead = leadId.toString().startsWith('legacy_');
+    // Handle different lead types
     let lead = null;
+    let isLegacyLead = false;
     
-    if (isLegacyLead) {
+    if (leadId === null) {
+      // This is a new WhatsApp lead (no lead ID yet)
+      console.log('📱 Sending media to new WhatsApp lead (no lead ID)');
+      lead = {
+        id: null,
+        name: 'WhatsApp Lead',
+        lead_number: phoneNumber
+      };
+    } else if (leadId && leadId.toString().startsWith('legacy_')) {
       // For legacy leads, get from leads_lead table
+      isLegacyLead = true;
       const legacyId = parseInt(leadId.replace('legacy_', ''));
       const { data: legacyLead, error: legacyError } = await supabase
         .from('leads_lead')
