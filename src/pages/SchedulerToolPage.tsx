@@ -4,10 +4,10 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
-import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon, ClockIcon, ChatBubbleLeftRightIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 
-interface SchedulerLead {
+export interface SchedulerLead {
   id: string;
   lead_number: string;
   name: string;
@@ -32,6 +32,7 @@ interface SchedulerLead {
   number_of_applicants_meeting?: string;
   potential_applicants_meeting?: string;
   next_followup?: string;
+  eligible?: boolean;
 }
 
 const SchedulerToolPage: React.FC = () => {
@@ -42,6 +43,8 @@ const SchedulerToolPage: React.FC = () => {
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [allSources, setAllSources] = useState<any[]>([]);
   const [allStages, setAllStages] = useState<any[]>([]);
+  const [allTags, setAllTags] = useState<any[]>([]);
+  const [currentLeadTags, setCurrentLeadTags] = useState<string>('');
   const [selectedLead, setSelectedLead] = useState<SchedulerLead | null>(null);
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
@@ -52,7 +55,8 @@ const SchedulerToolPage: React.FC = () => {
     language: '',
     source: '',
     category: '',
-    topic: ''
+    topic: '',
+    tags: ''
   });
   const [filteredLeads, setFilteredLeads] = useState<SchedulerLead[]>([]);
   const [showDropdowns, setShowDropdowns] = useState({
@@ -60,7 +64,8 @@ const SchedulerToolPage: React.FC = () => {
     language: false,
     source: false,
     category: false,
-    topic: false
+    topic: false,
+    tags: false
   });
   
   // Sorting state
@@ -72,8 +77,18 @@ const SchedulerToolPage: React.FC = () => {
   // Search state
   const [searchTerm, setSearchTerm] = useState('');
   
+  // Date filter state
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  
   // Collapsible rows state
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  
+  // Contact dropdown state
+  const [openContactDropdown, setOpenContactDropdown] = useState<string | null>(null);
+  
+  // View mode state (box view is default on mobile)
+  const [viewMode, setViewMode] = useState<'table' | 'box'>('box');
   
   // Editing state
   const [editingField, setEditingField] = useState<{leadId: string, field: string} | null>(null);
@@ -94,10 +109,12 @@ const SchedulerToolPage: React.FC = () => {
     balance: '',
     next_followup: '',
     balance_currency: '₪',
+    eligible: true,
   });
   const [mainCategories, setMainCategories] = useState<string[]>([]);
   const [sources, setSources] = useState<string[]>([]);
   const [languagesList, setLanguagesList] = useState<string[]>([]);
+  const [tagsList, setTagsList] = useState<string[]>([]);
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
   
   // Current user state
@@ -151,6 +168,7 @@ const SchedulerToolPage: React.FC = () => {
       const categoriesData = await fetchCategories();
       const sourcesData = await fetchSources();
       const stagesData = await fetchStages();
+      const tagsData = await fetchTags();
       
       console.log('📊 Reference data loaded:', {
         categories: categoriesData?.length || 0,
@@ -326,6 +344,32 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
+  const fetchTags = async () => {
+    try {
+      // Fetch all active tags
+      const { data: tagsData, error: tagsError } = await supabase
+        .from('misc_leadtag')
+        .select('id, name, order')
+        .eq('active', true)
+        .order('order', { ascending: true });
+      
+      if (!tagsError && tagsData) {
+        console.log('🏷️ Tags loaded:', tagsData.length, 'items');
+        setAllTags(tagsData);
+        // Also populate the tags list for the input field
+        const tagNames = tagsData.map(tag => tag.name);
+        setTagsList(tagNames);
+        return tagsData;
+      } else {
+        console.error('❌ Error fetching tags:', tagsError);
+        return [];
+      }
+    } catch (error) {
+      console.error('❌ Error fetching tags:', error);
+      return [];
+    }
+  };
+
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number, categoriesData?: any[]) => {
     const categories = categoriesData || allCategories;
     if (!categoryId || categoryId === '---' || categoryId === '--') {
@@ -482,6 +526,14 @@ const SchedulerToolPage: React.FC = () => {
       setLoading(true);
       setError(null);
 
+      // Validate that we have user data and employee_id
+      if (!userData?.employee_id) {
+        console.error('❌ No user data or employee_id available');
+        setError('User data not available');
+        setLoading(false);
+        return;
+      }
+
       // First, get the employee's display name for filtering new leads
       let employeeDisplayName = null;
       if (userData?.employee_id) {
@@ -499,7 +551,7 @@ const SchedulerToolPage: React.FC = () => {
         }
       }
 
-      // Fetch new leads with scheduler assigned to current user (by name)
+      // Fetch new leads with scheduler assigned to current user (by name) and specific stages
       const { data: newLeads, error: newError } = await supabase
         .from('leads')
         .select(`
@@ -524,13 +576,14 @@ const SchedulerToolPage: React.FC = () => {
           facts,
           special_notes,
           general_notes,
-          tags,
           probability,
           number_of_applicants_meeting,
           potential_applicants_meeting,
-          next_followup
+          next_followup,
+          eligible
         `)
-        .eq('scheduler', employeeDisplayName); // Filter by current user's display name
+        .eq('scheduler', employeeDisplayName) // Filter by current user's display name
+        .or('stage.in.(0,10,11,15),stage.in.(created,scheduler_assigned,handler_started,success)'); // Handle both numeric IDs and text values
 
       if (newError) {
         console.error('Error fetching new leads:', newError);
@@ -542,10 +595,11 @@ const SchedulerToolPage: React.FC = () => {
         employeeDisplayName: employeeDisplayName,
         newLeadsCount: newLeads?.length || 0,
         newLeads: newLeads?.slice(0, 3), // Show first 3 for debugging
-        allStages: newLeads?.map(lead => lead.stage) // Show all stages found
+        allStages: newLeads?.map(lead => lead.stage), // Show all stages found
+        eligibleValues: newLeads?.map(lead => ({ id: lead.id, eligible: lead.eligible })) // Show eligible values
       });
 
-      // Fetch legacy leads with scheduler assigned to current user
+      // Fetch legacy leads with scheduler assigned to current user and specific stages
       const { data: legacyLeads, error: legacyError } = await supabase
         .from('leads_lead')
         .select(`
@@ -568,9 +622,11 @@ const SchedulerToolPage: React.FC = () => {
           special_notes,
           notes,
           probability,
-          next_followup
+          next_followup,
+          eligibile
         `)
-        .eq('meeting_scheduler_id', String(userData?.employee_id)); // Filter by current user's employee ID (ensure string)
+        .eq('meeting_scheduler_id', String(userData.employee_id)) // Filter by current user's employee ID (ensure string)
+        .in('stage', [0, 10, 11, 15]); // Only show leads with stages 0, 10, 11, 15
 
       if (legacyError) {
         console.error('Error fetching legacy leads:', legacyError);
@@ -581,7 +637,8 @@ const SchedulerToolPage: React.FC = () => {
         userEmployeeId: userData?.employee_id,
         legacyLeadsCount: legacyLeads?.length || 0,
         legacyLeads: legacyLeads?.slice(0, 3), // Show first 3 for debugging
-        allStages: legacyLeads?.map(lead => lead.stage) // Show all stages found
+        allStages: legacyLeads?.map(lead => lead.stage), // Show all stages found
+        eligibleValues: legacyLeads?.map(lead => ({ id: lead.id, eligibile: (lead as any).eligibile })) // Show eligible values
       });
 
 
@@ -597,11 +654,76 @@ const SchedulerToolPage: React.FC = () => {
         });
       }
 
+      // Fetch tags for legacy leads
+      const legacyLeadIds = legacyLeads?.map(lead => lead.id) || [];
+      let legacyTagsMap = new Map();
+      
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyTagsData } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            lead_id,
+            misc_leadtag (
+              name
+            )
+          `)
+          .in('lead_id', legacyLeadIds);
+        
+        if (legacyTagsData) {
+          legacyTagsData.forEach(item => {
+            if (item.misc_leadtag) {
+              const leadId = item.lead_id;
+              const tagName = (item.misc_leadtag as any).name;
+              
+              if (!legacyTagsMap.has(leadId)) {
+                legacyTagsMap.set(leadId, []);
+              }
+              legacyTagsMap.get(leadId).push(tagName);
+            }
+          });
+        }
+      }
+
+      // Fetch tags for new leads
+      const newLeadIds = newLeads?.map(lead => lead.id) || [];
+      let newTagsMap = new Map();
+      
+      if (newLeadIds.length > 0) {
+        const { data: newTagsData } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            newlead_id,
+            misc_leadtag (
+              name
+            )
+          `)
+          .in('newlead_id', newLeadIds);
+        
+        if (newTagsData) {
+          newTagsData.forEach(item => {
+            if (item.misc_leadtag) {
+              const leadId = item.newlead_id;
+              const tagName = (item.misc_leadtag as any).name;
+              
+              if (!newTagsMap.has(leadId)) {
+                newTagsMap.set(leadId, []);
+              }
+              newTagsMap.get(leadId).push(tagName);
+            }
+          });
+        }
+      }
+
 
 
 
       // Transform new leads - already filtered by user's employee ID
       const transformedNewLeads: SchedulerLead[] = (newLeads || [])
+        .filter(lead => {
+          // Show only leads that are NOT eligible (false, null, undefined)
+          // Hide leads that are explicitly set to true (eligible)
+          return lead.eligible !== true;
+        })
         .map(lead => {
           const stageName = getStageName(lead.stage, stagesData);
           const sourceName = getSourceName(lead.source_id, lead.source, sourcesData);
@@ -645,16 +767,31 @@ const SchedulerToolPage: React.FC = () => {
             facts: lead.facts || '',
             special_notes: lead.special_notes || '',
             general_notes: lead.general_notes || '',
-            tags: lead.tags || '',
+            tags: newTagsMap.get(lead.id)?.join(', ') || '', // Get tags from newTagsMap
             probability: lead.probability || 0,
             number_of_applicants_meeting: lead.number_of_applicants_meeting || '',
             potential_applicants_meeting: lead.potential_applicants_meeting || '',
-            next_followup: lead.next_followup || ''
+            next_followup: lead.next_followup || '',
+            eligible: lead.eligible !== false // Convert to boolean, default to true if null/undefined
           };
         });
 
+      console.log('🔍 After filtering new leads:', {
+        originalCount: newLeads?.length || 0,
+        filteredCount: transformedNewLeads.length,
+        eligibleBreakdown: transformedNewLeads.map(lead => ({ id: lead.id, eligible: lead.eligible }))
+      });
+
       // Transform legacy leads - already filtered by user's employee ID
       const transformedLegacyLeads: SchedulerLead[] = (legacyLeads || [])
+        .filter(lead => {
+          // For legacy leads, eligible is text field - show only leads that are NOT eligible
+          // Hide leads that are explicitly set to 'yes' or 'true'
+          // Show leads that are 'no', 'false', null, undefined, or empty
+          // Note: column name is 'eligibile' (with extra 'i')
+          const eligibleValue = (lead as any).eligibile?.toLowerCase();
+          return eligibleValue !== 'yes' && eligibleValue !== 'true';
+        })
         .map(lead => {
           const stageName = getStageName(lead.stage, stagesData);
           const sourceName = getSourceName(lead.source_id, undefined, sourcesData);
@@ -706,13 +843,20 @@ const SchedulerToolPage: React.FC = () => {
             facts: lead.description || '',
             special_notes: lead.special_notes || '',
             general_notes: lead.notes || '',
-            tags: '', // Legacy leads don't have tags field
+            tags: legacyTagsMap.get(lead.id)?.join(', ') || '', // Get tags from legacyTagsMap
             probability: lead.probability || 0,
             number_of_applicants_meeting: '', // Legacy leads don't have this field
             potential_applicants_meeting: '', // Legacy leads don't have this field
-            next_followup: lead.next_followup || ''
+            next_followup: lead.next_followup || '',
+            eligible: (lead as any).eligibile?.toLowerCase() === 'yes' || (lead as any).eligibile?.toLowerCase() === 'true' // Convert text to boolean
           };
         });
+
+      console.log('🔍 After filtering legacy leads:', {
+        originalCount: legacyLeads?.length || 0,
+        filteredCount: transformedLegacyLeads.length,
+        eligibleBreakdown: transformedLegacyLeads.map(lead => ({ id: lead.id, eligible: lead.eligible }))
+      });
 
       // Combine and sort by created date (newest first)
       const allLeads = [...transformedNewLeads, ...transformedLegacyLeads]
@@ -782,9 +926,65 @@ const SchedulerToolPage: React.FC = () => {
     setIsWhatsAppModalOpen(true);
   };
 
+  const handleTimeline = (lead: SchedulerLead) => {
+    // Navigate to the client page with the InteractionsTab
+    navigate(`/clients/${lead.lead_number}?tab=interactions`);
+  };
+
   const handleClientUpdate = async () => {
     // Refresh the leads data when a client is updated
-    await fetchSchedulerLeads();
+    await fetchSchedulerLeads(allCategories, allSources, allStages, currentUser);
+  };
+
+  // Toggle eligible status
+  const handleToggleEligible = async (lead: SchedulerLead) => {
+    const newEligibleStatus = !lead.eligible;
+    const actionText = newEligibleStatus ? 'make eligible' : 'make ineligible';
+    
+    // Show confirmation alert
+    if (!window.confirm(`Are you sure you want to ${actionText} this lead? ${newEligibleStatus ? 'This lead will be removed from the scheduler view.' : 'This lead will be shown in the scheduler view.'}`)) {
+      return;
+    }
+
+    try {
+      const isLegacyLead = lead.lead_type === 'legacy';
+      const tableName = isLegacyLead ? 'leads_lead' : 'leads';
+      const idField = isLegacyLead ? lead.id.replace('legacy_', '') : lead.id;
+      
+      // For legacy leads, convert boolean to text and use correct column name
+      const updateData = isLegacyLead 
+        ? { eligibile: (newEligibleStatus ? 'yes' : 'no') } // Note: column name is 'eligibile'
+        : { eligible: newEligibleStatus };
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq('id', idField);
+
+      if (error) {
+        console.error('Error updating eligible status:', error);
+        toast.error('Failed to update eligible status');
+        return;
+      }
+
+      // Update local state
+      setLeads(prev => prev.map(l => 
+        l.id === lead.id 
+          ? { ...l, eligible: newEligibleStatus }
+          : l
+      ));
+
+      toast.success(`Lead ${actionText.replace('make ', 'made ')} successfully`);
+      
+      // If made eligible, the lead will be filtered out on next refresh
+      if (newEligibleStatus) {
+        // Remove from current view immediately
+        setLeads(prev => prev.filter(l => l.id !== lead.id));
+      }
+    } catch (error) {
+      console.error('Error in handleToggleEligible:', error);
+      toast.error('Failed to update eligible status');
+    }
   };
 
   // Toggle row expansion
@@ -798,6 +998,16 @@ const SchedulerToolPage: React.FC = () => {
       }
       return newSet;
     });
+  };
+
+  // Toggle contact dropdown
+  const toggleContactDropdown = (leadId: string) => {
+    setOpenContactDropdown(prev => prev === leadId ? null : leadId);
+  };
+
+  // Toggle view mode
+  const toggleViewMode = () => {
+    setViewMode(prev => prev === 'table' ? 'box' : 'table');
   };
 
   // Edit functions
@@ -869,7 +1079,167 @@ const SchedulerToolPage: React.FC = () => {
     setEditLeadData(prev => ({ ...prev, [field]: value }));
   };
 
-  const openEditLeadDrawer = (lead: SchedulerLead) => {
+  const fetchCurrentLeadTags = async (leadId: string) => {
+    try {
+      // Check if it's a legacy lead
+      const isLegacyLead = leadId.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        const legacyId = parseInt(leadId.replace('legacy_', ''));
+        const { data, error } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            id,
+            leadtag_id,
+            misc_leadtag (
+              id,
+              name
+            )
+          `)
+          .eq('lead_id', legacyId);
+        
+        if (!error && data) {
+          const tags = data
+            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
+            .map(item => (item.misc_leadtag as any).name);
+          
+          // Join tags with comma and space
+          const tagsString = tags.join(', ');
+          setCurrentLeadTags(tagsString);
+          console.log('🏷️ Current lead tags loaded (legacy):', tagsString);
+        } else {
+          console.error('❌ Error fetching current lead tags (legacy):', error);
+          setCurrentLeadTags('');
+        }
+      } else {
+        // For new leads, fetch from leads_lead_tags table using newlead_id
+        const { data, error } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            id,
+            leadtag_id,
+            misc_leadtag (
+              id,
+              name
+            )
+          `)
+          .eq('newlead_id', leadId);
+        
+        if (!error && data) {
+          const tags = data
+            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
+            .map(item => (item.misc_leadtag as any).name);
+          
+          // Join tags with comma and space
+          const tagsString = tags.join(', ');
+          setCurrentLeadTags(tagsString);
+          console.log('🏷️ Current lead tags loaded (new):', tagsString);
+        } else {
+          console.error('❌ Error fetching current lead tags (new):', error);
+          setCurrentLeadTags('');
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error fetching current lead tags:', error);
+      setCurrentLeadTags('');
+    }
+  };
+
+  const saveLeadTags = async (leadId: string, tagsString: string) => {
+    try {
+      const isLegacyLead = leadId.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        const legacyId = parseInt(leadId.replace('legacy_', ''));
+        
+        // First, remove all existing tags for this legacy lead
+        const { error: deleteError } = await supabase
+          .from('leads_lead_tags')
+          .delete()
+          .eq('lead_id', legacyId);
+        
+        if (deleteError) {
+          console.error('❌ Error deleting existing tags (legacy):', deleteError);
+          return;
+        }
+        
+        // Parse the tags string and find matching tag IDs
+        if (tagsString.trim()) {
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          
+          // Find tag IDs for the provided tag names
+          const tagIds = tagNames
+            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
+            .filter(id => id !== undefined);
+          
+          // Insert new tags for legacy lead
+          if (tagIds.length > 0) {
+            const tagInserts = tagIds.map(tagId => ({
+              lead_id: legacyId,
+              leadtag_id: tagId
+            }));
+            
+            const { error: insertError } = await supabase
+              .from('leads_lead_tags')
+              .insert(tagInserts);
+            
+            if (insertError) {
+              console.error('❌ Error inserting new tags (legacy):', insertError);
+              return;
+            }
+          }
+        }
+        
+        console.log('✅ Tags saved successfully for legacy lead:', legacyId);
+      } else {
+        // For new leads, use the newlead_id column
+        // First, remove all existing tags for this new lead
+        const { error: deleteError } = await supabase
+          .from('leads_lead_tags')
+          .delete()
+          .eq('newlead_id', leadId);
+        
+        if (deleteError) {
+          console.error('❌ Error deleting existing tags (new):', deleteError);
+          return;
+        }
+        
+        // Parse the tags string and find matching tag IDs
+        if (tagsString.trim()) {
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          
+          // Find tag IDs for the provided tag names
+          const tagIds = tagNames
+            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
+            .filter(id => id !== undefined);
+          
+          // Insert new tags for new lead
+          if (tagIds.length > 0) {
+            const tagInserts = tagIds.map(tagId => ({
+              newlead_id: leadId,
+              leadtag_id: tagId
+            }));
+            
+            const { error: insertError } = await supabase
+              .from('leads_lead_tags')
+              .insert(tagInserts);
+            
+            if (insertError) {
+              console.error('❌ Error inserting new tags (new):', insertError);
+              return;
+            }
+          }
+        }
+        
+        console.log('✅ Tags saved successfully for new lead:', leadId);
+      }
+    } catch (error) {
+      console.error('❌ Error saving tags:', error);
+    }
+  };
+
+
+  const openEditLeadDrawer = async (lead: SchedulerLead) => {
     // Get the correct currency for this lead
     const currentCurrency = getCurrencySymbol(
       lead.balance_currency,
@@ -890,9 +1260,15 @@ const SchedulerToolPage: React.FC = () => {
       balance: lead.total || '',
       next_followup: lead.next_followup || '',
       balance_currency: currentCurrency,
+      eligible: lead.eligible !== false,
     });
+    
+    // Fetch current lead's tags
+    await fetchCurrentLeadTags(lead.id);
+    
     setShowEditLeadDrawer(true);
   };
+
 
   const fetchCurrentUserFullName = async () => {
     try {
@@ -999,6 +1375,10 @@ const SchedulerToolPage: React.FC = () => {
             }
           }
         }
+        if (editLeadData.eligible !== selectedLead.eligible) {
+          // For legacy leads, convert boolean to text and use correct column name
+          updateData.eligibile = editLeadData.eligible ? 'yes' : 'no';
+        }
       } else {
         // For regular leads, check each field and only include if it has changed
         if (editLeadData.tags !== selectedLead.tags) {
@@ -1082,12 +1462,23 @@ const SchedulerToolPage: React.FC = () => {
         if (editLeadData.balance_currency !== selectedLead.balance_currency) {
           updateData.balance_currency = editLeadData.balance_currency;
         }
+        if (editLeadData.eligible !== selectedLead.eligible) {
+          updateData.eligible = editLeadData.eligible;
+        }
       }
       
-      // If no changes were detected, don't proceed with the update
+      // Save tags if they were changed (regardless of other field changes)
+      if (currentLeadTags !== (selectedLead?.tags || '')) {
+        console.log('🏷️ Tags changed, saving tags...');
+        await saveLeadTags(selectedLead.id, currentLeadTags);
+      }
+      
+      // If no changes were detected in other fields, don't proceed with the update
       if (Object.keys(updateData).length === 0) {
-        console.log('No changes detected, skipping update');
+        console.log('No changes detected in other fields, skipping update');
         setShowEditLeadDrawer(false);
+        await fetchSchedulerLeads(allCategories, allSources, allStages, currentUser);
+        toast.success('Lead updated!');
         return;
       }
       
@@ -1155,7 +1546,7 @@ const SchedulerToolPage: React.FC = () => {
       }
       
       setShowEditLeadDrawer(false);
-      await fetchSchedulerLeads();
+      await fetchSchedulerLeads(allCategories, allSources, allStages, currentUser);
       toast.success('Lead updated!');
       
     } catch (error) {
@@ -1190,6 +1581,24 @@ const SchedulerToolPage: React.FC = () => {
       });
     }
 
+    // Apply date filter
+    if (dateFrom || dateTo) {
+      filtered = filtered.filter(lead => {
+        const leadDate = new Date(lead.created_at);
+        const fromDate = dateFrom ? new Date(dateFrom) : null;
+        const toDate = dateTo ? new Date(dateTo) : null;
+        
+        if (fromDate && toDate) {
+          return leadDate >= fromDate && leadDate <= toDate;
+        } else if (fromDate) {
+          return leadDate >= fromDate;
+        } else if (toDate) {
+          return leadDate <= toDate;
+        }
+        return true;
+      });
+    }
+
     // Apply other filters
     if (filters.stage) {
       filtered = filtered.filter(lead => 
@@ -1216,6 +1625,11 @@ const SchedulerToolPage: React.FC = () => {
         lead.topic.toLowerCase().includes(filters.topic.toLowerCase())
       );
     }
+    if (filters.tags) {
+      filtered = filtered.filter(lead => 
+        lead.tags && lead.tags.toLowerCase().includes(filters.tags.toLowerCase())
+      );
+    }
 
     // Apply sorting
     if (sortConfig.key && sortConfig.direction) {
@@ -1238,6 +1652,10 @@ const SchedulerToolPage: React.FC = () => {
             const bTotalStr = String(b.total || '');
             aValue = parseFloat(aTotalStr.replace(/[^\d.-]/g, '')) || 0;
             bValue = parseFloat(bTotalStr.replace(/[^\d.-]/g, '')) || 0;
+            break;
+          case 'next_followup':
+            aValue = a.next_followup ? new Date(a.next_followup).getTime() : 0;
+            bValue = b.next_followup ? new Date(b.next_followup).getTime() : 0;
             break;
           default:
             return 0;
@@ -1263,7 +1681,8 @@ const SchedulerToolPage: React.FC = () => {
       language: '',
       source: '',
       category: '',
-      topic: ''
+      topic: '',
+      tags: ''
     });
     setSearchTerm('');
     setFilteredLeads(leads);
@@ -1292,41 +1711,59 @@ const SchedulerToolPage: React.FC = () => {
       : <ChevronDownIcon className="w-4 h-4 text-gray-600" />;
   };
 
-  // Badge logic for latest contact
-  const getContactBadgeStyle = (latestInteraction: string) => {
-    if (!latestInteraction) {
+  // Badge logic for follow up date
+  const getFollowUpBadgeStyle = (followUpDate: string) => {
+    if (!followUpDate) {
       return {
         className: "badge badge-neutral text-white text-xs",
-        text: "No Contact"
+        text: "No follow up"
       };
     }
 
-    const contactDate = new Date(latestInteraction);
+    const followUp = new Date(followUpDate);
     const now = new Date();
-    const diffInDays = Math.floor((now.getTime() - contactDate.getTime()) / (1000 * 60 * 60 * 24));
+    const diffInDays = Math.floor((followUp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
 
-    if (diffInDays > 14) { // Over 2 weeks
+    if (diffInDays < 0) { // Overdue
       return {
         className: "badge badge-error text-white text-xs",
-        text: formatDate(latestInteraction)
+        text: formatDate(followUpDate)
       };
-    } else if (diffInDays > 7) { // Over 1 week
+    } else if (diffInDays <= 7) { // Due within 1 week
       return {
-        className: "badge badge-warning text-white text-xs",
-        text: formatDate(latestInteraction)
+        className: "badge badge-info text-white text-xs",
+        text: formatDate(followUpDate)
       };
     } else {
       return {
         className: "badge badge-success text-white text-xs",
-        text: formatDate(latestInteraction)
+        text: formatDate(followUpDate)
       };
     }
   };
 
-  // Apply filters, search, and sorting when leads, filters, search term, or sort config change
+  // Apply filters, search, and sorting when leads, filters, search term, date filters, or sort config change
   useEffect(() => {
     applyFilters();
-  }, [leads, filters, searchTerm, sortConfig]);
+  }, [leads, filters, searchTerm, dateFrom, dateTo, sortConfig]);
+
+  // Set default view mode based on screen size
+  useEffect(() => {
+    const checkScreenSize = () => {
+      if (window.innerWidth < 768) { // Mobile
+        setViewMode('box');
+      } else { // Desktop
+        setViewMode('table');
+      }
+    };
+
+    // Set initial view mode
+    checkScreenSize();
+
+    // Listen for window resize
+    window.addEventListener('resize', checkScreenSize);
+    return () => window.removeEventListener('resize', checkScreenSize);
+  }, []);
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -1338,8 +1775,12 @@ const SchedulerToolPage: React.FC = () => {
           language: false,
           source: false,
           category: false,
-          topic: false
+          topic: false,
+          tags: false
         });
+      }
+      if (!target.closest('.contact-dropdown')) {
+        setOpenContactDropdown(null);
       }
     };
 
@@ -1367,7 +1808,7 @@ const SchedulerToolPage: React.FC = () => {
           <span>{error}</span>
           <button 
             className="btn btn-sm btn-outline"
-            onClick={() => fetchSchedulerLeads()}
+            onClick={() => fetchSchedulerLeads(allCategories, allSources, allStages, currentUser)}
           >
             Retry
           </button>
@@ -1379,13 +1820,36 @@ const SchedulerToolPage: React.FC = () => {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-bold text-gray-900">Hot Leads</h1>
-          <div className="badge badge-primary badge-lg">
-            {filteredLeads.length === leads.length && !searchTerm ? 
-              leads.length : 
-              filteredLeads.length
-            }
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-gray-900">Hot Leads</h1>
+            <div className="badge badge-primary badge-lg">
+              {filteredLeads.length === leads.length && !searchTerm ? 
+                leads.length : 
+                filteredLeads.length
+              }
+            </div>
+          </div>
+          
+          {/* View Toggle */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600 hidden sm:inline">View:</span>
+            <div className="btn-group">
+              <button
+                onClick={() => setViewMode('box')}
+                className={`btn btn-sm ${viewMode === 'box' ? 'btn-primary' : 'btn-outline'}`}
+                title="Box View"
+              >
+                <Squares2X2Icon className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setViewMode('table')}
+                className={`btn btn-sm ${viewMode === 'table' ? 'btn-primary' : 'btn-outline'}`}
+                title="Table View"
+              >
+                <TableCellsIcon className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1415,13 +1879,6 @@ const SchedulerToolPage: React.FC = () => {
               </button>
             )}
           </div>
-          <button 
-            className="btn btn-outline btn-sm"
-            onClick={clearFilters}
-            disabled={Object.values(filters).every(f => f === '') && !searchTerm}
-          >
-            Clear Filters
-          </button>
         </div>
       </div>
 
@@ -1587,58 +2044,475 @@ const SchedulerToolPage: React.FC = () => {
               )}
             </div>
           </div>
+
+          {/* Tags Filter */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Tags</label>
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Filter by tags..."
+                value={filters.tags}
+                onChange={(e) => updateFilter('tags', e.target.value)}
+                onFocus={() => setShowDropdowns(prev => ({ ...prev, tags: true }))}
+                className="input input-bordered w-full pr-8"
+              />
+              <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              {showDropdowns.tags && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                  {getUniqueValues('tags').map((tag) => (
+                    <div
+                      key={tag}
+                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                      onClick={() => {
+                        updateFilter('tags', tag);
+                        setShowDropdowns(prev => ({ ...prev, tags: false }));
+                      }}
+                    >
+                      {tag}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Date Filters and Clear Button */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">From:</label>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="input input-bordered input-sm"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">To:</label>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="input input-bordered input-sm"
+              />
+            </div>
+            <button 
+              className="btn btn-outline btn-sm"
+              onClick={() => {
+                clearFilters();
+                setDateFrom('');
+                setDateTo('');
+              }}
+              disabled={Object.values(filters).every(f => f === '') && !searchTerm && !dateFrom && !dateTo}
+            >
+              Clear Filters
+            </button>
+          </div>
+
         </div>
       </div>
 
       {leads.length === 0 ? (
         <div className="text-center py-12">
           <div className="text-gray-500 text-lg">
-            No leads found with scheduler assignment
+            No leads found on page
           </div>
           <p className="text-gray-400 mt-2">
             All leads are either not assigned to a scheduler or have progressed beyond the scheduler stage
           </p>
         </div>
+      ) : viewMode === 'box' ? (
+        // Box View
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredLeads.map((lead) => (
+            <div key={lead.id} className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[400px] relative pb-16 md:text-lg md:leading-relaxed p-5">
+              {/* Header */}
+              <div onClick={() => toggleRowExpansion(lead.id)} className="flex-1 cursor-pointer flex flex-col">
+                <div className="mb-3 flex items-center gap-2">
+                  <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest whitespace-nowrap">
+                    #{lead.lead_number}
+                  </span>
+                  <span className="w-1 h-1 bg-gray-300 rounded-full flex-shrink-0"></span>
+                  <h3 className="text-lg md:text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1 min-w-0">
+                    {lead.name || 'No Name'}
+                  </h3>
+                  <span className={`badge badge-sm ${getFollowUpBadgeStyle(lead.next_followup || '').className} whitespace-nowrap flex-shrink-0`}>
+                    {getFollowUpBadgeStyle(lead.next_followup || '').text}
+                  </span>
+                </div>
+
+                {/* Stage */}
+                <div className="flex justify-between items-center py-1">
+                  <span className="text-xs md:text-base font-semibold text-gray-500">Stage</span>
+                  <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">
+                    {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'Unknown'}
+                  </span>
+                </div>
+
+                <div className="space-y-2 divide-y divide-gray-100">
+                  {/* Created Date */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Created</span>
+                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">{formatDate(lead.created_at)}</span>
+                  </div>
+
+                  {/* Language */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Language</span>
+                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">{lead.language || 'N/A'}</span>
+                  </div>
+
+                  {/* Source */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Source</span>
+                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
+                      <span className="truncate block">{lead.source || 'N/A'}</span>
+                    </span>
+                  </div>
+
+                  {/* Category */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
+                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
+                      <span className="truncate block">{lead.category || 'N/A'}</span>
+                    </span>
+                  </div>
+
+                  {/* Topic */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Topic</span>
+                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
+                      <span className="truncate block">{lead.topic || 'N/A'}</span>
+                    </span>
+                  </div>
+
+                  {/* Total */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Value</span>
+                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">{formatCurrency(lead.total, lead.balance_currency)}</span>
+                  </div>
+
+                  {/* Tags */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Tags</span>
+                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
+                      <span className="truncate block">{lead.tags || 'N/A'}</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="mt-4 flex flex-row gap-2 justify-between items-center">
+                {/* Left side - Eligible Toggle and Contact */}
+                <div className="flex items-center gap-2">
+                  {/* Eligible Toggle */}
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-success toggle-sm"
+                    checked={lead.eligible || false}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      handleToggleEligible(lead);
+                    }}
+                    title="Eligible"
+                  />
+                  
+                  {/* Contact Dropdown */}
+                  <div className="relative contact-dropdown">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleContactDropdown(lead.id);
+                      }}
+                      className="btn btn-outline btn-primary btn-sm"
+                      title="Contact"
+                    >
+                      <ChatBubbleLeftRightIcon className="w-4 h-4" />
+                    </button>
+                    {openContactDropdown === lead.id && (
+                      <div className="absolute z-10 mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-32">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCall(lead);
+                            setOpenContactDropdown(null);
+                          }}
+                          className="w-full px-2 py-1 text-left hover:bg-gray-100 text-xs flex items-center gap-1"
+                          title="Call"
+                        >
+                          <PhoneIcon className="w-3 h-3 text-blue-600" />
+                          Call
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleEmail(lead);
+                            setOpenContactDropdown(null);
+                          }}
+                          className="w-full px-2 py-1 text-left hover:bg-gray-100 text-xs flex items-center gap-1"
+                          title="Email"
+                        >
+                          <EnvelopeIcon className="w-3 h-3 text-gray-600" />
+                          Email
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleWhatsApp(lead);
+                            setOpenContactDropdown(null);
+                          }}
+                          className="w-full px-2 py-1 text-left hover:bg-gray-100 text-xs flex items-center gap-1"
+                          title="WhatsApp"
+                        >
+                          <FaWhatsapp className="w-3 h-3 text-green-600" />
+                          WhatsApp
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Right side - Other action buttons */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTimeline(lead);
+                    }}
+                    className="btn btn-outline btn-primary btn-sm"
+                    title="Timeline"
+                  >
+                    <ClockIcon className="w-4 h-4" />
+                  </button>
+                  
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedLead(lead);
+                      openEditLeadDrawer(lead);
+                    }}
+                    className="btn btn-outline btn-primary btn-sm"
+                    title="Edit Lead"
+                  >
+                    <PencilSquareIcon className="w-4 h-4" />
+                  </button>
+                  
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleViewClient(lead);
+                    }}
+                    className="btn btn-outline btn-primary btn-sm"
+                    title="View Client"
+                  >
+                    <EyeIcon className="w-4 h-4" />
+                  </button>
+                  
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleRowExpansion(lead.id);
+                    }}
+                    className="btn btn-outline btn-primary btn-sm"
+                  >
+                    {expandedRows.has(lead.id) ? 'Show Less' : 'Show More'}
+                    <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${expandedRows.has(lead.id) ? 'rotate-180' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Expanded Notes Section */}
+              {expandedRows.has(lead.id) && (
+                <div className="mt-4 p-4 border-t border-gray-100">
+                  <div className="space-y-4">
+                    {/* Facts of Case */}
+                    <div className="bg-white p-4 rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] border border-gray-200">
+                      <h6 className="font-semibold text-gray-800 mb-2">Facts of Case</h6>
+                      <div className="space-y-2 max-h-32 overflow-y-auto">
+                        {editingField?.leadId === lead.id && editingField?.field === 'facts' ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={editValues[`${lead.id}_facts`] || ''}
+                              onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_facts`]: e.target.value }))}
+                              className="textarea textarea-bordered w-full text-sm"
+                              rows={4}
+                              placeholder="Enter facts of case..."
+                              dir="auto"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => saveEdit(lead.id, 'facts')}
+                                className="btn btn-xs btn-primary"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={cancelEditing}
+                                className="btn btn-xs btn-outline"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-start justify-between">
+                            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed flex-1" dir="auto">
+                              {lead.facts || <span className="text-gray-400 italic">No facts provided</span>}
+                            </p>
+                            <button
+                              onClick={() => startEditing(lead.id, 'facts', lead.facts || '')}
+                              className="btn btn-xs btn-outline btn-primary ml-2"
+                              title="Edit facts"
+                            >
+                              <PencilSquareIcon className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Special Notes */}
+                    <div className="bg-white p-4 rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] border border-gray-200">
+                      <h6 className="font-semibold text-gray-800 mb-2">Special Notes</h6>
+                      <div className="space-y-2 max-h-32 overflow-y-auto">
+                        {editingField?.leadId === lead.id && editingField?.field === 'special_notes' ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={editValues[`${lead.id}_special_notes`] || ''}
+                              onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_special_notes`]: e.target.value }))}
+                              className="textarea textarea-bordered w-full text-sm"
+                              rows={4}
+                              placeholder="Enter special notes..."
+                              dir="auto"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => saveEdit(lead.id, 'special_notes')}
+                                className="btn btn-xs btn-warning"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={cancelEditing}
+                                className="btn btn-xs btn-outline"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-start justify-between">
+                            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed flex-1" dir="auto">
+                              {lead.special_notes || <span className="text-gray-400 italic">No special notes</span>}
+                            </p>
+                            <button
+                              onClick={() => startEditing(lead.id, 'special_notes', lead.special_notes || '')}
+                              className="btn btn-xs btn-outline btn-primary ml-2"
+                              title="Edit special notes"
+                            >
+                              <PencilSquareIcon className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* General Notes */}
+                    <div className="bg-white p-4 rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] border border-gray-200">
+                      <h6 className="font-semibold text-gray-800 mb-2">General Notes</h6>
+                      <div className="space-y-2 max-h-32 overflow-y-auto">
+                        {editingField?.leadId === lead.id && editingField?.field === 'general_notes' ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={editValues[`${lead.id}_general_notes`] || ''}
+                              onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_general_notes`]: e.target.value }))}
+                              className="textarea textarea-bordered w-full text-sm"
+                              rows={4}
+                              placeholder="Enter general notes..."
+                              dir="auto"
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => saveEdit(lead.id, 'general_notes')}
+                                className="btn btn-xs btn-success"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={cancelEditing}
+                                className="btn btn-xs btn-outline"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-start justify-between">
+                            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed flex-1" dir="auto">
+                              {lead.general_notes || <span className="text-gray-400 italic">No general notes</span>}
+                            </p>
+                            <button
+                              onClick={() => startEditing(lead.id, 'general_notes', lead.general_notes || '')}
+                              className="btn btn-xs btn-outline btn-primary ml-2"
+                              title="Edit general notes"
+                            >
+                              <PencilSquareIcon className="w-3 h-3" />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       ) : (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="table w-full">
+            <table className="table w-full text-xs sm:text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="font-semibold text-gray-900 pr-2">Lead</th>
+                  <th className="font-semibold text-gray-900 pr-1 text-xs sm:text-sm">Lead</th>
                   <th 
-                    className="font-semibold text-gray-900 pl-2 cursor-pointer hover:bg-gray-100 select-none"
+                    className="font-semibold text-gray-900 pl-1 cursor-pointer hover:bg-gray-100 select-none text-xs sm:text-sm"
                     onClick={() => handleSort('created_at')}
                   >
                     <div className="flex items-center gap-1">
-                      Date Created
+                      <span className="hidden sm:inline">Date Created</span>
+                      <span className="sm:hidden">Date</span>
                       {getSortIcon('created_at')}
                     </div>
                   </th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Stage</th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Language</th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Source</th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Category</th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Topic</th>
                   <th 
-                    className="font-semibold text-gray-900 cursor-pointer hover:bg-gray-100 select-none"
-                    onClick={() => handleSort('latest_interaction')}
-                  >
-                    <div className="flex items-center gap-1">
-                      Latest Contact
-                      {getSortIcon('latest_interaction')}
-                    </div>
-                  </th>
-                  <th className="font-semibold text-gray-900">Stage</th>
-                  <th className="font-semibold text-gray-900">Language</th>
-                  <th className="font-semibold text-gray-900">Source</th>
-                  <th className="font-semibold text-gray-900">Category</th>
-                  <th className="font-semibold text-gray-900">Topic</th>
-                  <th 
-                    className="font-semibold text-gray-900 cursor-pointer hover:bg-gray-100 select-none"
+                    className="font-semibold text-gray-900 cursor-pointer hover:bg-gray-100 select-none text-xs sm:text-sm"
                     onClick={() => handleSort('total')}
                   >
                     <div className="flex items-center gap-1">
-                      Total
+                      Value
                       {getSortIcon('total')}
                     </div>
                   </th>
-                  <th className="font-semibold text-gray-900">Actions</th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Tags</th>
+                  <th 
+                    className="font-semibold text-gray-900 cursor-pointer hover:bg-gray-100 select-none text-xs sm:text-sm"
+                    onClick={() => handleSort('next_followup')}
+                  >
+                    <div className="flex items-center gap-1">
+                      Follow up date
+                      {getSortIcon('next_followup')}
+                    </div>
+                  </th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Eligible</th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1648,84 +2522,135 @@ const SchedulerToolPage: React.FC = () => {
                       className="hover:bg-gray-50 cursor-pointer"
                       onClick={() => toggleRowExpansion(lead.id)}
                     >
-                      <td className="pr-2">
-                        <div className="flex items-center gap-2">
+                      <td className="pr-1">
+                        <div className="flex items-center gap-1">
                           <div className="flex-shrink-0">
                             {expandedRows.has(lead.id) ? (
-                              <ChevronDownIcon className="w-4 h-4 text-gray-400" />
+                              <ChevronDownIcon className="w-3 h-3 sm:w-4 sm:h-4 text-gray-400" />
                             ) : (
-                              <ChevronRightIcon className="w-4 h-4 text-gray-400" />
+                              <ChevronRightIcon className="w-3 h-3 sm:w-4 sm:h-4 text-gray-400" />
                             )}
                           </div>
                           <div className="flex flex-col">
-                            <span className="font-mono text-sm text-gray-600">
+                            <span className="font-mono text-xs sm:text-sm text-gray-600">
                               #{lead.lead_number}
                             </span>
-                            <span className="font-medium text-gray-900 break-words leading-tight">
+                            <span className="font-medium text-gray-900 break-words leading-tight text-xs sm:text-sm">
                               {lead.name || 'No Name'}
                             </span>
                           </div>
                         </div>
                       </td>
-                    <td className="text-sm text-gray-600 pl-2">
+                    <td className="text-xs sm:text-sm text-gray-600 pl-1">
                       {formatDate(lead.created_at)}
                     </td>
-                    <td>
-                      <span className={getContactBadgeStyle(lead.latest_interaction || '').className}>
-                        {getContactBadgeStyle(lead.latest_interaction || '').text}
-                      </span>
+                    <td className="text-xs sm:text-sm text-gray-700">
+                      {lead.stage ? lead.stage.replace(/_/g, ' ') : 'Unknown'}
                     </td>
-                    <td>
-                      <span className="text-sm text-gray-700">
-                        {lead.stage ? lead.stage.replace(/_/g, ' ') : 'Unknown'}
-                      </span>
-                    </td>
-                    <td className="text-sm text-gray-600">
+                    <td className="text-xs sm:text-sm text-gray-600">
                       {lead.language || 'N/A'}
                     </td>
-                    <td className="text-sm text-gray-600">
+                    <td className="text-xs sm:text-sm text-gray-600 break-words">
                       {lead.source || 'N/A'}
                     </td>
-                    <td className="text-sm text-gray-600">
+                    <td className="text-xs sm:text-sm text-gray-600 break-words">
                       {lead.category || 'N/A'}
                     </td>
-                    <td className="text-sm text-gray-600 max-w-xs truncate">
+                    <td className="text-xs sm:text-sm text-gray-600 break-words">
                       {lead.topic || 'N/A'}
                     </td>
-                    <td className="text-sm font-medium text-gray-900">
+                    <td className="text-xs sm:text-sm font-medium text-gray-900">
                       {formatCurrency(lead.total, lead.balance_currency)}
                     </td>
+                    <td className="text-xs sm:text-sm text-gray-600 break-words">
+                      {lead.tags || 'N/A'}
+                    </td>
                     <td>
-                      <div className="flex gap-2">
+                      <span className={`${getFollowUpBadgeStyle(lead.next_followup || '').className} text-xs`}>
+                        {getFollowUpBadgeStyle(lead.next_followup || '').text}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          className="toggle toggle-success toggle-xs sm:toggle-sm"
+                          checked={lead.eligible || false}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            handleToggleEligible(lead);
+                          }}
+                        />
+                        <span className="text-xs sm:text-sm font-medium text-gray-700">
+                          {lead.eligible ? 'Yes' : 'No'}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      <div className="flex gap-1 sm:gap-2">
+                        {/* Contact Dropdown */}
+                        <div className="relative contact-dropdown">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleContactDropdown(lead.id);
+                            }}
+                            className="btn btn-xs sm:btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
+                            title="Contact"
+                          >
+                            <ChatBubbleLeftRightIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                          </button>
+                          {openContactDropdown === lead.id && (
+                            <div className="absolute z-10 mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-32 sm:min-w-40">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCall(lead);
+                                  setOpenContactDropdown(null);
+                                }}
+                                className="w-full px-2 sm:px-3 py-1 sm:py-2 text-left hover:bg-gray-100 text-xs sm:text-sm flex items-center gap-1 sm:gap-2"
+                                title="Call"
+                              >
+                                <PhoneIcon className="w-3 h-3 sm:w-4 sm:h-4 text-blue-600" />
+                                Call
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEmail(lead);
+                                  setOpenContactDropdown(null);
+                                }}
+                                className="w-full px-2 sm:px-3 py-1 sm:py-2 text-left hover:bg-gray-100 text-xs sm:text-sm flex items-center gap-1 sm:gap-2"
+                                title="Email"
+                              >
+                                <EnvelopeIcon className="w-3 h-3 sm:w-4 sm:h-4 text-gray-600" />
+                                Email
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleWhatsApp(lead);
+                                  setOpenContactDropdown(null);
+                                }}
+                                className="w-full px-2 sm:px-3 py-1 sm:py-2 text-left hover:bg-gray-100 text-xs sm:text-sm flex items-center gap-1 sm:gap-2"
+                                title="WhatsApp"
+                              >
+                                <FaWhatsapp className="w-3 h-3 sm:w-4 sm:h-4 text-green-600" />
+                                WhatsApp
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                        
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleCall(lead);
+                            handleTimeline(lead);
                           }}
-                          className="btn btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
-                          title="Call"
+                          className="btn btn-xs sm:btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
+                          title="Timeline"
                         >
-                          <PhoneIcon className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEmail(lead);
-                          }}
-                          className="btn btn-sm btn-outline btn-secondary hover:btn-secondary hover:text-white transition-colors"
-                          title="Email"
-                        >
-                          <EnvelopeIcon className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleWhatsApp(lead);
-                          }}
-                          className="btn btn-sm btn-outline btn-success hover:btn-success hover:text-white transition-colors"
-                          title="WhatsApp"
-                        >
-                          <FaWhatsapp className="w-4 h-4" />
+                          <ClockIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                         </button>
                         <button
                           onClick={(e) => {
@@ -1733,20 +2658,20 @@ const SchedulerToolPage: React.FC = () => {
                             setSelectedLead(lead);
                             openEditLeadDrawer(lead);
                           }}
-                          className="btn btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
+                          className="btn btn-xs sm:btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
                           title="Edit Lead"
                         >
-                          <PencilSquareIcon className="w-4 h-4" />
+                          <PencilSquareIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                         </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleViewClient(lead);
                           }}
-                          className="btn btn-sm btn-outline btn-secondary hover:btn-secondary hover:text-white transition-colors"
+                          className="btn btn-xs sm:btn-sm btn-outline btn-secondary hover:btn-secondary hover:text-white transition-colors"
                           title="View Client"
                         >
-                          <EyeIcon className="w-4 h-4" />
+                          <EyeIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                         </button>
                       </div>
                     </td>
@@ -1960,7 +2885,19 @@ const SchedulerToolPage: React.FC = () => {
             <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
               <div>
                 <label className="block font-semibold mb-1">Tags</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.tags} onChange={e => handleEditLeadChange('tags', e.target.value)} />
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="Search or select tags..."
+                  value={currentLeadTags}
+                  onChange={e => setCurrentLeadTags(e.target.value)}
+                  list="tags-options"
+                />
+                <datalist id="tags-options">
+                  {tagsList.map((name, index) => (
+                    <option key={`${name}-${index}`} value={name} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <label className="block font-semibold mb-1">Source</label>
@@ -2040,32 +2977,61 @@ const SchedulerToolPage: React.FC = () => {
               </div>
               <div>
                 <label className="block font-semibold mb-1">Balance Currency</label>
-                <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
-                  {currencies.length > 0 ? (
-                    <>
-                      {/* Show current currency first */}
-                      {currencies
-                        .filter(currency => currency.name === editLeadData.balance_currency)
-                        .map((currency) => (
-                          <option key={`current-${currency.id}`} value={currency.name}>
-                            {currency.name} ({currency.iso_code})
-                          </option>
-                        ))
-                      }
-                      {/* Show other currencies */}
-                      {currencies
-                        .filter(currency => currency.name !== editLeadData.balance_currency)
-                        .map((currency) => (
-                          <option key={currency.id} value={currency.name}>
-                            {currency.name} ({currency.iso_code})
-                          </option>
-                        ))
-                      }
-                    </>
-                  ) : (
-                    <option value="">Loading currencies...</option>
-                  )}
-                </select>
+                <div className="dropdown w-full">
+                  <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between">
+                    {editLeadData.balance_currency || 'Select Currency'}
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </div>
+                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-full max-h-60 overflow-y-auto">
+                    {currencies.length > 0 ? (
+                      <>
+                        {/* Show current currency first */}
+                        {currencies
+                          .filter(currency => currency.name === editLeadData.balance_currency)
+                          .map((currency) => (
+                            <li key={`current-${currency.id}`}>
+                              <a onClick={() => handleEditLeadChange('balance_currency', currency.name)}>
+                                {currency.name} ({currency.iso_code})
+                              </a>
+                            </li>
+                          ))
+                        }
+                        {/* Show other currencies */}
+                        {currencies
+                          .filter(currency => currency.name !== editLeadData.balance_currency)
+                          .map((currency) => (
+                            <li key={currency.id}>
+                              <a onClick={() => handleEditLeadChange('balance_currency', currency.name)}>
+                                {currency.name} ({currency.iso_code})
+                              </a>
+                            </li>
+                          ))
+                        }
+                      </>
+                    ) : (
+                      <li><a>Loading currencies...</a></li>
+                    )}
+                  </ul>
+                </div>
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Eligible</label>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-success"
+                    checked={editLeadData.eligible}
+                    onChange={(e) => handleEditLeadChange('eligible', e.target.checked)}
+                  />
+                  <span className="text-sm font-medium text-gray-700">
+                    {editLeadData.eligible ? 'Yes' : 'No'}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  {editLeadData.eligible ? 'Eligible leads will be removed from the scheduler view' : 'Ineligible leads will be shown in the scheduler view'}
+                </p>
               </div>
             </div>
             <div className="mt-6 flex justify-end">
