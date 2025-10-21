@@ -21,7 +21,6 @@ interface SchedulerLead {
   total: string;
   balance_currency: string;
   lead_type: 'new' | 'legacy';
-  scheduler: string;
   phone?: string;
   mobile?: string;
   email?: string;
@@ -600,17 +599,6 @@ const SchedulerToolPage: React.FC = () => {
 
 
 
-      // Fetch scheduler mappings for legacy leads
-      const { data: schedulerMapping } = await supabase
-        .from('tenants_employee')
-        .select('id, display_name');
-
-      const schedulerMap = new Map();
-      if (schedulerMapping) {
-        schedulerMapping.forEach(scheduler => {
-          schedulerMap.set(scheduler.id, scheduler.display_name);
-        });
-      }
 
       // Transform new leads - already filtered by user's employee ID
       const transformedNewLeads: SchedulerLead[] = (newLeads || [])
@@ -651,7 +639,6 @@ const SchedulerToolPage: React.FC = () => {
             total: lead.balance || '',
             balance_currency: lead.balance_currency || '₪',
             lead_type: 'new' as const,
-            scheduler: lead.scheduler || '', // For new leads, scheduler is already the display name
             phone: lead.phone || '',
             mobile: lead.mobile || '',
             email: lead.email || '',
@@ -713,7 +700,6 @@ const SchedulerToolPage: React.FC = () => {
               }
             })(),
             lead_type: 'legacy' as const,
-            scheduler: schedulerMap.get(lead.meeting_scheduler_id) || '',
             phone: lead.phone || '',
             mobile: '', // Legacy leads don't have mobile field
             email: lead.email || '',
@@ -1394,7 +1380,7 @@ const SchedulerToolPage: React.FC = () => {
     <div className="p-6">
       <div className="mb-6">
         <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-bold text-gray-900">Scheduler Tool</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Hot Leads</h1>
           <div className="badge badge-primary badge-lg">
             {filteredLeads.length === leads.length && !searchTerm ? 
               leads.length : 
@@ -1652,7 +1638,6 @@ const SchedulerToolPage: React.FC = () => {
                       {getSortIcon('total')}
                     </div>
                   </th>
-                  <th className="font-semibold text-gray-900">Scheduler</th>
                   <th className="font-semibold text-gray-900">Actions</th>
                 </tr>
               </thead>
@@ -1709,9 +1694,6 @@ const SchedulerToolPage: React.FC = () => {
                     </td>
                     <td className="text-sm font-medium text-gray-900">
                       {formatCurrency(lead.total, lead.balance_currency)}
-                    </td>
-                    <td className="text-sm text-gray-600">
-                      {lead.scheduler}
                     </td>
                     <td>
                       <div className="flex gap-2">
