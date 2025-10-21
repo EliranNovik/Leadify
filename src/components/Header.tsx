@@ -83,6 +83,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const isMouseOverSearchRef = useRef(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -119,6 +120,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [showMobileQuickActionsDropdown, setShowMobileQuickActionsDropdown] = useState(false);
   const [showSignOutModal, setShowSignOutModal] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const mobileButtonRef = useRef<HTMLButtonElement>(null);
   const [stageOptions, setStageOptions] = useState<string[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
@@ -220,8 +222,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           filterDropdownRef.current &&
           !filterDropdownRef.current.contains(event.target as Node)
         ) {
-          // Only close search bar if filter dropdown is not open
-          if (!showFilterDropdown) {
+          // Only close search bar if filter dropdown is not open, no search value/results, and mouse is not over search area
+          if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0 && !isMouseOverSearchRef.current) {
             setIsSearchActive(false);
             setSearchResults([]);
             setSearchValue('');
@@ -246,12 +248,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const quickActionsDropdown = document.querySelector('[data-quick-actions-dropdown]');
       const dropdownMenu = document.querySelector('[data-dropdown-menu]');
       
-      // Only close if dropdowns are actually open
-      if ((showQuickActionsDropdown || showMobileQuickActionsDropdown) &&
-          quickActionsDropdown && !quickActionsDropdown.contains(target as Node) && 
-          dropdownMenu && !dropdownMenu.contains(target as Node)) {
-        setShowQuickActionsDropdown(false);
-        setShowMobileQuickActionsDropdown(false);
+      // Check if target is a navigation link (Link component renders as <a>)
+      const isNavigationLink = target.tagName === 'A' || target.closest('a');
+      
+      // Close dropdowns if clicking outside both dropdown and menu
+      if (showQuickActionsDropdown || showMobileQuickActionsDropdown) {
+        // Check if click is outside the button and the dropdown menu
+        const clickedOutsideButton = !buttonRef.current?.contains(target as Node) && 
+                                   !mobileButtonRef.current?.contains(target as Node);
+        const clickedOutsideMenu = !dropdownMenu?.contains(target as Node);
+        
+        if ((clickedOutsideButton && clickedOutsideMenu) || isNavigationLink) {
+          setShowQuickActionsDropdown(false);
+          setShowMobileQuickActionsDropdown(false);
+        }
       }
     };
 
@@ -267,7 +277,38 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       document.removeEventListener('click', handleDropdownClickOutside);
       document.removeEventListener('scroll', handleScroll, true);
     };
-  }, [showFilterDropdown]);
+  }, [showFilterDropdown, showQuickActionsDropdown, showMobileQuickActionsDropdown]);
+
+  // Close quick actions dropdown when route changes
+  useEffect(() => {
+    setShowQuickActionsDropdown(false);
+    setShowMobileQuickActionsDropdown(false);
+  }, [location.pathname]);
+
+  // Handle escape key to close dropdowns
+  useEffect(() => {
+    const handleEscapeKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setShowQuickActionsDropdown(false);
+        setShowMobileQuickActionsDropdown(false);
+        setShowNotifications(false);
+        setShowFilterDropdown(false);
+      }
+    };
+
+    document.addEventListener('keydown', handleEscapeKey);
+    return () => document.removeEventListener('keydown', handleEscapeKey);
+  }, []);
+
+  // Cleanup function to close all dropdowns when component unmounts
+  useEffect(() => {
+    return () => {
+      setShowQuickActionsDropdown(false);
+      setShowMobileQuickActionsDropdown(false);
+      setShowNotifications(false);
+      setShowFilterDropdown(false);
+    };
+  }, []);
 
   useEffect(() => {
     if (searchTimeoutRef.current) {
@@ -1194,11 +1235,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           {/* Quick Actions Dropdown - Mobile only */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
+              ref={mobileButtonRef}
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
+                setShowQuickActionsDropdown(false); // Close desktop dropdown if open
               }}
-              className="flex items-center gap-1 px-3 py-2 rounded-lg font-medium transition-all duration-300 shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+              className="flex items-center gap-1 px-3 py-2 rounded-lg font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
             >
               <BoltIcon className="w-4 h-4 text-white" />
               <ChevronDownIcon className={`w-3 h-3 text-white transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
@@ -1321,10 +1365,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             <button
               ref={buttonRef}
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
+                setShowMobileQuickActionsDropdown(false); // Close mobile dropdown if open
               }}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
             >
               <BoltIcon className="w-5 h-5 text-white" />
               <span className="text-sm font-semibold">Quick Actions</span>
@@ -1458,10 +1504,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               })
             }}
             onMouseEnter={!isMobile ? () => {
+              isMouseOverSearchRef.current = true;
               setIsSearchActive(true);
               setTimeout(() => searchInputRef.current?.focus(), 100);
             } : undefined}
-            onMouseLeave={undefined}
+            onMouseLeave={!isMobile ? () => {
+              isMouseOverSearchRef.current = false;
+              // Only close on mouse leave if filter dropdown is not open and no search value/results
+              if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0) {
+                setTimeout(() => {
+                  // Double check that mouse is still not over search area
+                  if (!isMouseOverSearchRef.current) {
+                    setIsSearchActive(false);
+                  }
+                }, 300); // Longer delay to prevent accidental closures
+              }
+            } : undefined}
           >
             <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-[700ms] ease-in-out`}>
               {/* Large search icon (always visible) */}
@@ -1503,7 +1561,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   letterSpacing: '-0.01em', 
                   boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined 
                 }}
-                title="Search supports fuzzy matching - finds results even with typos (e.g., 'Boris Macer' will find 'Boris Maker')"
               />
               {/* Clear search button - visible on mobile when search is active */}
               {(searchValue.trim() || searchResults.length > 0) && (
@@ -1551,8 +1608,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               <div
                 ref={searchDropdownRef}
                 className="bg-white rounded-xl shadow-xl border border-gray-200 max-h-96 overflow-y-auto"
-                  style={{
+                style={{
                   width: searchDropdownStyle.width,
+                }}
+                onMouseEnter={() => {
+                  isMouseOverSearchRef.current = true;
+                }}
+                onMouseLeave={() => {
+                  isMouseOverSearchRef.current = false;
                 }}
               >
             {isSearching || isAdvancedSearching ? (
@@ -1671,7 +1734,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             
             {/* Advanced Filter Dropdown - positioned to the right of search results */}
             {showFilterDropdown && (
-              <div ref={filterDropdownRef} className="bg-white rounded-xl shadow-xl border border-gray-200 p-6 animate-fadeInUp min-w-80">
+              <div 
+                ref={filterDropdownRef} 
+                className="bg-white rounded-xl shadow-xl border border-gray-200 p-6 animate-fadeInUp min-w-80"
+                onMouseEnter={() => {
+                  isMouseOverSearchRef.current = true;
+                }}
+                onMouseLeave={() => {
+                  isMouseOverSearchRef.current = false;
+                }}
+              >
                 <div className="mb-4 flex justify-between items-start">
                   <div>
                     <h3 className="text-lg font-semibold text-gray-900 mb-2">Advanced Filters</h3>

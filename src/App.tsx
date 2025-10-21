@@ -56,6 +56,7 @@ import DebugTestPage from './pages/DebugTestPage';
 import EmployeePerformancePage from './pages/EmployeePerformancePage';
 import RMQMessagesPage from './pages/RMQMessagesPage';
 import CallsLedgerPage from './pages/CallsLedgerPage';
+import SchedulerToolPage from './pages/SchedulerToolPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -286,6 +287,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/admin" element={<AdminPage />} />
                     <Route path="/teams" element={<TeamsPage />} />
                     <Route path="/employee-performance" element={<EmployeePerformancePage />} />
+                    <Route path="/scheduler-tool" element={<SchedulerToolPage />} />
                     <Route path="/whatsapp" element={<WhatsAppPage />} />
                     <Route path="/whatsapp-leads" element={<WhatsAppLeadsPage />} />
                     <Route path="/collection" element={<CollectionPage />} />
