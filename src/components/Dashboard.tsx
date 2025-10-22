@@ -4174,7 +4174,7 @@ const Dashboard: React.FC = () => {
                   </div>
                 </div>
               ) : (
-                <div className="bg-gray-50 rounded-lg p-8 border border-gray-200 text-center">
+                <div className="bg-white rounded-lg p-8 border border-gray-200 text-center">
                   <div className="flex flex-col items-center gap-4">
                     <div className="p-3 bg-green-100 rounded-full">
                       <CheckCircleIcon className="w-8 h-8 text-green-600" />

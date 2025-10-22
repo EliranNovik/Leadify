@@ -1219,6 +1219,55 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
+  // Stage badge function for search results
+  const getStageBadge = (stage: string | number | null | undefined) => {
+    if (!stage || (typeof stage === 'string' && !stage.trim())) {
+      return (
+        <span className="badge badge-sm bg-gray-100 text-gray-600">
+          No Stage
+        </span>
+      );
+    }
+    
+    const stageStr = String(stage);
+    
+    // If it's already text (not a numeric ID), return as-is
+    if (typeof stage === 'string' && !stage.match(/^\d+$/)) {
+      return (
+        <span className="badge badge-sm bg-[#3b28c7] text-white">
+          {stageStr.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}
+        </span>
+      );
+    }
+    
+    // For numeric IDs, use comprehensive mapping
+    const stageMapping: { [key: string]: string } = {
+      '0': 'Created',
+      '10': 'Scheduler Assigned',
+      '11': 'Handler Started',
+      '15': 'Success',
+      '20': 'Meeting Scheduled',
+      '35': 'Meeting Irrelevant',
+      '50': 'Meeting Scheduled',
+      '51': 'Client Declined Price Offer',
+      '91': 'Dropped (Spam/Irrelevant)',
+      '105': 'Success',
+      'meeting_scheduled': 'Meeting Scheduled',
+      'scheduler_assigned': 'Scheduler Assigned',
+      'handler_started': 'Handler Started',
+      'success': 'Success',
+      'created': 'Created'
+    };
+    
+    const stageName = stageMapping[stageStr] || stageStr;
+    
+    return (
+      <span className="badge badge-sm bg-[#3b28c7] text-white">
+        {stageName}
+      </span>
+    );
+  };
+
   return (
     <>
       <div className="navbar bg-base-100 px-2 md:px-0 h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
@@ -1242,7 +1291,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 setShowMobileQuickActionsDropdown(!showMobileQuickActionsDropdown);
                 setShowQuickActionsDropdown(false); // Close desktop dropdown if open
               }}
-              className="flex items-center gap-1 px-3 py-2 rounded-lg font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+              className="flex items-center gap-1 px-3 py-2.5 rounded-lg font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
             >
               <BoltIcon className="w-4 h-4 text-white" />
               <ChevronDownIcon className={`w-3 h-3 text-white transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
@@ -1251,7 +1300,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {/* Dropdown Menu */}
             {showMobileQuickActionsDropdown && createPortal(
               <div 
-                className="fixed w-40 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
+                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
                 data-dropdown-menu
                 style={{
                   top: '64px',
@@ -1260,8 +1309,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }}
                 onClick={(e) => e.stopPropagation()}
               >
-                {/* RMQ Messages Option - COMMENTED OUT */}
-                {/* <button
+                {/* RMQ Messages Option */}
+                <button
                   onClick={() => {
                     setShowMobileQuickActionsDropdown(false);
                     if (onOpenMessaging) {
@@ -1272,7 +1321,35 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 >
                   <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
                   <span className="text-sm font-medium">RMQ Messages</span>
-                </button> */}
+                </button>
+
+                {/* WhatsApp Option */}
+                <button
+                  onClick={() => {
+                    setShowMobileQuickActionsDropdown(false);
+                    if (onOpenWhatsApp) {
+                      onOpenWhatsApp();
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
+                >
+                  <FaWhatsapp className="w-5 h-5 text-green-500" />
+                  <span className="text-sm font-medium">WhatsApp</span>
+                </button>
+
+                {/* Email Thread Option */}
+                <button
+                  onClick={() => {
+                    setShowMobileQuickActionsDropdown(false);
+                    if (onOpenEmailThread) {
+                      onOpenEmailThread();
+                    }
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
+                >
+                  <EnvelopeIcon className="w-5 h-5 text-gray-500" />
+                  <span className="text-sm font-medium">Email Thread</span>
+                </button>
 
                 {/* My Profile Option */}
                 <button
@@ -1294,42 +1371,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 {navTabs.map(tab => {
                   const Icon = tab.icon;
                   const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
-                  if (false) { // Removed action check
-                    return (
-                      <button
-                        key={tab.label}
-                        onClick={() => {
-                          setShowMobileQuickActionsDropdown(false);
-                          setShowQuickActionsDropdown(false);
-                          if (onOpenEmailThread) {
-                            onOpenEmailThread();
-                          }
-                        }}
-                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
-                      >
-                        <Icon className="w-5 h-5 text-gray-500" />
-                        <span className="text-sm font-medium">{tab.label}</span>
-                      </button>
-                    );
+                  
+                  // Skip WhatsApp and Email Thread as they're now handled above
+                  if (tab.path === '/whatsapp' || tab.label === 'Email Thread') {
+                    return null;
                   }
-                  if (tab.path === '/whatsapp') {
-                    return (
-                      <button
-                        key={tab.label}
-                        onClick={() => {
-                          setShowMobileQuickActionsDropdown(false);
-                          setShowQuickActionsDropdown(false);
-                          if (onOpenWhatsApp) {
-                            onOpenWhatsApp();
-                          }
-                        }}
-                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
-                      >
-                        <Icon className="w-5 h-5 text-gray-500" />
-                        <span className="text-sm font-medium">{tab.label}</span>
-                      </button>
-                    );
-                  }
+                  
                   return (
                     <Link
                       key={tab.path || tab.label}
@@ -1491,17 +1538,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             className={`min-w-12 min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${
               isSearchActive 
                 ? isMobile 
-                  ? 'absolute top-1/2 -translate-y-1/2' 
+                  ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]' 
                   : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
                 : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1'
             }`}
             style={{ 
-              background: 'transparent',
-              ...(isSearchActive && isMobile && { 
-                width: 'calc(100vw - 64px)',
-                left: '50%',
-                transform: 'translateX(-50%)'
-              })
+              background: 'transparent'
             }}
             onMouseEnter={!isMobile ? () => {
               isMouseOverSearchRef.current = true;
@@ -1647,9 +1689,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                               onClick={() => handleSearchResultClick(result)}
                             >
                               <div className="flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-semibold text-gray-900">{result.name}</span>
-                                  <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-2 flex-1">
+                                    {result.stage && (
+                                      <div className="md:hidden">
+                                        {getStageBadge(result.stage)}
+                                      </div>
+                                    )}
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-semibold text-gray-900">{result.name}</span>
+                                      <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
+                                    </div>
+                                  </div>
+                                  {result.stage && (
+                                    <div className="hidden md:block md:ml-auto">
+                                      {getStageBadge(result.stage)}
+                                    </div>
+                                  )}
                                 </div>
                                 {result.topic && (
                                   <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
@@ -1690,13 +1746,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                               onClick={() => handleSearchResultClick(result)}
                             >
                               <div className="flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-semibold text-gray-900">{result.name}</span>
-                                  <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
-                                  {result.isFuzzyMatch && (
-                                    <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">
-                                      Similar match
-                                    </span>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-2 flex-1">
+                                    {result.stage && (
+                                      <div className="md:hidden">
+                                        {getStageBadge(result.stage)}
+                                      </div>
+                                    )}
+                                    <div className="flex items-center gap-2">
+                                      <span className="font-semibold text-gray-900">{result.name}</span>
+                                      <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
+                                      {result.isFuzzyMatch && (
+                                        <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">
+                                          Similar match
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  {result.stage && (
+                                    <div className="hidden md:block md:ml-auto">
+                                      {getStageBadge(result.stage)}
+                                    </div>
                                   )}
                                 </div>
                                 {result.topic && (
@@ -2115,10 +2185,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   <div className="flex justify-between items-center">
                     <h3 className="font-semibold">Messages</h3>
                     <button 
-                      className="btn btn-ghost btn-xs"
+                      className="btn btn-ghost btn-xs whitespace-nowrap hover:bg-gray-100 hover:text-gray-800"
                       onClick={markAllAsRead}
                     >
-                      Mark all as read
+                      Read
                     </button>
                   </div>
                 </div>

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChevronDownIcon } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
-import UserManagement from './UserManagement';
+import UsersManager from './UsersManager';
 import PaymentPlanRowsManager from './PaymentPlanRowsManager';
 import AccessLogsManager from './AccessLogsManager';
 import CurrenciesManager from './CurrenciesManager';
@@ -106,12 +106,171 @@ const AdminPage: React.FC = () => {
   const [showLeftArrow, setShowLeftArrow] = useState(false);
   const [showRightArrow, setShowRightArrow] = useState(false);
 
-  // State for real data
-  const [newUsers, setNewUsers] = useState<User[]>([]);
-  const [unactivatedUsers, setUnactivatedUsers] = useState<User[]>([]);
-  const [accessLogs, setAccessLogs] = useState<AccessLog[]>([]);
-  const [leads, setLeads] = useState<Lead[]>([]);
-  const [dataLoading, setDataLoading] = useState(true);
+  // State for current user
+  const [currentUser, setCurrentUser] = useState<{ first_name?: string; email?: string } | null>(null);
+  const [userLoading, setUserLoading] = useState(true);
+  const [isTopSectionCollapsed, setIsTopSectionCollapsed] = useState(false);
+  const [dropdownPositions, setDropdownPositions] = useState<{[key: number]: 'left' | 'right'}>({});
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Function to get time-based greeting
+  const getTimeBasedGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good day';
+    return 'Good evening';
+  };
+
+  // Auto-collapse top section when a table is opened
+  useEffect(() => {
+    const hasTableOpen = selected.tab !== null && selected.sub !== null;
+    setIsTopSectionCollapsed(hasTableOpen);
+  }, [selected]);
+
+  // Recalculate dropdown positions on window resize
+  useEffect(() => {
+    const handleResize = () => {
+      if (openTab !== null) {
+        const position = calculateDropdownPosition(openTab);
+        setDropdownPositions(prev => ({ ...prev, [openTab]: position }));
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [openTab]);
+
+  // Outside click handler to close dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (openTab !== null && dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setOpenTab(null);
+      }
+    };
+
+    // Add event listener when dropdown is open
+    if (openTab !== null) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    // Cleanup event listener
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [openTab]);
+
+  // Function to calculate dropdown position
+  const calculateDropdownPosition = (tabIndex: number) => {
+    if (!tabBarRef.current) return 'left';
+    
+    const tabBar = tabBarRef.current;
+    const tabElement = tabBar.children[tabIndex] as HTMLElement;
+    if (!tabElement) return 'left';
+    
+    const tabBarRect = tabBar.getBoundingClientRect();
+    const tabRect = tabElement.getBoundingClientRect();
+    const dropdownWidth = 224; // w-56 = 14rem = 224px
+    const viewportWidth = window.innerWidth;
+    
+    // For mobile screens, use a more conservative approach
+    const isMobile = viewportWidth < 768;
+    
+    if (isMobile) {
+      // On mobile, check if the dropdown would overflow the viewport
+      const spaceOnRight = viewportWidth - tabRect.left;
+      const spaceOnLeft = tabRect.right;
+      
+      // If dropdown would overflow on the right, align to right
+      if (spaceOnRight < dropdownWidth) {
+        return 'right';
+      }
+      // If dropdown would overflow on the left when aligned right, center it
+      if (spaceOnLeft < dropdownWidth) {
+        return 'right'; // Use right alignment as fallback
+      }
+      return 'left';
+    } else {
+      // Desktop logic
+      const spaceOnRight = tabBarRect.right - tabRect.left;
+      const spaceOnLeft = tabRect.right - tabBarRect.left;
+      
+      return spaceOnRight < dropdownWidth && spaceOnLeft > dropdownWidth ? 'right' : 'left';
+    }
+  };
+
+  // Function to fetch current user data
+  const fetchCurrentUser = async () => {
+    try {
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      
+      if (authError) {
+        console.error('Error getting auth user:', authError);
+        setUserLoading(false);
+        return;
+      }
+      
+      if (!user) {
+        console.log('No authenticated user found');
+        setUserLoading(false);
+        return;
+      }
+      
+      console.log('Auth user ID:', user.id);
+      console.log('Auth user email:', user.email);
+      
+      // Try to find user by auth ID first
+      let { data: userData, error } = await supabase
+        .from('users')
+        .select('id, first_name, email, auth_id')
+        .eq('auth_id', user.id)
+        .maybeSingle();
+      
+      // If not found by auth_id, try by email
+      if (!userData && user.email) {
+        console.log('User not found by auth_id, trying by email:', user.email);
+        const { data: userByEmail, error: emailError } = await supabase
+          .from('users')
+          .select('id, first_name, email, auth_id')
+          .eq('email', user.email)
+          .maybeSingle();
+        
+        userData = userByEmail;
+        error = emailError;
+      }
+      
+      if (error) {
+        console.error('Error fetching user data:', error);
+        console.error('Auth user details:', { id: user.id, email: user.email });
+      } else if (userData) {
+        console.log('Found user data:', userData);
+        setCurrentUser({
+          first_name: userData.first_name,
+          email: userData.email
+        });
+      } else {
+        console.log('❌ No user found in users table for auth user:', user.id);
+        console.log('🔍 This means either:');
+        console.log('   1. The user exists in Supabase Auth but not in the users table');
+        console.log('   2. The auth_id field in users table is null or doesn\'t match');
+        console.log('   3. The user was created in auth but not synced to users table');
+        console.log('');
+        console.log('💡 To fix this, you need to either:');
+        console.log('   1. Create a user record in the users table with the correct auth_id');
+        console.log('   2. Or update the existing user record to have the correct auth_id');
+        console.log('');
+        
+        // Set a fallback with just the email from auth
+        setCurrentUser({
+          first_name: undefined,
+          email: user.email || 'Unknown'
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching current user:', error);
+    } finally {
+      setUserLoading(false);
+    }
+  };
 
   // Arrow visibility logic
   useEffect(() => {
@@ -141,148 +300,15 @@ const AdminPage: React.FC = () => {
     el.scrollBy({ left: dir === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
   };
 
-  const refreshAdminData = async () => {
-    setDataLoading(true);
-    try {
-      // Fetch users (last 30 days)
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-      
-      const { data: users, error: usersError } = await supabase
-        .from('users')
-        .select('id, email, first_name, last_name, full_name, created_at, is_active')
-        .gte('created_at', thirtyDaysAgo.toISOString())
-        .order('created_at', { ascending: false });
-
-      if (usersError) {
-        console.error('Error fetching users:', usersError);
-      } else {
-        const activeUsers = users?.filter(u => u.is_active) || [];
-        const inactiveUsers = users?.filter(u => !u.is_active) || [];
-        setNewUsers(activeUsers.slice(0, 4));
-        setUnactivatedUsers(inactiveUsers.slice(0, 2));
-      }
-
-      // Fetch latest 5 access logs
-      const { data: logs, error: logsError } = await supabase
-        .from('access_logs')
-        .select('id, created_at, request_method, endpoint, request_body, response_body, response_code')
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-      if (logsError) {
-        console.error('Error fetching access logs:', logsError);
-      } else {
-        setAccessLogs(logs || []);
-      }
-
-      // Fetch leads for search
-      const { data: leadsData, error: leadsError } = await supabase
-        .from('leads')
-        .select('id, name, email, phone, stage, lead_number')
-        .order('created_at', { ascending: false })
-        .limit(50);
-
-      if (leadsError) {
-        console.error('Error fetching leads:', leadsError);
-      } else {
-        const formattedLeads = leadsData?.map(lead => ({
-          id: lead.id,
-          name: lead.name,
-          email: lead.email,
-          phone: lead.phone,
-          stage: lead.stage,
-          number: lead.lead_number
-        })) || [];
-        setLeads(formattedLeads);
-      }
-
-    } catch (error) {
-      console.error('Error refreshing admin data:', error);
-    } finally {
-      setDataLoading(false);
-    }
-  };
-
-  // State for lead search
-  const [leadSearch, setLeadSearch] = React.useState('');
-  const [selectedLead, setSelectedLead] = React.useState<Lead | null>(null);
-  const filteredLeads = leadSearch.length > 0 ? leads.filter(l => l.name.toLowerCase().includes(leadSearch.toLowerCase()) || l.number.includes(leadSearch)) : [];
-
-  // Fetch real data for admin dashboard
+  // Fetch current user data on component mount
   useEffect(() => {
-    const fetchAdminData = async () => {
-      setDataLoading(true);
-      try {
-        // Fetch users (last 30 days)
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        
-        const { data: users, error: usersError } = await supabase
-          .from('users')
-          .select('id, email, first_name, last_name, full_name, created_at, is_active')
-          .gte('created_at', thirtyDaysAgo.toISOString())
-          .order('created_at', { ascending: false });
-
-        if (usersError) {
-          console.error('Error fetching users:', usersError);
-        } else {
-          const activeUsers = users?.filter(u => u.is_active) || [];
-          const inactiveUsers = users?.filter(u => !u.is_active) || [];
-          setNewUsers(activeUsers.slice(0, 4)); // Show latest 4 active users
-          setUnactivatedUsers(inactiveUsers.slice(0, 2)); // Show latest 2 inactive users
-        }
-
-        // Fetch latest 5 access logs
-        const { data: logs, error: logsError } = await supabase
-          .from('access_logs')
-          .select('id, created_at, request_method, endpoint, request_body, response_body, response_code')
-          .order('created_at', { ascending: false })
-          .limit(5);
-
-        if (logsError) {
-          console.error('Error fetching access logs:', logsError);
-        } else {
-          setAccessLogs(logs || []);
-        }
-
-        // Fetch leads for search
-        const { data: leadsData, error: leadsError } = await supabase
-          .from('leads')
-          .select('id, name, email, phone, stage, lead_number')
-          .order('created_at', { ascending: false })
-          .limit(50); // Limit to latest 50 leads for performance
-
-        if (leadsError) {
-          console.error('Error fetching leads:', leadsError);
-        } else {
-          const formattedLeads = leadsData?.map(lead => ({
-            id: lead.id,
-            name: lead.name,
-            email: lead.email,
-            phone: lead.phone,
-            stage: lead.stage,
-            number: lead.lead_number
-          })) || [];
-          setLeads(formattedLeads);
-        }
-
-      } catch (error) {
-        console.error('Error fetching admin data:', error);
-      } finally {
-        setDataLoading(false);
-      }
-    };
-
-    if (isAdmin) {
-      fetchAdminData();
-    }
-  }, [isAdmin]);
+    fetchCurrentUser();
+  }, []);
 
 
 
   // Show loading state
-  if (isLoading || dataLoading) {
+  if (isLoading || userLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="loading loading-spinner loading-lg"></div>
@@ -299,25 +325,189 @@ const AdminPage: React.FC = () => {
 
   return (
     <div className="p-6 w-full">
-      <div className="flex justify-between items-center mb-8">
-        <h1 className="text-3xl font-bold">Admin Panel</h1>
-        {isAdmin && (
+      {/* Welcome Section */}
+      <div className={`mb-12 transition-all duration-500 ease-in-out overflow-hidden ${
+        isTopSectionCollapsed ? 'max-h-0 mb-0' : 'max-h-screen'
+      }`}>
+        <div className="text-center py-12 relative">
+          {/* Background decoration */}
+          <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-secondary/5 rounded-3xl"></div>
+          <div className="absolute top-0 left-1/2 transform -translate-x-1/2 w-32 h-32 bg-gradient-to-br from-primary/10 to-secondary/10 rounded-full blur-3xl"></div>
+          
+          <div className="relative z-10">
+            <div className="inline-flex items-center gap-3 mb-6">
+              <div className="p-3 bg-gradient-to-br from-primary to-secondary rounded-2xl shadow-lg">
+                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <div className="text-left">
+                <div className="text-sm font-semibold text-primary/80 uppercase tracking-wider">Admin Dashboard</div>
+                <div className="text-xs text-base-content/60">Management Center</div>
+              </div>
+            </div>
+            
+            <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary via-secondary to-primary bg-clip-text text-transparent mb-4 leading-tight">
+              {getTimeBasedGreeting()}{currentUser?.first_name ? `, ${currentUser.first_name}` : ''}!
+            </h1>
+            <p className="text-base md:text-lg text-base-content/70 mb-8 font-medium">Welcome to your CRM Admin Panel</p>
+          </div>
+        </div>
+        
+        {/* Quick Action Buttons */}
+        <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 max-w-6xl mx-auto transition-all duration-500 ease-in-out ${
+          isTopSectionCollapsed ? 'opacity-0 max-h-0 overflow-hidden' : 'opacity-100 max-h-screen'
+        }`}>
           <button
-            onClick={refreshAdminData}
-            disabled={dataLoading}
-            className="btn btn-primary btn-sm gap-2"
+            onClick={() => {
+              const usersTab = ADMIN_TABS.findIndex(tab => tab.label === 'Authentication');
+              const usersSub = ADMIN_TABS[usersTab]?.subcategories.findIndex(sub => sub === 'Users');
+              setSelected({ tab: usersTab, sub: usersSub || 0 });
+              setOpenTab(null);
+              setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+            }}
+            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-6 h-32"
           >
-            {dataLoading ? (
-              <div className="loading loading-spinner loading-xs"></div>
-            ) : (
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-              </svg>
-            )}
-            Refresh Data
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+                <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-3xl font-extrabold text-white leading-tight">Users</div>
+                <div className="text-white/80 text-xs font-medium mt-1">Manage Users</div>
+              </div>
+            </div>
+            {/* SVG Graph Placeholder */}
+            <svg className="absolute bottom-2 right-2 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
           </button>
-        )}
+          
+          <button
+            onClick={() => {
+              const employeesTab = ADMIN_TABS.findIndex(tab => tab.label === 'Tenants');
+              const employeesSub = ADMIN_TABS[employeesTab]?.subcategories.findIndex(sub => sub === 'Employees');
+              setSelected({ tab: employeesTab, sub: employeesSub || 0 });
+              setOpenTab(null);
+              setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+            }}
+            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-6 h-32"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+                <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m9-4a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-2xl font-extrabold text-white leading-tight">Employees</div>
+                <div className="text-white/80 text-xs font-medium mt-1">Manage Team</div>
+              </div>
+            </div>
+            {/* SVG Bar Chart Placeholder */}
+            <svg className="absolute bottom-2 right-2 w-12 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
+          </button>
+          
+          <button
+            onClick={() => {
+              const sourcesTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
+              const sourcesSub = ADMIN_TABS[sourcesTab]?.subcategories.findIndex(sub => sub === 'Lead Sources');
+              setSelected({ tab: sourcesTab, sub: sourcesSub || 0 });
+              setOpenTab(null);
+              setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+            }}
+            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-6 h-32"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+                <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-3xl font-extrabold text-white leading-tight">Sources</div>
+                <div className="text-white/80 text-xs font-medium mt-1">Lead Sources</div>
+              </div>
+            </div>
+            {/* SVG Circle Placeholder */}
+            <svg className="absolute bottom-2 right-2 w-10 h-10 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" /><text x="16" y="21" textAnchor="middle" fontSize="10" fill="white" opacity="0.7">99+</text></svg>
+          </button>
+          
+          <button
+            onClick={() => {
+              const contractsTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
+              const contractsSub = ADMIN_TABS[contractsTab]?.subcategories.findIndex(sub => sub === 'Contract templates');
+              setSelected({ tab: contractsTab, sub: contractsSub || 0 });
+              setOpenTab(null);
+              setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+            }}
+            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-6 h-32"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+                <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div>
+                <div className="text-3xl font-extrabold text-white leading-tight">Contracts</div>
+                <div className="text-white/80 text-xs font-medium mt-1">Templates</div>
+              </div>
+            </div>
+            {/* SVG Line Chart Placeholder */}
+            <svg className="absolute bottom-2 right-2 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
+          </button>
+          
+          <button
+            onClick={() => {
+              const accessLogsTab = ADMIN_TABS.findIndex(tab => tab.label === 'Hooks');
+              const accessLogsSub = ADMIN_TABS[accessLogsTab]?.subcategories.findIndex(sub => sub === 'Access Logs');
+              setSelected({ tab: accessLogsTab, sub: accessLogsSub || 0 });
+              setOpenTab(null);
+              setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+            }}
+            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden p-6 h-32"
+          >
+            <div className="flex items-center gap-4">
+              <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+                <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              </div>
+              <div>
+                <div className="text-3xl font-extrabold text-white leading-tight">Access</div>
+                <div className="text-white/80 text-xs font-medium mt-1">Logs</div>
+              </div>
+            </div>
+            {/* SVG Activity Log Placeholder */}
+            <svg className="absolute bottom-2 right-2 w-12 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="8" width="4" height="16"/><rect x="8" y="12" width="4" height="12"/><rect x="14" y="6" width="4" height="18"/><rect x="20" y="10" width="4" height="14"/><rect x="26" y="14" width="4" height="10"/><rect x="32" y="4" width="4" height="20"/><rect x="38" y="8" width="4" height="16"/></svg>
+          </button>
+        </div>
       </div>
+
+      {/* Collapse/Expand Button */}
+      <div className="relative">
+        <button
+          onClick={() => setIsTopSectionCollapsed(!isTopSectionCollapsed)}
+          className={`fixed top-20 right-4 md:right-8 z-50 p-2 md:p-3 rounded-full shadow-lg transition-all duration-300 transform hover:scale-110 ${
+            isTopSectionCollapsed 
+              ? 'bg-gradient-to-r from-primary to-secondary text-white' 
+              : 'bg-white text-primary border-2 border-primary/20 hover:border-primary/40'
+          }`}
+          title={isTopSectionCollapsed ? 'Show Welcome Section' : 'Hide Welcome Section'}
+        >
+          <svg 
+            className={`w-5 h-5 md:w-6 md:h-6 transition-transform duration-300 ${isTopSectionCollapsed ? 'rotate-180' : ''}`} 
+            fill="none" 
+            viewBox="0 0 24 24" 
+            stroke="currentColor" 
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+          </svg>
+        </button>
+      </div>
+
       <div className="relative" style={{ minHeight: 48 }}>
         {/* Left Arrow */}
         {showLeftArrow && (
@@ -343,12 +533,12 @@ const AdminPage: React.FC = () => {
         )}
         <div
           ref={tabBarRef}
-          className="flex border-b border-base-200 mb-0 gap-3 flex-nowrap scrollbar-hide shadow-sm overflow-x-auto"
+          className="flex border-b border-base-200/50 mb-0 gap-2 flex-nowrap scrollbar-hide overflow-x-auto bg-white/50 backdrop-blur-sm rounded-t-2xl shadow-sm"
           style={{
             WebkitOverflowScrolling: 'touch',
             minHeight: 0,
             overflowX: openTab !== null ? 'visible' : 'auto',
-            height: 48,
+            height: 56,
           }}
         >
           {ADMIN_TABS
@@ -359,35 +549,62 @@ const AdminPage: React.FC = () => {
             .map((tab, i) => {
             const isOpen = openTab === i;
             return (
-              <div key={tab.label} className="relative flex-shrink-0">
+              <div key={tab.label} className="relative flex-shrink-0" ref={openTab === i ? dropdownRef : null}>
                 <button
-                  className={`flex items-center gap-1 px-3 py-2 sm:px-4 sm:py-2 text-base sm:text-lg font-semibold border-b-2 transition-colors whitespace-nowrap min-w-max
-                    ${isOpen ? 'border-primary text-primary bg-base-100' : 'border-transparent text-base-content/70 hover:text-primary hover:bg-base-200'}`}
+                  className={`flex items-center gap-2 px-4 py-3 text-sm md:text-base font-semibold rounded-t-xl transition-all duration-300 whitespace-nowrap min-w-max relative overflow-hidden group
+                    ${isOpen 
+                      ? 'bg-gradient-to-b from-primary to-primary/90 text-white shadow-lg transform scale-105' 
+                      : 'text-base-content/70 hover:text-primary hover:bg-white/80 hover:shadow-md hover:scale-105'}`}
                   style={{ outline: 'none' }}
-                  onClick={() => setOpenTab(isOpen ? null : i)}
+                  onClick={() => {
+                    if (!isOpen) {
+                      const position = calculateDropdownPosition(i);
+                      setDropdownPositions(prev => ({ ...prev, [i]: position }));
+                    }
+                    setOpenTab(isOpen ? null : i);
+                  }}
                 >
-                  {tab.label}
+                  {/* Background effect for active tab */}
+                  {isOpen && (
+                    <div className="absolute inset-0 bg-gradient-to-b from-white/20 to-transparent rounded-t-xl"></div>
+                  )}
+                  
+                  <span className="relative z-10">{tab.label}</span>
+                  
                   <ChevronDownIcon
-                    className={`w-5 h-5 ml-2 transition-transform duration-200 ${isOpen ? 'rotate-180 text-primary' : 'text-base-content/60'}`}
+                    className={`w-4 h-4 md:w-5 md:h-5 transition-all duration-300 relative z-10 ${isOpen ? 'rotate-180 text-white' : 'text-base-content/60 group-hover:text-primary'}`}
                     aria-hidden="true"
                   />
+                  
+                  {/* Active indicator */}
+                  {isOpen && (
+                    <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 w-8 h-1 bg-white rounded-full"></div>
+                  )}
                 </button>
+                
                 {/* Subcategories dropdown under the open tab (vertical list) */}
                 {isOpen && (
-                  <div className="absolute left-0 top-full z-50 bg-base-100 border-b border-x border-base-200 rounded-b-xl shadow-lg flex flex-col w-48 py-2 animate-fade-in max-h-80 overflow-y-auto">
+                  <div className={`absolute top-full z-50 bg-white border border-base-200/50 rounded-b-2xl shadow-xl flex flex-col w-full max-w-sm md:w-56 py-3 animate-fade-in max-h-80 overflow-y-auto backdrop-blur-sm ${
+                    window.innerWidth < 768 
+                      ? 'left-0 right-0 mx-2' 
+                      : dropdownPositions[i] === 'right' ? 'right-0' : 'left-0'
+                  }`}>
                     {tab.subcategories.map((sub, j) => (
                       <button
                         key={sub}
-                        className={`w-full text-left px-3 py-2 text-sm font-medium rounded-md transition-colors whitespace-nowrap
+                        className={`w-full text-left px-4 py-3 text-sm font-medium rounded-lg transition-all duration-200 whitespace-nowrap mx-2 group
                           ${selected.tab === i && selected.sub === j
-                            ? 'bg-primary text-white shadow'
-                            : 'bg-base-200 text-base-content hover:bg-primary/10 hover:text-primary'}`}
+                            ? 'bg-gradient-to-r from-primary to-primary/90 text-white shadow-md transform scale-105'
+                            : 'text-base-content hover:bg-primary/10 hover:text-primary hover:shadow-sm hover:scale-105'}`}
                         onClick={() => {
                           setSelected({ tab: i, sub: j });
                           setOpenTab(null);
                         }}
                       >
+                        <span className="flex items-center gap-2">
+                          <div className={`w-2 h-2 rounded-full transition-colors ${selected.tab === i && selected.sub === j ? 'bg-white' : 'bg-primary/30 group-hover:bg-primary'}`}></div>
                         {sub}
+                        </span>
                       </button>
                     ))}
                   </div>
@@ -397,150 +614,6 @@ const AdminPage: React.FC = () => {
           })}
         </div>
       </div>
-      {/* Feature Boxes Row - only show if no subcategory is selected and user is admin */}
-      {!(selected.tab !== null && selected.sub !== null) && isAdmin && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-8 mb-8">
-          {/* Users (Last 30 Days) */}
-          <div className="card shadow-xl rounded-2xl hover:shadow-2xl transition-all duration-200 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden">
-            <div className="card-body p-6">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="avatar placeholder">
-                  <div className="bg-white/20 text-white rounded-xl w-10 h-10 flex items-center justify-center">
-                    <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m9-4a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
-                  </div>
-                </div>
-                <span className="card-title text-lg text-white">Users (Last 30 Days)</span>
-              </div>
-              <div className="divider my-2 before:bg-white/30 after:bg-white/30 text-white/80">New Users</div>
-              <ul className="space-y-1 mb-2">
-                {newUsers.map(u => (
-                  <li key={u.email} className="flex items-center gap-2 text-sm">
-                    <span className="font-bold text-white">{u.first_name && u.last_name ? `${u.first_name} ${u.last_name}` : u.full_name || u.email}</span>
-                    <span className="text-white/80">({u.email})</span>
-                    <span className="badge badge-success badge-sm ml-auto bg-white/20 border-none text-white">{new Date(u.created_at).toLocaleDateString()}</span>
-                  </li>
-                ))}
-              </ul>
-              <div className="divider my-2 text-error before:bg-white/30 after:bg-white/30 text-white/80">Unactivated</div>
-              <ul className="space-y-1">
-                {unactivatedUsers.map(u => (
-                  <li key={u.email} className="flex items-center gap-2 text-sm">
-                    <span className="font-bold text-white">{u.first_name && u.last_name ? `${u.first_name} ${u.last_name}` : u.full_name || u.email}</span>
-                    <span className="text-white/80">({u.email})</span>
-                    <span className="badge badge-error badge-sm ml-auto bg-white/20 border-none text-white">{new Date(u.created_at).toLocaleDateString()}</span>
-                  </li>
-                ))}
-              </ul>
-              {/* SVG Graph Placeholder */}
-              <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-60" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
-            </div>
-          </div>
-          {/* Access Logs */}
-          <div className="card shadow-xl rounded-2xl hover:shadow-2xl transition-all duration-200 bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden">
-            <div className="card-body p-6">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="avatar placeholder">
-                  <div className="bg-white/20 text-white rounded-xl w-10 h-10 flex items-center justify-center">
-                    <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V4a2 2 0 10-4 0v1.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
-                  </div>
-                </div>
-                <span className="card-title text-lg text-white">Access Logs</span>
-              </div>
-              <div className="overflow-x-auto mt-2 rounded-lg bg-white/10 max-h-96 overflow-y-auto">
-                <table className="table table-xs w-full text-xs text-white">
-                  <thead className="sticky top-0 bg-white/10">
-                    <tr className="text-white/80">
-                      <th className="font-bold">Date</th>
-                      <th className="font-bold">Method</th>
-                      <th className="font-bold">Endpoint</th>
-                      <th className="font-bold">Request Body</th>
-                      <th className="font-bold">Code</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {accessLogs.map((log, idx) => (
-                      <tr key={idx} className="border-b border-white/20 hover:bg-white/10">
-                        <td className="whitespace-nowrap text-white font-mono font-bold">{new Date(log.created_at).toLocaleString()}</td>
-                        <td><span className={`badge ${log.request_method === 'POST' ? 'badge-error' : 'badge-info'} badge-sm bg-white/20 border-none text-white`}>{log.request_method}</span></td>
-                        <td className="font-mono">{log.endpoint}</td>
-                        <td className="font-mono text-xs max-w-md">
-                          <div className="max-h-20 overflow-y-auto">
-                            <pre className="whitespace-pre-wrap break-words text-xs">{log.request_body || 'No request body'}</pre>
-                          </div>
-                        </td>
-                        <td><span className={`badge ${log.response_code === 200 ? 'badge-success' : 'badge-error'} badge-sm bg-white/20 border-none text-white`}>{log.response_code}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {/* SVG Bar Chart Placeholder */}
-              <svg className="absolute bottom-4 right-4 w-12 h-8 opacity-60" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
-            </div>
-          </div>
-          {/* Leads Settings */}
-          <div className="card shadow-xl rounded-2xl hover:shadow-2xl transition-all duration-200 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden">
-            <div className="card-body p-6">
-              <div className="flex items-center gap-3 mb-2">
-                <div className="avatar placeholder">
-                  <div className="bg-white/20 text-white rounded-xl w-10 h-10 flex items-center justify-center">
-                    <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 1.343-3 3s1.343 3 3 3 3-1.343 3-3-1.343-3-3-3zm0 10c-4.418 0-8-1.79-8-4V6a2 2 0 012-2h12a2 2 0 012 2v8c0 2.21-3.582 4-8 4z" /></svg>
-                  </div>
-                </div>
-                <span className="card-title text-lg text-white">Leads Settings</span>
-              </div>
-              {/* Lead Search */}
-              <div className="mb-2 relative">
-                <input
-                  type="text"
-                  className="input input-bordered input-sm w-full bg-white/20 text-white placeholder-white/70 border-white/30 focus:border-white/60"
-                  placeholder="Search lead by name or number..."
-                  value={leadSearch}
-                  onChange={e => {
-                    setLeadSearch(e.target.value);
-                    setSelectedLead(null);
-                  }}
-                />
-                {leadSearch && filteredLeads.length > 0 && (
-                  <div className="absolute bg-white/90 text-base-content border border-white/30 rounded-xl shadow-lg mt-1 w-full z-50 max-h-40 overflow-y-auto">
-                    {filteredLeads.map(lead => (
-                      <button
-                        key={lead.id}
-                        className="block w-full text-left px-4 py-2 hover:bg-primary/10"
-                        onClick={() => setSelectedLead(lead)}
-                      >
-                        <span className="font-bold text-primary">{lead.number}</span> - {lead.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-              {/* Lead Info */}
-              {selectedLead && (
-                <div className="bg-white/20 rounded-lg p-3 mb-2 mt-1">
-                  <div className="font-bold text-white text-lg">{selectedLead.name} <span className="text-white/70">({selectedLead.number})</span></div>
-                  <div className="text-sm text-white/90">Email: {selectedLead.email}</div>
-                  <div className="text-sm text-white/90">Phone: {selectedLead.phone}</div>
-                  <div className="text-sm text-white/90">Stage: <span className="badge badge-outline ml-1 border-white/60 text-white/90">{selectedLead.stage}</span></div>
-                  <button className="btn btn-primary btn-sm mt-2">Settings</button>
-                </div>
-              )}
-              {/* Quick links */}
-              <div className="card-actions flex flex-wrap gap-2 mt-2">
-                <div className="btn-group">
-                  <button className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10" type="button">Lead Tags</button>
-                  <button className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10" type="button">Lead Sources</button>
-                  <button className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10" type="button">Lead Stage Reasons</button>
-                  <button className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10" type="button">Main Categories</button>
-                  <button className="btn btn-outline btn-sm border-white/40 text-white hover:bg-white/10" type="button">Sub Categories</button>
-                </div>
-              </div>
-              {/* SVG Line Chart Placeholder */}
-              <svg className="absolute bottom-4 right-4 w-16 h-8 opacity-60" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
-            </div>
-          </div>
-        </div>
-      )}
       {/* Content Area */}
       <div className="bg-base-100 rounded-xl shadow p-8 min-h-[200px] mt-8">
         {/* Welcome message for non-admin users */}
@@ -577,7 +650,7 @@ const AdminPage: React.FC = () => {
               <div className="w-full"><ContractTemplatesManager /></div>
             ) : selectedTab?.label === 'Authentication' &&
             selectedTab?.subcategories[selected.sub] === 'Users' ? (
-              <div className="w-full"><UserManagement /></div>
+              <div className="w-full"><UsersManager /></div>
             ) : selectedTab?.label === 'Finances' &&
             selectedTab?.subcategories[selected.sub] === 'Payment plan rows' ? (
               <div className="w-full"><PaymentPlanRowsManager /></div>
@@ -638,8 +711,14 @@ const AdminPage: React.FC = () => {
             <span className="text-base text-base-content/60 font-normal">Select a subcategory</span>
           </div>
         ) : (
-          <div className="flex items-center justify-center text-xl font-semibold text-primary">
-            Select a category
+          <div className="text-center py-12">
+            <div className="mb-6">
+              <svg className="w-20 h-20 mx-auto text-primary mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <h2 className="text-2xl font-bold text-primary mb-2">Choose a Management Section</h2>
+              <p className="text-base-content/70 mb-6">Select a category from the tabs above or use the quick action buttons to get started.</p>
+            </div>
           </div>
         )}
       </div>

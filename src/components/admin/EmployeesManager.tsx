@@ -2,23 +2,57 @@ import React, { useState, useEffect } from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
 import { supabase } from '../../lib/supabase';
 
+// Helper function to map role codes to display names (same as EmployeePerformancePage)
+const getRoleDisplayName = (roleCode: string): string => {
+  const roleMap: { [key: string]: string } = {
+    'c': 'Closer',
+    's': 'Scheduler',
+    'h': 'Handler',
+    'n': 'No role',
+    'e': 'Expert',
+    'z': 'Manager',
+    'Z': 'Manager',
+    'p': 'Partner',
+    'm': 'Manager',
+    'dm': 'Department Manager',
+    'pm': 'Project Manager',
+    'se': 'Secretary',
+    'b': 'Book keeper',
+    'partners': 'Partners',
+    'dv': 'Developer',
+    'ma': 'Marketing',
+    'P': 'Partner',
+    'M': 'Manager',
+    'DM': 'Department Manager',
+    'PM': 'Project Manager',
+    'SE': 'Secretary',
+    'B': 'Book keeper',
+    'Partners': 'Partners',
+    'd': 'Diverse',
+    'f': 'Finance'
+  };
+  
+  return roleMap[roleCode] || roleCode || 'No role';
+};
+
 const EmployeesManager: React.FC = () => {
   const [departments, setDepartments] = useState<Array<{ value: string; label: string }>>([]);
+  const [users, setUsers] = useState<Array<{ value: string; label: string }>>([]);
 
-  // Fetch departments from the database
+  // Fetch departments and users from the database
   useEffect(() => {
     const fetchDepartments = async () => {
       try {
         const { data, error } = await supabase
-          .from('departments')
-          .select('name')
+          .from('tenant_departement')
+          .select('id, name')
           .order('name');
 
         if (error) {
           console.error('Error fetching departments:', error);
         } else {
           const departmentOptions = data?.map(dept => ({
-            value: dept.name,
+            value: dept.id.toString(),
             label: dept.name
           })) || [];
           setDepartments(departmentOptions);
@@ -28,7 +62,29 @@ const EmployeesManager: React.FC = () => {
       }
     };
 
+    const fetchUsers = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('id, email, first_name, last_name, is_active')
+          .order('email');
+
+        if (error) {
+          console.error('Error fetching users:', error);
+        } else {
+          const userOptions = data?.map(user => ({
+            value: user.id.toString(),
+            label: `${user.email}${user.first_name || user.last_name ? ` (${user.first_name || ''} ${user.last_name || ''})`.trim() : ''}${user.is_active ? '' : ' [INACTIVE]'}`
+          })) || [];
+          setUsers(userOptions);
+        }
+      } catch (error) {
+        console.error('Error fetching users:', error);
+      }
+    };
+
     fetchDepartments();
+    fetchUsers();
   }, []);
 
   const fields = [
@@ -40,19 +96,41 @@ const EmployeesManager: React.FC = () => {
       placeholder: 'e.g., John Doe'
     },
     {
+      name: 'user_id',
+      label: 'Connected User',
+      type: 'select' as const,
+      required: false,
+      options: users,
+      placeholder: 'Select a user to connect (optional)',
+      hideInTable: true,
+      hideInEdit: true, // Only show in ADD form, not EDIT form
+      // Temporarily disabled foreign key lookup due to data type mismatch
+      // user_id contains integers but users.id is UUID
+      // foreignKey: {
+      //   table: 'users',
+      //   displayField: 'email',
+      //   valueField: 'id'
+      // }
+    },
+    {
       name: 'official_name',
       label: 'Official Name',
       type: 'text' as const,
-      required: true,
+      required: false,
       placeholder: 'e.g., John Michael Doe'
     },
     {
-      name: 'department',
+      name: 'department_id',
       label: 'Department',
       type: 'select' as const,
       required: false,
       options: departments,
-      placeholder: 'Select a department'
+      placeholder: 'Select a department',
+      foreignKey: {
+        table: 'tenant_departement',
+        displayField: 'name',
+        valueField: 'id'
+      }
     },
     {
       name: 'mobile',
@@ -69,39 +147,38 @@ const EmployeesManager: React.FC = () => {
       placeholder: 'e.g., +972-50-123-4567'
     },
     {
-      name: 'phone_extension',
-      label: 'Phone Extension',
+      name: 'phone_ext',
+      label: 'Phone Ext',
       type: 'text' as const,
       required: false,
       placeholder: 'e.g., 123'
     },
     {
-      name: 'mobile_extension',
-      label: 'Mobile Extension',
+      name: 'mobile_ext',
+      label: 'Mobile Ext',
       type: 'text' as const,
       required: false,
       placeholder: 'e.g., 456'
     },
     {
       name: 'last_call_from',
-      label: 'Last Call From',
+      label: 'Last Call',
       type: 'text' as const,
       required: false,
       placeholder: 'e.g., +972-50-123-4567'
     },
     {
-      name: 'meeting_link',
-      label: 'Meeting Link',
+      name: 'photo',
+      label: 'Photo',
       type: 'text' as const,
       required: false,
-      placeholder: 'e.g., https://meet.google.com/abc-defg-hij'
+      placeholder: 'Base64 encoded photo data'
     },
     {
-      name: 'photo_url',
-      label: 'Photo URL',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., https://example.com/photo.jpg'
+      name: 'is_lawyer',
+      label: 'Is Lawyer',
+      type: 'boolean' as const,
+      required: false
     },
     {
       name: 'is_manager',
@@ -110,8 +187,20 @@ const EmployeesManager: React.FC = () => {
       required: false
     },
     {
-      name: 'is_lawyer',
-      label: 'Is Lawyer',
+      name: 'is_reports',
+      label: 'Can See Reports',
+      type: 'boolean' as const,
+      required: false
+    },
+    {
+      name: 'is_router',
+      label: 'Is Router',
+      type: 'boolean' as const,
+      required: false
+    },
+    {
+      name: 'is_collection',
+      label: 'Is Collection Manager',
       type: 'boolean' as const,
       required: false
     },
@@ -122,39 +211,10 @@ const EmployeesManager: React.FC = () => {
       required: false
     },
     {
-      name: 'is_leads_router',
-      label: 'Is Leads Router',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'is_collection_manager',
-      label: 'Is Collection Manager',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'can_see_reports',
-      label: 'Can See Reports',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'can_decline_price_offers',
+      name: 'is_decline_po',
       label: 'Can Decline Price Offers',
       type: 'boolean' as const,
       required: false
-    },
-    {
-      name: 'permissions_level',
-      label: 'Permissions Level',
-      type: 'select' as const,
-      required: false,
-      options: [
-        { value: 'Access all leads', label: 'Access all leads' },
-        { value: 'Leads limited access (view only)', label: 'Leads limited access (view only)' },
-        { value: 'Exclusive leads only', label: 'Exclusive leads only' }
-      ]
     },
     {
       name: 'bonuses_role',
@@ -164,33 +224,43 @@ const EmployeesManager: React.FC = () => {
       options: [
         { value: 'One-time bonus (temporary)', label: 'One-time bonus (temporary)' },
         { value: 'No bonuses', label: 'No bonuses' },
-        { value: 'scheduler', label: 'Scheduler' },
-        { value: 'expert', label: 'Expert' },
-        { value: 'closer', label: 'Closer' }
+        { value: 'c', label: 'Closer' },
+        { value: 's', label: 'Scheduler' },
+        { value: 'h', label: 'Handler' },
+        { value: 'e', label: 'Expert' },
+        { value: 'z', label: 'Manager' },
+        { value: 'Z', label: 'Manager' },
+        { value: 'p', label: 'Partner' },
+        { value: 'm', label: 'Manager' },
+        { value: 'dm', label: 'Department Manager' },
+        { value: 'pm', label: 'Project Manager' },
+        { value: 'se', label: 'Secretary' },
+        { value: 'b', label: 'Book keeper' },
+        { value: 'partners', label: 'Partners' },
+        { value: 'dv', label: 'Developer' },
+        { value: 'ma', label: 'Marketing' },
+        { value: 'P', label: 'Partner' },
+        { value: 'M', label: 'Manager' },
+        { value: 'DM', label: 'Department Manager' },
+        { value: 'PM', label: 'Project Manager' },
+        { value: 'SE', label: 'Secretary' },
+        { value: 'B', label: 'Book keeper' },
+        { value: 'Partners', label: 'Partners' },
+        { value: 'd', label: 'Diverse' },
+        { value: 'f', label: 'Finance' },
+        { value: 'n', label: 'No role' }
       ]
     },
-    {
-      name: 'display_order',
-      label: 'Display Order',
-      type: 'number' as const,
-      required: false,
-      placeholder: 'e.g., 100'
-    },
-    {
-      name: 'is_active',
-      label: 'Active',
-      type: 'boolean' as const,
-      required: false
-    }
   ];
 
   return (
     <GenericCRUDManager
-      tableName="employees"
+      tableName="tenants_employee"
       fields={fields}
       title="Employee"
       description="Manage company employees and their roles"
-      pageSize={10}
+      pageSize={50}
+      sortColumn="id"
     />
   );
 };
