@@ -33,6 +33,7 @@ export interface SchedulerLead {
   potential_applicants_meeting?: string;
   next_followup?: string;
   eligible?: boolean;
+  country?: string;
 }
 
 const SchedulerToolPage: React.FC = () => {
@@ -44,6 +45,7 @@ const SchedulerToolPage: React.FC = () => {
   const [allSources, setAllSources] = useState<any[]>([]);
   const [allStages, setAllStages] = useState<any[]>([]);
   const [allTags, setAllTags] = useState<any[]>([]);
+  const [allCountries, setAllCountries] = useState<any[]>([]);
   const [currentLeadTags, setCurrentLeadTags] = useState<string>('');
   const [selectedLead, setSelectedLead] = useState<SchedulerLead | null>(null);
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
@@ -56,7 +58,8 @@ const SchedulerToolPage: React.FC = () => {
     source: '',
     category: '',
     topic: '',
-    tags: ''
+    tags: '',
+    country: ''
   });
   const [filteredLeads, setFilteredLeads] = useState<SchedulerLead[]>([]);
   const [showDropdowns, setShowDropdowns] = useState({
@@ -65,7 +68,8 @@ const SchedulerToolPage: React.FC = () => {
     source: false,
     category: false,
     topic: false,
-    tags: false
+    tags: false,
+    country: false
   });
   
   // Sorting state
@@ -151,8 +155,6 @@ const SchedulerToolPage: React.FC = () => {
 
   useEffect(() => {
     const loadData = async () => {
-      console.log('🔄 Starting data loading...');
-      
       // First, get current user information
       const userData = await fetchCurrentUser();
       if (!userData || !userData.employee_id) {
@@ -162,22 +164,16 @@ const SchedulerToolPage: React.FC = () => {
         return;
       }
       
-      console.log('👤 Current user:', userData);
-      
       // Load reference data first
       const categoriesData = await fetchCategories();
       const sourcesData = await fetchSources();
       const stagesData = await fetchStages();
       const tagsData = await fetchTags();
+      const countriesData = await fetchCountries();
       
-      console.log('📊 Reference data loaded:', {
-        categories: categoriesData?.length || 0,
-        sources: sourcesData?.length || 0,
-        stages: stagesData?.length || 0
-      });
       
       // Then load leads after reference data is ready, passing user data
-      await fetchSchedulerLeads(categoriesData, sourcesData, stagesData, userData);
+      await fetchSchedulerLeads(categoriesData, sourcesData, stagesData, userData, countriesData);
     };
     loadData();
   }, []);
@@ -287,7 +283,6 @@ const SchedulerToolPage: React.FC = () => {
         .order('name', { ascending: true });
       
       if (!categoriesError && categoriesData) {
-        console.log('📊 Categories loaded:', categoriesData.length, 'items');
         setAllCategories(categoriesData);
         return categoriesData;
       } else {
@@ -309,7 +304,6 @@ const SchedulerToolPage: React.FC = () => {
         .order('name', { ascending: true });
       
       if (!sourcesError && sourcesData) {
-        console.log('📊 Sources loaded:', sourcesData.length, 'items');
         setAllSources(sourcesData);
         return sourcesData;
       } else {
@@ -331,7 +325,6 @@ const SchedulerToolPage: React.FC = () => {
         .order('name', { ascending: true });
       
       if (!stagesError && stagesData) {
-        console.log('📊 Stages loaded:', stagesData.length, 'items');
         setAllStages(stagesData);
         return stagesData;
       } else {
@@ -354,7 +347,6 @@ const SchedulerToolPage: React.FC = () => {
         .order('order', { ascending: true });
       
       if (!tagsError && tagsData) {
-        console.log('🏷️ Tags loaded:', tagsData.length, 'items');
         setAllTags(tagsData);
         // Also populate the tags list for the input field
         const tagNames = tagsData.map(tag => tag.name);
@@ -366,6 +358,27 @@ const SchedulerToolPage: React.FC = () => {
       }
     } catch (error) {
       console.error('❌ Error fetching tags:', error);
+      return [];
+    }
+  };
+
+  const fetchCountries = async () => {
+    try {
+      // Fetch all countries with timezone
+      const { data: countriesData, error: countriesError } = await supabase
+        .from('misc_country')
+        .select('id, name, iso_code, name_he, timezone')
+        .order('name', { ascending: true });
+      
+      if (!countriesError && countriesData) {
+        setAllCountries(countriesData);
+        return countriesData;
+      } else {
+        console.error('❌ Error fetching countries:', countriesError);
+        return [];
+      }
+    } catch (error) {
+      console.error('❌ Error fetching countries:', error);
       return [];
     }
   };
@@ -521,7 +534,88 @@ const SchedulerToolPage: React.FC = () => {
     return String(stageId); // Fallback to original value
   };
 
-  const fetchSchedulerLeads = async (categoriesData?: any[], sourcesData?: any[], stagesData?: any[], userData?: any) => {
+  const getCountryName = (countryId: string | number | null | undefined, countriesData?: any[]) => {
+    const countries = countriesData || allCountries;
+    if (!countryId || countryId === '---' || countryId === '--') {
+      return '--';
+    }
+    
+    // If countries is not loaded yet, return the original value
+    if (!countries || countries.length === 0) {
+      return String(countryId);
+    }
+    
+    // Try to find by ID
+    const countryById = countries.find((country: any) => country.id.toString() === countryId.toString());
+    if (countryById) {
+      return countryById.name;
+    }
+    
+    // If not found by ID, try to find by name (in case it's already a name)
+    const countryByName = countries.find((country: any) => 
+      country.name.toLowerCase().trim() === String(countryId).toLowerCase().trim()
+    );
+    if (countryByName) {
+      return countryByName.name;
+    }
+    
+    return String(countryId); // Fallback to original value
+  };
+
+  const getCountryTimezone = (countryId: string | number | null | undefined, countriesData?: any[]) => {
+    const countries = countriesData || allCountries;
+    if (!countryId || countryId === '---' || countryId === '--') {
+      return null;
+    }
+    
+    if (!countries || countries.length === 0) {
+      return null;
+    }
+    
+    // Try to find by ID
+    const countryById = countries.find((country: any) => country.id.toString() === countryId.toString());
+    if (countryById && countryById.timezone) {
+      return countryById.timezone;
+    }
+    
+    // If not found by ID, try to find by name
+    const countryByName = countries.find((country: any) => 
+      country.name.toLowerCase().trim() === String(countryId).toLowerCase().trim()
+    );
+    if (countryByName && countryByName.timezone) {
+      return countryByName.timezone;
+    }
+    
+    return null;
+  };
+
+  const getBusinessHoursInfo = (timezone: string | null) => {
+    if (!timezone) return { isBusinessHours: false, localTime: null };
+    
+    try {
+      const now = new Date();
+      const localTime = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
+      const hour = localTime.getHours();
+      
+      // Business hours: 8 AM to 7 PM (8:00 - 19:00)
+      const isBusinessHours = hour >= 8 && hour < 19;
+      
+      // Format the local time
+      const formattedTime = localTime.toLocaleString("en-US", {
+        timeZone: timezone,
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+      
+      return { isBusinessHours, localTime: formattedTime };
+    } catch (error) {
+      console.error('Error checking business hours for timezone:', timezone, error);
+      return { isBusinessHours: false, localTime: null };
+    }
+  };
+
+  const fetchSchedulerLeads = async (categoriesData?: any[], sourcesData?: any[], stagesData?: any[], userData?: any, countriesData?: any[]) => {
     try {
       setLoading(true);
       setError(null);
@@ -545,7 +639,6 @@ const SchedulerToolPage: React.FC = () => {
         
         if (!employeeError && employeeData) {
           employeeDisplayName = employeeData.display_name;
-          console.log('👤 Employee display name:', employeeDisplayName);
         } else {
           console.error('❌ Could not find employee display name for ID:', userData.employee_id);
         }
@@ -580,7 +673,12 @@ const SchedulerToolPage: React.FC = () => {
           number_of_applicants_meeting,
           potential_applicants_meeting,
           next_followup,
-          eligible
+          eligible,
+          country_id,
+          misc_country!country_id (
+            id,
+            name
+          )
         `)
         .eq('scheduler', employeeDisplayName) // Filter by current user's display name
         .or('stage.in.(0,10,11,15),stage.in.(created,scheduler_assigned,handler_started,success)'); // Handle both numeric IDs and text values
@@ -590,16 +688,9 @@ const SchedulerToolPage: React.FC = () => {
         throw newError;
       }
 
-      console.log('🔍 New leads query results:', {
-        userEmployeeId: userData?.employee_id,
-        employeeDisplayName: employeeDisplayName,
-        newLeadsCount: newLeads?.length || 0,
-        newLeads: newLeads?.slice(0, 3), // Show first 3 for debugging
-        allStages: newLeads?.map(lead => lead.stage), // Show all stages found
-        eligibleValues: newLeads?.map(lead => ({ id: lead.id, eligible: lead.eligible })) // Show eligible values
-      });
 
       // Fetch legacy leads with scheduler assigned to current user and specific stages
+
       const { data: legacyLeads, error: legacyError } = await supabase
         .from('leads_lead')
         .select(`
@@ -629,17 +720,10 @@ const SchedulerToolPage: React.FC = () => {
         .in('stage', [0, 10, 11, 15]); // Only show leads with stages 0, 10, 11, 15
 
       if (legacyError) {
-        console.error('Error fetching legacy leads:', legacyError);
+        console.error('❌ Error fetching legacy leads:', legacyError);
         throw legacyError;
       }
 
-      console.log('🔍 Legacy leads query results:', {
-        userEmployeeId: userData?.employee_id,
-        legacyLeadsCount: legacyLeads?.length || 0,
-        legacyLeads: legacyLeads?.slice(0, 3), // Show first 3 for debugging
-        allStages: legacyLeads?.map(lead => lead.stage), // Show all stages found
-        eligibleValues: legacyLeads?.map(lead => ({ id: lead.id, eligibile: (lead as any).eligibile })) // Show eligible values
-      });
 
 
       // Fetch language mappings for legacy leads
@@ -714,6 +798,70 @@ const SchedulerToolPage: React.FC = () => {
         }
       }
 
+      // Country data for new leads is now fetched directly from the leads table with the JOIN
+      // For legacy leads, we'll keep the existing contact-based approach since they don't have country_id directly
+      let legacyCountryMap = new Map();
+      
+      if (legacyLeadIds.length > 0) {
+        try {
+          // Query for country data via lead_leadcontact -> leads_contact -> misc_country
+          const { data: legacyCountryData, error: legacyCountryError } = await supabase
+            .from('lead_leadcontact')
+            .select(`
+              lead_id,
+              leads_contact (
+                country_id,
+                misc_country (
+                  id,
+                  name
+                )
+              )
+            `)
+            .in('lead_id', legacyLeadIds)
+            .eq('main', 'true'); // Only get main contacts
+          
+          if (legacyCountryError) {
+            console.error('Error fetching country data for legacy leads:', legacyCountryError);
+          } else if (legacyCountryData && legacyCountryData.length > 0) {
+            legacyCountryData.forEach((item) => {
+              if (item.leads_contact && (item.leads_contact as any).misc_country) {
+                const leadId = item.lead_id;
+                const countryName = ((item.leads_contact as any).misc_country as any).name;
+                legacyCountryMap.set(leadId, countryName);
+              }
+            });
+          } else {
+            // Try without the main filter to get all contacts
+            const allContactsResult = await supabase
+              .from('lead_leadcontact')
+              .select(`
+                lead_id,
+                main,
+                leads_contact (
+                  country_id,
+                  misc_country (
+                    id,
+                    name
+                  )
+                )
+              `)
+              .in('lead_id', legacyLeadIds);
+            
+            if (allContactsResult.data && allContactsResult.data.length > 0) {
+              allContactsResult.data.forEach((item: any) => {
+                if (item.leads_contact && (item.leads_contact as any).misc_country) {
+                  const leadId = item.lead_id;
+                  const countryName = ((item.leads_contact as any).misc_country as any).name;
+                  legacyCountryMap.set(leadId, countryName);
+                }
+              });
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching country data for legacy leads:', error);
+        }
+      }
+
 
 
 
@@ -729,23 +877,6 @@ const SchedulerToolPage: React.FC = () => {
           const sourceName = getSourceName(lead.source_id, lead.source, sourcesData);
           const categoryName = getCategoryName(lead.category_id, lead.category, categoriesData);
           
-          // Debug logging for first few leads
-          if (lead.id === newLeads?.[0]?.id) {
-            console.log('🔍 New Lead Mapping Debug:', {
-              leadId: lead.id,
-              originalStage: lead.stage,
-              mappedStage: stageName,
-              originalSourceId: lead.source_id,
-              originalSource: lead.source,
-              mappedSource: sourceName,
-              originalCategoryId: lead.category_id,
-              originalCategory: lead.category,
-              mappedCategory: categoryName,
-              allStagesLength: stagesData?.length || 0,
-              allSourcesLength: sourcesData?.length || 0,
-              allCategoriesLength: categoriesData?.length || 0
-            });
-          }
           
           return {
             id: lead.id,
@@ -772,15 +903,11 @@ const SchedulerToolPage: React.FC = () => {
             number_of_applicants_meeting: lead.number_of_applicants_meeting || '',
             potential_applicants_meeting: lead.potential_applicants_meeting || '',
             next_followup: lead.next_followup || '',
-            eligible: lead.eligible !== false // Convert to boolean, default to true if null/undefined
+            eligible: lead.eligible !== false, // Convert to boolean, default to true if null/undefined
+            country: (lead as any).misc_country?.name || '' // Get country directly from the JOIN
           };
         });
 
-      console.log('🔍 After filtering new leads:', {
-        originalCount: newLeads?.length || 0,
-        filteredCount: transformedNewLeads.length,
-        eligibleBreakdown: transformedNewLeads.map(lead => ({ id: lead.id, eligible: lead.eligible }))
-      });
 
       // Transform legacy leads - already filtered by user's employee ID
       const transformedLegacyLeads: SchedulerLead[] = (legacyLeads || [])
@@ -797,22 +924,6 @@ const SchedulerToolPage: React.FC = () => {
           const sourceName = getSourceName(lead.source_id, undefined, sourcesData);
           const categoryName = getCategoryName(lead.category_id, lead.category, categoriesData);
           
-          // Debug logging for first few legacy leads
-          if (lead.id === legacyLeads?.[0]?.id) {
-            console.log('🔍 Legacy Lead Mapping Debug:', {
-              leadId: lead.id,
-              originalStage: lead.stage,
-              mappedStage: stageName,
-              originalSourceId: lead.source_id,
-              mappedSource: sourceName,
-              originalCategoryId: lead.category_id,
-              originalCategory: lead.category,
-              mappedCategory: categoryName,
-              allStagesLength: stagesData?.length || 0,
-              allSourcesLength: sourcesData?.length || 0,
-              allCategoriesLength: categoriesData?.length || 0
-            });
-          }
           
           return {
             id: `legacy_${lead.id}`,
@@ -848,26 +959,17 @@ const SchedulerToolPage: React.FC = () => {
             number_of_applicants_meeting: '', // Legacy leads don't have this field
             potential_applicants_meeting: '', // Legacy leads don't have this field
             next_followup: lead.next_followup || '',
-            eligible: (lead as any).eligibile?.toLowerCase() === 'yes' || (lead as any).eligibile?.toLowerCase() === 'true' // Convert text to boolean
+            eligible: (lead as any).eligibile?.toLowerCase() === 'yes' || (lead as any).eligibile?.toLowerCase() === 'true', // Convert text to boolean
+            country: legacyCountryMap.get(lead.id) || '' // Get country from legacyCountryMap
           };
         });
 
-      console.log('🔍 After filtering legacy leads:', {
-        originalCount: legacyLeads?.length || 0,
-        filteredCount: transformedLegacyLeads.length,
-        eligibleBreakdown: transformedLegacyLeads.map(lead => ({ id: lead.id, eligible: lead.eligible }))
-      });
 
       // Combine and sort by created date (newest first)
       const allLeads = [...transformedNewLeads, ...transformedLegacyLeads]
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
       setLeads(allLeads);
-      console.log('Scheduler leads loaded:', {
-        newLeads: transformedNewLeads.length,
-        legacyLeads: transformedLegacyLeads.length,
-        total: allLeads.length
-      });
 
     } catch (error) {
       console.error('Error fetching scheduler leads:', error);
@@ -1106,7 +1208,6 @@ const SchedulerToolPage: React.FC = () => {
           // Join tags with comma and space
           const tagsString = tags.join(', ');
           setCurrentLeadTags(tagsString);
-          console.log('🏷️ Current lead tags loaded (legacy):', tagsString);
         } else {
           console.error('❌ Error fetching current lead tags (legacy):', error);
           setCurrentLeadTags('');
@@ -1133,7 +1234,6 @@ const SchedulerToolPage: React.FC = () => {
           // Join tags with comma and space
           const tagsString = tags.join(', ');
           setCurrentLeadTags(tagsString);
-          console.log('🏷️ Current lead tags loaded (new):', tagsString);
         } else {
           console.error('❌ Error fetching current lead tags (new):', error);
           setCurrentLeadTags('');
@@ -1190,7 +1290,6 @@ const SchedulerToolPage: React.FC = () => {
           }
         }
         
-        console.log('✅ Tags saved successfully for legacy lead:', legacyId);
       } else {
         // For new leads, use the newlead_id column
         // First, remove all existing tags for this new lead
@@ -1231,7 +1330,6 @@ const SchedulerToolPage: React.FC = () => {
           }
         }
         
-        console.log('✅ Tags saved successfully for new lead:', leadId);
       }
     } catch (error) {
       console.error('❌ Error saving tags:', error);
@@ -1304,8 +1402,6 @@ const SchedulerToolPage: React.FC = () => {
       // Get current user name from Supabase users table
       const currentUserName = await fetchCurrentUserFullName();
       
-      console.log('Current user for lead edit:', currentUserName);
-      console.log('Is legacy lead:', isLegacyLead);
       
       // Create update data based on whether it's a legacy lead or not
       let updateData: any = {};
@@ -1469,13 +1565,11 @@ const SchedulerToolPage: React.FC = () => {
       
       // Save tags if they were changed (regardless of other field changes)
       if (currentLeadTags !== (selectedLead?.tags || '')) {
-        console.log('🏷️ Tags changed, saving tags...');
         await saveLeadTags(selectedLead.id, currentLeadTags);
       }
       
       // If no changes were detected in other fields, don't proceed with the update
       if (Object.keys(updateData).length === 0) {
-        console.log('No changes detected in other fields, skipping update');
         setShowEditLeadDrawer(false);
         await fetchSchedulerLeads(allCategories, allSources, allStages, currentUser);
         toast.success('Lead updated!');
@@ -1487,7 +1581,6 @@ const SchedulerToolPage: React.FC = () => {
       if (isLegacyLead) {
         // For legacy leads, update the leads_lead table
         const legacyId = selectedLead.id.toString().replace('legacy_', '');
-        console.log('Updating legacy lead with ID:', legacyId);
         
         const { error } = await supabase
           .from('leads_lead')
@@ -1497,7 +1590,6 @@ const SchedulerToolPage: React.FC = () => {
         updateError = error;
       } else {
         // For regular leads, update the leads table
-        console.log('Updating regular lead with ID:', selectedLead.id);
         
         const { error } = await supabase
           .from('leads')
@@ -1539,8 +1631,6 @@ const SchedulerToolPage: React.FC = () => {
           
           if (historyError) {
             console.error('Error logging lead changes:', historyError);
-          } else {
-            console.log('Logged', changesToInsert.length, 'field changes');
           }
         }
       }
@@ -1630,6 +1720,11 @@ const SchedulerToolPage: React.FC = () => {
         lead.tags && lead.tags.toLowerCase().includes(filters.tags.toLowerCase())
       );
     }
+    if (filters.country) {
+      filtered = filtered.filter(lead => 
+        lead.country && lead.country.toLowerCase().includes(filters.country.toLowerCase())
+      );
+    }
 
     // Apply sorting
     if (sortConfig.key && sortConfig.direction) {
@@ -1682,7 +1777,8 @@ const SchedulerToolPage: React.FC = () => {
       source: '',
       category: '',
       topic: '',
-      tags: ''
+      tags: '',
+      country: ''
     });
     setSearchTerm('');
     setFilteredLeads(leads);
@@ -1776,7 +1872,8 @@ const SchedulerToolPage: React.FC = () => {
           source: false,
           category: false,
           topic: false,
-          tags: false
+          tags: false,
+          country: false
         });
       }
       if (!target.closest('.contact-dropdown')) {
@@ -1884,7 +1981,7 @@ const SchedulerToolPage: React.FC = () => {
 
       {/* Filters */}
       <div className="mb-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
           {/* Stage Filter */}
           <div className="relative filter-dropdown">
             <label className="block text-sm font-medium text-gray-700 mb-1">Stage</label>
@@ -2077,6 +2174,38 @@ const SchedulerToolPage: React.FC = () => {
             </div>
           </div>
 
+          {/* Country Filter */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Country</label>
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Filter by country..."
+                value={filters.country}
+                onChange={(e) => updateFilter('country', e.target.value)}
+                onFocus={() => setShowDropdowns(prev => ({ ...prev, country: true }))}
+                className="input input-bordered w-full pr-8"
+              />
+              <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+              {showDropdowns.country && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-48 overflow-y-auto">
+                  {getUniqueValues('country').map((country) => (
+                    <div
+                      key={country}
+                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                      onClick={() => {
+                        updateFilter('country', country);
+                        setShowDropdowns(prev => ({ ...prev, country: false }));
+                      }}
+                    >
+                      {country}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
           {/* Date Filters and Clear Button */}
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-2">
@@ -2185,6 +2314,22 @@ const SchedulerToolPage: React.FC = () => {
                     <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
                       <span className="truncate block">{lead.topic || 'N/A'}</span>
                     </span>
+                  </div>
+
+                  {/* Country */}
+                  <div className="flex justify-between items-center py-1">
+                    <span className="text-xs md:text-base font-semibold text-gray-500">Country</span>
+                    <div className="flex items-center gap-1 ml-2 text-right">
+                      <span className="text-sm md:text-lg font-bold text-gray-800">{lead.country || 'N/A'}</span>
+                      {lead.country && (() => {
+                        const timezone = getCountryTimezone(lead.country, allCountries);
+                        const businessInfo = getBusinessHoursInfo(timezone);
+                        return timezone ? (
+                          <div className={`w-2 h-2 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
+                               title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} />
+                        ) : null;
+                      })()}
+                    </div>
                   </div>
 
                   {/* Total */}
@@ -2492,6 +2637,7 @@ const SchedulerToolPage: React.FC = () => {
                   <th className="font-semibold text-gray-900 text-xs sm:text-sm">Source</th>
                   <th className="font-semibold text-gray-900 text-xs sm:text-sm">Category</th>
                   <th className="font-semibold text-gray-900 text-xs sm:text-sm">Topic</th>
+                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Country</th>
                   <th 
                     className="font-semibold text-gray-900 cursor-pointer hover:bg-gray-100 select-none text-xs sm:text-sm"
                     onClick={() => handleSort('total')}
@@ -2558,6 +2704,19 @@ const SchedulerToolPage: React.FC = () => {
                     </td>
                     <td className="text-xs sm:text-sm text-gray-600 break-words">
                       {lead.topic || 'N/A'}
+                    </td>
+                    <td className="text-xs sm:text-sm text-gray-600 break-words">
+                      <div className="flex items-center gap-1">
+                        <span>{lead.country || 'N/A'}</span>
+                        {lead.country && (() => {
+                          const timezone = getCountryTimezone(lead.country, allCountries);
+                          const businessInfo = getBusinessHoursInfo(timezone);
+                          return timezone ? (
+                            <div className={`w-2 h-2 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
+                                 title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} />
+                          ) : null;
+                        })()}
+                      </div>
                     </td>
                     <td className="text-xs sm:text-sm font-medium text-gray-900">
                       {formatCurrency(lead.total, lead.balance_currency)}
@@ -2680,7 +2839,7 @@ const SchedulerToolPage: React.FC = () => {
                   {/* Collapsible content row */}
                   {expandedRows.has(lead.id) && (
                     <tr>
-                      <td colSpan={11} className="p-6 border-t border-gray-200 pb-8">
+                      <td colSpan={12} className="p-6 border-t border-gray-200 pb-8">
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                           {/* Facts of Case */}
                           <div className="space-y-2">

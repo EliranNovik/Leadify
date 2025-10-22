@@ -51,6 +51,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [showChat, setShowChat] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Fetch current user info
   useEffect(() => {
@@ -370,6 +371,14 @@ const WhatsAppLeadsPage: React.FC = () => {
       setMessages(prev => [...prev, newMsg]);
       setNewMessage('');
       
+      // Reset textarea height
+      setTimeout(() => {
+        const textarea = textareaRef.current;
+        if (textarea) {
+          textarea.style.height = '40px';
+        }
+      }, 100);
+      
       // Auto-scroll to bottom
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -480,6 +489,28 @@ const WhatsAppLeadsPage: React.FC = () => {
   const getMessagePreview = (message: string) => {
     return message.length > 50 ? message.substring(0, 50) + '...' : message;
   };
+
+  // Auto-resize textarea
+  const adjustTextareaHeight = () => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = 'auto';
+      const scrollHeight = textarea.scrollHeight;
+      const maxHeight = isMobile ? 120 : 100; // Max height in pixels
+      textarea.style.height = Math.min(scrollHeight, maxHeight) + 'px';
+    }
+  };
+
+  // Handle message input change
+  const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setNewMessage(e.target.value);
+    adjustTextareaHeight();
+  };
+
+  // Adjust textarea height when message changes
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [newMessage, isMobile]);
 
   return (
     <div className="fixed inset-0 bg-white z-[9999]">
@@ -746,19 +777,29 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                 {/* Message Input */}
                 <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
-                  <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={newMessage}
-                      onChange={(e) => setNewMessage(e.target.value)}
-                      placeholder="Type a reply..."
-                      className="flex-1 input input-bordered rounded-full"
-                      disabled={sending}
-                    />
+                  <form onSubmit={handleSendMessage} className="flex items-end gap-2">
+                    <div className="flex-1 relative">
+                      <textarea
+                        ref={textareaRef}
+                        value={newMessage}
+                        onChange={handleMessageChange}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSendMessage(e);
+                          }
+                        }}
+                        placeholder="Type a reply..."
+                        className="w-full px-4 py-2 border border-gray-300 rounded-full resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent min-h-[40px] max-h-[120px]"
+                        style={{ height: '40px' }}
+                        disabled={sending}
+                        rows={1}
+                      />
+                    </div>
                     <button
                       type="submit"
                       disabled={!newMessage.trim() || sending}
-                      className="btn btn-primary btn-circle"
+                      className="btn btn-primary btn-circle flex-shrink-0"
                     >
                       {sending ? (
                         <div className="loading loading-spinner loading-sm"></div>
