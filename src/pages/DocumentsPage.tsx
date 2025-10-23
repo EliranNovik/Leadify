@@ -284,9 +284,11 @@ const DocumentsPage: React.FC = () => {
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      if (!target.closest('.search-dropdown-container')) {
-        setShowDropdown(false);
+      // Don't close if clicking on the dropdown itself (portal rendered)
+      if (target.closest('.search-dropdown-container') || target.closest('[data-dropdown-portal]')) {
+        return;
       }
+      setShowDropdown(false);
     };
 
     if (showDropdown) {
@@ -309,6 +311,7 @@ const DocumentsPage: React.FC = () => {
 
   // Open folder and load documents
   const openFolder = async (folder: FolderItem) => {
+    console.log('openFolder called with:', folder.name, folder.id);
     setSelectedFolder(folder);
     setIsModalOpen(true);
     setIsLoadingDocuments(true);
@@ -631,6 +634,7 @@ const DocumentsPage: React.FC = () => {
                 {showDropdown && allFolders.length > 0 && createPortal(
                   <div 
                     className="fixed z-50 bg-white/20 backdrop-blur-lg border border-white/30 rounded-lg shadow-xl max-h-[60vh] md:max-h-80 overflow-y-auto overscroll-contain"
+                    data-dropdown-portal
                     style={{
                       top: dropdownPosition.top + 4,
                       left: dropdownPosition.left,
@@ -649,7 +653,10 @@ const DocumentsPage: React.FC = () => {
                         <div 
                           key={folder.id}
                           className="flex items-center justify-between p-3 hover:bg-white/30 cursor-pointer transition-colors border-b border-white/20 last:border-b-0 touch-manipulation"
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            console.log('Dropdown folder clicked:', folder.name, folder.id);
                             setShowDropdown(false);
                             openFolder(folder);
                           }}
@@ -682,7 +689,12 @@ const DocumentsPage: React.FC = () => {
                       <div 
                         key={folder.id}
                         className="flex items-center justify-between p-3 bg-white/20 backdrop-blur-sm rounded-lg border border-white/30 hover:bg-white/30 cursor-pointer transition-colors"
-                        onClick={() => openFolder(folder)}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          console.log('Search result folder clicked:', folder.name);
+                          openFolder(folder);
+                        }}
                       >
                         <div className="flex items-center gap-3">
                           <FolderIcon className="w-5 h-5" style={{ color: '#3b82f6' }} />
