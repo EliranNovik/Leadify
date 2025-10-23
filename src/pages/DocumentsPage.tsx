@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { 
   DocumentArrowUpIcon, 
   MagnifyingGlassIcon, 
@@ -69,8 +68,6 @@ const DocumentsPage: React.FC = () => {
   // Upload to existing folder state
   const [isUploadingToFolder, setIsUploadingToFolder] = useState(false);
   const [showUploadSection, setShowUploadSection] = useState(false);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
 
   // MSAL and Graph API setup
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -145,6 +142,7 @@ const DocumentsPage: React.FC = () => {
       return;
     }
 
+    console.log('Uploading files:', files.map(f => ({ name: f.name, type: f.type, size: f.size })));
     setIsUploading(true);
     setLastUploadedFolderUrl(''); // Clear previous folder URL
     const newUploads = files.map(file => ({ 
@@ -158,16 +156,23 @@ const DocumentsPage: React.FC = () => {
 
     for (const file of files) {
       try {
+        // Check file size (Microsoft Graph has a 100MB limit for direct uploads)
+        if (file.size > 100 * 1024 * 1024) { // 100MB
+          throw new Error(`File ${file.name} is too large. Maximum size is 100MB.`);
+        }
+
         const formData = new FormData();
         formData.append('file', file);
         formData.append('folderName', folderName);
         formData.append('uploadedBy', currentUser);
         formData.append('isGeneralDocument', 'true');
 
+        console.log(`Uploading file: ${file.name}, type: ${file.type}, size: ${file.size}`);
         const { data, error } = await supabase.functions.invoke('upload-to-onedrive', {
           body: formData,
         });
 
+        console.log('Upload response:', { data, error });
         if (error) throw new Error(error.message);
         if (!data || !data.success) {
           throw new Error(data.error || 'Upload function returned an error.');
@@ -284,8 +289,8 @@ const DocumentsPage: React.FC = () => {
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      // Don't close if clicking on the dropdown itself (portal rendered)
-      if (target.closest('.search-dropdown-container') || target.closest('[data-dropdown-portal]')) {
+      // Don't close if clicking on the dropdown itself
+      if (target.closest('.search-dropdown-container')) {
         return;
       }
       setShowDropdown(false);
@@ -297,17 +302,6 @@ const DocumentsPage: React.FC = () => {
     }
   }, [showDropdown]);
 
-  // Calculate dropdown position
-  useEffect(() => {
-    if (showDropdown && searchInputRef.current) {
-      const rect = searchInputRef.current.getBoundingClientRect();
-      setDropdownPosition({
-        top: rect.bottom + window.scrollY,
-        left: rect.left + window.scrollX,
-        width: rect.width
-      });
-    }
-  }, [showDropdown]);
 
   // Open folder and load documents
   const openFolder = async (folder: FolderItem) => {
@@ -470,10 +464,23 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
+  // Copy current folder link to clipboard
+  const copyCurrentFolderLink = async () => {
+    if (!selectedFolder?.webUrl) return;
+    
+    try {
+      await navigator.clipboard.writeText(selectedFolder.webUrl);
+      toast.success('Folder link copied to clipboard!');
+    } catch (error) {
+      console.error('Failed to copy link:', error);
+      toast.error('Failed to copy link to clipboard');
+    }
+  };
+
   return (
     <div className="p-6 w-full">
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+      <div className={`grid grid-cols-1 gap-8 ${lastUploadedFolderUrl ? 'lg:grid-cols-2 lg:grid-rows-2' : 'lg:grid-cols-2'}`}>
         {/* Upload Section */}
         <div className="bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-200 overflow-hidden">
           <div className="pl-6 pt-4 pb-2">
@@ -578,10 +585,21 @@ const DocumentsPage: React.FC = () => {
           <div className="bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-200 overflow-hidden">
             <div className="p-6">
               <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold text-white mb-1">Folder Uploaded Successfully!</h3>
-                  <p className="text-sm text-white/80">Click the button to copy the shareable link to your clipboard</p>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-lg font-semibold text-white">Folder Uploaded Successfully!</h3>
+                    <button
+                      onClick={() => setLastUploadedFolderUrl('')}
+                      className="btn btn-ghost btn-sm btn-circle text-white/70 hover:text-white hover:bg-white/20"
+                      title="Close"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-sm text-white/80 mb-4">Click the button to copy the shareable link to your clipboard</p>
                 </div>
+              </div>
+              <div className="flex justify-end">
                 <button
                   onClick={copyFolderLink}
                   className="btn flex items-center gap-2"
@@ -596,7 +614,7 @@ const DocumentsPage: React.FC = () => {
         )}
 
         {/* Search Section */}
-        <div className={`bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-200 ${showDropdown ? 'overflow-visible' : 'overflow-hidden'}`}>
+        <div className={`bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-200 ${showDropdown ? 'overflow-visible' : 'overflow-hidden'} ${lastUploadedFolderUrl ? 'lg:col-span-2' : ''}`}>
           <div className="pl-6 pt-4 pb-2">
             <h2 className="text-xl font-semibold text-white">Search Documents</h2>
             <div className="border-b border-white/30 mt-2"></div>
@@ -604,11 +622,10 @@ const DocumentsPage: React.FC = () => {
           <div className="p-6">
             <div className="space-y-6">
               {/* Search Input */}
-              <div className="space-y-2 search-dropdown-container">
+              <div className="space-y-2 search-dropdown-container relative">
                 <label className="text-base font-medium text-white">Search Folders</label>
                 <div className="relative">
                   <input
-                    ref={searchInputRef}
                     type="text"
                     className="input input-bordered w-full pl-10 bg-white/20 backdrop-blur-sm border-white/30 text-white placeholder-white/70"
                     placeholder="Search for folders..."
@@ -628,55 +645,44 @@ const DocumentsPage: React.FC = () => {
                       <div className="loading loading-spinner loading-sm"></div>
                     </div>
                   )}
-                </div>
-                
-                {/* Dropdown with all folders */}
-                {showDropdown && allFolders.length > 0 && createPortal(
-                  <div 
-                    className="fixed z-50 bg-white/20 backdrop-blur-lg border border-white/30 rounded-lg shadow-xl max-h-[60vh] md:max-h-80 overflow-y-auto overscroll-contain"
-                    data-dropdown-portal
-                    style={{
-                      top: dropdownPosition.top + 4,
-                      left: dropdownPosition.left,
-                      width: dropdownPosition.width,
-                      maxHeight: '60vh',
-                      WebkitOverflowScrolling: 'touch'
-                    }}
-                  >
-                    <div className="p-2 text-xs text-white/60 border-b border-white/20 sticky top-0 bg-white/20 backdrop-blur-sm">
-                      {searchQuery.trim() ? `Filtered Results (${allFolders.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).length})` : `All Folders (${allFolders.length})`}
-                    </div>
-                    <div className="overflow-y-auto max-h-[calc(60vh-40px)]">
-                      {allFolders
-                        .filter(folder => !searchQuery.trim() || folder.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                        .map((folder) => (
-                        <div 
-                          key={folder.id}
-                          className="flex items-center justify-between p-3 hover:bg-white/30 cursor-pointer transition-colors border-b border-white/20 last:border-b-0 touch-manipulation"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            console.log('Dropdown folder clicked:', folder.name, folder.id);
-                            setShowDropdown(false);
-                            openFolder(folder);
-                          }}
-                        >
-                        <div className="flex items-center gap-3">
-                          <FolderIcon className="w-5 h-5" style={{ color: '#3b82f6' }} />
-                          <div>
-                            <div className="text-base font-medium text-white">{folder.name}</div>
-                            <div className="text-sm text-white/70">
-                              Modified: {formatDate(folder.lastModifiedDateTime)}
+                  
+                  {/* Dropdown with all folders - now positioned relative to the input */}
+                  {showDropdown && allFolders.length > 0 && (
+                    <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white/20 backdrop-blur-lg border border-white/30 rounded-lg shadow-xl max-h-[60vh] md:max-h-80 overflow-y-auto overscroll-contain">
+                      <div className="p-2 text-xs text-white/60 border-b border-white/20 sticky top-0 bg-white/20 backdrop-blur-sm">
+                        {searchQuery.trim() ? `Filtered Results (${allFolders.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).length})` : `All Folders (${allFolders.length})`}
+                      </div>
+                      <div className="overflow-y-auto max-h-[calc(60vh-40px)]">
+                        {allFolders
+                          .filter(folder => !searchQuery.trim() || folder.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                          .map((folder) => (
+                          <div 
+                            key={folder.id}
+                            className="flex items-center justify-between p-3 hover:bg-white/30 cursor-pointer transition-colors border-b border-white/20 last:border-b-0 touch-manipulation"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              console.log('Dropdown folder clicked:', folder.name, folder.id);
+                              setShowDropdown(false);
+                              openFolder(folder);
+                            }}
+                          >
+                          <div className="flex items-center gap-3">
+                            <FolderIcon className="w-5 h-5" style={{ color: '#3b82f6' }} />
+                            <div>
+                              <div className="text-base font-medium text-white">{folder.name}</div>
+                              <div className="text-sm text-white/70">
+                                Modified: {formatDate(folder.lastModifiedDateTime)}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        <EyeIcon className="w-5 h-5 text-white/70" />
-                        </div>
-                      ))}
+                          <EyeIcon className="w-5 h-5 text-white/70" />
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  </div>,
-                  document.body
-                )}
+                  )}
+                </div>
               </div>
 
               {/* Search Results */}
@@ -750,6 +756,15 @@ const DocumentsPage: React.FC = () => {
                 >
                   <DocumentArrowUpIcon className="w-4 h-4" />
                   {showUploadSection ? 'Hide Upload' : 'Upload Files'}
+                </button>
+                <button
+                  className="btn btn-sm flex items-center gap-1"
+                  style={{ backgroundColor: '#1e3a8a', borderColor: '#1e3a8a', color: 'white' }}
+                  onClick={copyCurrentFolderLink}
+                  title="Copy folder link to clipboard"
+                >
+                  <PaperClipIcon className="w-4 h-4" style={{ color: 'white' }} />
+                  Copy Link
                 </button>
                 {folderDocuments.length > 0 && (
                   <button
