@@ -57,7 +57,11 @@ serve(async (req) => {
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const leadNumber = formData.get('leadNumber') as string;
+    const folderName = formData.get('folderName') as string;
+    const folderId = formData.get('folderId') as string;
     const isEmailAttachment = formData.get('isEmailAttachment') as string === 'true';
+    const isGeneralDocument = formData.get('isGeneralDocument') as string === 'true';
+    const isExistingFolder = formData.get('isExistingFolder') as string === 'true';
 
     if (!file) throw new Error('Missing file in request.');
 
@@ -81,23 +85,145 @@ serve(async (req) => {
         attachmentId: uploadedFile.id,
       };
 
+    } else if (isGeneralDocument) {
+      // Logic for general document uploads to Documents folder
+      if (!folderName) throw new Error('Missing folderName for general document upload.');
+
+      // Sanitize folder name to be safe for OneDrive
+      const sanitizedFolderName = folderName.replace(/[<>:"/\\|?*]/g, '_').trim();
+      if (!sanitizedFolderName) throw new Error('Invalid folder name.');
+
+      // 1. Find or create the folder in the Documents root
+      let driveItem;
+      try {
+        driveItem = await graphClient
+          .api(`/users/${targetUserId}/drive/root:/Documents/${sanitizedFolderName}`)
+          .get();
+      } catch (error) {
+        if (error.statusCode === 404) {
+          // Create the folder if it doesn't exist
+          driveItem = await graphClient
+            .api(`/users/${targetUserId}/drive/root:/Documents:/children`)
+            .post({
+              name: sanitizedFolderName,
+              folder: {},
+              '@microsoft.graph.conflictBehavior': 'rename',
+            });
+        } else {
+          throw error;
+        }
+      }
+
+      if (!driveItem || !driveItem.id) {
+        throw new Error('Could not create or find the folder.');
+      }
+
+      uploadFolderId = driveItem.id;
+      
+      // 2. Create a shareable link for the folder with organization scope
+      const permission = await graphClient
+        .api(`/users/${targetUserId}/drive/items/${uploadFolderId}/createLink`)
+        .post({
+          type: 'view',
+          scope: 'organization',
+        });
+
+      if (!permission || !permission.link || !permission.link.webUrl) {
+        throw new Error('Could not create a shareable link for the folder.');
+      }
+      
+      const shareableLink = permission.link.webUrl;
+
+      // 3. Upload the file to that folder
+      const fileBuffer = await file.arrayBuffer();
+      const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${file.name}:/content`;
+      
+      await graphClient.api(uploadUrl).put(fileBuffer);
+
+      responseData = {
+        success: true,
+        message: 'File uploaded successfully!',
+        folderUrl: shareableLink,
+        folderId: uploadFolderId,
+        fileName: file.name,
+        folderName: sanitizedFolderName,
+      };
+
+    } else if (isExistingFolder) {
+      // Logic for uploading to existing folder
+      if (!folderId) throw new Error('Missing folderId for existing folder upload.');
+
+      uploadFolderId = folderId;
+
+      // Upload the file to the existing folder
+      const fileBuffer = await file.arrayBuffer();
+      const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${file.name}:/content`;
+      
+      await graphClient.api(uploadUrl).put(fileBuffer);
+
+      responseData = {
+        success: true,
+        message: 'File uploaded successfully to existing folder!',
+        folderId: uploadFolderId,
+        fileName: file.name,
+      };
+
     } else {
       // Existing logic for lead document uploads
       if (!leadNumber) throw new Error('Missing leadNumber for document upload.');
 
       const folderName = `Lead_${leadNumber.replace(/ /g, '_')}`;
 
-      // 1. Find or create the folder for the lead
-      // The folder is created inside a general "Leads" directory for organization.
+      // 1. First ensure the "Documents/Leads" folder structure exists
+      let leadsFolder;
+      try {
+        leadsFolder = await graphClient
+          .api(`/users/${targetUserId}/drive/root:/Documents/Leads`)
+          .get();
+      } catch (error) {
+        if (error.statusCode === 404) {
+          // Create the Documents/Leads folder structure if it doesn't exist
+          // First create Documents folder if needed
+          let documentsFolder;
+          try {
+            documentsFolder = await graphClient
+              .api(`/users/${targetUserId}/drive/root:/Documents`)
+              .get();
+          } catch (docError) {
+            if (docError.statusCode === 404) {
+              documentsFolder = await graphClient
+                .api(`/users/${targetUserId}/drive/root:/children`)
+                .post({
+                  name: 'Documents',
+                  folder: {},
+                  '@microsoft.graph.conflictBehavior': 'rename'
+                });
+            }
+          }
+          
+          // Then create Leads folder inside Documents
+          leadsFolder = await graphClient
+            .api(`/users/${targetUserId}/drive/root:/Documents/children`)
+            .post({
+              name: 'Leads',
+              folder: {},
+              '@microsoft.graph.conflictBehavior': 'rename',
+            });
+        } else {
+          throw error;
+        }
+      }
+
+      // 2. Find or create the folder for the lead in /Documents/Leads/ path
       let driveItem;
       try {
         driveItem = await graphClient
-          .api(`/users/${targetUserId}/drive/root:/Leads/${folderName}`)
+          .api(`/users/${targetUserId}/drive/root:/Documents/Leads/${folderName}`)
           .get();
       } catch (error) {
         if (error.statusCode === 404) {
           driveItem = await graphClient
-            .api(`/users/${targetUserId}/drive/root:/Leads:/children`)
+            .api(`/users/${targetUserId}/drive/root:/Documents/Leads:/children`)
             .post({
               name: folderName,
               folder: {},

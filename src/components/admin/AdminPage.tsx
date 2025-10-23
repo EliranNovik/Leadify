@@ -329,33 +329,15 @@ const AdminPage: React.FC = () => {
       <div className={`mb-12 transition-all duration-500 ease-in-out overflow-hidden ${
         isTopSectionCollapsed ? 'max-h-0 mb-0' : 'max-h-screen'
       }`}>
-        <div className="text-center py-12 relative">
-          {/* Background decoration */}
-          <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-secondary/5 rounded-3xl"></div>
-          <div className="absolute top-0 left-1/2 transform -translate-x-1/2 w-32 h-32 bg-gradient-to-br from-primary/10 to-secondary/10 rounded-full blur-3xl"></div>
-          
-          <div className="relative z-10">
-            <div className="inline-flex items-center gap-3 mb-6">
-              <div className="p-3 bg-gradient-to-br from-primary to-secondary rounded-2xl shadow-lg">
-                <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <div className="text-left">
-                <div className="text-sm font-semibold text-primary/80 uppercase tracking-wider">Admin Dashboard</div>
-                <div className="text-xs text-base-content/60">Management Center</div>
-              </div>
-            </div>
-            
-            <h1 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-primary via-secondary to-primary bg-clip-text text-transparent mb-4 leading-tight">
-              {getTimeBasedGreeting()}{currentUser?.first_name ? `, ${currentUser.first_name}` : ''}!
-            </h1>
-            <p className="text-base md:text-lg text-base-content/70 mb-8 font-medium">Welcome to your CRM Admin Panel</p>
-          </div>
+        <div className="text-center py-8">
+          <h1 className="text-4xl md:text-4xl lg:text-5xl font-bold mb-4 leading-tight" style={{ color: '#4218CC' }}>
+            {getTimeBasedGreeting()}{currentUser?.first_name ? `, ${currentUser.first_name}` : ''}!
+          </h1>
+          <p className="text-xl md:text-xl lg:text-2xl font-medium mb-8" style={{ color: '#4218CC' }}>Welcome to your CRM Admin Panel</p>
         </div>
         
         {/* Quick Action Buttons */}
-        <div className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 max-w-6xl mx-auto transition-all duration-500 ease-in-out ${
+        <div className={`flex md:grid md:grid-cols-2 lg:grid-cols-5 gap-6 max-w-6xl mx-auto transition-all duration-500 ease-in-out overflow-x-auto scrollbar-hide pb-2 md:pb-0 ${
           isTopSectionCollapsed ? 'opacity-0 max-h-0 overflow-hidden' : 'opacity-100 max-h-screen'
         }`}>
           <button
@@ -366,7 +348,7 @@ const AdminPage: React.FC = () => {
               setOpenTab(null);
               setIsTopSectionCollapsed(true); // Auto-collapse after clicking
             }}
-            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-6 h-32"
+            className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
           >
             <div className="flex items-center gap-4">
               <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
@@ -391,7 +373,7 @@ const AdminPage: React.FC = () => {
               setOpenTab(null);
               setIsTopSectionCollapsed(true); // Auto-collapse after clicking
             }}
-            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-6 h-32"
+            className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
           >
             <div className="flex items-center gap-4">
               <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
@@ -416,7 +398,7 @@ const AdminPage: React.FC = () => {
               setOpenTab(null);
               setIsTopSectionCollapsed(true); // Auto-collapse after clicking
             }}
-            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-6 h-32"
+            className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
           >
             <div className="flex items-center gap-4">
               <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
@@ -441,7 +423,7 @@ const AdminPage: React.FC = () => {
               setOpenTab(null);
               setIsTopSectionCollapsed(true); // Auto-collapse after clicking
             }}
-            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-6 h-32"
+            className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
           >
             <div className="flex items-center gap-4">
               <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
@@ -466,7 +448,7 @@ const AdminPage: React.FC = () => {
               setOpenTab(null);
               setIsTopSectionCollapsed(true); // Auto-collapse after clicking
             }}
-            className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden p-6 h-32"
+            className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
           >
             <div className="flex items-center gap-4">
               <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
@@ -710,17 +692,7 @@ const AdminPage: React.FC = () => {
           <div className="flex items-center justify-center text-xl font-semibold text-primary">
             <span className="text-base text-base-content/60 font-normal">Select a subcategory</span>
           </div>
-        ) : (
-          <div className="text-center py-12">
-            <div className="mb-6">
-              <svg className="w-20 h-20 mx-auto text-primary mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <h2 className="text-2xl font-bold text-primary mb-2">Choose a Management Section</h2>
-              <p className="text-base-content/70 mb-6">Select a category from the tabs above or use the quick action buttons to get started.</p>
-            </div>
-          </div>
-        )}
+        ) : null}
       </div>
       {/* Glassy card style */}
       <style>{`

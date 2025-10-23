@@ -10,7 +10,7 @@ import Header from './components/Header';
 import AIChatWindow from './components/AIChatWindow';
 import EmailThreadModal from './components/EmailThreadModal';
 import { supabase, sessionManager } from './lib/supabase';
-import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon } from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
 import LeadSearchPage from './pages/LeadSearchPage';
@@ -48,6 +48,7 @@ import PublicLegacyContractView from './pages/PublicLegacyContractView';
 import PaymentPage from './pages/PaymentPage';
 import ProformaCreatePage from './pages/ProformaCreatePage';
 import AboutPage from './pages/AboutPage';
+import DocumentsPage from './pages/DocumentsPage';
 import ContactPage from './pages/ContactPage';
 import HowItWorksPage from './pages/HowItWorksPage';
 import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
@@ -216,6 +217,54 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
       <Route path="/payment/:token" element={<PaymentPage />} />
+      <Route path="/documents" element={
+        <div className="flex h-screen bg-white">
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="bg-white border-b border-gray-200 px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                     <div className="p-2 rounded-lg" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
+                       <DocumentArrowUpIcon className="w-6 h-6 text-white" />
+                     </div>
+                  <div>
+                    <h1 className="text-2xl font-bold text-gray-900">Documents</h1>
+                    <p className="text-sm text-gray-500">Upload and manage documents in OneDrive</p>
+                  </div>
+                </div>
+                <div className="flex-1 flex justify-center">
+                  <h2 className="text-2xl font-bold" style={{ color: '#1e3a8a' }}>Decker, Pex, Levi Law Offices</h2>
+                </div>
+                <div className="flex items-center gap-4">
+                  {!msalAccount ? (
+                    <button
+                      onClick={() => instance.loginPopup()}
+                      className="btn btn-primary"
+                    >
+                      <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
+                        <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                      </svg>
+                      Microsoft Login
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm text-gray-600">Welcome, {msalAccount.name}</span>
+                      <button
+                        onClick={() => instance.logoutPopup()}
+                        className="btn btn-outline btn-sm"
+                      >
+                        Logout
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+            <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gradient-to-br from-blue-800 via-blue-900 to-blue-950" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
+              <DocumentsPage />
+            </main>
+          </div>
+        </div>
+      } />
       <Route path="/calls-ledger" element={
         <ProtectedRoute user={authUser}>
           <div className="flex h-screen bg-white">

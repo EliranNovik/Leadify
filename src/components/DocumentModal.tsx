@@ -70,6 +70,14 @@ const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumb
       if (data && data.success) {
         console.log('Documents fetched successfully:', data.files);
         setDocuments(data.files || []);
+      } else if (data && !data.success) {
+        console.error('Function returned error:', data);
+        // Handle specific 404 case (folder not found)
+        if (data.error && data.error.includes('not found')) {
+          setError(`No documents found for lead ${leadNumber}. Documents may not have been uploaded yet.`);
+        } else {
+          setError(data.error || 'Failed to fetch documents');
+        }
       } else {
         console.error('Unexpected response format:', data);
         setError('Unexpected response format from server');

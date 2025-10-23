@@ -26,6 +26,7 @@ import {
   ChatBubbleLeftRightIcon,
   PhoneIcon,
   FireIcon,
+  DocumentArrowUpIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 
@@ -70,6 +71,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
+  { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
@@ -99,6 +101,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
+  { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
   { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
