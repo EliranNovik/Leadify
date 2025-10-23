@@ -86,7 +86,28 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const getFacts = () => {
     // For legacy leads, use 'description' field instead of 'facts'
     const facts = isLegacy ? getFieldValue(client, 'description') : getFieldValue(client, 'facts');
-    return facts || '';
+    
+    if (!facts) return [];
+    
+    try {
+      // Try to parse as JSON first
+      const parsedFacts = JSON.parse(facts);
+      
+      // If it's an object, extract non-null values
+      if (typeof parsedFacts === 'object' && parsedFacts !== null) {
+        const nonNullFacts = Object.entries(parsedFacts)
+          .filter(([key, value]) => value !== null && value !== undefined && value !== '')
+          .map(([key, value]) => ({ key, value }));
+        
+        return nonNullFacts;
+      }
+      
+      // If it's not an object, treat as plain text
+      return [{ key: 'facts', value: facts }];
+    } catch (error) {
+      // If JSON parsing fails, treat as plain text
+      return [{ key: 'facts', value: facts }];
+    }
   };
 
   const getEligibilityStatus = () => {
@@ -110,13 +131,19 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [generalNotes, setGeneralNotes] = useState(getGeneralNotes());
   const [tags, setTags] = useState(getTags());
   const [anchor, setAnchor] = useState(getAnchor());
-  const [factsOfCase, setFactsOfCase] = useState(getFacts() ? [getFacts()] : []);
+  const [factsOfCase, setFactsOfCase] = useState(getFacts());
 
   const [editedSpecialNotes, setEditedSpecialNotes] = useState(specialNotes.join('\n'));
   const [editedGeneralNotes, setEditedGeneralNotes] = useState(generalNotes);
   const [editedTags, setEditedTags] = useState(tags);
   const [editedAnchor, setEditedAnchor] = useState(anchor);
-  const [editedFacts, setEditedFacts] = useState(getFacts());
+  const [editedFacts, setEditedFacts] = useState(() => {
+    const facts = getFacts();
+    if (Array.isArray(facts)) {
+      return facts.map(fact => `${fact.key}: ${fact.value}`).join('\n');
+    }
+    return '';
+  });
 
   // Update state when client data changes (e.g., after page refresh)
   useEffect(() => {
@@ -125,14 +152,20 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setGeneralNotes(getGeneralNotes());
     setTags(getTags());
     setAnchor(getAnchor());
-    setFactsOfCase(getFacts() ? [getFacts()] : []);
+    setFactsOfCase(getFacts());
     
     // Update edited values as well
     setEditedSpecialNotes(getSpecialNotes().join('\n'));
     setEditedGeneralNotes(getGeneralNotes());
     setEditedTags(getTags());
     setEditedAnchor(getAnchor());
-    setEditedFacts(getFacts());
+    setEditedFacts(() => {
+      const facts = getFacts();
+      if (Array.isArray(facts)) {
+        return facts.map(fact => `${fact.key}: ${fact.value}`).join('\n');
+      }
+      return '';
+    });
   }, [client]);
 
   // State to hold current user's display name
@@ -537,7 +570,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   isEditing={isEditingFacts}
                   onEdit={() => {
                     setIsEditingFacts(true);
-                    setEditedFacts(factsOfCase.map(fact => formatNoteText(fact)).join('\n'));
+                    setEditedFacts(factsOfCase.map(fact => `${fact.key}: ${fact.value}`).join('\n'));
                   }}
                   onSave={async () => {
                     try {
@@ -588,9 +621,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
                     {factsOfCase.length > 0 ? (
-                      factsOfCase.map((fact, index) => (
-                        <p key={index} className={`text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words ${getTextAlignment(formatNoteText(fact))}`}>{formatNoteText(fact)}</p>
-                      ))
+                      <div className="flex flex-wrap gap-4">
+                        {factsOfCase.map((fact, index) => (
+                          <div key={index} className="bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
+                            <span className="text-sm font-medium text-gray-600 capitalize">{fact.key}:</span>
+                            <span className="text-sm text-gray-900 ml-1">{fact.value}</span>
+                          </div>
+                        ))}
+                      </div>
                     ) : (
                       <span className="text-gray-500">No case facts added</span>
                     )}

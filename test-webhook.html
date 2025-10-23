@@ -82,12 +82,12 @@
             
             <div class="form-group">
                 <label for="phone">Phone</label>
-                <input type="tel" id="phone" name="phone">
+                <input type="tel" id="phone" name="phone" placeholder="e.g., +1234567890">
             </div>
             
             <div class="form-group">
                 <label for="mobile">Mobile</label>
-                <input type="tel" id="mobile" name="mobile">
+                <input type="tel" id="mobile" name="mobile" placeholder="e.g., +1234567890">
             </div>
             
             <div class="form-group">
@@ -175,6 +175,15 @@
             <div class="form-group">
                 <label for="source">Source</label>
                 <input type="text" id="source" name="source" value="Web Form">
+            </div>
+            
+            <div class="form-group">
+                <label for="source_code">Source Code (Optional)</label>
+                <input type="number" id="source_code" name="source_code" placeholder="e.g., 2165 for Website Form">
+                <small style="color: #666; font-size: 12px;">
+                    Enter a source code to validate against misc_leadsource table. 
+                    Examples: 2165 (Website Form), 1984 (Facebook), 350 (Marketism Au)
+                </small>
             </div>
             
             <div class="form-group">

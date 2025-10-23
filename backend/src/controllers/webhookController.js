@@ -8,6 +8,8 @@ const webhookController = {
    */
   async catchFormData(req, res) {
     try {
+      console.log('📥 Received webhook data:', req.body);
+      
       // Log the received form data
       const formData = {
         name: req.body.name,
@@ -15,13 +17,15 @@ const webhookController = {
         phone: req.body.phone,
         topic: req.body.topic,
         facts: req.body.facts,
-        source: req.body.source || 'webhook'
+        source: req.body.source || 'webhook',
+        language: req.body.language || 'English',
+        source_code: req.body.source_code || null
       };
 
       // Validate required fields
-      if (!formData.name || !formData.email || !formData.phone) {
+      if (!formData.name || !formData.email) {
         return res.status(400).json({ 
-          error: 'Missing required fields: name, email, phone' 
+          error: 'Missing required fields: name and email are required' 
         });
       }
 
@@ -66,33 +70,67 @@ const webhookController = {
         });
       }
 
-      // Prepare lead data
-      const leadData = {
-        name: formData.name,
-        email: formData.email,
-        phone: formData.phone,
-        topic: formData.topic,
-        facts: formData.facts,
-        source: formData.source,
-        stage: 'created',
-        created_at: new Date().toISOString()
-      };
-
-      // Insert new lead
-      const { data: newLead, error: insertError } = await supabase
-        .from('leads')
-        .insert([leadData])
-        .select()
-        .single();
+      // Create new lead using the source validation function
+      const { data: newLead, error: insertError } = await supabase.rpc('create_lead_with_source_validation', {
+        p_lead_name: formData.name,
+        p_lead_email: formData.email,
+        p_lead_phone: formData.phone || null,
+        p_lead_topic: formData.topic || null,
+        p_lead_language: formData.language || 'English',
+        p_lead_source: formData.source || 'Webhook',
+        p_created_by: 'webhook@system',
+        p_source_code: formData.source_code || null,
+        p_balance_currency: 'NIS',
+        p_proposal_currency: 'NIS'
+      });
 
       if (insertError) {
         console.error('Error creating lead:', insertError);
-        return res.status(500).json({ error: 'Failed to create lead' });
+        return res.status(500).json({ 
+          error: 'Failed to create lead',
+          details: insertError.message 
+        });
+      }
+
+      if (!newLead || newLead.length === 0) {
+        console.error('No lead data returned from function');
+        return res.status(500).json({ error: 'Failed to create lead - no data returned' });
+      }
+
+      const createdLead = newLead[0];
+      console.log('✅ Lead created successfully:', createdLead);
+
+      // If facts data is provided, update the lead with facts
+      if (formData.facts) {
+        try {
+          const { error: factsError } = await supabase
+            .from('leads')
+            .update({ facts: formData.facts })
+            .eq('id', createdLead.id);
+
+          if (factsError) {
+            console.error('Error updating facts:', factsError);
+          } else {
+            console.log('✅ Facts updated successfully');
+          }
+        } catch (factsError) {
+          console.error('Error updating facts:', factsError);
+        }
       }
 
       res.status(201).json({ 
         success: true, 
-        lead_id: newLead.id,
+        data: {
+          lead_number: createdLead.lead_number,
+          id: createdLead.id,
+          name: createdLead.name,
+          email: createdLead.email,
+          source_id: createdLead.source_id,
+          source_name: createdLead.source_name,
+          final_topic: createdLead.final_topic,
+          final_category_id: createdLead.final_category_id,
+          created_at: new Date().toISOString()
+        },
         message: 'Lead created successfully' 
       });
 

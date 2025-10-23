@@ -742,8 +742,8 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 
 const LeadSearchPage: React.FC = () => {
   const [filters, setFilters] = useState({
-    fromDate: '',
-    toDate: '',
+    fromDate: new Date().toISOString().split('T')[0], // Default to today
+    toDate: new Date().toISOString().split('T')[0], // Default to today
     category: [] as string[],
     language: [] as string[],
     reason: [] as string[],
@@ -1223,6 +1223,14 @@ const LeadSearchPage: React.FC = () => {
     setSearchPerformed(true);
     
     console.log('🔍 Starting lead search with filters:', filters);
+    console.log('📅 Current date info:', {
+      currentDate: new Date().toISOString().split('T')[0],
+      currentDateTime: new Date().toISOString(),
+      filterFromDate: filters.fromDate,
+      filterToDate: filters.toDate,
+      fromDateMatch: filters.fromDate === new Date().toISOString().split('T')[0],
+      toDateMatch: filters.toDate === new Date().toISOString().split('T')[0]
+    });
     
     // Create employee mappings for role filters
     const nameToIdMapping = new Map<string, number>();
@@ -1273,7 +1281,8 @@ const LeadSearchPage: React.FC = () => {
             id: lead.id,
             name: lead.name,
             category: lead.category,
-            cdate: lead.cdate
+            cdate: lead.cdate,
+            cdate_date: lead.cdate ? new Date(lead.cdate).toISOString().split('T')[0] : null
           }))
         });
       } catch (testError) {
@@ -1360,7 +1369,13 @@ const LeadSearchPage: React.FC = () => {
         const noFiltersTest = await newLeadsQuery.limit(5);
         console.log('✅ New leads with no filters:', {
           count: noFiltersTest.data?.length || 0,
-          data: noFiltersTest.data
+          data: noFiltersTest.data,
+          sampleCreatedAt: noFiltersTest.data?.map(lead => ({
+            id: lead.id,
+            name: lead.name,
+            created_at: lead.created_at,
+            created_at_date: new Date(lead.created_at).toISOString().split('T')[0]
+          }))
         });
       } catch (testError) {
         console.error('❌ New leads no filters test failed:', testError);
@@ -1376,12 +1391,21 @@ const LeadSearchPage: React.FC = () => {
           }
           if (filters.toDate) {
             console.log('📅 Testing toDate filter only:', filters.toDate);
-            dateOnlyQuery = dateOnlyQuery.lte('created_at', filters.toDate);
+            // For toDate, we need to include the entire day, so add 23:59:59
+            const endOfDay = filters.toDate + 'T23:59:59.999Z';
+            console.log('📅 Using end of day for toDate:', endOfDay);
+            dateOnlyQuery = dateOnlyQuery.lte('created_at', endOfDay);
           }
           const dateOnlyTest = await dateOnlyQuery.limit(5);
           console.log('✅ New leads with date filters only:', {
             count: dateOnlyTest.data?.length || 0,
-            data: dateOnlyTest.data
+            data: dateOnlyTest.data,
+            sampleCreatedAt: dateOnlyTest.data?.map(lead => ({
+              id: lead.id,
+              name: lead.name,
+              created_at: lead.created_at,
+              created_at_date: new Date(lead.created_at).toISOString().split('T')[0]
+            }))
           });
         } catch (testError) {
           console.error('❌ New leads date filters test failed:', testError);
@@ -1413,7 +1437,10 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.toDate) {
         console.log('📅 Adding toDate filter for new leads:', filters.toDate);
-        newLeadsQuery = newLeadsQuery.lte('created_at', filters.toDate);
+        // For toDate, we need to include the entire day, so add 23:59:59
+        const endOfDay = filters.toDate + 'T23:59:59.999Z';
+        console.log('📅 Using end of day for toDate:', endOfDay);
+        newLeadsQuery = newLeadsQuery.lte('created_at', endOfDay);
       }
       if (filters.category && filters.category.length > 0) {
         console.log('🏷️ Adding category filter for new leads:', filters.category);
@@ -1528,7 +1555,10 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.toDate) {
         console.log('📅 Adding toDate filter for legacy leads:', filters.toDate);
-        legacyLeadsQuery = legacyLeadsQuery.lte('cdate', filters.toDate);
+        // For toDate, we need to include the entire day, so add 23:59:59
+        const endOfDay = filters.toDate + 'T23:59:59.999Z';
+        console.log('📅 Using end of day for toDate:', endOfDay);
+        legacyLeadsQuery = legacyLeadsQuery.lte('cdate', endOfDay);
       }
       if (filters.category && filters.category.length > 0) {
         console.log('🏷️ Adding category filter for legacy leads:', filters.category);
@@ -2128,11 +2158,21 @@ const LeadSearchPage: React.FC = () => {
           {/* Date Range Row */}
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
             <label className="label mb-2"><span className="label-text">From date</span></label>
-            <input type="date" className="input input-bordered" onChange={e => handleFilterChange('fromDate', e.target.value)} />
+            <input 
+              type="date" 
+              className="input input-bordered" 
+              value={filters.fromDate}
+              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+            />
           </div>
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
             <label className="label mb-2"><span className="label-text">To date</span></label>
-            <input type="date" className="input input-bordered" onChange={e => handleFilterChange('toDate', e.target.value)} />
+            <input 
+              type="date" 
+              className="input input-bordered" 
+              value={filters.toDate}
+              onChange={e => handleFilterChange('toDate', e.target.value)} 
+            />
           </div>
           <MainCategoryInput
             label="Main Category"
