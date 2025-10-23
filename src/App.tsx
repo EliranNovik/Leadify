@@ -3,7 +3,7 @@ import { BrowserRouter as Router } from 'react-router-dom';
 import AppRoutes from './AppRoutes';
 import { MsalProvider, useMsal } from '@azure/msal-react';
 import { PublicClientApplication } from '@azure/msal-browser';
-import { msalConfig } from './msalConfig';
+import { msalConfig, loginRequest } from './msalConfig';
 import { Toaster } from 'react-hot-toast';
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -220,8 +220,9 @@ const AppContentInner: React.FC = () => {
       <Route path="/documents" element={
         <div className="flex h-screen bg-white">
           <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="bg-white border-b border-gray-200 px-6 py-4">
-              <div className="flex items-center justify-between">
+            <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-4">
+              {/* Desktop Layout */}
+              <div className="hidden md:flex items-center justify-between">
                 <div className="flex items-center gap-3">
                      <div className="p-2 rounded-lg" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
                        <DocumentArrowUpIcon className="w-6 h-6 text-white" />
@@ -237,8 +238,16 @@ const AppContentInner: React.FC = () => {
                 <div className="flex items-center gap-4">
                   {!msalAccount ? (
                     <button
-                      onClick={() => instance.loginPopup()}
+                      onClick={() => {
+                        const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+                        if (isMobile) {
+                          instance.loginRedirect(loginRequest);
+                        } else {
+                          instance.loginPopup(loginRequest);
+                        }
+                      }}
                       className="btn btn-primary"
+                      style={{ backgroundColor: '#1e40af', borderColor: '#1e40af' }}
                     >
                       <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24">
                         <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
@@ -250,12 +259,70 @@ const AppContentInner: React.FC = () => {
                       <span className="text-sm text-gray-600">Welcome, {msalAccount.name}</span>
                       <button
                         onClick={() => instance.logoutPopup()}
-                        className="btn btn-outline btn-sm"
+                        className="btn btn-outline btn-sm flex items-center gap-1"
                       >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24">
+                          <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                        </svg>
                         Logout
                       </button>
                     </div>
                   )}
+                </div>
+              </div>
+
+              {/* Mobile Layout */}
+              <div className="md:hidden">
+                {/* Top row - Logo and Auth */}
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 rounded-lg" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
+                      <DocumentArrowUpIcon className="w-5 h-5 text-white" />
+                    </div>
+                    <div>
+                      <h1 className="text-lg font-bold text-gray-900">Documents</h1>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!msalAccount ? (
+                      <button
+                        onClick={() => {
+                          const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+                          if (isMobile) {
+                            instance.loginRedirect(loginRequest);
+                          } else {
+                            instance.loginPopup(loginRequest);
+                          }
+                        }}
+                        className="btn btn-primary btn-sm"
+                        style={{ backgroundColor: '#1e40af', borderColor: '#1e40af' }}
+                      >
+                        <svg className="w-4 h-4 mr-1" viewBox="0 0 24 24">
+                          <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                        </svg>
+                        <span className="text-sm">Login</span>
+                      </button>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-600">Welcome, {msalAccount.name}</span>
+                        <button
+                          onClick={() => instance.logoutPopup()}
+                          className="btn btn-outline btn-sm flex items-center gap-1"
+                        >
+                          <svg className="w-4 h-4" viewBox="0 0 24 24">
+                            <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                          </svg>
+                          Logout
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                
+                {/* Bottom row - Law firm name */}
+                <div className="text-center">
+                  <h2 className="text-lg font-bold" style={{ color: '#1e3a8a' }}>Decker, Pex, Levi Law Offices</h2>
+                  <p className="text-xs text-gray-500 mt-1">Upload and manage documents in OneDrive</p>
                 </div>
               </div>
             </div>

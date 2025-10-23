@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   DocumentArrowUpIcon, 
   MagnifyingGlassIcon, 
@@ -68,6 +69,8 @@ const DocumentsPage: React.FC = () => {
   // Upload to existing folder state
   const [isUploadingToFolder, setIsUploadingToFolder] = useState(false);
   const [showUploadSection, setShowUploadSection] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
 
   // MSAL and Graph API setup
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -289,6 +292,18 @@ const DocumentsPage: React.FC = () => {
     if (showDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showDropdown]);
+
+  // Calculate dropdown position
+  useEffect(() => {
+    if (showDropdown && searchInputRef.current) {
+      const rect = searchInputRef.current.getBoundingClientRect();
+      setDropdownPosition({
+        top: rect.bottom + window.scrollY,
+        left: rect.left + window.scrollX,
+        width: rect.width
+      });
     }
   }, [showDropdown]);
 
@@ -578,7 +593,7 @@ const DocumentsPage: React.FC = () => {
         )}
 
         {/* Search Section */}
-        <div className="bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-200 overflow-hidden">
+        <div className={`bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-200 ${showDropdown ? 'overflow-visible' : 'overflow-hidden'}`}>
           <div className="pl-6 pt-4 pb-2">
             <h2 className="text-xl font-semibold text-white">Search Documents</h2>
             <div className="border-b border-white/30 mt-2"></div>
@@ -590,6 +605,7 @@ const DocumentsPage: React.FC = () => {
                 <label className="text-base font-medium text-white">Search Folders</label>
                 <div className="relative">
                   <input
+                    ref={searchInputRef}
                     type="text"
                     className="input input-bordered w-full pl-10 bg-white/20 backdrop-blur-sm border-white/30 text-white placeholder-white/70"
                     placeholder="Search for folders..."
@@ -612,22 +628,32 @@ const DocumentsPage: React.FC = () => {
                 </div>
                 
                 {/* Dropdown with all folders */}
-                {showDropdown && allFolders.length > 0 && (
-                  <div className="absolute z-10 w-full mt-1 bg-white/20 backdrop-blur-lg border border-white/30 rounded-lg shadow-xl max-h-60 overflow-y-auto">
-                    <div className="p-2 text-xs text-white/60 border-b border-white/20">
+                {showDropdown && allFolders.length > 0 && createPortal(
+                  <div 
+                    className="fixed z-50 bg-white/20 backdrop-blur-lg border border-white/30 rounded-lg shadow-xl max-h-[60vh] md:max-h-80 overflow-y-auto overscroll-contain"
+                    style={{
+                      top: dropdownPosition.top + 4,
+                      left: dropdownPosition.left,
+                      width: dropdownPosition.width,
+                      maxHeight: '60vh',
+                      WebkitOverflowScrolling: 'touch'
+                    }}
+                  >
+                    <div className="p-2 text-xs text-white/60 border-b border-white/20 sticky top-0 bg-white/20 backdrop-blur-sm">
                       {searchQuery.trim() ? `Filtered Results (${allFolders.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase())).length})` : `All Folders (${allFolders.length})`}
                     </div>
-                    {allFolders
-                      .filter(folder => !searchQuery.trim() || folder.name.toLowerCase().includes(searchQuery.toLowerCase()))
-                      .map((folder) => (
-                      <div 
-                        key={folder.id}
-                        className="flex items-center justify-between p-3 hover:bg-white/30 cursor-pointer transition-colors border-b border-white/20 last:border-b-0"
-                        onClick={() => {
-                          setShowDropdown(false);
-                          openFolder(folder);
-                        }}
-                      >
+                    <div className="overflow-y-auto max-h-[calc(60vh-40px)]">
+                      {allFolders
+                        .filter(folder => !searchQuery.trim() || folder.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                        .map((folder) => (
+                        <div 
+                          key={folder.id}
+                          className="flex items-center justify-between p-3 hover:bg-white/30 cursor-pointer transition-colors border-b border-white/20 last:border-b-0 touch-manipulation"
+                          onClick={() => {
+                            setShowDropdown(false);
+                            openFolder(folder);
+                          }}
+                        >
                         <div className="flex items-center gap-3">
                           <FolderIcon className="w-5 h-5" style={{ color: '#3b82f6' }} />
                           <div>
@@ -638,9 +664,11 @@ const DocumentsPage: React.FC = () => {
                           </div>
                         </div>
                         <EyeIcon className="w-5 h-5 text-white/70" />
-                      </div>
-                    ))}
-                  </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>,
+                  document.body
                 )}
               </div>
 
@@ -648,7 +676,7 @@ const DocumentsPage: React.FC = () => {
               {!showDropdown && searchQuery.trim() && (
                 <div className="space-y-2">
                   <h3 className="text-base font-medium text-white">Search Results</h3>
-                  <div className="max-h-96 overflow-y-auto space-y-2">
+                  <div className="max-h-[60vh] md:max-h-96 overflow-y-auto space-y-2">
                     {searchResults.length > 0 ? (
                     searchResults.map((folder) => (
                       <div 
