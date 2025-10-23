@@ -345,26 +345,26 @@ const DocumentsPage: React.FC = () => {
   };
 
   // Download document
-  const downloadDocument = async (document: DocumentItem) => {
+  const downloadDocument = async (doc: DocumentItem) => {
     try {
       // Use the downloadUrl directly from the document
-      if (document.downloadUrl) {
+      if (doc.downloadUrl) {
         // Create a temporary link to download the file
         const link = document.createElement('a');
-        link.href = document.downloadUrl;
-        link.download = document.name;
+        link.href = doc.downloadUrl;
+        link.download = doc.name;
         link.target = '_blank';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         
-        toast.success(`${document.name} downloaded successfully`);
+        toast.success(`${doc.name} downloaded successfully`);
       } else {
         throw new Error('Download URL not available');
       }
     } catch (error) {
       console.error('Error downloading document:', error);
-      toast.error(`Failed to download ${document.name}`);
+      toast.error(`Failed to download ${doc.name}`);
     }
   };
 
@@ -372,20 +372,47 @@ const DocumentsPage: React.FC = () => {
   const downloadAllDocuments = async () => {
     if (!selectedFolder || folderDocuments.length === 0) return;
 
-    toast.loading('Preparing download...', { id: 'download-all' });
+    toast.loading(`Downloading ${folderDocuments.length} documents...`, { id: 'download-all' });
 
     try {
-      // For now, we'll open the folder in OneDrive for bulk download
-      // In the future, this could be enhanced to create a ZIP file
-      if (selectedFolder.webUrl) {
-        window.open(selectedFolder.webUrl, '_blank');
-        toast.success('Folder opened in OneDrive for download', { id: 'download-all' });
+      let successCount = 0;
+      let errorCount = 0;
+
+      // Download each document individually
+      for (const doc of folderDocuments) {
+        try {
+          if (doc.downloadUrl) {
+            // Create a temporary link to download the file
+            const link = document.createElement('a');
+            link.href = doc.downloadUrl;
+            link.download = doc.name;
+            link.target = '_blank';
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            successCount++;
+          } else {
+            console.warn(`No download URL for ${doc.name}`);
+            errorCount++;
+          }
+        } catch (error) {
+          console.error(`Error downloading ${doc.name}:`, error);
+          errorCount++;
+        }
+      }
+
+      // Show result toast
+      if (successCount > 0 && errorCount === 0) {
+        toast.success(`Successfully downloaded ${successCount} documents!`, { id: 'download-all' });
+      } else if (successCount > 0 && errorCount > 0) {
+        toast.success(`Downloaded ${successCount} documents, ${errorCount} failed`, { id: 'download-all' });
       } else {
-        throw new Error('Folder URL not available');
+        toast.error('Failed to download any documents', { id: 'download-all' });
       }
     } catch (error) {
-      console.error('Error downloading folder:', error);
-      toast.error('Failed to open folder', { id: 'download-all' });
+      console.error('Error downloading documents:', error);
+      toast.error('Failed to download documents', { id: 'download-all' });
     }
   };
 
@@ -788,16 +815,18 @@ const DocumentsPage: React.FC = () => {
           <div className="bg-white/20 backdrop-blur-lg w-full max-w-2xl h-full shadow-2xl transform transition-transform border-l border-white/30">
             {/* Modal Header */}
             <div className="flex items-center justify-between p-6 border-b border-white/30">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
                 <FolderIcon className="w-6 h-6" style={{ color: '#3b82f6' }} />
-                <div>
-                  <h2 className="text-xl font-semibold text-white">{selectedFolder.name}</h2>
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-xl font-semibold text-white truncate" title={selectedFolder.name}>
+                    {selectedFolder.name}
+                  </h2>
                   <p className="text-sm text-white/80">
                     {folderDocuments.length} document{folderDocuments.length !== 1 ? 's' : ''}
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-shrink-0 ml-4">
                 <button
                   className="btn btn-sm bg-white/20 backdrop-blur-sm border-white/40 text-white hover:bg-white/30"
                   onClick={() => setShowUploadSection(!showUploadSection)}
