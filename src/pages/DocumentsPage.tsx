@@ -9,10 +9,12 @@ import {
   PaperClipIcon,
   CheckCircleIcon,
   XCircleIcon,
-  ClockIcon
+  ClockIcon,
+  PlusIcon
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import { useMsal } from '@azure/msal-react';
 
 interface UploadedFile {
   name: string;
@@ -70,14 +72,16 @@ const DocumentsPage: React.FC = () => {
   const [showUploadSection, setShowUploadSection] = useState(false);
 
   // MSAL and Graph API setup
+  const { accounts, instance } = useMsal();
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [accessToken, setAccessToken] = useState<string | null>(null);
+  
+  // Immediate authentication check based on MSAL accounts
+  const hasActiveAccounts = accounts.length > 0;
 
   // Helper function to get current user's name from MSAL
   const getCurrentUserName = (): string => {
     try {
-      // Get the current MSAL account
-      const accounts = instance.getAllAccounts();
       if (accounts.length > 0) {
         return accounts[0].name || accounts[0].username || 'Unknown User';
       }
@@ -92,19 +96,32 @@ const DocumentsPage: React.FC = () => {
   useEffect(() => {
     const initializeAuth = async () => {
       try {
-        // Check if we have a valid access token
-        const token = localStorage.getItem('msal_access_token');
-        if (token) {
-          setAccessToken(token);
+        // Only consider user authenticated if they have active MSAL accounts
+        if (accounts.length > 0) {
           setIsAuthenticated(true);
+          // Try to get a fresh token
+          try {
+            const tokenResponse = await instance.acquireTokenSilent({
+              scopes: ['https://graph.microsoft.com/.default'],
+              account: accounts[0]
+            });
+            setAccessToken(tokenResponse.accessToken);
+          } catch (tokenError) {
+            console.log('talk not acquire token silently, user may need to re-authenticate');
+          }
+        } else {
+          setIsAuthenticated(false);
+          setAccessToken(null);
         }
       } catch (error) {
         console.error('Error initializing auth:', error);
+        setIsAuthenticated(false);
+        setAccessToken(null);
       }
     };
 
     initializeAuth();
-  }, []);
+  }, [accounts, instance]);
 
   // Handle file drop
   const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
@@ -142,7 +159,6 @@ const DocumentsPage: React.FC = () => {
       return;
     }
 
-    console.log('Uploading files:', files.map(f => ({ name: f.name, type: f.type, size: f.size })));
     setIsUploading(true);
     setLastUploadedFolderUrl(''); // Clear previous folder URL
     const newUploads = files.map(file => ({ 
@@ -167,12 +183,10 @@ const DocumentsPage: React.FC = () => {
         formData.append('uploadedBy', currentUser);
         formData.append('isGeneralDocument', 'true');
 
-        console.log(`Uploading file: ${file.name}, type: ${file.type}, size: ${file.size}`);
         const { data, error } = await supabase.functions.invoke('upload-to-onedrive', {
           body: formData,
         });
 
-        console.log('Upload response:', { data, error });
         if (error) throw new Error(error.message);
         if (!data || !data.success) {
           throw new Error(data.error || 'Upload function returned an error.');
@@ -305,7 +319,6 @@ const DocumentsPage: React.FC = () => {
 
   // Open folder and load documents
   const openFolder = async (folder: FolderItem) => {
-    console.log('openFolder called with:', folder.name, folder.id);
     setSelectedFolder(folder);
     setIsModalOpen(true);
     setIsLoadingDocuments(true);
@@ -477,14 +490,49 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
+
+  // Show sign-in message if not authenticated - use immediate check
+  if (!hasActiveAccounts) {
+    return (
+      <div className="p-6 w-full">
+        <div className="flex flex-col items-center justify-center min-h-[60vh]">
+          <div className="bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl p-12 text-center max-w-md">
+            <div className="mb-6">
+              <svg className="w-16 h-16 mx-auto text-white/70 mb-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+              </svg>
+            </div>
+            <h2 className="text-2xl font-bold text-white mb-4">Authentication Required</h2>
+            <p className="text-white/80 mb-6">
+              Please sign in with your Microsoft account to access and manage documents.
+            </p>
+            <p className="text-sm text-white/60">
+              Click the "Microsoft Login" button in the header to get started.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-6 w-full">
 
       <div className={`grid grid-cols-1 gap-8 ${lastUploadedFolderUrl ? 'lg:grid-cols-2 lg:grid-rows-2' : 'lg:grid-cols-2'}`}>
         {/* Upload Section */}
         <div className="bg-white/20 backdrop-blur-lg border border-white/30 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-200 overflow-hidden">
-          <div className="pl-6 pt-4 pb-2">
-            <h2 className="text-xl font-semibold text-white">Upload Documents</h2>
+          <div className="px-6 pt-4 pb-2">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-semibold text-white">Upload Documents</h2>
+              <button
+                onClick={() => window.location.reload()}
+                className="btn btn-sm bg-white/20 backdrop-blur-sm border-white/40 text-white hover:bg-white/30 flex items-center gap-2"
+                title="Start fresh upload to new folder"
+              >
+                <PlusIcon className="w-4 h-4" />
+                New
+              </button>
+            </div>
             <div className="border-b border-white/30 mt-2"></div>
           </div>
           <div className="p-6">
@@ -758,12 +806,11 @@ const DocumentsPage: React.FC = () => {
                   {showUploadSection ? 'Hide Upload' : 'Upload Files'}
                 </button>
                 <button
-                  className="btn btn-sm flex items-center gap-1"
-                  style={{ backgroundColor: '#1e3a8a', borderColor: '#1e3a8a', color: 'white' }}
+                  className="btn btn-sm bg-white/20 backdrop-blur-sm border-white/40 text-white hover:bg-white/30 flex items-center gap-1"
                   onClick={copyCurrentFolderLink}
                   title="Copy folder link to clipboard"
                 >
-                  <PaperClipIcon className="w-4 h-4" style={{ color: 'white' }} />
+                  <PaperClipIcon className="w-4 h-4" />
                   Copy Link
                 </button>
                 {folderDocuments.length > 0 && (
