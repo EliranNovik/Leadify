@@ -1194,34 +1194,14 @@ const getTemplates = async (req, res) => {
       });
     }
 
-    // First, get the WABA (WhatsApp Business Account) ID from the phone number
-    let wabaId;
-    try {
-      const phoneInfo = await axios.get(
-        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}?fields=waba_id`,
-        {
-          headers: {
-            'Authorization': `Bearer ${ACCESS_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      
-      if (phoneInfo.data.waba_id) {
-        wabaId = phoneInfo.data.waba_id;
-        console.log('✅ Found WABA ID:', wabaId);
-      } else {
-        console.log('⚠️ No WABA ID found, trying with phone number ID');
-        wabaId = PHONE_NUMBER_ID;
-      }
-    } catch (error) {
-      console.log('⚠️ Error getting WABA ID, using phone number ID directly');
-      wabaId = PHONE_NUMBER_ID;
-    }
+    // Use the WhatsApp Business Account ID directly
+    // From Meta Business Suite: asset_id=1290806625806976 is the WABA ID
+    const WABA_ID = process.env.WHATSAPP_WABA_ID || '1290806625806976';
+    console.log('✅ Using WABA ID:', WABA_ID);
 
     // Fetch templates from WhatsApp API using WABA ID
     const response = await axios.get(
-      `${WHATSAPP_API_URL}/${wabaId}/message_templates`,
+      `${WHATSAPP_API_URL}/${WABA_ID}/message_templates`,
       {
         headers: {
           'Authorization': `Bearer ${ACCESS_TOKEN}`,
