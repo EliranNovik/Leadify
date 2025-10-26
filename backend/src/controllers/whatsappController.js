@@ -1194,11 +1194,11 @@ const getTemplates = async (req, res) => {
       });
     }
 
-    // First, get the business account ID from the phone number
-    let businessAccountId;
+    // First, get the WABA (WhatsApp Business Account) ID from the phone number
+    let wabaId;
     try {
       const phoneInfo = await axios.get(
-        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}?fields=business`,
+        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}?fields=waba_id`,
         {
           headers: {
             'Authorization': `Bearer ${ACCESS_TOKEN}`,
@@ -1207,21 +1207,21 @@ const getTemplates = async (req, res) => {
         }
       );
       
-      if (phoneInfo.data.business && phoneInfo.data.business.id) {
-        businessAccountId = phoneInfo.data.business.id;
-        console.log('✅ Found business account ID:', businessAccountId);
+      if (phoneInfo.data.waba_id) {
+        wabaId = phoneInfo.data.waba_id;
+        console.log('✅ Found WABA ID:', wabaId);
       } else {
-        console.log('⚠️ No business account found, trying with phone number ID');
-        businessAccountId = PHONE_NUMBER_ID;
+        console.log('⚠️ No WABA ID found, trying with phone number ID');
+        wabaId = PHONE_NUMBER_ID;
       }
     } catch (error) {
-      console.log('⚠️ Error getting business account, using phone number ID directly');
-      businessAccountId = PHONE_NUMBER_ID;
+      console.log('⚠️ Error getting WABA ID, using phone number ID directly');
+      wabaId = PHONE_NUMBER_ID;
     }
 
-    // Fetch templates from WhatsApp API using business account ID
+    // Fetch templates from WhatsApp API using WABA ID
     const response = await axios.get(
-      `${WHATSAPP_API_URL}/${businessAccountId}/message_templates`,
+      `${WHATSAPP_API_URL}/${wabaId}/message_templates`,
       {
         headers: {
           'Authorization': `Bearer ${ACCESS_TOKEN}`,
