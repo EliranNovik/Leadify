@@ -35,54 +35,12 @@ export interface WhatsAppAPITemplate {
 
 export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
   try {
-    console.log('🔍 Fetching WhatsApp templates from API...');
-    
-    // Fetch templates from WhatsApp API
-    const response = await fetch(buildApiUrl('/api/whatsapp/templates'), {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('❌ Error fetching templates from API:', errorData);
-      
-      // Fallback to database if API fails
-      console.log('⚠️ Falling back to database...');
-      return await fetchTemplatesFromDatabase();
-    }
-
-    const data = await response.json();
-    console.log('✅ Templates fetched from API:', data.templates?.length || 0, 'templates');
-
-    if (data.success && data.templates) {
-      // Map API templates to our format
-      const mappedTemplates = data.templates.map((template: WhatsAppAPITemplate, index: number) => ({
-        id: index + 1,
-        title: template.name,
-        name360: template.name,
-        language: template.language, // Store the language code
-        params: template.components?.some(c => c.type === 'BODY' && c.text?.includes('{{1}}')) ? '1' : '0',
-        active: template.status === 'APPROVED' ? 't' : 'f',
-        category_id: template.category || '',
-        firm_id: 0,
-        number_id: 0,
-        content: template.components?.find(c => c.type === 'BODY')?.text || '',
-      }));
-
-      console.log('📋 Mapped templates:', mappedTemplates.length);
-      return mappedTemplates;
-    }
-
-    return [];
+    // Always fetch from database where params are saved
+    console.log('🔍 Fetching WhatsApp templates from database...');
+    return await fetchTemplatesFromDatabase();
   } catch (error) {
     console.error('❌ Error fetching WhatsApp templates:', error);
-    
-    // Fallback to database
-    console.log('⚠️ Falling back to database...');
-    return await fetchTemplatesFromDatabase();
+    return [];
   }
 }
 

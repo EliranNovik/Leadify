@@ -533,7 +533,8 @@ const sendMessage = async (req, res) => {
           }
         };
         
-        // Add components if template parameters are provided
+        // Add components ONLY if template parameters are provided
+        // WhatsApp API requires parameters to be present if the template has them
         if (templateParameters && templateParameters.length > 0) {
           messagePayload.template.components = [
             {
@@ -542,6 +543,7 @@ const sendMessage = async (req, res) => {
             }
           ];
         }
+        // If no parameters, don't add components at all - let WhatsApp handle the template
         
         console.log('📱 Template payload:', messagePayload);
       } else {
@@ -1227,11 +1229,95 @@ const getTemplates = async (req, res) => {
       }
     );
 
-    console.log('📋 Templates fetched from WhatsApp API:', response.data.data?.length || 0);
+    const templates = response.data.data || [];
+    console.log('📋 Templates fetched from WhatsApp API:', templates.length);
+
+    // Save templates to database
+    if (templates.length > 0) {
+      try {
+        // Transform WhatsApp API template format to database format
+        // Store the original WhatsApp template ID for reference
+        const templatesToInsert = templates.map(template => {
+          // Find the component text from the template structure
+          const bodyComponent = template.components?.find(comp => comp.type === 'BODY');
+          const textContent = bodyComponent?.text || '';
+          
+          // Count the number of variables in the template
+          // WhatsApp uses {{1}}, {{2}}, etc. for variables
+          const variableCount = (textContent.match(/\{\{\d+\}\}/g) || []).length;
+          
+          // Template has parameters if there are any variables
+          const hasParams = variableCount > 0;
+          
+          console.log(`📋 Template: ${template.name}, Variables: ${variableCount}, HasParams: ${hasParams}`);
+          
+          return {
+            whatsappTemplateId: template.id, // Store WhatsApp template ID separately
+            name360: template.name || null,
+            title: template.name || null,
+            params: hasParams ? '1' : '0',
+            active: template.status === 'APPROVED' ? 't' : 'f',
+            category_id: template.category || null,
+            content: textContent || null
+          };
+        });
+
+        // Insert or update templates in database
+        for (const template of templatesToInsert) {
+          try {
+            // Check if template exists by number_id (WhatsApp template ID)
+            const { data: existingTemplate } = await supabase
+              .from('whatsapp_whatsapptemplate')
+              .select('id')
+              .eq('number_id', template.whatsappTemplateId)
+              .single();
+
+            // Prepare template data with number_id as WhatsApp template ID
+            const templateData = {
+              number_id: template.whatsappTemplateId, // WhatsApp template ID
+              name360: template.name360,
+              title: template.title,
+              params: template.params,
+              active: template.active,
+              category_id: template.category_id,
+              content: template.content
+            };
+
+            if (existingTemplate) {
+              // Update existing template - keep the existing auto-incremented id
+              const { error: updateError } = await supabase
+                .from('whatsapp_whatsapptemplate')
+                .update(templateData)
+                .eq('id', existingTemplate.id);
+
+              if (updateError) {
+                console.error(`Error updating template ${template.whatsappTemplateId}:`, updateError);
+              }
+            } else {
+              // Insert new template - let the database auto-increment the id
+              const { error: insertError } = await supabase
+                .from('whatsapp_whatsapptemplate')
+                .insert(templateData);
+
+              if (insertError) {
+                console.error(`Error inserting template ${template.whatsappTemplateId}:`, insertError);
+              }
+            }
+          } catch (dbError) {
+            console.error(`Error processing template ${template.whatsappTemplateId}:`, dbError);
+          }
+        }
+
+        console.log(`✅ Saved ${templates.length} templates to database`);
+      } catch (dbError) {
+        console.error('❌ Error saving templates to database:', dbError);
+        // Continue even if database save fails
+      }
+    }
 
     return res.json({
       success: true,
-      templates: response.data.data || []
+      templates: templates
     });
   } catch (error) {
     console.error('Error fetching templates:', error);

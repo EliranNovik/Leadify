@@ -566,16 +566,9 @@ const WhatsAppPage: React.FC = () => {
               text: newMessage.trim()
             }
           ];
-        } else if (selectedTemplate.params === '0') {
-          // Template doesn't require parameters, send without them
-          messagePayload.templateParameters = [];
-        }
-        
-        // For templates, only include message if there are parameters
-        // WhatsApp API doesn't require message field for templates
-        if (selectedTemplate.params === '1' && newMessage.trim()) {
           messagePayload.message = newMessage.trim();
         }
+        // If params === '0', don't include templateParameters field at all
       } else {
         // Regular message requires message text
         messagePayload.message = newMessage.trim();
