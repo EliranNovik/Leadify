@@ -63,6 +63,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const [userActiveFilter, setUserActiveFilter] = useState<string>('all'); // Filter for user is_active status (for tenants_employee)
   const [showAllRecords, setShowAllRecords] = useState(true); // Show all records by default
   const [foreignKeyData, setForeignKeyData] = useState<{[key: string]: {[key: string]: string}}>({});
+  const [allForeignKeyOptions, setAllForeignKeyOptions] = useState<{[key: string]: {value: string; label: string}[]}>({});
 
   // Fetch records
   const fetchRecords = async () => {
@@ -255,8 +256,45 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     setForeignKeyData(fkData);
   };
 
+  // Fetch all options for foreign key fields (used for dropdowns)
+  const fetchAllForeignKeyOptions = async () => {
+    const foreignKeyFields = fields.filter(f => f.foreignKey);
+    const options: {[key: string]: {value: string; label: string}[]} = {};
+
+    for (const field of foreignKeyFields) {
+      if (!field.foreignKey) continue;
+      
+      const { table, valueField, displayField } = field.foreignKey;
+      
+      try {
+        const result = await supabase
+          .from(table)
+          .select(`${valueField}, ${displayField}`);
+        
+        if (result.error) {
+          console.error(`❌ Error fetching options for ${field.name}:`, result.error);
+          continue;
+        }
+        
+        if (result.data) {
+          options[field.name] = result.data.map((item: any) => ({
+            value: item[valueField],
+            label: item[displayField] || String(item[valueField])
+          }));
+          console.log(`✅ Fetched ${result.data.length} options for ${field.name}`);
+        }
+      } catch (error) {
+        console.error(`❌ Error fetching options for ${field.name}:`, error);
+      }
+    }
+    
+    console.log(`🔍 Final foreign key options:`, options);
+    setAllForeignKeyOptions(options);
+  };
+
   useEffect(() => {
     fetchRecords();
+    fetchAllForeignKeyOptions();
   }, [currentPage, searchTerm, isActiveFilter, userActiveFilter, showAllRecords]);
 
   // Handle boolean toggle changes
@@ -739,6 +777,23 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         );
 
       case 'select':
+        // If field has foreignKey, use all options from that table
+        if (field.foreignKey) {
+          const options = allForeignKeyOptions[field.name] || [];
+          
+          return (
+            <select {...commonProps} value={value || ''} onChange={field.readOnly ? undefined : handleChange}>
+              <option value="">Select {field.label}</option>
+              {options.map(option => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          );
+        }
+        
+        // Regular select with manual options
         return (
           <select {...commonProps} value={value || ''} onChange={field.readOnly ? undefined : handleChange}>
             <option value="">Select {field.label}</option>

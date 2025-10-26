@@ -467,7 +467,7 @@ const sendMessage = async (req, res) => {
       const legacyId = parseInt(leadId.replace('legacy_', ''));
       const { data: legacyLead, error: legacyError } = await supabase
         .from('leads_lead')
-        .select('id, name')
+        .select('id, name, meeting_date, meeting_time')
         .eq('id', legacyId)
         .single();
 
@@ -478,7 +478,9 @@ const sendMessage = async (req, res) => {
       lead = {
         id: legacyId,
         name: legacyLead.name,
-        lead_number: legacyId.toString()
+        lead_number: legacyId.toString(),
+        meeting_date: legacyLead.meeting_date,
+        meeting_time: legacyLead.meeting_time
       };
     } else {
       // For new leads, get from leads table
@@ -492,7 +494,21 @@ const sendMessage = async (req, res) => {
         return res.status(404).json({ error: 'Lead not found' });
       }
       
-      lead = newLead;
+      // Fetch latest meeting for this lead
+      const { data: latestMeeting, error: meetingError } = await supabase
+        .from('meetings')
+        .select('meeting_date, meeting_time')
+        .eq('client_id', leadId)
+        .order('meeting_date', { ascending: false })
+        .order('meeting_time', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      lead = {
+        ...newLead,
+        meeting_date: latestMeeting?.meeting_date || null,
+        meeting_time: latestMeeting?.meeting_time || null
+      };
     }
 
     let whatsappMessageId;
@@ -536,10 +552,43 @@ const sendMessage = async (req, res) => {
         // Add components ONLY if template parameters are provided
         // WhatsApp API requires parameters to be present if the template has them
         if (templateParameters && templateParameters.length > 0) {
+          // Auto-fill parameters: param {{1}} = client name, param {{2}} = latest meeting date/time
+          const parameters = templateParameters.map((param, index) => {
+            if (index === 0) {
+              // First parameter: client name
+              return {
+                type: 'text',
+                text: lead?.name || 'Client'
+              };
+            } else if (index === 1) {
+              // Second parameter: latest meeting date and time
+              if (lead?.meeting_date && lead?.meeting_time) {
+                const meetingDate = new Date(lead.meeting_date);
+                const formattedDate = meetingDate.toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                });
+                return {
+                  type: 'text',
+                  text: `${formattedDate} at ${lead.meeting_time}`
+                };
+              } else {
+                return {
+                  type: 'text',
+                  text: 'TBD'
+                };
+              }
+            } else {
+              // Other parameters use the provided value
+              return param;
+            }
+          });
+          
           messagePayload.template.components = [
             {
               type: 'body',
-              parameters: templateParameters
+              parameters: parameters
             }
           ];
         }
@@ -1263,6 +1312,10 @@ const getTemplates = async (req, res) => {
         });
 
         // Insert or update templates in database
+        let newCount = 0;
+        let updatedCount = 0;
+        let skippedCount = 0;
+        
         for (const template of templatesToInsert) {
           try {
             // Check if template exists by number_id (WhatsApp template ID)
@@ -1285,15 +1338,9 @@ const getTemplates = async (req, res) => {
             };
 
             if (existingTemplate) {
-              // Update existing template - keep the existing auto-incremented id
-              const { error: updateError } = await supabase
-                .from('whatsapp_whatsapptemplate')
-                .update(templateData)
-                .eq('id', existingTemplate.id);
-
-              if (updateError) {
-                console.error(`Error updating template ${template.whatsappTemplateId}:`, updateError);
-              }
+              // Skip if template already exists (don't update)
+              skippedCount++;
+              console.log(`⏭️  Skipping existing template: ${template.title} (${template.whatsappTemplateId})`);
             } else {
               // Insert new template - use number_id % max_int as id
               const { error: insertError } = await supabase
@@ -1301,15 +1348,18 @@ const getTemplates = async (req, res) => {
                 .insert(templateData);
 
               if (insertError) {
-                console.error(`Error inserting template ${template.whatsappTemplateId}:`, insertError);
+                console.error(`❌ Error inserting template ${template.whatsappTemplateId}:`, insertError);
+              } else {
+                newCount++;
+                console.log(`✅ Inserted new template: ${template.title} (${template.whatsappTemplateId})`);
               }
             }
           } catch (dbError) {
-            console.error(`Error processing template ${template.whatsappTemplateId}:`, dbError);
+            console.error(`❌ Error processing template ${template.whatsappTemplateId}:`, dbError);
           }
         }
 
-        console.log(`✅ Saved ${templates.length} templates to database`);
+        console.log(`✅ Saved ${newCount} new templates to database (${skippedCount} skipped, ${updatedCount} updated)`);
       } catch (dbError) {
         console.error('❌ Error saving templates to database:', dbError);
         // Continue even if database save fails
