@@ -1660,69 +1660,7 @@ const WhatsAppPage: React.FC = () => {
                               )}
                         </div>
                         
-                        {/* Edit/Delete buttons for outgoing messages */}
-                        {message.direction === 'out' && message.message_type === 'text' && !isLocked && (
-                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {editingMessage === message.id ? (
-                              <div className="flex items-center gap-1">
-                                <button
-                                  onClick={() => handleEditMessage(message.id, editMessageText)}
-                                  className="btn btn-xs btn-circle btn-primary"
-                                  title="Save"
-                                >
-                                  <CheckIcon className="w-3 h-3" />
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setEditingMessage(null);
-                                    setEditMessageText('');
-                                  }}
-                                  className="btn btn-xs btn-circle btn-ghost"
-                                  title="Cancel"
-                                >
-                                  <XMarkIcon className="w-3 h-3" />
-                                </button>
-                              </div>
-                            ) : (
-                              <>
-                                <button
-                                  onClick={() => {
-                                    setEditingMessage(message.id);
-                                    setEditMessageText(message.message);
-                                  }}
-                                  className="btn btn-xs btn-circle btn-ghost"
-                                  title="Edit"
-                                >
-                                  <PencilIcon className="w-3 h-3" />
-                                </button>
-                                {showDeleteOptions === message.id ? (
-                                  <div className="absolute right-0 bottom-full mb-2 bg-white rounded-lg shadow-lg border border-gray-200 p-2 flex flex-col gap-1 z-10">
-                                    <button
-                                      onClick={() => handleDeleteMessage(message.id, false)}
-                                      className="btn btn-xs btn-ghost text-left whitespace-nowrap"
-                                    >
-                                      Delete for me
-                                    </button>
-                                    <button
-                                      onClick={() => handleDeleteMessage(message.id, true)}
-                                      className="btn btn-xs btn-ghost text-left text-red-600 whitespace-nowrap"
-                                    >
-                                      Delete for everyone
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <button
-                                    onClick={() => setShowDeleteOptions(message.id)}
-                                    className="btn btn-xs btn-circle btn-ghost text-red-600"
-                                    title="Delete"
-                                  >
-                                    <TrashIcon className="w-3 h-3" />
-                                  </button>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        )}
+                        {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
                       </div>
                     </div>
                   </div>

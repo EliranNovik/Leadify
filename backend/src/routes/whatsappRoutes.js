@@ -30,6 +30,9 @@ router.post('/delete-message', whatsappController.deleteMessage);
 // Get message status
 router.get('/message-status/:messageId', whatsappController.getMessageStatus);
 
+// Get templates from WhatsApp API
+router.get('/templates', whatsappController.getTemplates);
+
 // Get conversation history
 router.get('/conversation/:leadId', whatsappController.getConversation);
 

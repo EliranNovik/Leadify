@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
+import { fetchWhatsAppTemplates, filterTemplates, type WhatsAppTemplate } from '../lib/whatsappTemplates';
 import {
   MagnifyingGlassIcon,
   PaperAirplaneIcon,
@@ -71,6 +72,13 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [showDeleteOptions, setShowDeleteOptions] = useState<number | null>(null);
   const [userCache, setUserCache] = useState<Record<string, string>>({});
 
+  // Template state
+  const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate | null>(null);
+  const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
+  const [templateSearchTerm, setTemplateSearchTerm] = useState('');
+  const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+
   // Helper function to fetch user name by ID
   const getUserName = async (userId: string) => {
     if (!userId) return null;
@@ -130,6 +138,26 @@ const WhatsAppLeadsPage: React.FC = () => {
     checkMobile();
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Fetch WhatsApp templates
+  useEffect(() => {
+    const loadTemplates = async () => {
+      try {
+        console.log('🔄 Loading WhatsApp templates...');
+        setIsLoadingTemplates(true);
+        const fetchedTemplates = await fetchWhatsAppTemplates();
+        console.log('📦 Templates loaded:', fetchedTemplates.length, 'templates');
+        setTemplates(fetchedTemplates);
+      } catch (error) {
+        console.error('❌ Error loading templates:', error);
+        toast.error('Failed to load templates');
+      } finally {
+        setIsLoadingTemplates(false);
+      }
+    };
+    
+    loadTemplates();
   }, []);
 
   // Fetch WhatsApp leads (messages from unconnected numbers)
@@ -506,7 +534,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       setEditingMessage(null);
       setEditMessageText('');
-      toast.success('Message edited successfully!');
+      toast.success('Message edited (note: WhatsApp API does not support message editing, update is internal only)', { duration: 5000 });
     } catch (error) {
       console.error('Error editing message:', error);
       toast.error('Failed to edit message: ' + (error as Error).message);
@@ -565,15 +593,47 @@ const WhatsAppLeadsPage: React.FC = () => {
   // Send reply message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim() || !selectedLead || !currentUser) return;
+    if ((!newMessage.trim() && !selectedTemplate) || !selectedLead || !currentUser) return;
 
     setSending(true);
     try {
       console.log('🚀 Sending reply message:', {
         message: newMessage.trim(),
         to: selectedLead.phone_number,
-        sender: currentUser.full_name || currentUser.email
+        sender: currentUser.full_name || currentUser.email,
+        hasTemplate: !!selectedTemplate,
+        templateName: selectedTemplate?.name360
       });
+
+      // Build the message payload
+      const messagePayload: any = {
+        leadId: null, // No lead ID for new WhatsApp leads
+        phoneNumber: selectedLead.phone_number,
+        message: newMessage.trim(),
+        sender_name: currentUser.full_name || currentUser.email,
+        hasTemplate: !!selectedTemplate,
+        selectedTemplate: selectedTemplate?.title
+      };
+
+      // Check if we should send as template message
+      if (selectedTemplate) {
+        messagePayload.isTemplate = true;
+        messagePayload.templateName = selectedTemplate.name360;
+        messagePayload.templateLanguage = 'en_US';
+        
+        // Only add parameters if the template requires them
+        if (selectedTemplate.params === '1' && newMessage.trim()) {
+          messagePayload.templateParameters = [
+            {
+              type: 'text',
+              text: newMessage.trim()
+            }
+          ];
+        } else if (selectedTemplate.params === '0') {
+          // Template doesn't require parameters, send without them
+          messagePayload.templateParameters = [];
+        }
+      }
 
       // Send message via WhatsApp API
       const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
@@ -581,12 +641,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          leadId: null, // No lead ID for new WhatsApp leads
-          phoneNumber: selectedLead.phone_number,
-          message: newMessage.trim(),
-          sender_name: currentUser.full_name || currentUser.email
-        }),
+        body: JSON.stringify(messagePayload),
       });
 
       const result = await response.json();
@@ -611,6 +666,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       setMessages(prev => [...prev, newMsg]);
       setNewMessage('');
+      setSelectedTemplate(null); // Clear template after sending
       
       // Refresh messages to get updated data (including any new incoming messages)
       // This will update the timer based on the latest message
@@ -1373,69 +1429,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                               )}
                             </div>
                             
-                            {/* Edit/Delete buttons for outgoing messages */}
-                            {message.direction === 'out' && message.message_type === 'text' && !isLocked && (
-                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                {editingMessage === message.id ? (
-                                  <div className="flex items-center gap-1">
-                                    <button
-                                      onClick={() => handleEditMessage(message.id, editMessageText)}
-                                      className="btn btn-xs btn-circle btn-primary"
-                                      title="Save"
-                                    >
-                                      <CheckIcon className="w-3 h-3" />
-                                    </button>
-                                    <button
-                                      onClick={() => {
-                                        setEditingMessage(null);
-                                        setEditMessageText('');
-                                      }}
-                                      className="btn btn-xs btn-circle btn-ghost"
-                                      title="Cancel"
-                                    >
-                                      <XMarkIcon className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <>
-                                    <button
-                                      onClick={() => {
-                                        setEditingMessage(message.id);
-                                        setEditMessageText(message.message);
-                                      }}
-                                      className="btn btn-xs btn-circle btn-ghost"
-                                      title="Edit"
-                                    >
-                                      <PencilIcon className="w-3 h-3" />
-                                    </button>
-                                    {showDeleteOptions === message.id ? (
-                                      <div className="absolute right-0 bottom-full mb-2 bg-white rounded-lg shadow-lg border border-gray-200 p-2 flex flex-col gap-1 z-10">
-                                        <button
-                                          onClick={() => handleDeleteMessage(message.id, false)}
-                                          className="btn btn-xs btn-ghost text-left whitespace-nowrap"
-                                        >
-                                          Delete for me
-                                        </button>
-                                        <button
-                                          onClick={() => handleDeleteMessage(message.id, true)}
-                                          className="btn btn-xs btn-ghost text-left text-red-600 whitespace-nowrap"
-                                        >
-                                          Delete for everyone
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <button
-                                        onClick={() => setShowDeleteOptions(message.id)}
-                                        className="btn btn-xs btn-circle btn-ghost text-red-600"
-                                        title="Delete"
-                                      >
-                                        <TrashIcon className="w-3 h-3" />
-                                      </button>
-                                    )}
-                                  </>
-                                )}
-                              </div>
-                            )}
+                            {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
                           </div>
                         </div>
                       </div>
@@ -1458,6 +1452,83 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                   </div>
                 )}
+
+                {/* Template Message Selector */}
+                <div className="flex-shrink-0 px-4 pt-2 border-t border-gray-200 bg-gray-50">
+                  <div className="flex items-center gap-2 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                      className={`btn btn-sm ${selectedTemplate ? 'btn-primary' : 'btn-outline'}`}
+                    >
+                      {selectedTemplate ? `Template: ${selectedTemplate.title}` : `Use Template (${templates.length})`}
+                    </button>
+                    {selectedTemplate && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTemplate(null)}
+                        className="btn btn-sm btn-ghost"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Template Dropdown */}
+                  {showTemplateSelector && (
+                    <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-3 mb-2 max-h-60 overflow-y-auto">
+                      <div className="text-sm font-medium mb-2">Select Template:</div>
+                      <input
+                        type="text"
+                        className="input input-sm input-bordered w-full mb-2"
+                        placeholder="Search templates..."
+                        value={templateSearchTerm}
+                        onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                      />
+                      
+                      {/* Templates List */}
+                      <div className="space-y-1">
+                        {isLoadingTemplates ? (
+                          <div className="flex items-center justify-center py-2">
+                            <div className="loading loading-spinner loading-sm"></div>
+                            <span className="ml-2">Loading templates...</span>
+                          </div>
+                        ) : (
+                          filterTemplates(templates, templateSearchTerm).map((template) => (
+                            <button
+                              key={template.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedTemplate(template);
+                                setShowTemplateSelector(false);
+                                setTemplateSearchTerm('');
+                                
+                                // If template doesn't require parameters, auto-fill the message
+                                if (template.params === '0') {
+                                  setNewMessage(template.content || '');
+                                } else if (template.params === '1') {
+                                  // Clear message so user can enter parameter
+                                  setNewMessage('');
+                                }
+                              }}
+                              className={`w-full text-left px-3 py-2 rounded text-sm hover:bg-gray-100 ${
+                                template.active !== 't' ? 'opacity-50' : ''
+                              }`}
+                            >
+                              <div className="font-medium">{template.title}</div>
+                              {template.content && (
+                                <div className="text-xs text-gray-500 truncate">{template.content}</div>
+                              )}
+                              {template.active !== 't' && (
+                                <span className="text-xs text-orange-600">(Pending Approval)</span>
+                              )}
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
                 {/* Message Input */}
                 <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
@@ -1482,7 +1553,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                     <button
                       type="submit"
-                      disabled={!newMessage.trim() || sending || isLocked}
+                      disabled={(!newMessage.trim() && !selectedTemplate) || sending || isLocked}
                       className="btn btn-primary btn-circle flex-shrink-0"
                     >
                       {sending ? (

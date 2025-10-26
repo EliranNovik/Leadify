@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { buildApiUrl } from './api';
 
 export interface WhatsAppTemplate {
   id: number;
@@ -12,41 +13,96 @@ export interface WhatsAppTemplate {
   content: string;
 }
 
+// Interface for templates from WhatsApp API
+export interface WhatsAppAPITemplate {
+  name: string;
+  language: string;
+  status: string;
+  category: string;
+  id: string;
+  components?: Array<{
+    type: string;
+    text?: string;
+    format?: string;
+    buttons?: Array<{
+      type: string;
+      text?: string;
+      url?: string;
+    }>;
+  }>;
+}
+
 export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
   try {
-    console.log('🔍 Fetching WhatsApp templates from database...');
+    console.log('🔍 Fetching WhatsApp templates from API...');
     
-    // First try to get all templates without filtering by active status
+    // Fetch templates from WhatsApp API
+    const response = await fetch(buildApiUrl('/api/whatsapp/templates'), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('❌ Error fetching templates from API:', errorData);
+      
+      // Fallback to database if API fails
+      console.log('⚠️ Falling back to database...');
+      return await fetchTemplatesFromDatabase();
+    }
+
+    const data = await response.json();
+    console.log('✅ Templates fetched from API:', data.templates?.length || 0, 'templates');
+
+    if (data.success && data.templates) {
+      // Map API templates to our format
+      const mappedTemplates = data.templates.map((template: WhatsAppAPITemplate, index: number) => ({
+        id: index + 1,
+        title: template.name,
+        name360: template.name,
+        params: template.components?.some(c => c.type === 'BODY' && c.text?.includes('{{1}}')) ? '1' : '0',
+        active: template.status === 'APPROVED' ? 't' : 'f',
+        category_id: template.category || '',
+        firm_id: 0,
+        number_id: 0,
+        content: template.components?.find(c => c.type === 'BODY')?.text || '',
+      }));
+
+      console.log('📋 Mapped templates:', mappedTemplates.length);
+      return mappedTemplates;
+    }
+
+    return [];
+  } catch (error) {
+    console.error('❌ Error fetching WhatsApp templates:', error);
+    
+    // Fallback to database
+    console.log('⚠️ Falling back to database...');
+    return await fetchTemplatesFromDatabase();
+  }
+}
+
+// Fallback function to fetch from database
+async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
+  try {
+    console.log('🔍 Fetching WhatsApp templates from database (fallback)...');
+    
     const { data, error } = await supabase
       .from('whatsapp_whatsapptemplate')
       .select('*')
       .order('title', { ascending: true });
 
-    console.log('📊 Database response (all templates):', { data, error });
-
     if (error) {
-      console.error('❌ Error fetching WhatsApp templates:', error);
-      throw error;
+      console.error('❌ Error fetching from database:', error);
+      return [];
     }
 
-    console.log('✅ Templates fetched successfully:', data?.length || 0, 'templates');
-    if (data && data.length > 0) {
-      console.log('📋 First few templates:', data.slice(0, 3));
-      
-      // Check what the active field looks like
-      const activeValues = [...new Set(data.map(t => t.active))];
-      console.log('🔍 Active field values found:', activeValues);
-    }
-
-    // Include all templates regardless of active status for now
-    // This allows us to see pending templates and debug the issue
-    const activeTemplates = data || [];
-
-    console.log('✅ Active templates filtered:', activeTemplates.length, 'templates');
-
-    return activeTemplates;
+    console.log('✅ Templates fetched from database:', data?.length || 0);
+    return data || [];
   } catch (error) {
-    console.error('❌ Error fetching WhatsApp templates:', error);
+    console.error('❌ Error fetching from database:', error);
     return [];
   }
 }

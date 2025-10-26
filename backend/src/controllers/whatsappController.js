@@ -1169,6 +1169,58 @@ const deleteMessage = async (req, res) => {
   }
 };
 
+// Get templates from WhatsApp API
+const getTemplates = async (req, res) => {
+  try {
+    if (isDevelopmentMode) {
+      // Mock templates for development
+      console.log('📋 Mock templates for development');
+      return res.json({
+        success: true,
+        templates: [
+          {
+            name: 'hello_world',
+            language: 'en_US',
+            status: 'APPROVED',
+            category: 'UTILITY',
+            components: [
+              {
+                type: 'BODY',
+                text: 'Hello! Welcome to our service.'
+              }
+            ]
+          }
+        ]
+      });
+    }
+
+    // Fetch templates from WhatsApp API
+    const response = await axios.get(
+      `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/message_templates`,
+      {
+        headers: {
+          'Authorization': `Bearer ${ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    console.log('📋 Templates fetched from WhatsApp API:', response.data.data?.length || 0);
+
+    return res.json({
+      success: true,
+      templates: response.data.data || []
+    });
+  } catch (error) {
+    console.error('Error fetching templates:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch templates',
+      details: error.message 
+    });
+  }
+};
+
 module.exports = {
   verifyWebhook,
   handleWebhook,
@@ -1181,5 +1233,6 @@ module.exports = {
   getMedia,
   updateMessageStatus,
   editMessage,
-  deleteMessage
+  deleteMessage,
+  getTemplates
 }; 
