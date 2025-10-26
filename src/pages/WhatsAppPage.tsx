@@ -625,6 +625,7 @@ const WhatsAppPage: React.FC = () => {
       setMessages(prev => [...prev, newMsg]);
       setShouldAutoScroll(true); // Trigger auto-scroll when new message is sent
       setNewMessage('');
+      setSelectedTemplate(null); // Clear template selection after sending
       toast.success('Message sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending message:', error);
@@ -1698,21 +1699,6 @@ const WhatsAppPage: React.FC = () => {
                     Clear
                   </button>
                 )}
-                
-                {/* Debug button to show template info */}
-                <button
-                  type="button"
-                  onClick={() => {
-                    console.log('📋 Current templates:', templates);
-                    console.log('📋 Selected template:', selectedTemplate);
-                    console.log('📋 Template names:', templates.map(t => ({ title: t.title, name360: t.name360, active: t.active })));
-                    toast.success(`Loaded ${templates.length} templates. Check console for details.`);
-                  }}
-                  className="btn btn-ghost btn-sm text-blue-500"
-                  title="Debug template info"
-                >
-                  Debug
-                </button>
               </div>
               
               {/* Template Dropdown */}
