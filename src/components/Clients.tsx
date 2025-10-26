@@ -4030,11 +4030,8 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           )}
           
-          {/* Client info card */}
-          <ClientInformationBox selectedClient={selectedClient} />
-
-          {/* Amount badge + stage badge + applicants */}
-          <div className="w-full flex flex-col items-center">
+          {/* Amount badge + stage badge + applicants - Moved to top for mobile */}
+          <div className="w-full flex flex-col items-center mb-4">
             {/* Next Payment Due Indicator */}
             {nextDuePayment && (
               <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-xl shadow-lg px-4 py-2 mb-2 w-full max-w-xs">
@@ -4181,11 +4178,19 @@ const Clients: React.FC<ClientsProps> = ({
             })()}
           </div>
 
-          {/* Progress & Follow-up card */}
-          <ProgressFollowupBox 
+          {/* Client info card */}
+          <ClientInformationBox 
             selectedClient={selectedClient} 
             getEmployeeDisplayName={getEmployeeDisplayName}
           />
+
+          {/* Progress & Follow-up card - Hidden on mobile (now inline in ClientInformationBox) */}
+          <div className="hidden md:block">
+            <ProgressFollowupBox 
+              selectedClient={selectedClient} 
+              getEmployeeDisplayName={getEmployeeDisplayName}
+            />
+          </div>
         </div>
       </div>
       {/* Vibrant 'Lead is cold' badge, top right, same height as Stages/Actions */}
@@ -4440,9 +4445,9 @@ const Clients: React.FC<ClientsProps> = ({
               {/* Stages and Actions buttons - moved closer to tabs */}
               <div className="flex items-center gap-3 flex-shrink-0">
                 <div className="dropdown">
-                  <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm saira-regular">
+                  <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm saira-regular" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
                     <span>Stages</span>
-                    <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                    <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
                   </label>
                   <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                     {dropdownItems}
@@ -4475,9 +4480,9 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 )}
                 <div className="dropdown dropdown-end">
-                  <label tabIndex={0} className="btn btn-md bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
+                  <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
                     <span>Actions</span>
-                    <ChevronDownIcon className="w-4 h-4 text-purple-600" />
+                    <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
                   </label>
                   <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
                     <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
@@ -4494,9 +4499,9 @@ const Clients: React.FC<ClientsProps> = ({
               <div className="flex gap-2 mb-4">
                 <div className="flex-1">
                   <div className="dropdown w-full">
-                    <label tabIndex={0} className="btn btn-sm w-full bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
+                    <label tabIndex={0} className="btn btn-sm w-full bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
                       <span>Stages</span>
-                      <ChevronDownIcon className="w-4 h-4" />
+                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
                     </label>
                     <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                       {dropdownItems}
@@ -4528,9 +4533,9 @@ const Clients: React.FC<ClientsProps> = ({
                 )}
                 <div className="flex-1">
                   <div className="dropdown w-full">
-                    <label tabIndex={0} className="btn btn-sm w-full bg-white text-purple-600 border-purple-600 border-2 hover:bg-purple-50 gap-2 text-sm">
+                    <label tabIndex={0} className="btn btn-sm w-full bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
                       <span>Actions</span>
-                      <ChevronDownIcon className="w-4 h-4" />
+                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
                     </label>
                     <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
                       <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
@@ -4598,68 +4603,6 @@ const Clients: React.FC<ClientsProps> = ({
                           {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} onCreateFinancePlan={activeTab === 'finances' ? () => setShowPaymentsPlanDrawer(true) : undefined} />}
           </div>
         </div>
-      {/* Restore main client content for mobile below the new card */}
-      <div className="block md:hidden w-full">
-        {selectedClient && (
-          <div className="mt-4">
-            {/* Mobile version: modern card-based tab navigation */}
-            <div className="px-6 py-4">
-              <div
-                ref={mobileTabsRef}
-                className="overflow-x-auto scrollbar-hide bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 dark:border-gray-700 p-3 w-full"
-                style={{ WebkitOverflowScrolling: 'touch' }}
-              >
-                <div className="flex gap-2 pb-1">
-                  {tabs.map((tab) => {
-                    const isActive = activeTab === tab.id;
-                    return (
-                      <button
-                        key={tab.id}
-                        className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
-                          isActive
-                            ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
-                            : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
-                        }`}
-                        onClick={() => setActiveTab(tab.id)}
-                      >
-                        <div className="relative">
-                          <tab.icon className={`w-6 h-6 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
-                          {tab.id === 'interactions' && tab.badge && (
-                            <div className={`absolute -top-2 -right-2 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${
-                              isActive 
-                                ? 'bg-white/20 text-white' 
-                                : 'bg-purple-100 text-purple-700'
-                            }`}>
-                              {tab.badge}
-                            </div>
-                          )}
-                        </div>
-                        <span className={`text-xs font-semibold truncate max-w-[70px] ${
-                          isActive ? 'text-white' : 'text-gray-600'
-                        }`}>
-                          {tab.label}
-                        </span>
-                        {isActive && (
-                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-            {/* Tab Content - full width, white background */}
-            <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
-                        <div
-            key={activeTab}
-            className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
-          >
-                          {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} onCreateFinancePlan={activeTab === 'finances' ? () => setShowPaymentsPlanDrawer(true) : undefined} />}
-          </div>
-            </div>
-          </div>
-        )}
-      </div>
 
       {/* Schedule Meeting Right Panel */}
       {showScheduleMeetingPanel && (

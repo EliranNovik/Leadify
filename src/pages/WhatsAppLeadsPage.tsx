@@ -32,7 +32,7 @@ interface WhatsAppLead {
   message: string;
   sent_at: string;
   status: string;
-  message_type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contact';
+  message_type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contact' | 'button_response' | 'list_response';
   media_url?: string;
   media_filename?: string;
   media_mime_type?: string;
@@ -491,12 +491,15 @@ const WhatsAppLeadsPage: React.FC = () => {
     }
   }, [messages]);
 
-  // Filter leads based on search term
+  // Filter leads based on search term and sort by latest message
   const filteredLeads = leads.filter(lead =>
     lead.phone_number?.includes(searchTerm) ||
     lead.sender_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     lead.message.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  ).sort((a, b) => {
+    // Sort by last_message_at (descending - most recent first)
+    return new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime();
+  });
 
   // Handle edit message
   const handleEditMessage = async (messageId: number, newText: string) => {
@@ -989,8 +992,8 @@ const WhatsAppLeadsPage: React.FC = () => {
   }, [newMessage, isMobile]);
 
   return (
-    <div className="fixed inset-0 bg-white z-[9999]">
-      <div className="h-full flex flex-col">
+    <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
+      <div className="h-full flex flex-col overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200 bg-white">
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
@@ -1329,6 +1332,26 @@ const WhatsAppLeadsPage: React.FC = () => {
                               {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
                                 <p className="break-words text-base">{message.message}</p>
                               )}
+                              
+                              {/* Button response */}
+                              {message.message_type === 'button_response' && (
+                                <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
+                                  <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                                  </svg>
+                                  <p className="text-sm font-medium text-blue-900">{message.message}</p>
+                                </div>
+                              )}
+                              
+                              {/* List response */}
+                              {message.message_type === 'list_response' && (
+                                <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
+                                  <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                                  </svg>
+                                  <p className="text-sm font-medium text-green-900">{message.message}</p>
+                                </div>
+                              )}
                             </>
                           )}
 
@@ -1531,7 +1554,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 </div>
 
                 {/* Message Input */}
-                <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+                <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white" style={isMobile ? { position: 'sticky', bottom: 0, backgroundColor: 'white', zIndex: 10 } : {}}>
                   <form onSubmit={handleSendMessage} className="flex items-end gap-2">
                     <div className="flex-1 relative">
                       <textarea

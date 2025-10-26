@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
@@ -54,7 +55,7 @@ interface WhatsAppMessage {
   message: string;
   sent_at: string;
   status: string;
-  message_type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contact';
+  message_type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contact' | 'button_response' | 'list_response';
   media_url?: string;
   media_id?: string;
   media_filename?: string;
@@ -68,6 +69,7 @@ interface WhatsAppMessage {
 }
 
 const WhatsAppPage: React.FC = () => {
+  const navigate = useNavigate();
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClient, setSelectedClient] = useState<any>(null);
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
@@ -87,6 +89,7 @@ const WhatsAppPage: React.FC = () => {
   const [allMessages, setAllMessages] = useState<WhatsAppMessage[]>([]);
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
+  const [shouldCloseOnNavigate, setShouldCloseOnNavigate] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   // Contacts panel (mobile) UI state
@@ -509,7 +512,23 @@ const WhatsAppPage: React.FC = () => {
     (client.email && client.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
     (client.phone && client.phone.includes(searchTerm)) ||
     (client.mobile && client.mobile.includes(searchTerm))
-  );
+  ).sort((a, b) => {
+    // Get last message for each client
+    const lastMessageA = allMessages.filter(m => m.lead_id === a.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
+    const lastMessageB = allMessages.filter(m => m.lead_id === b.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
+    
+    // If both have messages, sort by latest message time (descending)
+    if (lastMessageA && lastMessageB) {
+      return new Date(lastMessageB.sent_at).getTime() - new Date(lastMessageA.sent_at).getTime();
+    }
+    
+    // If only one has messages, prioritize it
+    if (lastMessageA && !lastMessageB) return -1;
+    if (lastMessageB && !lastMessageA) return 1;
+    
+    // If neither has messages, maintain original order
+    return 0;
+  });
 
   // Send new message via WhatsApp API
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -1041,8 +1060,8 @@ const WhatsAppPage: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-0 bg-white z-[9999]">
-      <div className="h-full flex flex-col">
+    <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
+      <div className="h-full flex flex-col overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
         {/* Header */}
         <div className={`flex items-center justify-between p-4 md:p-6 border-b border-gray-200 ${isMobile && isContactsHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
@@ -1143,12 +1162,28 @@ const WhatsAppPage: React.FC = () => {
               </div>
             )}
           </div>
-          <button
-            onClick={() => window.history.back()}
-            className="btn btn-ghost btn-circle flex-shrink-0"
-          >
-            <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            {selectedClient && (
+              <button
+                onClick={() => {
+                  console.log('Navigating to client:', selectedClient.lead_number);
+                  // Navigate to client page - this will replace the WhatsApp route in the browser history
+                  navigate(`/clients/${selectedClient.lead_number}`);
+                }}
+                className="btn btn-primary btn-sm gap-2"
+                title="View Client Page"
+              >
+                <UserIcon className="w-4 h-4" />
+                <span className="hidden md:inline">View Client</span>
+              </button>
+            )}
+            <button
+              onClick={() => window.history.back()}
+              className="btn btn-ghost btn-circle flex-shrink-0"
+            >
+              <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 flex overflow-hidden">
@@ -1406,6 +1441,24 @@ const WhatsAppPage: React.FC = () => {
                             }`}>
                               {message.message}
                             </p>
+                          )}
+                          
+                          {message.message_type === 'button_response' && (
+                            <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-lg border border-blue-200">
+                              <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122" />
+                              </svg>
+                              <p className="text-sm font-medium text-blue-900">{message.message}</p>
+                            </div>
+                          )}
+                          
+                          {message.message_type === 'list_response' && (
+                            <div className="flex items-center gap-2 p-2 bg-green-50 rounded-lg border border-green-200">
+                              <svg className="w-5 h-5 text-green-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                              </svg>
+                              <p className="text-sm font-medium text-green-900">{message.message}</p>
+                            </div>
                           )}
                         </>
                       )}
@@ -1671,7 +1724,7 @@ const WhatsAppPage: React.FC = () => {
             </div>
 
             {/* Message Input - Fixed */}
-            <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
+            <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={isMobile ? { position: 'sticky', bottom: 0, backgroundColor: 'white', zIndex: 10 } : {}}>
               
               {/* Template Message Selector */}
               <div className="mb-3 flex items-center gap-2 flex-wrap">
@@ -1693,39 +1746,7 @@ const WhatsAppPage: React.FC = () => {
                   </button>
                 )}
                 
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      setIsLoadingTemplates(true);
-                      const result = await refreshTemplatesFromAPI();
-                      if (result.success) {
-                        toast.success(result.message);
-                        // Reload templates from database
-                        const fetchedTemplates = await fetchWhatsAppTemplates();
-                        setTemplates(fetchedTemplates);
-                      } else {
-                        toast.error(result.message);
-                      }
-                    } catch (error) {
-                      console.error('Error refreshing templates:', error);
-                      toast.error('Failed to refresh templates');
-                    } finally {
-                      setIsLoadingTemplates(false);
-                    }
-                  }}
-                  disabled={isLoadingTemplates}
-                  className="btn btn-ghost btn-sm"
-                  title="Refresh templates from WhatsApp API"
-                >
-                  {isLoadingTemplates ? (
-                    <div className="loading loading-spinner loading-sm"></div>
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                    </svg>
-                  )}
-                </button>
+
               </div>
               
               {/* Template Dropdown */}

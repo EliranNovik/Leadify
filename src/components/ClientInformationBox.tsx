@@ -4,9 +4,10 @@ import { supabase } from '../lib/supabase';
 
 interface ClientInformationBoxProps {
   selectedClient: any;
+  getEmployeeDisplayName?: (employeeId: string | null | undefined) => string;
 }
 
-const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedClient }) => {
+const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedClient, getEmployeeDisplayName }) => {
   const [legacyContactInfo, setLegacyContactInfo] = useState<{email: string | null, phone: string | null}>({
     email: null,
     phone: null
@@ -216,6 +217,50 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
           <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Topic</p>
           <p className="text-sm text-gray-900 text-right">
             {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
+          </p>
+        </div>
+      </div>
+
+      {/* Separation line for mobile view */}
+      <div className="md:hidden border-t-2 border-gray-300 my-4"></div>
+
+      {/* Progress & Follow-up - Mobile view inline */}
+      <div className="space-y-3 md:hidden">
+        {/* Probability */}
+        <div className="pb-2 border-b border-gray-200 last:border-b-0">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Probability</p>
+            <span className="text-sm font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
+          </div>
+          <div className="w-full bg-gray-200 rounded-full h-2">
+            <div 
+              className="bg-[#3b28c7] h-2 rounded-full transition-all duration-300" 
+              style={{ width: `${selectedClient?.probability || 0}%` }}
+            ></div>
+          </div>
+        </div>
+
+        {/* Next Follow-up */}
+        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Next Follow-up</p>
+          <p className="text-sm text-gray-900 text-right">
+            {selectedClient?.next_followup ? (
+              new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric'
+              })
+            ) : (
+              'Not scheduled'
+            )}
+          </p>
+        </div>
+
+        {/* Closer */}
+        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Closer</p>
+          <p className="text-sm text-gray-900 text-right">
+            {getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) : (selectedClient?.closer || 'Not assigned')}
           </p>
         </div>
       </div>
