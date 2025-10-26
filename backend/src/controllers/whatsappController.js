@@ -112,7 +112,9 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       audio,
       video,
       location,
-      contacts
+      contacts,
+      button,
+      interactive
     } = message;
 
     // Find lead by phone number (handle various formats)
@@ -293,6 +295,52 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       case 'contacts':
         messageData.message = 'Contact shared';
         messageData.message_type = 'contact';
+        break;
+      
+      case 'button':
+        // Handle button response from template message
+        messageData.message = `Button clicked: ${button.payload}`;
+        messageData.message_type = 'button_response';
+        console.log('🔘 Button response received:', {
+          buttonId: button.id,
+          payload: button.payload,
+          phoneNumber,
+          leadName: lead?.name
+        });
+        
+        // Handle specific button actions based on payload
+        if (button.payload === 'RESCHEDULE' || button.payload === 'reschedule') {
+          messageData.message = '📅 Client clicked "Reschedule" button';
+          console.log('📅 Reschedule request from:', lead?.name || phoneNumber);
+          
+          // You can add custom logic here, such as:
+          // - Creating a meeting/call scheduled event
+          // - Sending a notification to the case manager
+          // - Updating the lead status
+        }
+        break;
+      
+      case 'interactive':
+        // Handle interactive messages (buttons, lists)
+        if (interactive?.type === 'button_reply') {
+          messageData.message = `Button clicked: ${interactive.button_reply.title}`;
+          messageData.message_type = 'button_response';
+          console.log('🔘 Interactive button clicked:', {
+            buttonText: interactive.button_reply.title,
+            buttonId: interactive.button_reply.id,
+            phoneNumber,
+            leadName: lead?.name
+          });
+        } else if (interactive?.type === 'list_reply') {
+          messageData.message = `List option selected: ${interactive.list_reply.title}`;
+          messageData.message_type = 'list_response';
+          console.log('📋 List option selected:', {
+            optionText: interactive.list_reply.title,
+            optionId: interactive.list_reply.id,
+            phoneNumber,
+            leadName: lead?.name
+          });
+        }
         break;
     }
 
@@ -567,9 +615,18 @@ const sendMessage = async (req, res) => {
             month: 'long', 
             day: 'numeric' 
           });
+          // Format time to remove seconds (HH:MM format)
+          const timeStr = lead.meeting_time;
+          let formattedTime = timeStr;
+          // Check if time includes seconds (format HH:MM:SS or HH:MM:SS.milliseconds)
+          if (timeStr.includes(':') && (timeStr.match(/:/g) || []).length >= 2) {
+            // Extract hours and minutes only
+            const parts = timeStr.split(':');
+            formattedTime = `${parts[0]}:${parts[1]}`;
+          }
           autoFilledParameters.push({
             type: 'text',
-            text: `${formattedDate} at ${lead.meeting_time}`
+            text: `${formattedDate} at ${formattedTime}`
           });
         } else {
           autoFilledParameters.push({
