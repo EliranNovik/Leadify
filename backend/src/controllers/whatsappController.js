@@ -988,6 +988,169 @@ const getMedia = async (req, res) => {
   }
 };
 
+// Edit WhatsApp message (new feature)
+const editMessage = async (req, res) => {
+  try {
+    const { messageId, newMessage } = req.body;
+
+    if (!messageId || !newMessage) {
+      return res.status(400).json({ error: 'Message ID and new message are required' });
+    }
+
+    if (isDevelopmentMode) {
+      // Mock response for development
+      console.log('🔧 Mock edit message:', { messageId, newMessage });
+      
+      // Update the message in database
+      const { error: updateError } = await supabase
+        .from('whatsapp_messages')
+        .update({ 
+          message: newMessage,
+          updated_at: new Date().toISOString(),
+          is_edited: true
+        })
+        .eq('whatsapp_message_id', messageId);
+
+      if (updateError) {
+        console.error('Error updating message in database:', updateError);
+        return res.status(500).json({ error: 'Failed to update message in database' });
+      }
+
+      return res.json({ 
+        success: true, 
+        message: 'Message edited successfully (MOCK MODE)' 
+      });
+    } else {
+      // Edit message using WhatsApp API
+      const editPayload = {
+        messaging_product: 'whatsapp',
+        status: 'edited',
+        message: {
+          message_id: messageId
+        }
+      };
+
+      const response = await axios.post(
+        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
+        {
+          ...editPayload,
+          text: {
+            body: newMessage
+          }
+        },
+        {
+          headers: {
+            'Authorization': `Bearer ${ACCESS_TOKEN}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      // Update message in database
+      const { error: updateError } = await supabase
+        .from('whatsapp_messages')
+        .update({ 
+          message: newMessage,
+          updated_at: new Date().toISOString(),
+          is_edited: true
+        })
+        .eq('whatsapp_message_id', messageId);
+
+      if (updateError) {
+        console.error('Error updating message in database:', updateError);
+        return res.status(500).json({ error: 'Failed to update message in database' });
+      }
+
+      return res.json({ 
+        success: true, 
+        message: 'Message edited successfully' 
+      });
+    }
+
+  } catch (error) {
+    console.error('Error editing message:', error);
+    res.status(500).json({ error: 'Failed to edit message' });
+  }
+};
+
+// Delete WhatsApp message (new feature)
+const deleteMessage = async (req, res) => {
+  try {
+    const { messageId, deleteForEveryone } = req.body;
+
+    if (!messageId) {
+      return res.status(400).json({ error: 'Message ID is required' });
+    }
+
+    if (isDevelopmentMode) {
+      // Mock response for development
+      console.log('🗑️ Mock delete message:', { messageId, deleteForEveryone });
+      
+      if (deleteForEveryone) {
+        // Soft delete - mark as deleted for everyone
+        const { error: updateError } = await supabase
+          .from('whatsapp_messages')
+          .update({ 
+            is_deleted: true,
+            deleted_for_everyone: true,
+            deleted_at: new Date().toISOString()
+          })
+          .eq('whatsapp_message_id', messageId);
+
+        if (updateError) {
+          console.error('Error deleting message in database:', updateError);
+          return res.status(500).json({ error: 'Failed to delete message in database' });
+        }
+      }
+
+      return res.json({ 
+        success: true, 
+        message: 'Message deleted successfully (MOCK MODE)' 
+      });
+    } else {
+      // Delete message using WhatsApp API
+      const response = await axios.delete(
+        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages/${messageId}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${ACCESS_TOKEN}`,
+            'Content-Type': 'application/json'
+          },
+          data: {
+            status: deleteForEveryone ? 'delete_for_everyone' : 'delete_for_me'
+          }
+        }
+      );
+
+      // Update message in database
+      if (deleteForEveryone) {
+        const { error: updateError } = await supabase
+          .from('whatsapp_messages')
+          .update({ 
+            is_deleted: true,
+            deleted_for_everyone: true,
+            deleted_at: new Date().toISOString()
+          })
+          .eq('whatsapp_message_id', messageId);
+
+        if (updateError) {
+          console.error('Error deleting message in database:', updateError);
+          return res.status(500).json({ error: 'Failed to delete message in database' });
+        }
+      }
+
+      return res.json({ 
+        success: true, 
+        message: 'Message deleted successfully' 
+      });
+    }
+
+  } catch (error) {
+    console.error('Error deleting message:', error);
+    res.status(500).json({ error: 'Failed to delete message' });
+  }
+};
+
 module.exports = {
   verifyWebhook,
   handleWebhook,
@@ -998,5 +1161,7 @@ module.exports = {
   findLeadsByPhone,
   uploadMedia,
   getMedia,
-  updateMessageStatus
+  updateMessageStatus,
+  editMessage,
+  deleteMessage
 }; 

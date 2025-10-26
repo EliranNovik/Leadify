@@ -21,6 +21,12 @@ router.post('/send-message', whatsappController.sendMessage);
 // Send WhatsApp media (image, document, etc.)
 router.post('/send-media', whatsappController.sendMedia);
 
+// Edit WhatsApp message
+router.post('/edit-message', whatsappController.editMessage);
+
+// Delete WhatsApp message
+router.post('/delete-message', whatsappController.deleteMessage);
+
 // Get message status
 router.get('/message-status/:messageId', whatsappController.getMessageStatus);
 

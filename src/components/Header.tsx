@@ -2111,13 +2111,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </button>
 
           {/* WhatsApp Button */}
-          <button
-            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
-            title="Open WhatsApp"
-            onClick={onOpenWhatsApp}
-          >
-            <FaWhatsapp className="w-7 h-7 text-green-600" />
-          </button>
+          <div className="relative">
+            <button
+              className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
+              title="Open WhatsApp"
+              onClick={onOpenWhatsApp}
+            >
+              <FaWhatsapp className="w-7 h-7 text-green-600" />
+            </button>
+            {whatsappLeadsUnreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                {whatsappLeadsUnreadCount > 9 ? '9+' : whatsappLeadsUnreadCount}
+              </span>
+            )}
+          </div>
           
           <button
             className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"

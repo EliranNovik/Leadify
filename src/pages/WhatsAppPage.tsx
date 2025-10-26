@@ -18,6 +18,12 @@ import {
   PhotoIcon,
   FilmIcon,
   MusicalNoteIcon,
+  LockClosedIcon,
+  ClockIcon,
+  PencilIcon,
+  TrashIcon,
+  EllipsisVerticalIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 
@@ -94,6 +100,16 @@ const WhatsAppPage: React.FC = () => {
   
   // Emoji picker state
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
+  
+  // Lock state for 24-hour window
+  const [timeLeft, setTimeLeft] = useState<string>('');
+  const [isLocked, setIsLocked] = useState(false);
+
+  // Edit/Delete message state
+  const [editingMessage, setEditingMessage] = useState<number | null>(null);
+  const [editMessageText, setEditMessageText] = useState('');
+  const [deletingMessage, setDeletingMessage] = useState<number | null>(null);
+  const [showDeleteOptions, setShowDeleteOptions] = useState<number | null>(null);
 
   // Helper function to get document icon based on MIME type
   const getDocumentIcon = (mimeType?: string) => {
@@ -326,6 +342,34 @@ const WhatsAppPage: React.FC = () => {
         console.log('📋 Messages data:', data);
         setMessages(data || []);
         
+        // Mark incoming messages as read when viewing the conversation
+        if (currentUser && data && data.length > 0 && !isPolling) {
+          const incomingMessageIds = data
+            .filter(msg => msg.direction === 'in' && (!msg.is_read || msg.is_read === false))
+            .map(msg => msg.id);
+          
+          if (incomingMessageIds.length > 0) {
+            try {
+              const { error } = await supabase
+                .from('whatsapp_messages')
+                .update({ 
+                  is_read: true, 
+                  read_at: new Date().toISOString(),
+                  read_by: currentUser.id 
+                })
+                .in('id', incomingMessageIds);
+              
+              if (error) {
+                console.error('Error marking messages as read:', error);
+              } else {
+                console.log(`✅ Marked ${incomingMessageIds.length} messages as read`);
+              }
+            } catch (error) {
+              console.error('Error marking messages as read:', error);
+            }
+          }
+        }
+        
         // Only trigger auto-scroll on initial load, not during polling
         if (!isPolling && isFirstLoad && shouldAutoScroll) {
           setTimeout(() => {
@@ -347,6 +391,31 @@ const WhatsAppPage: React.FC = () => {
     
     return () => clearInterval(interval);
   }, [selectedClient]);
+
+  // Update timer for 24-hour window
+  useEffect(() => {
+    if (!selectedClient || messages.length === 0) {
+      setTimeLeft('');
+      setIsLocked(false);
+      return;
+    }
+
+    // Find the last message from the client (incoming message)
+    const lastIncomingMessage = messages
+      .filter(msg => msg.direction === 'in')
+      .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
+
+    if (lastIncomingMessage) {
+      calculateTimeLeft(lastIncomingMessage.sent_at);
+      
+      // Update timer every minute
+      const interval = setInterval(() => {
+        calculateTimeLeft(lastIncomingMessage.sent_at);
+      }, 60000); // Update every minute
+      
+      return () => clearInterval(interval);
+    }
+  }, [selectedClient, messages]);
 
   // Auto-scroll to bottom only when chat is first selected or new message is sent
   const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
@@ -596,7 +665,7 @@ const WhatsAppPage: React.FC = () => {
     }
   };
 
-  // Fetch all messages on component mount
+  // Fetch all messages on component mount and set up polling
   useEffect(() => {
     const fetchAllMessages = async () => {
       const messages = await getAllMessages();
@@ -604,7 +673,15 @@ const WhatsAppPage: React.FC = () => {
         setAllMessages(messages);
       }
     };
+    
     fetchAllMessages();
+    
+    // Set up polling to refresh all messages every 30 seconds
+    const interval = setInterval(() => {
+      fetchAllMessages();
+    }, 30000);
+    
+    return () => clearInterval(interval);
   }, []);
 
   // Get last message for client preview from all messages
@@ -615,8 +692,22 @@ const WhatsAppPage: React.FC = () => {
   // Get unread count for client from all messages
   const getUnreadCountForClient = (clientId: string) => {
     const clientMessages = allMessages.filter(msg => msg.lead_id === clientId);
-    return clientMessages.filter(msg => msg.direction === 'in' && msg.status !== 'read').length;
+    // Use the same simple logic as WhatsApp Leads Page
+    return clientMessages.filter(msg => {
+      if (msg.direction !== 'in') return false;
+      // Check if message is unread (same logic as WhatsApp Leads Page)
+      const isRead = (msg as any).is_read;
+      return !isRead || isRead === false;
+    }).length;
   };
+
+  // Calculate total unread messages across all clients
+  const totalUnreadCount = allMessages.filter(msg => {
+    if (msg.direction !== 'in') return false;
+    // Use the same simple logic as WhatsApp Leads Page
+    const isRead = (msg as any).is_read;
+    return !isRead || isRead === false;
+  }).length;
 
   // Handle file selection
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -637,6 +728,96 @@ const WhatsAppPage: React.FC = () => {
     const emoji = emojiObject.emoji;
     setNewMessage(prev => prev + emoji);
     setIsEmojiPickerOpen(false);
+  };
+
+  // Handle edit message
+  const handleEditMessage = async (messageId: number, newText: string) => {
+    try {
+      const message = messages.find(m => m.id === messageId);
+      if (!message || !message.whatsapp_message_id) {
+        toast.error('Message ID not found');
+        return;
+      }
+
+      const response = await fetch(buildApiUrl('/api/whatsapp/edit-message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messageId: message.whatsapp_message_id,
+          newMessage: newText
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to edit message');
+      }
+
+      // Update message in local state
+      setMessages(prev => prev.map(m => 
+        m.id === messageId 
+          ? { ...m, message: newText, is_edited: true as any }
+          : m
+      ));
+
+      setEditingMessage(null);
+      setEditMessageText('');
+      toast.success('Message edited successfully!');
+    } catch (error) {
+      console.error('Error editing message:', error);
+      toast.error('Failed to edit message: ' + (error as Error).message);
+    }
+  };
+
+  // Handle delete message
+  const handleDeleteMessage = async (messageId: number, deleteForEveryone: boolean) => {
+    try {
+      const message = messages.find(m => m.id === messageId);
+      if (!message || !message.whatsapp_message_id) {
+        toast.error('Message ID not found');
+        return;
+      }
+
+      const response = await fetch(buildApiUrl('/api/whatsapp/delete-message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messageId: message.whatsapp_message_id,
+          deleteForEveryone: deleteForEveryone
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to delete message');
+      }
+
+      if (deleteForEveryone) {
+        // Remove message from local state
+        setMessages(prev => prev.filter(m => m.id !== messageId));
+        toast.success('Message deleted for everyone!');
+      } else {
+        // Mark as deleted for me
+        setMessages(prev => prev.map(m => 
+          m.id === messageId 
+            ? { ...m, is_deleted: true as any }
+            : m
+        ));
+        toast.success('Message deleted!');
+      }
+
+      setDeletingMessage(null);
+      setShowDeleteOptions(null);
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      toast.error('Failed to delete message: ' + (error as Error).message);
+    }
   };
 
   // Send media message
@@ -754,18 +935,87 @@ const WhatsAppPage: React.FC = () => {
     }
   };
 
+  // Format date separator (WhatsApp-style)
+  const formatDateSeparator = (timestamp: string) => {
+    const date = new Date(timestamp);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    if (date.toDateString() === today.toDateString()) {
+      return 'Today';
+    }
+    if (date.toDateString() === yesterday.toDateString()) {
+      return 'Yesterday';
+    }
+    const diffTime = today.getTime() - date.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays <= 7) {
+      return date.toLocaleDateString('en-US', { weekday: 'long' });
+    }
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
+
+  // Calculate time left in 24-hour window
+  const calculateTimeLeft = (lastMessageTime: string) => {
+    const lastMessage = new Date(lastMessageTime);
+    const now = new Date();
+    const diffMs = now.getTime() - lastMessage.getTime();
+    const hoursLeft = 24 - (diffMs / (1000 * 60 * 60));
+    
+    if (hoursLeft <= 0) {
+      setIsLocked(true);
+      setTimeLeft('Locked');
+      return;
+    }
+    
+    setIsLocked(false);
+    const hours = Math.floor(hoursLeft);
+    const minutes = Math.floor((hoursLeft - hours) * 60);
+    
+    if (hours > 0) {
+      setTimeLeft(`${hours}h ${minutes}m`);
+    } else {
+      setTimeLeft(`${minutes}m`);
+    }
+  };
+
+  // Check if a client is locked (24 hours passed since last message)
+  const isClientLocked = (lastMessageTime: string) => {
+    const lastMessage = new Date(lastMessageTime);
+    const now = new Date();
+    const diffMs = now.getTime() - lastMessage.getTime();
+    const hoursPassed = diffMs / (1000 * 60 * 60);
+    return hoursPassed > 24;
+  };
+
   return (
     <div className="fixed inset-0 bg-white z-[9999]">
       <div className="h-full flex flex-col">
         {/* Header */}
         <div className={`flex items-center justify-between p-4 md:p-6 border-b border-gray-200 ${isMobile && isContactsHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-            <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
+            <div className="relative">
+              <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
+              {totalUnreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                  {totalUnreadCount > 9 ? '9+' : totalUnreadCount}
+                </span>
+              )}
+            </div>
             <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">WhatsApp</h2>
             {selectedClient && (
               <div className="hidden md:flex items-center gap-4 min-w-0 flex-1 overflow-hidden">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
+                  <div className="relative">
+                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
+                    {selectedClient && messages.filter(m => m.direction === 'in').length > 0 && isClientLocked(messages.filter(m => m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '') && (
+                      <div className="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5">
+                        <LockClosedIcon className="w-2 h-2 text-white" />
+                      </div>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-lg font-semibold text-gray-900 truncate">
                       {selectedClient.name}
@@ -774,6 +1024,23 @@ const WhatsAppPage: React.FC = () => {
                       ({selectedClient.lead_number})
                     </span>
                   </div>
+                  {timeLeft && (
+                    <div className={`flex items-center gap-1 px-2 py-1 rounded text-sm font-medium ${
+                      isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {isLocked ? (
+                        <>
+                          <LockClosedIcon className="w-4 h-4" />
+                          <span>Locked</span>
+                        </>
+                      ) : (
+                        <>
+                          <ClockIcon className="w-4 h-4" />
+                          <span>{timeLeft}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
                 
                 {(selectedClient.closer || selectedClient.scheduler || selectedClient.next_followup || selectedClient.probability || selectedClient.balance || selectedClient.potential_applicants) && (
@@ -874,6 +1141,12 @@ const WhatsAppPage: React.FC = () => {
                   const lastMessage = getLastMessageForClient(client.id);
                   const unreadCount = getUnreadCountForClient(client.id);
                   const isSelected = selectedClient?.id === client.id;
+                  
+                  // Check if client is locked (24 hours passed since last message)
+                  const clientLastMessage = lastMessage && lastMessage.direction === 'in' 
+                    ? lastMessage.sent_at 
+                    : (allMessages.filter(m => m.lead_id === client.id && m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '');
+                  const locked = isClientLocked(clientLastMessage);
 
                   return (
                     <div
@@ -892,10 +1165,16 @@ const WhatsAppPage: React.FC = () => {
                     >
                       <div className="flex items-center gap-2 md:gap-3">
                         {/* Avatar */}
-                        <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0 relative">
                           <span className="text-green-600 font-semibold text-sm md:text-lg">
                             {client.name.charAt(0).toUpperCase()}
                           </span>
+                          {/* Lock icon overlay */}
+                          {locked && (
+                            <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
+                              <LockClosedIcon className="w-3 h-3 text-white" />
+                            </div>
+                          )}
                         </div>
 
                         {/* Client Info */}
@@ -952,10 +1231,15 @@ const WhatsAppPage: React.FC = () => {
                         </svg>
                       </button>
                       <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                        <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center relative">
                           <span className="text-green-600 font-semibold text-sm">
                             {selectedClient.name.charAt(0).toUpperCase()}
                           </span>
+                          {isClientLocked(messages.filter(m => m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '') && (
+                            <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
+                              <LockClosedIcon className="w-3 h-3 text-white" />
+                            </div>
+                          )}
                         </div>
                         <div>
                           <h3 className="font-semibold text-gray-900 text-sm">
@@ -967,6 +1251,23 @@ const WhatsAppPage: React.FC = () => {
                         </div>
                       </div>
                     </div>
+                    {timeLeft && (
+                      <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
+                        isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                      }`}>
+                        {isLocked ? (
+                          <>
+                            <LockClosedIcon className="w-4 h-4" />
+                            <span>Locked</span>
+                          </>
+                        ) : (
+                          <>
+                            <ClockIcon className="w-4 h-4" />
+                            <span>{timeLeft}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -979,23 +1280,37 @@ const WhatsAppPage: React.FC = () => {
                   <p className="text-sm">Start the conversation with {selectedClient.name}</p>
                 </div>
               ) : (
-                messages.map((message, index) => (
+                messages.map((message, index) => {
+                  // Check if we need to show a date separator
+                  const showDateSeparator = index === 0 || 
+                    new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
+                  
+                  return (
+                    <React.Fragment key={message.id || index}>
+                      {/* Date Separator */}
+                      {showDateSeparator && (
+                        <div className="flex justify-center my-4">
+                          <div className="bg-gray-100 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full">
+                            {formatDateSeparator(message.sent_at)}
+                          </div>
+                        </div>
+                      )}
+                      
                   <div
-                    key={message.id || index}
                     className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
                   >
                     {message.direction === 'out' && (
-                      <span className="text-xs text-gray-500 mb-1 mr-2">
+                      <span className="text-sm text-gray-600 mb-1 mr-2 font-medium">
                         {message.sender_name}
                       </span>
                     )}
                     {message.direction === 'in' && (
-                      <span className="text-xs text-gray-500 mb-1 ml-2">
+                      <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
                         {message.sender_name}
                       </span>
                     )}
                     <div
-                      className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
+                      className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
                         message.direction === 'out'
                           ? isEmojiOnly(message.message)
                             ? 'bg-white text-gray-900'
@@ -1003,13 +1318,35 @@ const WhatsAppPage: React.FC = () => {
                           : 'bg-white text-gray-900 border border-gray-200'
                       }`}
                     >
-                      {/* Message content based on type */}
-                      {message.message_type === 'text' && (
-                        <p className={`break-words ${
-                          isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
-                        }`}>
-                          {message.message}
-                        </p>
+                      {/* Edit input or message content */}
+                      {editingMessage === message.id ? (
+                        <input
+                          type="text"
+                          value={editMessageText}
+                          onChange={(e) => setEditMessageText(e.target.value)}
+                          className="w-full bg-transparent border-none outline-none"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              handleEditMessage(message.id, editMessageText);
+                            } else if (e.key === 'Escape') {
+                              setEditingMessage(null);
+                              setEditMessageText('');
+                            }
+                          }}
+                        />
+                      ) : (
+                        <>
+                          {/* Message content based on type */}
+                          {message.message_type === 'text' && (
+                            <p className={`break-words ${
+                              isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
+                            }`}>
+                              {message.message}
+                            </p>
+                          )}
+                        </>
                       )}
                       
                       {message.message_type === 'image' && (
@@ -1052,7 +1389,7 @@ const WhatsAppPage: React.FC = () => {
                             </div>
                           )}
                           {message.caption && (
-                            <p className="text-sm break-words">{message.caption}</p>
+                            <p className="text-base break-words">{message.caption}</p>
                           )}
                         </div>
                       )}
@@ -1159,7 +1496,7 @@ const WhatsAppPage: React.FC = () => {
                           )}
                           
                           {message.caption && (
-                            <p className="text-sm break-words mt-2">{message.caption}</p>
+                            <p className="text-base break-words mt-2">{message.caption}</p>
                           )}
                         </div>
                       )}
@@ -1173,7 +1510,7 @@ const WhatsAppPage: React.FC = () => {
                             <span className="text-sm">Audio message</span>
                           </div>
                           {message.caption && (
-                            <p className="text-sm break-words mt-2">{message.caption}</p>
+                            <p className="text-base break-words mt-2">{message.caption}</p>
                           )}
                         </div>
                       )}
@@ -1208,7 +1545,7 @@ const WhatsAppPage: React.FC = () => {
                             </video>
                           )}
                           {message.caption && (
-                            <p className="text-sm break-words">{message.caption}</p>
+                            <p className="text-base break-words">{message.caption}</p>
                           )}
                         </div>
                       )}
@@ -1222,7 +1559,7 @@ const WhatsAppPage: React.FC = () => {
                             </svg>
                             <span className="text-sm">Location shared</span>
                           </div>
-                          <p className="text-sm break-words mt-1">{message.message}</p>
+                          <p className="text-base break-words mt-1">{message.message}</p>
                         </div>
                       )}
                       
@@ -1236,22 +1573,93 @@ const WhatsAppPage: React.FC = () => {
                       )}
 
                       {/* Message status and time */}
-                      <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
-                        <span>
-                          {new Date(message.sent_at).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </span>
-                        {message.direction === 'out' && (
-                          <span className="inline-block align-middle text-current">
-                            {renderMessageStatus(message.whatsapp_status)}
+                      <div className="flex items-center justify-between mt-1">
+                        <div className="flex items-center gap-1 text-sm opacity-80">
+                          <span>
+                            {new Date(message.sent_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
                           </span>
+                          {message.direction === 'out' && (
+                            <span className="inline-block align-middle text-current">
+                              {renderMessageStatus(message.whatsapp_status)}
+                            </span>
+                          )}
+                          {(message as any).is_edited && (
+                            <span className="text-xs opacity-60 italic">(edited)</span>
+                          )}
+                        </div>
+                        
+                        {/* Edit/Delete buttons for outgoing messages */}
+                        {message.direction === 'out' && message.message_type === 'text' && !isLocked && (
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {editingMessage === message.id ? (
+                              <div className="flex items-center gap-1">
+                                <button
+                                  onClick={() => handleEditMessage(message.id, editMessageText)}
+                                  className="btn btn-xs btn-circle btn-primary"
+                                  title="Save"
+                                >
+                                  <CheckIcon className="w-3 h-3" />
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setEditingMessage(null);
+                                    setEditMessageText('');
+                                  }}
+                                  className="btn btn-xs btn-circle btn-ghost"
+                                  title="Cancel"
+                                >
+                                  <XMarkIcon className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <button
+                                  onClick={() => {
+                                    setEditingMessage(message.id);
+                                    setEditMessageText(message.message);
+                                  }}
+                                  className="btn btn-xs btn-circle btn-ghost"
+                                  title="Edit"
+                                >
+                                  <PencilIcon className="w-3 h-3" />
+                                </button>
+                                {showDeleteOptions === message.id ? (
+                                  <div className="absolute right-0 bottom-full mb-2 bg-white rounded-lg shadow-lg border border-gray-200 p-2 flex flex-col gap-1 z-10">
+                                    <button
+                                      onClick={() => handleDeleteMessage(message.id, false)}
+                                      className="btn btn-xs btn-ghost text-left whitespace-nowrap"
+                                    >
+                                      Delete for me
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteMessage(message.id, true)}
+                                      className="btn btn-xs btn-ghost text-left text-red-600 whitespace-nowrap"
+                                    >
+                                      Delete for everyone
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => setShowDeleteOptions(message.id)}
+                                    className="btn btn-xs btn-circle btn-ghost text-red-600"
+                                    title="Delete"
+                                  >
+                                    <TrashIcon className="w-3 h-3" />
+                                  </button>
+                                )}
+                              </>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
                   </div>
-                ))
+                    </React.Fragment>
+                  );
+                })
               )}
               <div ref={messagesEndRef} />
             </div>
@@ -1393,18 +1801,30 @@ const WhatsAppPage: React.FC = () => {
                 </div>
               )}
               
+              {/* Lock Message */}
+              {isLocked && (
+                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg mb-2">
+                  <LockClosedIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
+                  <div className="text-sm text-red-700">
+                    <p className="font-medium">Messaging window expired</p>
+                    <p className="text-xs text-red-600">More than 24 hours have passed since the client's last message. You can no longer send messages to this contact.</p>
+                  </div>
+                </div>
+              )}
+
               <form onSubmit={handleSendMessage} className="flex items-center gap-2">
                 <div className="relative">
                   <button 
                     type="button" 
                     onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
                     className="btn btn-ghost btn-circle"
+                    disabled={isLocked}
                   >
                     <FaceSmileIcon className="w-6 h-6 text-gray-500" />
                   </button>
                   
                   {/* Emoji Picker */}
-                  {isEmojiPickerOpen && (
+                  {isEmojiPickerOpen && !isLocked && (
                     <div className="absolute bottom-12 left-0 z-50 emoji-picker-container">
                       <EmojiPicker
                         onEmojiClick={handleEmojiClick}
@@ -1425,8 +1845,8 @@ const WhatsAppPage: React.FC = () => {
                 
                 {/* File upload button */}
                 <label 
-                  className="btn btn-ghost btn-circle cursor-pointer"
-                  onClick={() => console.log('📁 File upload button clicked')}
+                  className={`btn btn-ghost btn-circle ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                  onClick={() => !isLocked && console.log('📁 File upload button clicked')}
                 >
                   <PaperClipIcon className="w-6 h-6 text-gray-500" />
                   <input
@@ -1434,7 +1854,7 @@ const WhatsAppPage: React.FC = () => {
                     className="hidden"
                     accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
                     onChange={handleFileSelect}
-                    disabled={uploadingMedia}
+                    disabled={uploadingMedia || isLocked}
                   />
                 </label>
 
@@ -1452,28 +1872,48 @@ const WhatsAppPage: React.FC = () => {
                   </div>
                 )}
 
-                <input
-                  type="text"
+                <textarea
                   value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
+                  onChange={(e) => {
+                    setNewMessage(e.target.value);
+                    // Auto-resize the textarea
+                    e.target.style.height = 'auto';
+                    e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      // Trigger form submit
+                      if (newMessage.trim() || selectedTemplate) {
+                        const form = e.currentTarget.closest('form');
+                        if (form) {
+                          form.requestSubmit();
+                        }
+                      }
+                    }
+                  }}
                   placeholder={
-                    selectedFile 
-                      ? "Add a caption..." 
-                      : selectedTemplate 
-                        ? selectedTemplate.params === '1' 
-                          ? `Enter parameter for: ${selectedTemplate.title}` 
-                          : `Template: ${selectedTemplate.title} (no parameters needed)`
-                        : "Type a message..."
+                    isLocked 
+                      ? "Messaging window expired - cannot send messages"
+                      : selectedFile 
+                        ? "Add a caption..." 
+                        : selectedTemplate 
+                          ? selectedTemplate.params === '1' 
+                            ? `Enter parameter for: ${selectedTemplate.title}` 
+                            : `Template: ${selectedTemplate.title} (no parameters needed)`
+                          : "Type a message..."
                   }
-                  className="flex-1 input input-bordered rounded-full"
-                  disabled={sending || uploadingMedia}
+                  className={`flex-1 textarea textarea-bordered rounded-full resize-none ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                  disabled={sending || uploadingMedia || isLocked}
+                  rows={1}
+                  style={{ maxHeight: '200px', minHeight: 'auto', paddingTop: '16px', paddingBottom: '16px', paddingLeft: '16px', paddingRight: '16px' }}
                 />
                 
                 {selectedFile ? (
                   <button
                     type="button"
                     onClick={handleSendMedia}
-                    disabled={uploadingMedia}
+                    disabled={uploadingMedia || isLocked}
                     className="btn btn-primary btn-circle"
                   >
                     {uploadingMedia ? (
@@ -1486,7 +1926,7 @@ const WhatsAppPage: React.FC = () => {
                   <button
                     type="submit"
                     disabled={(() => {
-                      const isDisabled = (!newMessage.trim() && !selectedTemplate) || sending;
+                      const isDisabled = (!newMessage.trim() && !selectedTemplate) || sending || isLocked;
                       console.log('🔘 Send button state:', { 
                         newMessage: newMessage.trim(), 
                         selectedTemplate: selectedTemplate?.title, 

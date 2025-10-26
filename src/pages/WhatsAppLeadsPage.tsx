@@ -15,6 +15,10 @@ import {
   PhotoIcon,
   FilmIcon,
   LockClosedIcon,
+  PencilIcon,
+  TrashIcon,
+  XMarkIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 
@@ -59,6 +63,12 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [isLocked, setIsLocked] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Edit/Delete message state
+  const [editingMessage, setEditingMessage] = useState<number | null>(null);
+  const [editMessageText, setEditMessageText] = useState('');
+  const [deletingMessage, setDeletingMessage] = useState<number | null>(null);
+  const [showDeleteOptions, setShowDeleteOptions] = useState<number | null>(null);
 
   // Fetch current user info
   useEffect(() => {
@@ -410,6 +420,96 @@ const WhatsAppLeadsPage: React.FC = () => {
     lead.sender_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     lead.message.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  // Handle edit message
+  const handleEditMessage = async (messageId: number, newText: string) => {
+    try {
+      const message = messages.find(m => m.id === messageId);
+      if (!message || !message.whatsapp_message_id) {
+        toast.error('Message ID not found');
+        return;
+      }
+
+      const response = await fetch(buildApiUrl('/api/whatsapp/edit-message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messageId: message.whatsapp_message_id,
+          newMessage: newText
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to edit message');
+      }
+
+      // Update message in local state
+      setMessages(prev => prev.map(m => 
+        m.id === messageId 
+          ? { ...m, message: newText, is_edited: true as any }
+          : m
+      ));
+
+      setEditingMessage(null);
+      setEditMessageText('');
+      toast.success('Message edited successfully!');
+    } catch (error) {
+      console.error('Error editing message:', error);
+      toast.error('Failed to edit message: ' + (error as Error).message);
+    }
+  };
+
+  // Handle delete message
+  const handleDeleteMessage = async (messageId: number, deleteForEveryone: boolean) => {
+    try {
+      const message = messages.find(m => m.id === messageId);
+      if (!message || !message.whatsapp_message_id) {
+        toast.error('Message ID not found');
+        return;
+      }
+
+      const response = await fetch(buildApiUrl('/api/whatsapp/delete-message'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messageId: message.whatsapp_message_id,
+          deleteForEveryone: deleteForEveryone
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to delete message');
+      }
+
+      if (deleteForEveryone) {
+        // Remove message from local state
+        setMessages(prev => prev.filter(m => m.id !== messageId));
+        toast.success('Message deleted for everyone!');
+      } else {
+        // Mark as deleted for me
+        setMessages(prev => prev.map(m => 
+          m.id === messageId 
+            ? { ...m, is_deleted: true as any }
+            : m
+        ));
+        toast.success('Message deleted!');
+      }
+
+      setDeletingMessage(null);
+      setShowDeleteOptions(null);
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      toast.error('Failed to delete message: ' + (error as Error).message);
+    }
+  };
 
   // Send reply message
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -765,7 +865,7 @@ const WhatsAppLeadsPage: React.FC = () => {
     if (textarea) {
       textarea.style.height = 'auto';
       const scrollHeight = textarea.scrollHeight;
-      const maxHeight = isMobile ? 120 : 100; // Max height in pixels
+      const maxHeight = 250; // Max height in pixels - increased for longer messages
       textarea.style.height = Math.min(scrollHeight, maxHeight) + 'px';
     }
   };
@@ -1063,7 +1163,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                           {/* Date Separator */}
                           {showDateSeparator && (
                             <div className="flex justify-center my-4">
-                              <div className="bg-gray-100 text-gray-600 text-xs font-medium px-3 py-1 rounded-full">
+                              <div className="bg-gray-100 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full">
                                 {formatDateSeparator(message.sent_at)}
                               </div>
                             </div>
@@ -1071,25 +1171,47 @@ const WhatsAppLeadsPage: React.FC = () => {
                           
                           <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}>
                         {message.direction === 'in' && (
-                          <span className="text-xs text-gray-500 mb-1 ml-2">
+                          <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
                             {message.sender_name}
                           </span>
                         )}
                         {message.direction === 'out' && (
-                          <span className="text-xs text-gray-500 mb-1 mr-2">
+                          <span className="text-sm text-gray-600 mb-1 mr-2 font-medium">
                             {message.sender_first_name || message.sender_name || 'You'}
                           </span>
                         )}
                         <div
-                          className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
+                          className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
                             message.direction === 'out'
                               ? 'bg-green-600 text-white'
                               : 'bg-white text-gray-900 border border-gray-200'
                           }`}
                         >
-                          {/* Text message - only show if no media */}
-                          {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
-                            <p className="break-words text-sm">{message.message}</p>
+                          {/* Edit input or message content */}
+                          {editingMessage === message.id ? (
+                            <input
+                              type="text"
+                              value={editMessageText}
+                              onChange={(e) => setEditMessageText(e.target.value)}
+                              className="w-full bg-transparent border-none outline-none"
+                              autoFocus
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handleEditMessage(message.id, editMessageText);
+                                } else if (e.key === 'Escape') {
+                                  setEditingMessage(null);
+                                  setEditMessageText('');
+                                }
+                              }}
+                            />
+                          ) : (
+                            <>
+                              {/* Text message - only show if no media */}
+                              {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
+                                <p className="break-words text-base">{message.message}</p>
+                              )}
+                            </>
                           )}
 
                           {/* Image message */}
@@ -1118,7 +1240,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   Download
                                 </button>
                                 {message.caption && (
-                                  <p className="text-sm break-words">{message.caption}</p>
+                                  <p className="text-base break-words">{message.caption}</p>
                                 )}
                               </div>
                             </div>
@@ -1169,13 +1291,82 @@ const WhatsAppLeadsPage: React.FC = () => {
                             </div>
                           )}
 
-                          <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
-                            <span>
-                              {new Date(message.sent_at).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </span>
+                          <div className="flex items-center justify-between mt-1">
+                            <div className="flex items-center gap-1 text-sm opacity-80">
+                              <span>
+                                {new Date(message.sent_at).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </span>
+                              {(message as any).is_edited && (
+                                <span className="text-xs opacity-60 italic">(edited)</span>
+                              )}
+                            </div>
+                            
+                            {/* Edit/Delete buttons for outgoing messages */}
+                            {message.direction === 'out' && message.message_type === 'text' && !isLocked && (
+                              <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                {editingMessage === message.id ? (
+                                  <div className="flex items-center gap-1">
+                                    <button
+                                      onClick={() => handleEditMessage(message.id, editMessageText)}
+                                      className="btn btn-xs btn-circle btn-primary"
+                                      title="Save"
+                                    >
+                                      <CheckIcon className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      onClick={() => {
+                                        setEditingMessage(null);
+                                        setEditMessageText('');
+                                      }}
+                                      className="btn btn-xs btn-circle btn-ghost"
+                                      title="Cancel"
+                                    >
+                                      <XMarkIcon className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={() => {
+                                        setEditingMessage(message.id);
+                                        setEditMessageText(message.message);
+                                      }}
+                                      className="btn btn-xs btn-circle btn-ghost"
+                                      title="Edit"
+                                    >
+                                      <PencilIcon className="w-3 h-3" />
+                                    </button>
+                                    {showDeleteOptions === message.id ? (
+                                      <div className="absolute right-0 bottom-full mb-2 bg-white rounded-lg shadow-lg border border-gray-200 p-2 flex flex-col gap-1 z-10">
+                                        <button
+                                          onClick={() => handleDeleteMessage(message.id, false)}
+                                          className="btn btn-xs btn-ghost text-left whitespace-nowrap"
+                                        >
+                                          Delete for me
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteMessage(message.id, true)}
+                                          className="btn btn-xs btn-ghost text-left text-red-600 whitespace-nowrap"
+                                        >
+                                          Delete for everyone
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        onClick={() => setShowDeleteOptions(message.id)}
+                                        className="btn btn-xs btn-circle btn-ghost text-red-600"
+                                        title="Delete"
+                                      >
+                                        <TrashIcon className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -1185,6 +1376,19 @@ const WhatsAppLeadsPage: React.FC = () => {
                   )}
                   <div ref={messagesEndRef} />
                 </div>
+
+                {/* Lock Message */}
+                {isLocked && (
+                  <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
+                    <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg mb-2">
+                      <LockClosedIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
+                      <div className="text-sm text-red-700">
+                        <p className="font-medium">Messaging window expired</p>
+                        <p className="text-xs text-red-600">More than 24 hours have passed since the client's last message. You can no longer send messages to this contact.</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Message Input */}
                 <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white">
@@ -1200,16 +1404,16 @@ const WhatsAppLeadsPage: React.FC = () => {
                             handleSendMessage(e);
                           }
                         }}
-                        placeholder="Type a reply..."
-                        className="w-full px-4 py-2 border border-gray-300 rounded-full resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent min-h-[40px] max-h-[120px]"
-                        style={{ height: '40px' }}
-                        disabled={sending}
+                        placeholder={isLocked ? "Messaging window expired - cannot send messages" : "Type a reply..."}
+                        className={`w-full border border-gray-300 rounded-full resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent min-h-[40px] max-h-[250px] ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                        style={{ height: '40px', paddingTop: '16px', paddingBottom: '16px', paddingLeft: '16px', paddingRight: '16px' }}
+                        disabled={sending || isLocked}
                         rows={1}
                       />
                     </div>
                     <button
                       type="submit"
-                      disabled={!newMessage.trim() || sending}
+                      disabled={!newMessage.trim() || sending || isLocked}
                       className="btn btn-primary btn-circle flex-shrink-0"
                     >
                       {sending ? (
