@@ -435,8 +435,18 @@ const sendMessage = async (req, res) => {
     });
     const { leadId, message, phoneNumber, isTemplate, templateName, templateLanguage, templateParameters } = req.body;
 
-    if (!message || !phoneNumber) {
-      return res.status(400).json({ error: 'Message and phone number are required' });
+    // Validate inputs: for templates, message is optional (only required if template has parameters)
+    if (!phoneNumber) {
+      return res.status(400).json({ error: 'Phone number is required' });
+    }
+    
+    if (!isTemplate && !message) {
+      return res.status(400).json({ error: 'Message is required for non-template messages' });
+    }
+    
+    // For templates with parameters, message should contain the parameter value
+    if (isTemplate && templateParameters && templateParameters.length > 0 && !message) {
+      return res.status(400).json({ error: 'Template parameter value is required' });
     }
 
     // Handle different lead types

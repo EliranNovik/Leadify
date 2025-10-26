@@ -1544,7 +1544,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                             handleSendMessage(e);
                           }
                         }}
-                        placeholder={isLocked ? "Messaging window expired - cannot send messages" : "Type a reply..."}
+                        placeholder={isLocked ? "Messaging window expired - use templates to send messages" : "Type a reply..."}
                         className={`w-full border border-gray-300 rounded-full resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent min-h-[40px] max-h-[250px] ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                         style={{ height: '40px', paddingTop: '16px', paddingBottom: '16px', paddingLeft: '16px', paddingRight: '16px' }}
                         disabled={sending || isLocked}
@@ -1553,7 +1553,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                     <button
                       type="submit"
-                      disabled={(!newMessage.trim() && !selectedTemplate) || sending || isLocked}
+                      disabled={(!newMessage.trim() && !selectedTemplate) || sending}
                       className="btn btn-primary btn-circle flex-shrink-0"
                     >
                       {sending ? (

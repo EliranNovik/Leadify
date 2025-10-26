@@ -571,8 +571,13 @@ const WhatsAppPage: React.FC = () => {
           messagePayload.templateParameters = [];
         }
         
-        messagePayload.message = newMessage.trim(); // Always include message for validation
+        // For templates, only include message if there are parameters
+        // WhatsApp API doesn't require message field for templates
+        if (selectedTemplate.params === '1' && newMessage.trim()) {
+          messagePayload.message = newMessage.trim();
+        }
       } else {
+        // Regular message requires message text
         messagePayload.message = newMessage.trim();
       }
 
@@ -1901,7 +1906,7 @@ const WhatsAppPage: React.FC = () => {
                   }}
                   placeholder={
                     isLocked 
-                      ? "Messaging window expired - cannot send messages"
+                      ? "Messaging window expired - use templates to send messages"
                       : selectedFile 
                         ? "Add a caption..." 
                         : selectedTemplate 
@@ -1920,7 +1925,7 @@ const WhatsAppPage: React.FC = () => {
                   <button
                     type="button"
                     onClick={handleSendMedia}
-                    disabled={uploadingMedia || isLocked}
+                    disabled={uploadingMedia}
                     className="btn btn-primary btn-circle"
                   >
                     {uploadingMedia ? (
@@ -1933,7 +1938,7 @@ const WhatsAppPage: React.FC = () => {
                   <button
                     type="submit"
                     disabled={(() => {
-                      const isDisabled = (!newMessage.trim() && !selectedTemplate) || sending || isLocked;
+                      const isDisabled = (!newMessage.trim() && !selectedTemplate) || sending;
                       console.log('🔘 Send button state:', { 
                         newMessage: newMessage.trim(), 
                         selectedTemplate: selectedTemplate?.title, 
