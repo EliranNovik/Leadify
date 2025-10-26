@@ -11,6 +11,10 @@ import {
   ClockIcon,
   ExclamationTriangleIcon,
   CheckCircleIcon,
+  DocumentTextIcon,
+  PhotoIcon,
+  FilmIcon,
+  LockClosedIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 
@@ -36,6 +40,7 @@ interface WhatsAppLead {
   phone_number?: string;
   is_connected: boolean;
   message_count: number;
+  unread_count?: number;
   last_message_at: string;
 }
 
@@ -50,6 +55,8 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [timeLeft, setTimeLeft] = useState<string>('');
+  const [isLocked, setIsLocked] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -61,7 +68,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         // Try to find user in users table by email
         const { data: userRow } = await supabase
           .from('users')
-          .select('id, full_name, email')
+          .select('id, full_name, email, first_name')
           .eq('email', user.email)
           .single();
         
@@ -98,7 +105,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         setLoading(true);
         console.log('🔍 Fetching WhatsApp leads...');
 
-        // Get all incoming WhatsApp messages
+        // Get all incoming WhatsApp messages, including read status
         const { data: incomingMessages, error } = await supabase
           .from('whatsapp_messages')
           .select(`
@@ -143,22 +150,34 @@ const WhatsAppLeadsPage: React.FC = () => {
               message.leads.phone === phoneNumber || message.leads.mobile === phoneNumber
             );
             
+            // Count unread messages (messages that are not read or is_read is null/false)
+            const isUnread = !message.is_read || message.is_read === false;
+            
             leadMap.set(phoneNumber, {
               ...message,
               phone_number: phoneNumber,
               is_connected: !!isConnected || !!phoneMatchesLead,
               message_count: 1,
+              unread_count: isUnread ? 1 : 0,
               last_message_at: message.sent_at
             });
           } else {
             const existingLead = leadMap.get(phoneNumber)!;
             existingLead.message_count += 1;
+            
+            // Increment unread count if this message is unread
+            const isUnread = !message.is_read || message.is_read === false;
+            if (isUnread) {
+              existingLead.unread_count = (existingLead.unread_count || 0) + 1;
+            }
+            
             // Keep the most recent message as the main message
             if (new Date(message.sent_at) > new Date(existingLead.last_message_at)) {
               Object.assign(existingLead, {
                 ...message,
                 phone_number: phoneNumber,
                 message_count: existingLead.message_count,
+                unread_count: existingLead.unread_count,
                 last_message_at: message.sent_at
               });
             }
@@ -230,7 +249,6 @@ const WhatsAppLeadsPage: React.FC = () => {
         console.log('🔄 Fetching messages for lead:', selectedLead.phone_number);
         
         // Fetch messages that match the phone number or sender name
-        // Use separate queries to avoid special character parsing issues
         const [phoneQuery, nameQuery] = await Promise.all([
           supabase
             .from('whatsapp_messages')
@@ -270,7 +288,45 @@ const WhatsAppLeadsPage: React.FC = () => {
         }
 
         console.log('📨 Messages fetched for lead:', data?.length || 0);
-        setMessages(data || []);
+        
+        // For outgoing messages, look up the user's first name
+        const messagesWithSenderNames = await Promise.all(
+          (data || []).map(async (message) => {
+            if (message.direction === 'out' && message.sender_name) {
+              // Try to find the user by email (sender_name might be an email)
+              const { data: user } = await supabase
+                .from('users')
+                .select('first_name, full_name, email')
+                .eq('email', message.sender_name)
+                .single();
+              
+              if (user) {
+                return {
+                  ...message,
+                  sender_first_name: user.first_name || user.full_name || message.sender_name
+                };
+              }
+              
+              // Try to find by full_name if sender_name is not an email
+              const { data: userByName } = await supabase
+                .from('users')
+                .select('first_name, full_name')
+                .eq('full_name', message.sender_name)
+                .single();
+              
+              if (userByName) {
+                return {
+                  ...message,
+                  sender_first_name: userByName.first_name || userByName.full_name || message.sender_name
+                };
+              }
+            }
+            
+            return message;
+          })
+        );
+        
+        setMessages(messagesWithSenderNames);
         
         // Mark incoming messages as read when viewing the conversation
         if (currentUser && data && data.length > 0) {
@@ -313,6 +369,40 @@ const WhatsAppLeadsPage: React.FC = () => {
 
     fetchMessages();
   }, [selectedLead]);
+
+  // Update timer for 24-hour window
+  useEffect(() => {
+    if (!selectedLead) {
+      setTimeLeft('');
+      setIsLocked(false);
+      return;
+    }
+
+    // Find the last message from the client (incoming message)
+    const lastIncomingMessage = messages
+      .filter(msg => msg.direction === 'in')
+      .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
+
+    if (lastIncomingMessage) {
+      calculateTimeLeft(lastIncomingMessage.sent_at);
+      
+      // Update timer every minute
+      const interval = setInterval(() => {
+        calculateTimeLeft(lastIncomingMessage.sent_at);
+      }, 60000); // Update every minute
+      
+      return () => clearInterval(interval);
+    } else {
+      // If no incoming messages, check the selected lead's last message time
+      calculateTimeLeft(selectedLead.last_message_at);
+      
+      const interval = setInterval(() => {
+        calculateTimeLeft(selectedLead.last_message_at);
+      }, 60000);
+      
+      return () => clearInterval(interval);
+    }
+  }, [selectedLead, messages]);
 
   // Filter leads based on search term
   const filteredLeads = leads.filter(lead =>
@@ -370,6 +460,105 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       setMessages(prev => [...prev, newMsg]);
       setNewMessage('');
+      
+      // Refresh messages to get updated data (including any new incoming messages)
+      // This will update the timer based on the latest message
+      const refreshMessages = async () => {
+        if (!selectedLead) return;
+        
+        try {
+          const [phoneQuery, nameQuery] = await Promise.all([
+            supabase
+              .from('whatsapp_messages')
+              .select('*')
+              .eq('phone_number', selectedLead.phone_number)
+              .order('sent_at', { ascending: true }),
+            supabase
+              .from('whatsapp_messages')
+              .select('*')
+              .eq('sender_name', selectedLead.sender_name)
+              .order('sent_at', { ascending: true })
+          ]);
+
+          const phoneMessages = phoneQuery.data || [];
+          const nameMessages = nameQuery.data || [];
+          const allMessages = [...phoneMessages, ...nameMessages];
+          
+          const uniqueMessages = allMessages.filter((message, index, self) => 
+            index === self.findIndex(m => m.id === message.id)
+          );
+          
+          setMessages(uniqueMessages);
+        } catch (error) {
+          console.error('Error refreshing messages:', error);
+        }
+      };
+      
+      // Refresh messages after a short delay to allow server to process
+      setTimeout(() => {
+        refreshMessages();
+        
+        // Also refresh the leads list to update the lock status
+        // This will ensure the lock icon updates immediately when a new message arrives
+        const refreshLeads = async () => {
+          try {
+            const { data: incomingMessages } = await supabase
+              .from('whatsapp_messages')
+              .select('*')
+              .eq('direction', 'in')
+              .order('sent_at', { ascending: false });
+
+            if (incomingMessages) {
+              const leadMap = new Map<string, WhatsAppLead>();
+              
+              incomingMessages.forEach((message) => {
+                const phoneNumber = message.phone_number || extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
+                
+                if (!leadMap.has(phoneNumber)) {
+                  const isConnected = !!message.lead_id || !!message.legacy_id;
+                  const isUnread = !message.is_read || message.is_read === false;
+                  
+                  leadMap.set(phoneNumber, {
+                    ...message,
+                    phone_number: phoneNumber,
+                    is_connected: !!isConnected,
+                    message_count: 1,
+                    unread_count: isUnread ? 1 : 0,
+                    last_message_at: message.sent_at
+                  });
+                } else {
+                  const existingLead = leadMap.get(phoneNumber)!;
+                  existingLead.message_count += 1;
+                  const isUnread = !message.is_read || message.is_read === false;
+                  if (isUnread) {
+                    existingLead.unread_count = (existingLead.unread_count || 0) + 1;
+                  }
+                  if (new Date(message.sent_at) > new Date(existingLead.last_message_at)) {
+                    Object.assign(existingLead, {
+                      ...message,
+                      phone_number: phoneNumber,
+                      message_count: existingLead.message_count,
+                      unread_count: existingLead.unread_count,
+                      last_message_at: message.sent_at
+                    });
+                  }
+                }
+              });
+
+              const updatedLeads = Array.from(leadMap.values())
+                .filter(lead => !lead.is_connected && lead.phone_number !== 'unknown')
+                .sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
+              
+              setLeads(updatedLeads);
+            }
+          } catch (error) {
+            console.error('Error refreshing leads:', error);
+          }
+        };
+        
+        // Refresh leads list to update lock status
+        refreshLeads();
+      }, 1000);
       
       // Reset textarea height
       setTimeout(() => {
@@ -485,9 +674,89 @@ const WhatsAppLeadsPage: React.FC = () => {
     }
   };
 
+  // Format date separator (WhatsApp-style)
+  const formatDateSeparator = (timestamp: string) => {
+    const date = new Date(timestamp);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    // Check if the date is today
+    if (date.toDateString() === today.toDateString()) {
+      return 'Today';
+    }
+    // Check if the date is yesterday
+    if (date.toDateString() === yesterday.toDateString()) {
+      return 'Yesterday';
+    }
+    // Check if the date is within the last 7 days
+    const diffTime = today.getTime() - date.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays <= 7) {
+      return date.toLocaleDateString('en-US', { weekday: 'long' });
+    }
+    // Otherwise, show the full date
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
+
+  // Calculate time left in 24-hour window for WhatsApp messaging
+  const calculateTimeLeft = (lastMessageTime: string) => {
+    const lastMessage = new Date(lastMessageTime);
+    const now = new Date();
+    const diffMs = now.getTime() - lastMessage.getTime();
+    const hoursLeft = 24 - (diffMs / (1000 * 60 * 60));
+    
+    if (hoursLeft <= 0) {
+      setIsLocked(true);
+      setTimeLeft('Locked');
+      return;
+    }
+    
+    setIsLocked(false);
+    const hours = Math.floor(hoursLeft);
+    const minutes = Math.floor((hoursLeft - hours) * 60);
+    
+    if (hours > 0) {
+      setTimeLeft(`${hours}h ${minutes}m`);
+    } else {
+      setTimeLeft(`${minutes}m`);
+    }
+  };
+
+  // Check if a lead is locked (24 hours passed since last message)
+  const isLeadLocked = (lastMessageTime: string) => {
+    const lastMessage = new Date(lastMessageTime);
+    const now = new Date();
+    const diffMs = now.getTime() - lastMessage.getTime();
+    const hoursPassed = diffMs / (1000 * 60 * 60);
+    return hoursPassed > 24;
+  };
+
   // Get message preview
   const getMessagePreview = (message: string) => {
     return message.length > 50 ? message.substring(0, 50) + '...' : message;
+  };
+
+  // Helper function to get document icon
+  const getDocumentIcon = (mimeType?: string) => {
+    if (!mimeType) return DocumentTextIcon;
+    if (mimeType.includes('image/')) return PhotoIcon;
+    if (mimeType.includes('pdf')) return DocumentTextIcon;
+    if (mimeType.includes('video/')) return FilmIcon;
+    return DocumentTextIcon;
+  };
+
+  // Helper function to download media
+  const handleDownloadMedia = (mediaUrl: string, fileName: string) => {
+    const url = mediaUrl.startsWith('http') ? mediaUrl : buildApiUrl(`/api/whatsapp/media/${mediaUrl}`);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = fileName;
+    link.target = '_blank';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   // Auto-resize textarea
@@ -570,6 +839,7 @@ const WhatsAppLeadsPage: React.FC = () => {
               ) : (
                 filteredLeads.map((lead) => {
                   const isSelected = selectedLead?.id === lead.id;
+                  const locked = isLeadLocked(lead.last_message_at);
 
                   return (
                     <div
@@ -586,13 +856,19 @@ const WhatsAppLeadsPage: React.FC = () => {
                     >
                       <div className="flex items-start gap-3">
                         {/* Avatar */}
-                        <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0 relative">
                           {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) ? (
                             <span className="text-green-600 font-semibold text-sm md:text-lg">
                               {lead.sender_name.charAt(0).toUpperCase()}
                             </span>
                           ) : (
                             <PhoneIcon className="w-5 h-5 md:w-6 md:h-6 text-green-600" />
+                          )}
+                          {/* Lock icon overlay */}
+                          {locked && (
+                            <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
+                              <LockClosedIcon className="w-3 h-3 text-white" />
+                            </div>
                           )}
                         </div>
 
@@ -615,9 +891,9 @@ const WhatsAppLeadsPage: React.FC = () => {
                               <span className="text-xs text-gray-500">
                                 {formatTime(lead.last_message_at)}
                               </span>
-                              {lead.message_count > 1 && (
+                              {lead.unread_count && lead.unread_count > 0 && (
                                 <span className="bg-green-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[16px] text-center">
-                                  {lead.message_count}
+                                  {lead.unread_count}
                                 </span>
                               )}
                             </div>
@@ -679,13 +955,33 @@ const WhatsAppLeadsPage: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleConvertToLead(selectedLead)}
-                      className="btn btn-primary btn-sm"
-                    >
-                      <UserPlusIcon className="w-4 h-4 mr-1" />
-                      Convert to Lead
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {/* Timer/Lock Icon */}
+                      {timeLeft && (
+                        <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
+                          isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {isLocked ? (
+                            <>
+                              <LockClosedIcon className="w-4 h-4" />
+                              <span>Locked</span>
+                            </>
+                          ) : (
+                            <>
+                              <ClockIcon className="w-4 h-4" />
+                              <span>{timeLeft}</span>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => handleConvertToLead(selectedLead)}
+                        className="btn btn-primary btn-sm"
+                      >
+                        <UserPlusIcon className="w-4 h-4 mr-1" />
+                        Convert to Lead
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -718,13 +1014,33 @@ const WhatsAppLeadsPage: React.FC = () => {
                         </p>
                       </div>
                     </div>
-                    <button
-                      onClick={() => handleConvertToLead(selectedLead)}
-                      className="btn btn-primary"
-                    >
-                      <UserPlusIcon className="w-4 h-4 mr-2" />
-                      Convert to Lead
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {/* Timer/Lock Icon */}
+                      {timeLeft && (
+                        <div className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${
+                          isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {isLocked ? (
+                            <>
+                              <LockClosedIcon className="w-5 h-5" />
+                              <span>Locked</span>
+                            </>
+                          ) : (
+                            <>
+                              <ClockIcon className="w-5 h-5" />
+                              <span>{timeLeft}</span>
+                            </>
+                          )}
+                        </div>
+                      )}
+                      <button
+                        onClick={() => handleConvertToLead(selectedLead)}
+                        className="btn btn-primary"
+                      >
+                        <UserPlusIcon className="w-4 h-4 mr-2" />
+                        Convert to Lead
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -737,11 +1053,23 @@ const WhatsAppLeadsPage: React.FC = () => {
                       <p className="text-sm">Messages from this number will appear here</p>
                     </div>
                   ) : (
-                    messages.map((message, index) => (
-                      <div
-                        key={message.id || index}
-                        className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
-                      >
+                    messages.map((message, index) => {
+                      // Check if we need to show a date separator
+                      const showDateSeparator = index === 0 || 
+                        new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
+                      
+                      return (
+                        <React.Fragment key={message.id || index}>
+                          {/* Date Separator */}
+                          {showDateSeparator && (
+                            <div className="flex justify-center my-4">
+                              <div className="bg-gray-100 text-gray-600 text-xs font-medium px-3 py-1 rounded-full">
+                                {formatDateSeparator(message.sent_at)}
+                              </div>
+                            </div>
+                          )}
+                          
+                          <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}>
                         {message.direction === 'in' && (
                           <span className="text-xs text-gray-500 mb-1 ml-2">
                             {message.sender_name}
@@ -749,7 +1077,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                         )}
                         {message.direction === 'out' && (
                           <span className="text-xs text-gray-500 mb-1 mr-2">
-                            You
+                            {message.sender_first_name || message.sender_name || 'You'}
                           </span>
                         )}
                         <div
@@ -759,7 +1087,88 @@ const WhatsAppLeadsPage: React.FC = () => {
                               : 'bg-white text-gray-900 border border-gray-200'
                           }`}
                         >
-                          <p className="break-words text-sm">{message.message}</p>
+                          {/* Text message - only show if no media */}
+                          {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
+                            <p className="break-words text-sm">{message.message}</p>
+                          )}
+
+                          {/* Image message */}
+                          {message.message_type === 'image' && message.media_url && (
+                            <div>
+                              <img 
+                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                alt="Image"
+                                className="max-w-full max-h-[400px] object-cover rounded-lg mb-2 cursor-pointer hover:opacity-90 transition-opacity"
+                                onClick={() => {
+                                  // Open image in new tab
+                                  window.open(message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`), '_blank');
+                                }}
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                }}
+                              />
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleDownloadMedia(message.media_url!, `image_${message.id}.jpg`)}
+                                  className="btn btn-sm btn-ghost"
+                                >
+                                  <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                  </svg>
+                                  Download
+                                </button>
+                                {message.caption && (
+                                  <p className="text-sm break-words">{message.caption}</p>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Document message with WhatsApp-style design */}
+                          {(message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && message.media_url && (
+                            <div className="mb-2">
+                              {/* WhatsApp-style document card */}
+                              <div className="bg-white rounded-lg border border-gray-300 overflow-hidden shadow-sm">
+                                {/* Document header */}
+                                <div className="p-3 border-b border-gray-200 flex items-center gap-3 bg-gray-50">
+                                  <div className="bg-blue-100 p-3 rounded-lg">
+                                    {React.createElement(getDocumentIcon(message.media_mime_type), { className: "w-6 h-6 text-blue-600" })}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <p className="font-medium text-sm truncate">
+                                      {message.media_filename || message.message?.match(/[\w.-]+\.pdf/) || 'Document'}
+                                    </p>
+                                    {message.media_size && (
+                                      <p className="text-xs text-gray-500">
+                                        {(message.media_size / 1024).toFixed(1)} KB
+                                      </p>
+                                    )}
+                                  </div>
+                                  <button
+                                    onClick={() => handleDownloadMedia(message.media_url!, message.media_filename || message.message || 'document')}
+                                    className="btn btn-ghost btn-sm p-2 hover:bg-gray-200"
+                                    title="Download"
+                                  >
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                  </button>
+                                </div>
+                                
+                                {/* PDF Preview for PDF documents */}
+                                {(message.media_mime_type === 'application/pdf' || message.message?.includes('.pdf')) && (
+                                  <div className="p-2 bg-gray-100">
+                                    <iframe
+                                      src={`${message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}#toolbar=0&navpanes=0&scrollbar=0`}
+                                      className="w-full h-80 md:h-96 border-0 rounded"
+                                      title="PDF Preview"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
                           <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
                             <span>
                               {new Date(message.sent_at).toLocaleTimeString([], {
@@ -770,7 +1179,9 @@ const WhatsAppLeadsPage: React.FC = () => {
                           </div>
                         </div>
                       </div>
-                    ))
+                      </React.Fragment>
+                    );
+                    })
                   )}
                   <div ref={messagesEndRef} />
                 </div>
