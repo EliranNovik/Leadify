@@ -172,9 +172,17 @@ const DocumentsPage: React.FC = () => {
 
     for (const file of files) {
       try {
-        // Check file size (Microsoft Graph has a 100MB limit for direct uploads)
+        // Check file size and show detailed error
+        const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+        console.log(`📤 Uploading file: ${file.name} (${fileSizeMB} MB)`);
+        
         if (file.size > 100 * 1024 * 1024) { // 100MB
-          throw new Error(`File ${file.name} is too large. Maximum size is 100MB.`);
+          throw new Error(`File ${file.name} is too large (${fileSizeMB}MB). Maximum size is 100MB.`);
+        }
+        
+        // Check if file is over 4MB (Microsoft Graph simple upload limit)
+        if (file.size > 4 * 1024 * 1024) {
+          console.log(`⚠️ Large file detected (${fileSizeMB}MB). May require special handling.`);
         }
 
         const formData = new FormData();
@@ -206,14 +214,26 @@ const DocumentsPage: React.FC = () => {
         
       } catch (err) {
         const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
+        const fileSizeMB = ((file as any).size / (1024 * 1024)).toFixed(2);
+        
         // Update file status to error
         setUploadedFiles(prev => prev.map(f => 
           f.name === file.name 
             ? { ...f, status: 'error', error: errorMessage } 
             : f
         ));
-        console.error(`Error uploading ${file.name}:`, err);
-        // Removed individual file error toast
+        
+        console.error(`❌ Error uploading ${file.name} (${fileSizeMB}MB):`, err);
+        console.error('Error details:', {
+          fileName: file.name,
+          fileSize: file.size,
+          fileSizeMB: fileSizeMB,
+          fileType: file.type,
+          error: err
+        });
+        
+        // Show detailed error toast
+        toast.error(`Failed to upload ${file.name} (${fileSizeMB}MB): ${errorMessage}`);
       }
     }
     setIsUploading(false);
@@ -413,6 +433,30 @@ const DocumentsPage: React.FC = () => {
     } catch (error) {
       console.error('Error downloading documents:', error);
       toast.error('Failed to download documents', { id: 'download-all' });
+    }
+  };
+
+  // Fetch documents for a folder
+  const fetchDocuments = async (folder: FolderItem) => {
+    setIsLoadingDocuments(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('list-onedrive-files', {
+        body: { folderId: folder.id, searchType: 'folderContents' }
+      });
+
+      if (error) throw new Error(error.message);
+      
+      if (data && data.success) {
+        setFolderDocuments(data.documents || []);
+      } else {
+        throw new Error(data?.error || 'Failed to load folder contents');
+      }
+    } catch (error) {
+      console.error('Error loading folder contents:', error);
+      toast.error('Failed to load folder contents');
+      setFolderDocuments([]);
+    } finally {
+      setIsLoadingDocuments(false);
     }
   };
 

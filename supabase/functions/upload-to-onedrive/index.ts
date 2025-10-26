@@ -64,6 +64,18 @@ serve(async (req) => {
     const isExistingFolder = formData.get('isExistingFolder') as string === 'true';
 
     if (!file) throw new Error('Missing file in request.');
+    
+    // Log file details for debugging
+    console.log('📤 Upload request received:', {
+      fileName: file.name,
+      fileSize: file.size,
+      fileType: file.type,
+      isEmailAttachment,
+      isGeneralDocument,
+      isExistingFolder,
+      folderName,
+      folderId
+    });
 
     let uploadFolderId: string;
     let responseData: object;
@@ -136,9 +148,66 @@ serve(async (req) => {
 
       // 3. Upload the file to that folder
       const fileBuffer = await file.arrayBuffer();
-      const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${file.name}:/content`;
+      const fileSize = fileBuffer.byteLength;
       
-      await graphClient.api(uploadUrl).put(fileBuffer);
+      // Use resumable upload for files larger than 4MB
+      let uploadResult;
+      if (fileSize > 4 * 1024 * 1024) {
+        // For large files, use resumable upload session
+        console.log(`Using resumable upload for large file: ${file.name} (${(fileSize / (1024 * 1024)).toFixed(2)}MB)`);
+        
+        const fileName = file.name;
+        const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${fileName}:/createUploadSession`;
+        
+        const uploadSession = await graphClient.api(uploadUrl).post({
+          item: {
+            '@microsoft.graph.conflictBehavior': 'rename',
+            name: fileName
+          }
+        });
+        
+        if (!uploadSession || !uploadSession.uploadUrl) {
+          throw new Error('Failed to create upload session');
+        }
+        
+        // Upload file in chunks to the upload URL
+        const chunkSize = 320 * 1024; // 320KB chunks (Microsoft's recommended size)
+        let offset = 0;
+        
+        while (offset < fileSize) {
+          const chunk = fileBuffer.slice(offset, Math.min(offset + chunkSize, fileSize));
+          const chunkResponse = await fetch(uploadSession.uploadUrl, {
+            method: 'PUT',
+            headers: {
+              'Content-Length': chunk.byteLength.toString(),
+              'Content-Range': `bytes ${offset}-${offset + chunk.byteLength - 1}/${fileSize}`
+            },
+            body: chunk
+          });
+          
+          if (!chunkResponse.ok && chunkResponse.status !== 201 && chunkResponse.status !== 200) {
+            const errorText = await chunkResponse.text();
+            throw new Error(`Failed to upload chunk: ${chunkResponse.status} ${errorText}`);
+          }
+          
+          offset += chunk.byteLength;
+          console.log(`Uploaded ${Math.round((offset / fileSize) * 100)}% of ${file.name}`);
+          
+          // If upload is complete, break
+          if (chunkResponse.status === 200 || chunkResponse.status === 201) {
+            uploadResult = await chunkResponse.json();
+            break;
+          }
+        }
+        
+        if (!uploadResult) {
+          throw new Error('Upload session completed but no result received');
+        }
+      } else {
+        // For smaller files, use simple upload
+        const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${file.name}:/content`;
+        uploadResult = await graphClient.api(uploadUrl).put(fileBuffer);
+      }
 
       responseData = {
         success: true,
@@ -157,9 +226,66 @@ serve(async (req) => {
 
       // Upload the file to the existing folder
       const fileBuffer = await file.arrayBuffer();
-      const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${file.name}:/content`;
+      const fileSize = fileBuffer.byteLength;
       
-      await graphClient.api(uploadUrl).put(fileBuffer);
+      // Use resumable upload for files larger than 4MB
+      let uploadResult;
+      if (fileSize > 4 * 1024 * 1024) {
+        // For large files, use resumable upload session
+        console.log(`Using resumable upload for large file: ${file.name} (${(fileSize / (1024 * 1024)).toFixed(2)}MB)`);
+        
+        const fileName = file.name;
+        const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${fileName}:/createUploadSession`;
+        
+        const uploadSession = await graphClient.api(uploadUrl).post({
+          item: {
+            '@microsoft.graph.conflictBehavior': 'rename',
+            name: fileName
+          }
+        });
+        
+        if (!uploadSession || !uploadSession.uploadUrl) {
+          throw new Error('Failed to create upload session');
+        }
+        
+        // Upload file in chunks to the upload URL
+        const chunkSize = 320 * 1024; // 320KB chunks
+        let offset = 0;
+        
+        while (offset < fileSize) {
+          const chunk = fileBuffer.slice(offset, Math.min(offset + chunkSize, fileSize));
+          const chunkResponse = await fetch(uploadSession.uploadUrl, {
+            method: 'PUT',
+            headers: {
+              'Content-Length': chunk.byteLength.toString(),
+              'Content-Range': `bytes ${offset}-${offset + chunk.byteLength - 1}/${fileSize}`
+            },
+            body: chunk
+          });
+          
+          if (!chunkResponse.ok && chunkResponse.status !== 201 && chunkResponse.status !== 200) {
+            const errorText = await chunkResponse.text();
+            throw new Error(`Failed to upload chunk: ${chunkResponse.status} ${errorText}`);
+          }
+          
+          offset += chunk.byteLength;
+          console.log(`Uploaded ${Math.round((offset / fileSize) * 100)}% of ${file.name}`);
+          
+          // If upload is complete, break
+          if (chunkResponse.status === 200 || chunkResponse.status === 201) {
+            uploadResult = await chunkResponse.json();
+            break;
+          }
+        }
+        
+        if (!uploadResult) {
+          throw new Error('Upload session completed but no result received');
+        }
+      } else {
+        // For smaller files, use simple upload
+        const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${file.name}:/content`;
+        uploadResult = await graphClient.api(uploadUrl).put(fileBuffer);
+      }
 
       responseData = {
         success: true,
