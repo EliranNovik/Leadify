@@ -1274,6 +1274,7 @@ const getTemplates = async (req, res) => {
 
             // Prepare template data with number_id as WhatsApp template ID
             const templateData = {
+              id: Number(template.whatsappTemplateId) % 2147483647, // Use a portion of WhatsApp ID as our ID (within int range)
               number_id: template.whatsappTemplateId, // WhatsApp template ID
               name360: template.name360,
               title: template.title,
@@ -1294,7 +1295,7 @@ const getTemplates = async (req, res) => {
                 console.error(`Error updating template ${template.whatsappTemplateId}:`, updateError);
               }
             } else {
-              // Insert new template - let the database auto-increment the id
+              // Insert new template - use number_id % max_int as id
               const { error: insertError } = await supabase
                 .from('whatsapp_whatsapptemplate')
                 .insert(templateData);
