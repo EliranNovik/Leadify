@@ -11,6 +11,7 @@ export interface WhatsAppTemplate {
   firm_id: number;
   number_id: number;
   content: string;
+  language?: string; // Language code from WhatsApp API
 }
 
 // Interface for templates from WhatsApp API
@@ -62,6 +63,7 @@ export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
         id: index + 1,
         title: template.name,
         name360: template.name,
+        language: template.language, // Store the language code
         params: template.components?.some(c => c.type === 'BODY' && c.text?.includes('{{1}}')) ? '1' : '0',
         active: template.status === 'APPROVED' ? 't' : 'f',
         category_id: template.category || '',

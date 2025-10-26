@@ -619,7 +619,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       if (selectedTemplate) {
         messagePayload.isTemplate = true;
         messagePayload.templateName = selectedTemplate.name360;
-        messagePayload.templateLanguage = 'en_US';
+        messagePayload.templateLanguage = selectedTemplate.language || 'en_US'; // Use template's language
         
         // Only add parameters if the template requires them
         if (selectedTemplate.params === '1' && newMessage.trim()) {

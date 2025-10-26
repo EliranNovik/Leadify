@@ -584,17 +584,21 @@ const sendMessage = async (req, res) => {
       sent_at: new Date().toISOString(),
       whatsapp_message_id: whatsappMessageId,
       whatsapp_status: 'pending', // Start as pending, will be updated by webhook
-      message_type: isTemplate ? 'template' : 'text',
+      message_type: 'text', // Always use 'text' as the database doesn't support 'template' type
       whatsapp_timestamp: new Date().toISOString()
     };
 
+    // Log the message data being saved
+    console.log('💾 Saving message to database:', JSON.stringify(messageData, null, 2));
+    
     const { error: insertError } = await supabase
       .from('whatsapp_messages')
       .insert([messageData]);
 
     if (insertError) {
-      console.error('Error saving outgoing message:', insertError);
-      return res.status(500).json({ error: 'Failed to save message' });
+      console.error('❌ Error saving outgoing message:', insertError);
+      console.error('❌ Error details:', JSON.stringify(insertError, null, 2));
+      return res.status(500).json({ error: 'Failed to save message', details: insertError.message });
     }
 
     console.log('✅ Message sent successfully:', responseData);
