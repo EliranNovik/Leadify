@@ -1194,13 +1194,41 @@ const getTemplates = async (req, res) => {
       });
     }
 
-    // Fetch templates from WhatsApp API
+    // First, get the business account ID from the phone number
+    let businessAccountId;
+    try {
+      const phoneInfo = await axios.get(
+        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}?fields=business`,
+        {
+          headers: {
+            'Authorization': `Bearer ${ACCESS_TOKEN}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      
+      if (phoneInfo.data.business && phoneInfo.data.business.id) {
+        businessAccountId = phoneInfo.data.business.id;
+        console.log('✅ Found business account ID:', businessAccountId);
+      } else {
+        console.log('⚠️ No business account found, trying with phone number ID');
+        businessAccountId = PHONE_NUMBER_ID;
+      }
+    } catch (error) {
+      console.log('⚠️ Error getting business account, using phone number ID directly');
+      businessAccountId = PHONE_NUMBER_ID;
+    }
+
+    // Fetch templates from WhatsApp API using business account ID
     const response = await axios.get(
-      `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/message_templates`,
+      `${WHATSAPP_API_URL}/${businessAccountId}/message_templates`,
       {
         headers: {
           'Authorization': `Bearer ${ACCESS_TOKEN}`,
           'Content-Type': 'application/json'
+        },
+        params: {
+          limit: 100 // Get up to 100 templates
         }
       }
     );
@@ -1213,10 +1241,21 @@ const getTemplates = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching templates:', error);
+    
+    // Log detailed error information
+    if (error.response) {
+      console.error('Response status:', error.response.status);
+      console.error('Response data:', error.response.data);
+      console.error('Response headers:', error.response.headers);
+    } else if (error.request) {
+      console.error('Request details:', error.request);
+    }
+    
     res.status(500).json({ 
       success: false,
       error: 'Failed to fetch templates',
-      details: error.message 
+      details: error.response?.data || error.message,
+      status: error.response?.status
     });
   }
 };
