@@ -1257,7 +1257,7 @@ const getTemplates = async (req, res) => {
             title: template.name || null,
             params: hasParams ? '1' : '0',
             active: template.status === 'APPROVED' ? 't' : 'f',
-            category_id: template.category || null,
+            category_id: null, // Don't save category as text - should be a foreign key ID
             content: textContent || null
           };
         });

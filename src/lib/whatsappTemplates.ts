@@ -35,19 +35,29 @@ export interface WhatsAppAPITemplate {
 
 export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
   try {
-    // Always fetch from database where params are saved
+    // First try to fetch from database where params are saved
     console.log('🔍 Fetching WhatsApp templates from database...');
-    return await fetchTemplatesFromDatabase();
+    const dbTemplates = await fetchTemplatesFromDatabase();
+    
+    // If database is empty, fall back to API
+    if (dbTemplates.length === 0) {
+      console.log('⚠️ Database is empty, fetching from API...');
+      return await fetchTemplatesFromAPI();
+    }
+    
+    return dbTemplates;
   } catch (error) {
     console.error('❌ Error fetching WhatsApp templates:', error);
-    return [];
+    // Fallback to API if database fetch fails
+    console.log('⚠️ Falling back to API...');
+    return await fetchTemplatesFromAPI();
   }
 }
 
-// Fallback function to fetch from database
+// Function to fetch from database
 async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
   try {
-    console.log('🔍 Fetching WhatsApp templates from database (fallback)...');
+    console.log('🔍 Fetching WhatsApp templates from database...');
     
     const { data, error } = await supabase
       .from('whatsapp_whatsapptemplate')
@@ -64,6 +74,85 @@ async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
   } catch (error) {
     console.error('❌ Error fetching from database:', error);
     return [];
+  }
+}
+
+// Function to fetch from API
+async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
+  try {
+    console.log('🔍 Fetching WhatsApp templates from API...');
+    
+    const response = await fetch(buildApiUrl('/api/whatsapp/templates'), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('❌ Error fetching templates from API:', errorData);
+      return [];
+    }
+
+    const data = await response.json();
+    console.log('✅ Templates fetched from API:', data.templates?.length || 0, 'templates');
+
+    if (data.success && data.templates) {
+      // Map API templates to our format
+      const mappedTemplates = data.templates.map((template: WhatsAppAPITemplate, index: number) => ({
+        id: index + 1,
+        title: template.name,
+        name360: template.name,
+        language: template.language,
+        params: template.components?.some(c => c.type === 'BODY' && c.text?.includes('{{1}}')) ? '1' : '0',
+        active: template.status === 'APPROVED' ? 't' : 'f',
+        category_id: template.category || '',
+        firm_id: 0,
+        number_id: 0,
+        content: template.components?.find(c => c.type === 'BODY')?.text || '',
+      }));
+
+      console.log('📋 Mapped templates:', mappedTemplates.length);
+      return mappedTemplates;
+    }
+
+    return [];
+  } catch (error) {
+    console.error('❌ Error fetching templates from API:', error);
+    return [];
+  }
+}
+
+// Function to trigger fetch and save to database
+export async function refreshTemplatesFromAPI(): Promise<{success: boolean, message: string}> {
+  try {
+    console.log('🔄 Triggering template refresh from API...');
+    
+    const response = await fetch(buildApiUrl('/api/whatsapp/templates'), {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('❌ Error refreshing templates:', errorData);
+      return { success: false, message: errorData.error || 'Failed to refresh templates' };
+    }
+
+    const data = await response.json();
+    
+    if (data.success) {
+      console.log('✅ Templates refreshed successfully');
+      return { success: true, message: `Successfully fetched ${data.templates?.length || 0} templates` };
+    }
+
+    return { success: false, message: 'Failed to refresh templates' };
+  } catch (error) {
+    console.error('❌ Error refreshing templates:', error);
+    return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
   }
 }
 

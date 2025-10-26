@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
-import { fetchWhatsAppTemplates, filterTemplates, testDatabaseAccess, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import { fetchWhatsAppTemplates, filterTemplates, testDatabaseAccess, refreshTemplatesFromAPI, type WhatsAppTemplate } from '../lib/whatsappTemplates';
 import EmojiPicker from 'emoji-picker-react';
 import {
   MagnifyingGlassIcon,
@@ -1674,7 +1674,7 @@ const WhatsAppPage: React.FC = () => {
             <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
               
               {/* Template Message Selector */}
-              <div className="mb-3 flex items-center gap-2">
+              <div className="mb-3 flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={() => setShowTemplateSelector(!showTemplateSelector)}
@@ -1692,6 +1692,40 @@ const WhatsAppPage: React.FC = () => {
                     Clear
                   </button>
                 )}
+                
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      setIsLoadingTemplates(true);
+                      const result = await refreshTemplatesFromAPI();
+                      if (result.success) {
+                        toast.success(result.message);
+                        // Reload templates from database
+                        const fetchedTemplates = await fetchWhatsAppTemplates();
+                        setTemplates(fetchedTemplates);
+                      } else {
+                        toast.error(result.message);
+                      }
+                    } catch (error) {
+                      console.error('Error refreshing templates:', error);
+                      toast.error('Failed to refresh templates');
+                    } finally {
+                      setIsLoadingTemplates(false);
+                    }
+                  }}
+                  disabled={isLoadingTemplates}
+                  className="btn btn-ghost btn-sm"
+                  title="Refresh templates from WhatsApp API"
+                >
+                  {isLoadingTemplates ? (
+                    <div className="loading loading-spinner loading-sm"></div>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  )}
+                </button>
               </div>
               
               {/* Template Dropdown */}
