@@ -549,50 +549,48 @@ const sendMessage = async (req, res) => {
           }
         };
         
-        // Add components ONLY if template parameters are provided
-        // WhatsApp API requires parameters to be present if the template has them
-        if (templateParameters && templateParameters.length > 0) {
-          // Auto-fill parameters: param {{1}} = client name, param {{2}} = latest meeting date/time
-          const parameters = templateParameters.map((param, index) => {
-            if (index === 0) {
-              // First parameter: client name
-              return {
-                type: 'text',
-                text: lead?.name || 'Client'
-              };
-            } else if (index === 1) {
-              // Second parameter: latest meeting date and time
-              if (lead?.meeting_date && lead?.meeting_time) {
-                const meetingDate = new Date(lead.meeting_date);
-                const formattedDate = meetingDate.toLocaleDateString('en-US', { 
-                  year: 'numeric', 
-                  month: 'long', 
-                  day: 'numeric' 
-                });
-                return {
-                  type: 'text',
-                  text: `${formattedDate} at ${lead.meeting_time}`
-                };
-              } else {
-                return {
-                  type: 'text',
-                  text: 'TBD'
-                };
-              }
-            } else {
-              // Other parameters use the provided value
-              return param;
-            }
+        // Always auto-fill parameters for templates
+        // param {{1}} = client name, param {{2}} = latest meeting date/time
+        const autoFilledParameters = [];
+        
+        // First parameter: client name
+        autoFilledParameters.push({
+          type: 'text',
+          text: lead?.name || 'Client'
+        });
+        
+        // Second parameter: latest meeting date and time
+        if (lead?.meeting_date && lead?.meeting_time) {
+          const meetingDate = new Date(lead.meeting_date);
+          const formattedDate = meetingDate.toLocaleDateString('en-US', { 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric' 
           });
-          
-          messagePayload.template.components = [
-            {
-              type: 'body',
-              parameters: parameters
-            }
-          ];
+          autoFilledParameters.push({
+            type: 'text',
+            text: `${formattedDate} at ${lead.meeting_time}`
+          });
+        } else {
+          autoFilledParameters.push({
+            type: 'text',
+            text: 'TBD'
+          });
         }
-        // If no parameters, don't add components at all - let WhatsApp handle the template
+        
+        // Add any additional parameters from templateParameters if provided
+        if (templateParameters && templateParameters.length > 0) {
+          templateParameters.slice(2).forEach(param => {
+            autoFilledParameters.push(param);
+          });
+        }
+        
+        messagePayload.template.components = [
+          {
+            type: 'body',
+            parameters: autoFilledParameters
+          }
+        ];
         
         console.log('📱 Template payload:', messagePayload);
       } else {

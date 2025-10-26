@@ -151,6 +151,8 @@ const WhatsAppTemplatesManager: React.FC = () => {
           description="Manage WhatsApp message templates and their configurations"
           pageSize={50}
           sortColumn="id"
+          hideAddButton={true}
+          hideTitle={true}
         />
       </div>
     </div>

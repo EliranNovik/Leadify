@@ -35,6 +35,8 @@ interface GenericCRUDManagerProps {
   description?: string;
   pageSize?: number;
   sortColumn?: string;
+  hideAddButton?: boolean;
+  hideTitle?: boolean;
 }
 
 interface Record {
@@ -48,7 +50,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   title,
   description,
   pageSize = 50,
-  sortColumn = 'created_at'
+  sortColumn = 'created_at',
+  hideAddButton = false,
+  hideTitle = false
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
@@ -845,19 +849,23 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   return (
     <div className="w-full">
       {/* Header */}
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h2 className="text-2xl font-bold text-base-content">{title}</h2>
-          {description && <p className="text-base-content/70 mt-1">{description}</p>}
+      {!hideTitle && (
+        <div className="flex justify-between items-center mb-6">
+          <div>
+            <h2 className="text-2xl font-bold text-base-content">{title}</h2>
+            {description && <p className="text-base-content/70 mt-1">{description}</p>}
+          </div>
+          {!hideAddButton && (
+            <button
+              onClick={() => openModal()}
+              className="btn btn-primary gap-2"
+            >
+              <PlusIcon className="w-5 h-5" />
+              Add {title}
+            </button>
+          )}
         </div>
-        <button
-          onClick={() => openModal()}
-          className="btn btn-primary gap-2"
-        >
-          <PlusIcon className="w-5 h-5" />
-          Add {title}
-        </button>
-      </div>
+      )}
 
       {/* Search and Filters */}
       <div className="mb-4 flex flex-col sm:flex-row gap-4">
