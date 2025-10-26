@@ -1001,13 +1001,18 @@ const editMessage = async (req, res) => {
       // Mock response for development
       console.log('🔧 Mock edit message:', { messageId, newMessage });
       
+      // Get current user from request (assuming it's passed in the request)
+      const currentUserId = req.body.currentUserId || null;
+      
       // Update the message in database
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
         .update({ 
           message: newMessage,
           updated_at: new Date().toISOString(),
-          is_edited: true
+          is_edited: true,
+          edited_at: new Date().toISOString(),
+          edited_by: currentUserId
         })
         .eq('whatsapp_message_id', messageId);
 
@@ -1046,13 +1051,18 @@ const editMessage = async (req, res) => {
         }
       );
 
+      // Get current user from request (assuming it's passed in the request)
+      const currentUserId = req.body.currentUserId || null;
+      
       // Update message in database
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
         .update({ 
           message: newMessage,
           updated_at: new Date().toISOString(),
-          is_edited: true
+          is_edited: true,
+          edited_at: new Date().toISOString(),
+          edited_by: currentUserId
         })
         .eq('whatsapp_message_id', messageId);
 
@@ -1086,6 +1096,9 @@ const deleteMessage = async (req, res) => {
       // Mock response for development
       console.log('🗑️ Mock delete message:', { messageId, deleteForEveryone });
       
+      // Get current user from request
+      const currentUserId = req.body.currentUserId || null;
+      
       if (deleteForEveryone) {
         // Soft delete - mark as deleted for everyone
         const { error: updateError } = await supabase
@@ -1093,7 +1106,8 @@ const deleteMessage = async (req, res) => {
           .update({ 
             is_deleted: true,
             deleted_for_everyone: true,
-            deleted_at: new Date().toISOString()
+            deleted_at: new Date().toISOString(),
+            deleted_by: currentUserId
           })
           .eq('whatsapp_message_id', messageId);
 
@@ -1122,6 +1136,9 @@ const deleteMessage = async (req, res) => {
         }
       );
 
+      // Get current user from request
+      const currentUserId = req.body.currentUserId || null;
+      
       // Update message in database
       if (deleteForEveryone) {
         const { error: updateError } = await supabase
@@ -1129,7 +1146,8 @@ const deleteMessage = async (req, res) => {
           .update({ 
             is_deleted: true,
             deleted_for_everyone: true,
-            deleted_at: new Date().toISOString()
+            deleted_at: new Date().toISOString(),
+            deleted_by: currentUserId
           })
           .eq('whatsapp_message_id', messageId);
 

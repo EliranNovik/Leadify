@@ -110,6 +110,30 @@ const WhatsAppPage: React.FC = () => {
   const [editMessageText, setEditMessageText] = useState('');
   const [deletingMessage, setDeletingMessage] = useState<number | null>(null);
   const [showDeleteOptions, setShowDeleteOptions] = useState<number | null>(null);
+  const [userCache, setUserCache] = useState<Record<string, string>>({});
+
+  // Helper function to fetch user name by ID
+  const getUserName = async (userId: string) => {
+    if (!userId) return null;
+    if (userCache[userId]) return userCache[userId];
+    
+    try {
+      const { data } = await supabase
+        .from('users')
+        .select('first_name, full_name')
+        .eq('id', userId)
+        .single();
+      
+      if (data) {
+        const name = data.first_name || data.full_name || 'Unknown User';
+        setUserCache(prev => ({ ...prev, [userId]: name }));
+        return name;
+      }
+    } catch (error) {
+      console.error('Error fetching user:', error);
+    }
+    return null;
+  };
 
   // Helper function to get document icon based on MIME type
   const getDocumentIcon = (mimeType?: string) => {
@@ -391,6 +415,31 @@ const WhatsAppPage: React.FC = () => {
     
     return () => clearInterval(interval);
   }, [selectedClient]);
+
+  // Load user names for edited/deleted messages
+  useEffect(() => {
+    const loadUserNames = async () => {
+      const userIds = new Set<string>();
+      
+      messages.forEach(msg => {
+        if ((msg as any).edited_by) userIds.add((msg as any).edited_by);
+        if ((msg as any).deleted_by) userIds.add((msg as any).deleted_by);
+      });
+
+      for (const userId of userIds) {
+        if (!userCache[userId]) {
+          const name = await getUserName(userId);
+          if (name) {
+            setUserCache(prev => ({ ...prev, [userId]: name }));
+          }
+        }
+      }
+    };
+
+    if (messages.length > 0) {
+      loadUserNames();
+    }
+  }, [messages]);
 
   // Update timer for 24-hour window
   useEffect(() => {
@@ -746,7 +795,8 @@ const WhatsAppPage: React.FC = () => {
         },
         body: JSON.stringify({
           messageId: message.whatsapp_message_id,
-          newMessage: newText
+          newMessage: newText,
+          currentUserId: currentUser?.id
         }),
       });
 
@@ -788,7 +838,8 @@ const WhatsAppPage: React.FC = () => {
         },
         body: JSON.stringify({
           messageId: message.whatsapp_message_id,
-          deleteForEveryone: deleteForEveryone
+          deleteForEveryone: deleteForEveryone,
+          currentUserId: currentUser?.id
         }),
       });
 
@@ -1320,12 +1371,23 @@ const WhatsAppPage: React.FC = () => {
                     >
                       {/* Edit input or message content */}
                       {editingMessage === message.id ? (
-                        <input
-                          type="text"
+                        <textarea
                           value={editMessageText}
-                          onChange={(e) => setEditMessageText(e.target.value)}
-                          className="w-full bg-transparent border-none outline-none"
+                          onChange={(e) => {
+                            setEditMessageText(e.target.value);
+                            // Auto-resize the textarea
+                            e.target.style.height = 'auto';
+                            e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                          }}
+                          className="w-full bg-transparent border-none outline-none resize-none overflow-y-auto text-white placeholder-white/70"
                           autoFocus
+                          style={{ 
+                            minHeight: '20px', 
+                            maxHeight: '200px', 
+                            wordWrap: 'break-word',
+                            overflowWrap: 'break-word',
+                            whiteSpace: 'pre-wrap'
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
@@ -1586,9 +1648,16 @@ const WhatsAppPage: React.FC = () => {
                               {renderMessageStatus(message.whatsapp_status)}
                             </span>
                           )}
-                          {(message as any).is_edited && (
-                            <span className="text-xs opacity-60 italic">(edited)</span>
-                          )}
+                                                        {(message as any).is_edited && (
+                                <span className="text-xs opacity-60 italic">
+                                  (edited{(message as any).edited_by ? ` by ${userCache[(message as any).edited_by] || '...'}` : ''})
+                                </span>
+                              )}
+                              {(message as any).is_deleted && (message as any).deleted_by && (
+                                <span className="text-xs opacity-60 italic text-red-600">
+                                  (deleted by {userCache[(message as any).deleted_by] || '...'})
+                                </span>
+                              )}
                         </div>
                         
                         {/* Edit/Delete buttons for outgoing messages */}
