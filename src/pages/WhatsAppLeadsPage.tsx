@@ -65,6 +65,9 @@ const WhatsAppLeadsPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Media modal state
+  const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
+
   // Edit/Delete message state
   const [editingMessage, setEditingMessage] = useState<number | null>(null);
   const [editMessageText, setEditMessageText] = useState('');
@@ -1128,7 +1131,7 @@ const WhatsAppLeadsPage: React.FC = () => {
               <>
                 {/* Mobile Chat Header */}
                 {isMobile && (
-                  <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                  <div className="sticky top-0 z-10 flex items-center justify-between p-4 border-b border-gray-200 bg-white">
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => setShowChat(false)}
@@ -1197,7 +1200,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                 {/* Desktop Header */}
                 {!isMobile && (
-                  <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                  <div className="sticky top-0 z-10 flex items-center justify-between p-4 border-b border-gray-200 bg-white">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
                         {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
@@ -1330,7 +1333,13 @@ const WhatsAppLeadsPage: React.FC = () => {
                             <>
                               {/* Text message - only show if no media */}
                               {(!message.message_type || message.message_type === 'text') && !message.media_url && !message.message?.includes('.pdf') && (
-                                <p className="break-words text-base">{message.message}</p>
+                                <p 
+                                  className="break-words whitespace-pre-wrap text-base"
+                                  dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                  style={{ textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                >
+                                  {message.message}
+                                </p>
                               )}
                               
                               {/* Button response */}
@@ -1363,8 +1372,13 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 alt="Image"
                                 className="max-w-full max-h-[400px] object-cover rounded-lg mb-2 cursor-pointer hover:opacity-90 transition-opacity"
                                 onClick={() => {
-                                  // Open image in new tab
-                                  window.open(message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`), '_blank');
+                                  if (message.media_url) {
+                                    setSelectedMedia({
+                                      url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                      type: 'image',
+                                      caption: message.caption
+                                    });
+                                  }
                                 }}
                                 onError={(e) => {
                                   e.currentTarget.style.display = 'none';
@@ -1381,7 +1395,13 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   Download
                                 </button>
                                 {message.caption && (
-                                  <p className="text-base break-words">{message.caption}</p>
+                                  <p 
+                                    className="text-base break-words"
+                                    dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                                    style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                                  >
+                                    {message.caption}
+                                  </p>
                                 )}
                               </div>
                             </div>
@@ -1477,7 +1497,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 )}
 
                 {/* Template Message Selector */}
-                <div className="flex-shrink-0 px-4 pt-2 border-t border-gray-200 bg-gray-50">
+                <div className="flex-shrink-0 px-4 pt-2 border-t border-gray-200 bg-white">
                   <div className="flex items-center gap-2 mb-2">
                     <button
                       type="button"
@@ -1499,7 +1519,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                   {/* Template Dropdown */}
                   {showTemplateSelector && (
-                    <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-3 mb-2 max-h-60 overflow-y-auto">
+                    <div className="bg-white border border-gray-300 rounded-lg shadow-lg p-3 mb-2 max-h-60 overflow-y-auto scrollbar-hide">
                       <div className="text-sm font-medium mb-2">Select Template:</div>
                       <input
                         type="text"
@@ -1555,21 +1575,26 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                 {/* Message Input */}
                 <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white" style={isMobile ? { position: 'sticky', bottom: 0, backgroundColor: 'white', zIndex: 10 } : {}}>
-                  <form onSubmit={handleSendMessage} className="flex items-end gap-2">
+                  <form onSubmit={handleSendMessage} className="flex items-center gap-2">
                     <div className="flex-1 relative">
                       <textarea
                         ref={textareaRef}
                         value={newMessage}
                         onChange={handleMessageChange}
                         onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            handleSendMessage(e);
-                          }
+                          // Just ignore Enter key handling - let it create new lines naturally
+                          // The form won't submit because we only have a button, no implicit submit on Enter
                         }}
                         placeholder={isLocked ? "Messaging window expired - use templates to send messages" : "Type a reply..."}
-                        className={`w-full border border-gray-300 rounded-full resize-none overflow-hidden focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent min-h-[40px] max-h-[250px] ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
-                        style={{ height: '40px', paddingTop: '16px', paddingBottom: '16px', paddingLeft: '16px', paddingRight: '16px' }}
+                        className={`w-full border border-gray-300 rounded-2xl resize-none overflow-y-auto focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent min-h-[40px] max-h-[250px] ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                        style={{ 
+                          paddingTop: '16px', 
+                          paddingBottom: '16px', 
+                          paddingLeft: '16px', 
+                          paddingRight: '16px',
+                          direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
+                          textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left'
+                        }}
                         disabled={sending || isLocked}
                         rows={1}
                       />
@@ -1577,7 +1602,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                     <button
                       type="submit"
                       disabled={(!newMessage.trim() && !selectedTemplate) || sending}
-                      className="btn btn-primary btn-circle flex-shrink-0"
+                      className="btn btn-primary btn-circle flex-shrink-0 h-[48px] w-[48px]"
                     >
                       {sending ? (
                         <div className="loading loading-spinner loading-sm"></div>
@@ -1601,6 +1626,103 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Media Modal */}
+      {selectedMedia && (
+        <div className="fixed inset-0 z-[9999] bg-black bg-opacity-90 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="relative w-full h-full flex items-center justify-center" onClick={() => setSelectedMedia(null)}>
+            {/* Close button */}
+            <button
+              onClick={() => setSelectedMedia(null)}
+              className="absolute top-4 right-4 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+            >
+              <XMarkIcon className="w-6 h-6" />
+            </button>
+
+            {/* Download button */}
+            <button
+              onClick={() => {
+                if (!selectedMedia) return;
+                const link = document.createElement('a');
+                link.href = selectedMedia.url;
+                link.download = `media_${Date.now()}.${selectedMedia.type === 'image' ? 'jpg' : 'mp4'}`;
+                link.click();
+              }}
+              className="absolute top-4 left-4 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+            >
+              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </button>
+
+            {/* Media content */}
+            <div className="relative w-full h-full flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
+              {selectedMedia.type === 'image' ? (
+                <img
+                  src={selectedMedia.url}
+                  alt="Full size image"
+                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                  onError={(e) => {
+                    console.log('Failed to load image in modal:', selectedMedia.url);
+                    e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                  }}
+                />
+              ) : (
+                <video
+                  controls
+                  className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+                  onError={(e) => {
+                    console.log('Failed to load video in modal:', selectedMedia.url);
+                    e.currentTarget.style.display = 'none';
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'text-center text-white p-8 bg-gray-800 rounded-lg';
+                    errorDiv.innerHTML = `
+                      <div class="w-16 h-16 mx-auto mb-4 text-gray-400">Video Unavailable</div>
+                      <p class="text-lg font-medium">Video Unavailable</p>
+                      <p class="text-sm opacity-70">Media may have expired</p>
+                    `;
+                    e.currentTarget.parentNode?.appendChild(errorDiv);
+                  }}
+                >
+                  <source src={selectedMedia.url} />
+                  Your browser does not support the video tag.
+                </video>
+              )}
+
+              {/* Caption */}
+              {selectedMedia.caption && (
+                <div className="absolute bottom-4 left-4 right-4 bg-black bg-opacity-50 text-white p-4 rounded-lg backdrop-blur-sm">
+                  <p className="text-sm">{selectedMedia.caption}</p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Gallery - Show all images from conversation */}
+            {selectedMedia.type === 'image' && (
+              <div className="absolute bottom-0 left-0 right-0 px-4 pb-4 flex items-center justify-center">
+                <div className="bg-black bg-opacity-60 rounded-lg p-2 flex gap-2 overflow-x-auto max-w-[90vw] scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
+                  {messages.filter(m => m.message_type === 'image' && m.media_url).map((img) => {
+                    const url = img.media_url!.startsWith('http') ? img.media_url! : buildApiUrl(`/api/whatsapp/media/${img.media_url}`);
+                    const isActive = selectedMedia.url === url;
+                    return (
+                      <img
+                        key={img.id}
+                        src={url}
+                        alt="thumb"
+                        className={`h-16 w-16 object-cover rounded-md cursor-pointer border-2 transition-all duration-200 ${isActive ? 'border-green-400 shadow-lg scale-110' : 'border-transparent opacity-70 hover:opacity-100'}`}
+                        onClick={e => {
+                          e.stopPropagation();
+                          setSelectedMedia({ url, type: 'image', caption: img.caption });
+                        }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

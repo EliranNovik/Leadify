@@ -1436,9 +1436,13 @@ const WhatsAppPage: React.FC = () => {
                         <>
                           {/* Message content based on type */}
                           {message.message_type === 'text' && (
-                            <p className={`break-words ${
-                              isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
-                            }`}>
+                            <p 
+                              className={`break-words whitespace-pre-wrap ${
+                                isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
+                              }`}
+                              dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                              style={{ textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                            >
                               {message.message}
                             </p>
                           )}
@@ -1503,7 +1507,13 @@ const WhatsAppPage: React.FC = () => {
                             </div>
                           )}
                           {message.caption && (
-                            <p className="text-base break-words">{message.caption}</p>
+                            <p 
+                              className="text-base break-words"
+                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                            >
+                              {message.caption}
+                            </p>
                           )}
                         </div>
                       )}
@@ -1610,7 +1620,13 @@ const WhatsAppPage: React.FC = () => {
                           )}
                           
                           {message.caption && (
-                            <p className="text-base break-words mt-2">{message.caption}</p>
+                            <p 
+                              className="text-base break-words mt-2"
+                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                            >
+                              {message.caption}
+                            </p>
                           )}
                         </div>
                       )}
@@ -1659,7 +1675,13 @@ const WhatsAppPage: React.FC = () => {
                             </video>
                           )}
                           {message.caption && (
-                            <p className="text-base break-words">{message.caption}</p>
+                            <p 
+                              className="text-base break-words"
+                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                            >
+                              {message.caption}
+                            </p>
                           )}
                         </div>
                       )}
@@ -1927,16 +1949,8 @@ const WhatsAppPage: React.FC = () => {
                     e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      // Trigger form submit
-                      if (newMessage.trim() || selectedTemplate) {
-                        const form = e.currentTarget.closest('form');
-                        if (form) {
-                          form.requestSubmit();
-                        }
-                      }
-                    }
+                    // Just ignore Enter key handling - let it create new lines naturally
+                    // The form won't submit because we only have a button, no implicit submit on Enter
                   }}
                   placeholder={
                     isLocked 
@@ -1949,10 +1963,19 @@ const WhatsAppPage: React.FC = () => {
                             : `Template: ${selectedTemplate.title} (no parameters needed)`
                           : "Type a message..."
                   }
-                  className={`flex-1 textarea textarea-bordered rounded-full resize-none ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                  className={`flex-1 textarea textarea-bordered rounded-2xl resize-none ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
                   disabled={sending || uploadingMedia || isLocked}
                   rows={1}
-                  style={{ maxHeight: '200px', minHeight: 'auto', paddingTop: '16px', paddingBottom: '16px', paddingLeft: '16px', paddingRight: '16px' }}
+                  style={{ 
+                    maxHeight: '200px', 
+                    minHeight: 'auto', 
+                    paddingTop: '16px', 
+                    paddingBottom: '16px', 
+                    paddingLeft: '16px', 
+                    paddingRight: '16px',
+                    direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
+                    textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left'
+                  }}
                 />
                 
                 {selectedFile ? (
@@ -1981,7 +2004,7 @@ const WhatsAppPage: React.FC = () => {
                       });
                       return isDisabled;
                     })()}
-                    className="btn btn-primary btn-circle"
+                    className="btn btn-primary btn-circle h-[48px] w-[48px] flex-shrink-0"
                   >
                     {sending ? (
                       <div className="loading loading-spinner loading-sm"></div>
