@@ -25,6 +25,9 @@ interface Field {
     table: string;
     displayField: string;
     valueField: string;
+    joinTable?: string;
+    joinField?: string;
+    joinDisplayField?: string;
   };
 }
 
@@ -171,7 +174,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     for (const field of foreignKeyFields) {
       if (!field.foreignKey) continue;
       
-      const { table, valueField, displayField } = field.foreignKey;
+      const { table, valueField, displayField, joinTable, joinField, joinDisplayField } = field.foreignKey;
       const uniqueIds = [...new Set(records.map(r => r[field.name]).filter(id => id))];
       
       console.log(`🔍 Field ${field.name}: ${uniqueIds.length} unique IDs for table ${table}`);
@@ -219,6 +222,17 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                   .in(valueField, validUUIDs);
                 data = result.data;
                 error = result.error;
+              } else if (table === 'misc_category' && joinTable && joinField && joinDisplayField) {
+                // Special handling for categories to join with main category
+                // Use reverse foreign key: misc_maincategory!parent_id means join misc_maincategory where parent_id matches misc_maincategory.id
+                console.log('📋 Fetching category batch with join:', `${joinTable}!${joinField}`);
+                const result = await supabase
+                  .from(table)
+                  .select(`${valueField}, ${displayField}, ${joinField}, ${joinTable}!${joinField}(${joinDisplayField})`)
+                  .in(valueField, batch);
+                data = result.data;
+                error = result.error;
+                console.log('📋 Category batch result:', result);
               } else {
                 const result = await supabase
                   .from(table)
@@ -245,6 +259,13 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                     value = `${item.first_name} ${item.last_name} (${item.email})`;
                   } else if (table === 'users' && item.email) {
                     value = item.email;
+                  } else if (table === 'misc_category' && joinTable && joinDisplayField) {
+                    // Format category display to show subcategory (main category)
+                    // item[joinTable] is already the object, not an array
+                    const mainCategory = item[joinTable]?.[joinDisplayField];
+                    if (mainCategory) {
+                      value = `${value} (${mainCategory})`;
+                    }
                   }
                   
                   (fkData[field.name] as { [key: string]: string })[key] = value;
@@ -274,12 +295,25 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     for (const field of foreignKeyFields) {
       if (!field.foreignKey) continue;
       
-      const { table, valueField, displayField } = field.foreignKey;
+      const { table, valueField, displayField, joinTable, joinField, joinDisplayField } = field.foreignKey;
       
       try {
-        const result = await supabase
-          .from(table)
-          .select(`${valueField}, ${displayField}`);
+        let result;
+        
+        // Special handling for categories to join with main category
+        if (table === 'misc_category' && joinTable && joinField && joinDisplayField) {
+          // Use reverse foreign key: misc_maincategory!parent_id means join misc_maincategory where parent_id matches misc_maincategory.id
+          const selectQuery = `${valueField}, ${displayField}, ${joinField}, ${joinTable}!${joinField}(${joinDisplayField})`;
+          console.log('📋 Fetching categories with select:', selectQuery);
+          result = await supabase
+            .from(table)
+            .select(selectQuery);
+          console.log('📋 Category fetch result:', result);
+        } else {
+          result = await supabase
+            .from(table)
+            .select(`${valueField}, ${displayField}`);
+        }
         
         if (result.error) {
           console.error(`❌ Error fetching options for ${field.name}:`, result.error);
@@ -287,10 +321,24 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         }
         
         if (result.data) {
-          options[field.name] = result.data.map((item: any) => ({
-            value: item[valueField],
-            label: item[displayField] || String(item[valueField])
-          }));
+          console.log(`📊 Sample data for ${field.name}:`, result.data[0]);
+          options[field.name] = result.data.map((item: any) => {
+            let label = item[displayField] || String(item[valueField]);
+            
+            // Format category display to show subcategory (main category)
+            if (table === 'misc_category' && joinTable && joinDisplayField) {
+              // item[joinTable] is already the object, not an array
+              const mainCategory = item[joinTable]?.[joinDisplayField];
+              if (mainCategory) {
+                label = `${label} (${mainCategory})`;
+              }
+            }
+            
+            return {
+              value: item[valueField],
+              label: label
+            };
+          });
           console.log(`✅ Fetched ${result.data.length} options for ${field.name}`);
         }
       } catch (error) {
@@ -873,7 +921,19 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
     }
     
-    setEditingRecord(record || null);
+    // If creating new record, initialize with default values from fields
+    if (!record) {
+      const defaultRecord: any = {};
+      fields.forEach(field => {
+        if ('defaultValue' in field && field.defaultValue !== undefined) {
+          defaultRecord[field.name] = field.defaultValue;
+        }
+      });
+      setEditingRecord(defaultRecord);
+    } else {
+      setEditingRecord(record);
+    }
+    
     setIsModalOpen(true);
   };
 
@@ -923,6 +983,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             rows={4}
             value={value || ''}
             onChange={field.readOnly ? undefined : handleChange}
+            className="textarea textarea-bordered w-full"
+            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
           />
         );
 
@@ -932,7 +994,13 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           const options = allForeignKeyOptions[field.name] || [];
           
           return (
-            <select {...commonProps} value={value || ''} onChange={field.readOnly ? undefined : handleChange}>
+            <select 
+              {...commonProps} 
+              value={value || ''} 
+              onChange={field.readOnly ? undefined : handleChange} 
+              className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
+              style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+            >
               <option value="">Select {field.label}</option>
               {options.map(option => (
                 <option key={option.value} value={option.value}>
@@ -945,7 +1013,13 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         
         // Regular select with manual options
         return (
-          <select {...commonProps} value={value || ''} onChange={field.readOnly ? undefined : handleChange}>
+          <select 
+            {...commonProps} 
+            value={value || ''} 
+            onChange={field.readOnly ? undefined : handleChange} 
+            className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
+            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+          >
             <option value="">Select {field.label}</option>
             {field.options?.map(option => (
               <option key={option.value} value={option.value}>
@@ -974,6 +1048,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             type="date"
             value={value ? new Date(value).toISOString().split('T')[0] : ''}
             onChange={field.readOnly ? undefined : handleChange}
+            className="input input-bordered w-full"
+            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
           />
         );
 
@@ -984,11 +1060,20 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             type="datetime-local"
             value={value ? new Date(value).toISOString().slice(0, 16) : ''}
             onChange={field.readOnly ? undefined : handleChange}
+            className="input input-bordered w-full"
+            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
           />
         );
 
       default:
-        return <input {...commonProps} type={field.type} />;
+        return (
+          <input 
+            {...commonProps} 
+            type={field.type} 
+            className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
+            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+          />
+        );
     }
   };
 

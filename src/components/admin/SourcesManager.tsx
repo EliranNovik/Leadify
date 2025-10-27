@@ -4,7 +4,7 @@ import { supabase } from '../../lib/supabase';
 
 const SourcesManager: React.FC = () => {
   const [departments, setDepartments] = useState<Array<{id: string, name: string}>>([]);
-  const [categories, setCategories] = useState<Array<{id: string, name: string}>>([]);
+  const [categories, setCategories] = useState<Array<{id: number, name: string, displayName: string}>>([]);
 
   // Fetch departments and categories for dropdowns
   useEffect(() => {
@@ -21,15 +21,24 @@ const SourcesManager: React.FC = () => {
           setDepartments(deptData);
         }
 
-        // Fetch main categories
+        // Fetch misc categories with their main categories
         const { data: catData } = await supabase
-          .from('main_categories')
-          .select('id, name')
-          .eq('is_active', true)
+          .from('misc_category')
+          .select('id, name, parent_id, misc_maincategory!parent_id(id, name)')
           .order('name');
         
         if (catData) {
-          setCategories(catData);
+          // Format categories to show subcategory (main category)
+          const formattedCategories = catData.map((cat: any) => {
+            const mainCategory = (cat.misc_maincategory as any)?.[0]?.name;
+            const displayName = mainCategory ? `${cat.name} (${mainCategory})` : cat.name;
+            return {
+              id: cat.id,
+              name: cat.name,
+              displayName: displayName
+            };
+          });
+          setCategories(formattedCategories);
         }
       } catch (error) {
         console.error('Error fetching dropdown data:', error);
@@ -50,15 +59,10 @@ const SourcesManager: React.FC = () => {
     {
       name: 'kind',
       label: 'Kind',
-      type: 'select' as const,
+      type: 'number' as const,
       required: true,
-      options: [
-        { value: 'Manual', label: 'Manual' },
-        { value: 'API hook', label: 'API hook' },
-        { value: 'Facebook Campaign', label: 'Facebook Campaign' },
-        { value: 'Website-GravityForms', label: 'Website-GravityForms' },
-        { value: 'Website-Elemntor API form', label: 'Website-Elemntor API form' }
-      ]
+      placeholder: 'e.g., 1',
+      defaultValue: 1
     },
     {
       name: 'default_topic',
@@ -68,16 +72,26 @@ const SourcesManager: React.FC = () => {
       placeholder: 'e.g., German Citizenship'
     },
     {
-      name: 'default_category',
+      name: 'default_category_id',
       label: 'Default Category',
       type: 'select' as const,
       required: false,
-      options: categories.map(cat => ({ value: cat.name, label: cat.name })),
       foreignKey: {
-        table: 'main_categories',
-        valueField: 'name',
-        displayField: 'name'
+        table: 'misc_category',
+        valueField: 'id',
+        displayField: 'name',
+        joinTable: 'misc_maincategory',
+        joinField: 'parent_id',
+        joinDisplayField: 'name'
       }
+    },
+    {
+      name: 'firm_id',
+      label: 'Firm ID',
+      type: 'number' as const,
+      required: true,
+      placeholder: 'e.g., 1',
+      defaultValue: 1
     },
     {
       name: 'code',
@@ -94,41 +108,46 @@ const SourcesManager: React.FC = () => {
       placeholder: 'e.g., CAMP123'
     },
     {
-      name: 'bonus_formula',
-      label: 'Bonus Formula',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., Standard'
+      name: 'bonus_formula_id',
+      label: 'Bonus Formula ID',
+      type: 'number' as const,
+      required: true,
+      placeholder: 'e.g., 1',
+      defaultValue: 0
     },
     {
-      name: 'order_value',
-      label: 'Order Value',
+      name: 'order',
+      label: 'Order',
       type: 'number' as const,
-      required: false,
-      placeholder: 'e.g., 1'
+      required: true,
+      placeholder: 'e.g., 1',
+      defaultValue: 0
     },
     {
       name: 'priority',
       label: 'Priority',
       type: 'number' as const,
-      required: false,
-      placeholder: 'e.g., 1'
+      required: true,
+      placeholder: 'e.g., 1',
+      defaultValue: 0
     },
     {
-      name: 'is_active',
+      name: 'active',
       label: 'Active',
       type: 'boolean' as const,
-      required: false
+      required: true,
+      defaultValue: false
     }
   ];
 
   return (
     <GenericCRUDManager
-      tableName="sources"
+      tableName="misc_leadsource"
       fields={fields}
       title="Source"
       description="Manage lead sources and their configurations"
       pageSize={10}
+      sortColumn="id"
     />
   );
 };

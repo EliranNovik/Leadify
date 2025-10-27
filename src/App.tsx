@@ -14,7 +14,7 @@ import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIco
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
 import LeadSearchPage from './pages/LeadSearchPage';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import ExpertPage from './components/ExpertPage';
 import CalendarPage from './components/CalendarPage';
 import CreateNewLead from './components/CreateNewLead';
@@ -61,6 +61,8 @@ import SchedulerToolPage from './pages/SchedulerToolPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
+  const location = useLocation();
+  const isAdminPage = location.pathname === '/admin';
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
   
@@ -360,14 +362,16 @@ const AppContentInner: React.FC = () => {
         element={
           <ProtectedRoute user={authUser}>
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
-              <Sidebar 
-                userName={userFullName || userName}
-                userInitials={userInitials}
-                isOpen={isSidebarOpen}
-                onClose={() => setIsSidebarOpen(false)}
-                onOpenAIChat={() => setIsAiChatOpen(true)}
-              />
-              <div className="flex-1 flex flex-col overflow-hidden md:pl-24">
+              {!isAdminPage && (
+                <Sidebar 
+                  userName={userFullName || userName}
+                  userInitials={userInitials}
+                  isOpen={isSidebarOpen}
+                  onClose={() => setIsSidebarOpen(false)}
+                  onOpenAIChat={() => setIsAiChatOpen(true)}
+                />
+              )}
+              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage ? 'md:pl-24' : ''}`}>
                 <Header 
                   onMenuClick={() => setIsSidebarOpen(prev => !prev)} 
                   onSearchClick={() => setIsSearchOpen(prev => !prev)}

@@ -1,5 +1,17 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChevronDownIcon } from '@heroicons/react/24/outline';
+import { 
+  ChevronDownIcon, 
+  ArrowRightOnRectangleIcon,
+  CalculatorIcon,
+  ShieldCheckIcon,
+  BanknotesIcon,
+  LinkIcon,
+  UsersIcon,
+  ChartBarIcon,
+  Cog6ToothIcon,
+  BuildingOffice2Icon,
+  ChatBubbleLeftRightIcon
+} from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UsersManager from './UsersManager';
 import PaymentPlanRowsManager from './PaymentPlanRowsManager';
@@ -22,39 +34,53 @@ import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 
-const ADMIN_TABS = [
+interface AdminTab {
+  label: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  subcategories: string[];
+  requiresAdmin: boolean;
+}
+
+const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Accounting',
+    icon: CalculatorIcon,
     subcategories: ['Currencies', 'Currency rates', 'Money accounts', 'Vats'],
     requiresAdmin: true,
   },
   {
     label: 'Authentication',
+    icon: ShieldCheckIcon,
     subcategories: ['Groups', 'Users'],
     requiresAdmin: true,
   },
   {
     label: 'Finances',
+    icon: BanknotesIcon,
     subcategories: ['Payment plan rows'],
     requiresAdmin: true,
   },
   {
     label: 'Hooks',
+    icon: LinkIcon,
     subcategories: ['Access Logs'],
     requiresAdmin: true,
   },
   {
     label: 'Leads',
+    icon: UsersIcon,
     subcategories: ['Anchors', 'Contacts', 'Leads'],
     requiresAdmin: true,
   },
   {
     label: 'Marketing',
+    icon: ChartBarIcon,
     subcategories: ['Marketing expenses', 'Marketing suppliers', 'Sales team expenses'],
     requiresAdmin: true,
   },
   {
     label: 'Misc',
+    icon: Cog6ToothIcon,
     subcategories: [
       'Bonus formulas', 'Contract templates', 'Countries', 'Email Templates', 'Holidays', 'Languages', 'Lead Stage Reasons', 'Lead Sources', 'Lead Tags', 'Main Categories', 'Public messages', 'sub categories', 'whatsapp template olds'
     ],
@@ -62,11 +88,13 @@ const ADMIN_TABS = [
   },
   {
     label: 'Tenants',
+    icon: BuildingOffice2Icon,
     subcategories: ['Bank accounts', 'Departements', 'Employees', 'Firms', 'Meeting Locations'],
     requiresAdmin: true,
   },
   {
     label: 'Whatsapp',
+    icon: ChatBubbleLeftRightIcon,
     subcategories: ['Whatsapp numbers', 'Whats app templates'],
     requiresAdmin: true,
   },
@@ -97,6 +125,20 @@ type User = {
   is_active: boolean;
 };
 
+// Type for recent changes (combined access logs and user changes)
+type RecentChange = {
+  id: string | number;
+  type: 'access_log' | 'user_change';
+  created_at: string;
+  updated_at?: string;
+  request_method?: string;
+  endpoint?: string;
+  response_code?: number;
+  user_name?: string;
+  updated_by_name?: string;
+  action?: string;
+};
+
 const AdminPage: React.FC = () => {
   const { isAdmin, isLoading, refreshAdminStatus } = useAdminRole();
   const navigate = useNavigate();
@@ -112,6 +154,18 @@ const AdminPage: React.FC = () => {
   const [isTopSectionCollapsed, setIsTopSectionCollapsed] = useState(false);
   const [dropdownPositions, setDropdownPositions] = useState<{[key: number]: 'left' | 'right'}>({});
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  
+  // State for sidebar collapse and employee data
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [employeeData, setEmployeeData] = useState<{
+    department?: string;
+    bonusRole?: string;
+  } | null>(null);
+
+  // State for recent changes
+  const [recentChanges, setRecentChanges] = useState<RecentChange[]>([]);
+  const [loadingChanges, setLoadingChanges] = useState(false);
 
   // Function to get time-based greeting
   const getTimeBasedGreeting = () => {
@@ -218,10 +272,27 @@ const AdminPage: React.FC = () => {
       console.log('Auth user ID:', user.id);
       console.log('Auth user email:', user.email);
       
-      // Try to find user by auth ID first
+      // Try to find user by auth ID first - using the same pattern as Sidebar
       let { data: userData, error } = await supabase
         .from('users')
-        .select('id, first_name, email, auth_id')
+        .select(`
+          id,
+          first_name,
+          email,
+          auth_id,
+          employee_id,
+          tenants_employee!employee_id(
+            id,
+            display_name,
+            official_name,
+            bonuses_role,
+            department_id,
+            tenant_departement!department_id(
+              id,
+              name
+            )
+          )
+        `)
         .eq('auth_id', user.id)
         .maybeSingle();
       
@@ -230,12 +301,46 @@ const AdminPage: React.FC = () => {
         console.log('User not found by auth_id, trying by email:', user.email);
         const { data: userByEmail, error: emailError } = await supabase
           .from('users')
-          .select('id, first_name, email, auth_id')
+          .select(`
+            id,
+            first_name,
+            email,
+            auth_id,
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name,
+              official_name,
+              bonuses_role,
+              department_id,
+              tenant_departement!department_id(
+                id,
+                name
+              )
+            )
+          `)
           .eq('email', user.email)
           .maybeSingle();
         
         userData = userByEmail;
         error = emailError;
+      }
+      
+      // Extract employee data from the joined query
+      if (userData && userData.tenants_employee) {
+        // Handle both array and single object responses
+        const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+        
+        if (empData) {
+          // Set department
+          const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
+          const deptName = deptData?.name || 'General';
+          
+          setEmployeeData({
+            department: deptName,
+            bonusRole: empData.bonuses_role || ''
+          });
+        }
       }
       
       if (error) {
@@ -300,9 +405,97 @@ const AdminPage: React.FC = () => {
     el.scrollBy({ left: dir === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
   };
 
+  // Fetch recent changes
+  const fetchRecentChanges = async () => {
+    try {
+      setLoadingChanges(true);
+      
+      // Fetch access logs
+      const { data: accessLogs, error: accessError } = await supabase
+        .from('access_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      // Fetch recent user changes with updated_by information
+      const { data: userChanges, error: userError } = await supabase
+        .from('users')
+        .select(`
+          id,
+          email,
+          first_name,
+          full_name,
+          updated_at,
+          updated_by,
+          users!updated_by(
+            first_name,
+            email
+          )
+        `)
+        .not('updated_at', 'is', null)
+        .order('updated_at', { ascending: false })
+        .limit(20);
+
+      if (accessError) console.error('Error fetching access logs:', accessError);
+      if (userError) console.error('Error fetching user changes:', userError);
+
+      console.log('📊 Access logs:', accessLogs);
+      console.log('👥 User changes:', userChanges);
+      
+      // Log first user change to inspect structure
+      if (userChanges && userChanges.length > 0) {
+        console.log('🔍 First user change structure:', userChanges[0]);
+      }
+
+      // Transform access logs
+      const transformedAccessLogs: RecentChange[] = (accessLogs || []).map(log => ({
+        id: log.id,
+        type: 'access_log' as const,
+        created_at: log.created_at,
+        request_method: log.request_method,
+        endpoint: log.endpoint,
+        response_code: log.response_code
+      }));
+
+      // Transform user changes
+      const transformedUserChanges: RecentChange[] = (userChanges || []).map(user => {
+        // Handle the joined user data (which can be an array or single object)
+        const updatedByUser = Array.isArray(user.users) ? user.users[0] : user.users;
+        const change = {
+          id: user.id,
+          type: 'user_change' as const,
+          created_at: user.updated_at || new Date().toISOString(),
+          updated_at: user.updated_at,
+          user_name: user.full_name || user.first_name || user.email,
+          updated_by_name: updatedByUser?.first_name || updatedByUser?.email || 'System',
+          action: 'User updated'
+        };
+        console.log('🔄 Transformed user change:', change);
+        return change;
+      });
+      
+      console.log('📋 Transformed user changes array:', transformedUserChanges);
+
+      // Combine and sort by timestamp
+      const combined = [...transformedAccessLogs, ...transformedUserChanges].sort((a, b) => 
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      ).slice(0, 20);
+
+      console.log('✅ Combined recent changes:', combined);
+      console.log('📊 User changes in combined:', combined.filter(c => c.type === 'user_change').length);
+      console.log('📊 Access logs in combined:', combined.filter(c => c.type === 'access_log').length);
+      setRecentChanges(combined);
+    } catch (error) {
+      console.error('Error fetching recent changes:', error);
+    } finally {
+      setLoadingChanges(false);
+    }
+  };
+
   // Fetch current user data on component mount
   useEffect(() => {
     fetchCurrentUser();
+    fetchRecentChanges();
   }, []);
 
 
@@ -323,8 +516,208 @@ const AdminPage: React.FC = () => {
     // Silent check - no logging needed
   }
 
+  // Helper to get role display name
+  const getRoleDisplayName = (role: string | undefined): string => {
+    if (!role) return '';
+    const roleMap: { [key: string]: string } = {
+      'pm': 'Project Manager',
+      'se': 'Secretary',
+      'dv': 'Developer',
+      'dm': 'Department Manager',
+      'b': 'Book Keeper',
+      'f': 'Finance',
+      'h': 'Handler',
+      'e': 'Expert',
+      'm': 'Manager',
+      'l': 'Lawyer',
+      'a': 'Administrator',
+      's': 'Scheduler',
+      'c': 'Coordinator',
+      'p': 'Partner',
+      'adv': 'Advocate',
+      'advocate': 'Advocate',
+      'handler': 'Handler',
+      'expert': 'Expert',
+      'manager': 'Manager',
+      'lawyer': 'Lawyer',
+      'admin': 'Administrator',
+      'coordinator': 'Coordinator',
+      'scheduler': 'Scheduler'
+    };
+    return roleMap[role.toLowerCase()] || role;
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    navigate('/login');
+  };
+
   return (
-    <div className="p-6 w-full">
+    <div className="flex h-screen bg-base-100 w-full overflow-hidden">
+      {/* Left Sidebar - Desktop Tabs as Sidebar */}
+      <aside 
+        className="hidden md:flex flex-col bg-white border-r border-gray-200 shadow-lg fixed left-0 top-0 bottom-0 overflow-hidden transition-all duration-300 group"
+        style={{ width: isSidebarCollapsed ? '64px' : '256px' }}
+        onMouseEnter={() => setIsSidebarCollapsed(false)}
+        onMouseLeave={() => setIsSidebarCollapsed(true)}
+      >
+        <div className={`border-b border-gray-200 flex-shrink-0 ${isSidebarCollapsed ? 'py-2' : 'py-4'} px-4`}>
+          <h2 className={`text-xl font-bold text-gray-900 transition-opacity ${isSidebarCollapsed ? 'opacity-0 w-0 h-0' : 'opacity-100'}`}>
+            {!isSidebarCollapsed && 'Admin Menu'}
+          </h2>
+          <div className={`absolute left-0 right-0 flex justify-center ${!isSidebarCollapsed ? 'hidden' : ''}`} style={{ top: '12px' }}>
+            <span className="text-2xl font-bold text-gray-900">A</span>
+          </div>
+        </div>
+        <div className={`flex-1 overflow-y-auto ${isSidebarCollapsed ? 'pt-16' : 'pt-2'}`}>
+          {ADMIN_TABS.filter(tab => {
+            const hasAccess = !tab.requiresAdmin || isAdmin;
+            return hasAccess;
+          }).map((tab, i) => {
+            const Icon = tab.icon;
+            return (
+              <div key={tab.label} className="mb-2">
+                <button
+                  onClick={() => setOpenTab(openTab === i ? null : i)}
+                  className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between'} p-3 mx-2 rounded-lg transition-all ${
+                    openTab === i
+                      ? 'bg-primary text-white shadow-md'
+                      : isSidebarCollapsed 
+                        ? 'hover:bg-gray-100 text-gray-900'
+                        : 'hover:bg-gray-100 text-gray-900'
+                  }`}
+                >
+                  {isSidebarCollapsed ? (
+                    <Icon className="w-6 h-6" />
+                  ) : (
+                    <>
+                      <span className="font-semibold">{tab.label}</span>
+                      <ChevronDownIcon
+                        className={`w-5 h-5 transition-transform ${openTab === i ? 'rotate-180' : ''}`}
+                      />
+                    </>
+                  )}
+                </button>
+              {openTab === i && (
+                <div className="mt-2 space-y-1 ml-6">
+                  {tab.subcategories.map((sub, j) => (
+                    <button
+                      key={sub}
+                      onClick={() => {
+                        setSelected({ tab: i, sub: j });
+                        setOpenTab(null);
+                      }}
+                      className={`w-full text-left px-4 py-2 rounded-lg transition-all ${
+                        selected.tab === i && selected.sub === j
+                          ? 'bg-primary/10 text-primary font-semibold'
+                          : 'text-gray-700 hover:bg-gray-100'
+                      }`}
+                    >
+                      {sub}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            );
+          })}
+        </div>
+        
+        {/* Footer with User Info and Logout */}
+        <div className="p-4 border-t border-gray-200 flex-shrink-0 space-y-3">
+          <div className={`space-y-1 ${isSidebarCollapsed ? 'hidden' : ''}`}>
+            <div className="font-semibold text-gray-900">
+              {currentUser?.first_name || currentUser?.email}
+            </div>
+            {employeeData?.bonusRole && (
+              <div className="text-sm text-gray-600">{getRoleDisplayName(employeeData.bonusRole)}</div>
+            )}
+          </div>
+          <button
+            onClick={handleLogout}
+            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} p-2 rounded-lg transition-all hover:bg-red-50 text-red-600`}
+          >
+            <ArrowRightOnRectangleIcon className="w-5 h-5" />
+            {!isSidebarCollapsed && <span className="ml-2 font-medium">Logout</span>}
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Sidebar */}
+      {isMobileSidebarOpen && (
+        <div className="fixed inset-0 z-[10000] md:hidden">
+          {/* Backdrop */}
+          <div 
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setIsMobileSidebarOpen(false)}
+          />
+          {/* Sidebar Panel */}
+          <div className="absolute left-0 top-0 bottom-0 w-80 bg-white shadow-2xl overflow-y-auto">
+            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-900">Admin Menu</h2>
+              <button 
+                onClick={() => setIsMobileSidebarOpen(false)}
+                className="p-2 hover:bg-gray-100 rounded-lg"
+              >
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4">
+              {ADMIN_TABS.filter(tab => {
+                const hasAccess = !tab.requiresAdmin || isAdmin;
+                return hasAccess;
+              }).map((tab, i) => (
+                <div key={tab.label} className="mb-4">
+                  <button
+                    onClick={() => setOpenTab(openTab === i ? null : i)}
+                    className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-gray-100 text-left font-semibold"
+                  >
+                    <span>{tab.label}</span>
+                    <ChevronDownIcon
+                      className={`w-5 h-5 transition-transform ${openTab === i ? 'rotate-180' : ''}`}
+                    />
+                  </button>
+                  {openTab === i && (
+                    <div className="mt-2 space-y-1">
+                      {tab.subcategories.map((sub, j) => (
+                        <button
+                          key={sub}
+                          onClick={() => {
+                            setSelected({ tab: i, sub: j });
+                            setOpenTab(null);
+                            setIsMobileSidebarOpen(false);
+                          }}
+                          className="w-full text-left px-4 py-2 rounded-lg hover:bg-primary/10 text-sm"
+                        >
+                          {sub}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Menu Button */}
+      <button
+        onClick={() => setIsMobileSidebarOpen(true)}
+        className="md:hidden fixed bottom-6 right-6 z-50 p-4 bg-primary text-white rounded-full shadow-lg hover:shadow-xl transition-all"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+
+      {/* Main Content Area */}
+      <div 
+        className="flex-1 overflow-y-auto p-4 md:p-6 transition-all duration-300"
+        style={{ marginLeft: window.innerWidth >= 768 ? (isSidebarCollapsed ? '64px' : '256px') : '0' }}
+      >
       {/* Welcome Section */}
       <div className={`mb-12 transition-all duration-500 ease-in-out overflow-hidden ${
         isTopSectionCollapsed ? 'max-h-0 mb-0' : 'max-h-screen'
@@ -467,6 +860,136 @@ const AdminPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Recent Changes Section - Only show when no specific content is selected */}
+      {selected.tab === null && selected.sub === null && (
+        <div className="w-full mt-8 px-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* User Changes */}
+            <div className="bg-white rounded-xl shadow-lg p-6">
+              <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <svg className="w-6 h-6 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                </svg>
+                User Changes
+              </h3>
+              {loadingChanges ? (
+                <div className="flex justify-center items-center py-8">
+                  <div className="loading loading-spinner loading-lg text-success"></div>
+                </div>
+              ) : (() => {
+                const userChangeCount = recentChanges.filter(c => c.type === 'user_change').length;
+                console.log('👥 User changes count:', userChangeCount);
+                return userChangeCount > 0;
+              })() ? (
+                <div className="overflow-x-auto">
+                  <table className="table table-sm w-full">
+                    <thead>
+                      <tr>
+                        <th className="text-gray-900 font-semibold">User</th>
+                        <th className="text-gray-900 font-semibold">Updated By</th>
+                        <th className="text-gray-900 font-semibold">Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentChanges.filter(c => c.type === 'user_change').map((change) => (
+                        <tr key={`${change.type}-${change.id}`}>
+                          <td>
+                            <div className="font-medium text-gray-900">{change.user_name}</div>
+                          </td>
+                          <td>
+                            <div className="text-sm text-gray-600">
+                              {change.updated_by_name || 'System'}
+                            </div>
+                          </td>
+                          <td>
+                            <div className="text-xs text-gray-500">
+                              {new Date(change.created_at).toLocaleString()}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  No user changes found
+                </div>
+              )}
+            </div>
+
+            {/* Access Logs */}
+            <div className="bg-white rounded-xl shadow-lg p-6">
+              <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
+                <svg className="w-6 h-6 text-info" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                API Requests
+              </h3>
+              {loadingChanges ? (
+                <div className="flex justify-center items-center py-8">
+                  <div className="loading loading-spinner loading-lg text-info"></div>
+                </div>
+              ) : recentChanges.filter(c => c.type === 'access_log').length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="table table-sm w-full">
+                    <thead>
+                      <tr>
+                        <th className="text-gray-900 font-semibold">Method</th>
+                        <th className="text-gray-900 font-semibold">Endpoint</th>
+                        <th className="text-gray-900 font-semibold">Status</th>
+                        <th className="text-gray-900 font-semibold">Time</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {recentChanges.filter(c => c.type === 'access_log').map((change) => (
+                        <tr key={`${change.type}-${change.id}`}>
+                          <td>
+                            <span className={`badge badge-sm ${
+                              change.request_method === 'GET' ? 'badge-success' :
+                              change.request_method === 'POST' ? 'badge-primary' :
+                              change.request_method === 'PUT' ? 'badge-warning' :
+                              change.request_method === 'DELETE' ? 'badge-error' :
+                              'badge-neutral'
+                            }`}>
+                              {change.request_method}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="text-xs text-gray-700 truncate max-w-xs" title={change.endpoint}>
+                              {change.endpoint}
+                            </div>
+                          </td>
+                          <td>
+                            <span className={`badge badge-sm ${
+                              change.response_code && change.response_code >= 200 && change.response_code < 300 ? 'badge-success' :
+                              change.response_code && change.response_code >= 400 && change.response_code < 500 ? 'badge-warning' :
+                              change.response_code && change.response_code >= 500 ? 'badge-error' :
+                              'badge-neutral'
+                            }`}>
+                              {change.response_code}
+                            </span>
+                          </td>
+                          <td>
+                            <div className="text-xs text-gray-500">
+                              {new Date(change.created_at).toLocaleString()}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  No API requests found
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Collapse/Expand Button */}
       <div className="relative">
         <button
@@ -490,114 +1013,9 @@ const AdminPage: React.FC = () => {
         </button>
       </div>
 
-      <div className="relative" style={{ minHeight: 48 }}>
-        {/* Left Arrow */}
-        {showLeftArrow && (
-          <button
-            className="absolute left-0 top-0 bottom-0 z-20 flex items-center px-1 bg-gradient-to-r from-white/90 via-white/60 to-transparent hover:bg-white/80 shadow-md rounded-l-xl"
-            style={{ height: '100%' }}
-            onClick={() => scrollTabs('left')}
-            aria-label="Scroll left"
-          >
-            <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
-          </button>
-        )}
-        {/* Right Arrow */}
-        {showRightArrow && (
-          <button
-            className="absolute right-0 top-0 bottom-0 z-20 flex items-center px-1 bg-gradient-to-l from-white/90 via-white/60 to-transparent hover:bg-white/80 shadow-md rounded-r-xl"
-            style={{ height: '100%' }}
-            onClick={() => scrollTabs('right')}
-            aria-label="Scroll right"
-          >
-            <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-          </button>
-        )}
-        <div
-          ref={tabBarRef}
-          className="flex border-b border-base-200/50 mb-0 gap-2 flex-nowrap scrollbar-hide overflow-x-auto bg-white/50 backdrop-blur-sm rounded-t-2xl shadow-sm"
-          style={{
-            WebkitOverflowScrolling: 'touch',
-            minHeight: 0,
-            overflowX: openTab !== null ? 'visible' : 'auto',
-            height: 56,
-          }}
-        >
-          {ADMIN_TABS
-            .filter(tab => {
-              const hasAccess = !tab.requiresAdmin || isAdmin;
-              return hasAccess;
-            }) // Only show tabs user has access to
-            .map((tab, i) => {
-            const isOpen = openTab === i;
-            return (
-              <div key={tab.label} className="relative flex-shrink-0" ref={openTab === i ? dropdownRef : null}>
-                <button
-                  className={`flex items-center gap-2 px-4 py-3 text-sm md:text-base font-semibold rounded-t-xl transition-all duration-300 whitespace-nowrap min-w-max relative overflow-hidden group
-                    ${isOpen 
-                      ? 'bg-gradient-to-b from-primary to-primary/90 text-white shadow-lg transform scale-105' 
-                      : 'text-base-content/70 hover:text-primary hover:bg-white/80 hover:shadow-md hover:scale-105'}`}
-                  style={{ outline: 'none' }}
-                  onClick={() => {
-                    if (!isOpen) {
-                      const position = calculateDropdownPosition(i);
-                      setDropdownPositions(prev => ({ ...prev, [i]: position }));
-                    }
-                    setOpenTab(isOpen ? null : i);
-                  }}
-                >
-                  {/* Background effect for active tab */}
-                  {isOpen && (
-                    <div className="absolute inset-0 bg-gradient-to-b from-white/20 to-transparent rounded-t-xl"></div>
-                  )}
-                  
-                  <span className="relative z-10">{tab.label}</span>
-                  
-                  <ChevronDownIcon
-                    className={`w-4 h-4 md:w-5 md:h-5 transition-all duration-300 relative z-10 ${isOpen ? 'rotate-180 text-white' : 'text-base-content/60 group-hover:text-primary'}`}
-                    aria-hidden="true"
-                  />
-                  
-                  {/* Active indicator */}
-                  {isOpen && (
-                    <div className="absolute bottom-0 left-1/2 transform -translate-x-1/2 w-8 h-1 bg-white rounded-full"></div>
-                  )}
-                </button>
-                
-                {/* Subcategories dropdown under the open tab (vertical list) */}
-                {isOpen && (
-                  <div className={`absolute top-full z-50 bg-white border border-base-200/50 rounded-b-2xl shadow-xl flex flex-col w-full max-w-sm md:w-56 py-3 animate-fade-in max-h-80 overflow-y-auto backdrop-blur-sm ${
-                    window.innerWidth < 768 
-                      ? 'left-0 right-0 mx-2' 
-                      : dropdownPositions[i] === 'right' ? 'right-0' : 'left-0'
-                  }`}>
-                    {tab.subcategories.map((sub, j) => (
-                      <button
-                        key={sub}
-                        className={`w-full text-left px-4 py-3 text-sm font-medium rounded-lg transition-all duration-200 whitespace-nowrap mx-2 group
-                          ${selected.tab === i && selected.sub === j
-                            ? 'bg-gradient-to-r from-primary to-primary/90 text-white shadow-md transform scale-105'
-                            : 'text-base-content hover:bg-primary/10 hover:text-primary hover:shadow-sm hover:scale-105'}`}
-                        onClick={() => {
-                          setSelected({ tab: i, sub: j });
-                          setOpenTab(null);
-                        }}
-                      >
-                        <span className="flex items-center gap-2">
-                          <div className={`w-2 h-2 rounded-full transition-colors ${selected.tab === i && selected.sub === j ? 'bg-white' : 'bg-primary/30 group-hover:bg-primary'}`}></div>
-                        {sub}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      {/* Content Area */}
-      <div className="bg-base-100 rounded-xl shadow p-8 min-h-[200px] mt-8">
+
+        {/* Content Area */}
+        <div className="bg-base-100 rounded-xl shadow p-4 md:p-8 min-h-[200px] mt-4 md:mt-8">
         {/* Welcome message for non-admin users */}
         {!isAdmin && selected.tab === null && selected.sub === null && (
           <div className="text-center py-8">
@@ -693,18 +1111,19 @@ const AdminPage: React.FC = () => {
             <span className="text-base text-base-content/60 font-normal">Select a subcategory</span>
           </div>
         ) : null}
+        </div>
+        {/* Glassy card style */}
+        <style>{`
+          .glass-card {
+            background: rgba(255,255,255,0.70);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-radius: 1.25rem;
+            box-shadow: 0 4px 24px 0 rgba(0,0,0,0.08), 0 1.5px 8px 0 rgba(0,0,0,0.04);
+            transition: box-shadow 0.2s, transform 0.2s;
+          }
+        `}</style>
       </div>
-      {/* Glassy card style */}
-      <style>{`
-        .glass-card {
-          background: rgba(255,255,255,0.70);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border-radius: 1.25rem;
-          box-shadow: 0 4px 24px 0 rgba(0,0,0,0.08), 0 1.5px 8px 0 rgba(0,0,0,0.04);
-          transition: box-shadow 0.2s, transform 0.2s;
-        }
-      `}</style>
     </div>
   );
 };
