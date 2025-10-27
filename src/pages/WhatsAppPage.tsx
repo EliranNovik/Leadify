@@ -1757,36 +1757,28 @@ const WhatsAppPage: React.FC = () => {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Message Input - Fixed */}
-            <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={isMobile ? { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'white', zIndex: 50 } : {}}>
-              
-              {/* Template Message Selector */}
-              <div className="mb-3 flex items-center gap-2 flex-wrap">
-                <button
-                  type="button"
-                  onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                  className={`btn btn-sm ${selectedTemplate ? 'btn-primary' : 'btn-outline'}`}
-                >
-                  {selectedTemplate ? `Template: ${selectedTemplate.title}` : `Use Template (${templates.length})`}
-                </button>
-                
-                {selectedTemplate && (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedTemplate(null)}
-                    className="btn btn-ghost btn-sm text-red-500"
-                  >
-                    Clear
-                  </button>
-                )}
-                
-
-              </div>
-              
-              {/* Template Dropdown */}
-              {showTemplateSelector && (
-                <div className="mb-3 p-3 bg-gray-50 rounded-lg border">
-                  <div className="text-sm font-medium mb-2">Select Template:</div>
+            {/* Message Input - Fixed with glassy blur on mobile */}
+            <div 
+              className={`flex-shrink-0 border-t transition-all duration-200 ${
+                isMobile 
+                  ? 'sticky bg-white/80 backdrop-blur-lg supports-[backdrop-filter]:bg-white/70 border-gray-300/50' 
+                  : 'bg-white border-gray-200'
+              }`}
+              style={isMobile ? { zIndex: 50, bottom: 0, paddingBottom: `calc(30px + env(safe-area-inset-bottom))` } : {}}
+            >
+              {/* Template Dropdown - Above input on mobile, toggled by icon */}
+              {showTemplateSelector && isMobile && (
+                <div className="absolute bottom-full left-0 right-0 mb-2 p-3 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-semibold text-gray-900">Templates</div>
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateSelector(false)}
+                      className="btn btn-ghost btn-xs"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
                   
                   {/* Search Input */}
                   <div className="mb-3">
@@ -1795,120 +1787,215 @@ const WhatsAppPage: React.FC = () => {
                       placeholder="Search templates..."
                       value={templateSearchTerm}
                       onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                     />
                   </div>
                   
                   {/* Templates List */}
-                  <div className="max-h-64 overflow-y-auto space-y-2">
+                  <div className="space-y-2 max-h-[40vh] overflow-y-auto">
                     {isLoadingTemplates ? (
                       <div className="text-center text-gray-500 py-4">
                         <div className="loading loading-spinner loading-sm"></div>
-                        <span className="ml-2">Loading templates...</span>
+                        <span className="ml-2">Loading...</span>
                       </div>
                     ) : (
-                      <>
-                        {filterTemplates(templates, templateSearchTerm).map((template) => (
-                          <button
-                            key={template.id}
-                            type="button"
-                            onClick={() => {
-                              if (template.active !== 't') {
-                                toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
-                                return;
-                              }
-                              setSelectedTemplate(template);
-                              setShowTemplateSelector(false);
-                              setTemplateSearchTerm('');
-                            }}
-                            className={`block w-full text-left p-3 rounded border ${
-                              selectedTemplate?.id === template.id 
-                                ? 'bg-blue-50 border-blue-300' 
-                                : 'bg-white border-gray-200 hover:bg-gray-50'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between">
-                              <div className="font-medium text-gray-900">{template.title}</div>
-                              <div className="flex items-center gap-1">
-                                <span className="text-xs text-gray-500 font-mono">{template.name360}</span>
-                                {template.active === 't' && (
-                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                    Active
-                                  </span>
-                                )}
-                                {template.active !== 't' && (
-                                  <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                                    Pending
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            <div className="text-sm text-gray-500 mt-1">
-                              {template.params === '1' && (
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800 mb-2">
-                                  Requires Parameter
-                                </span>
-                              )}
-                              {template.params === '0' && (
-                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mb-2">
-                                  No Parameters
-                                </span>
-                              )}
-                              {template.content && template.content !== 'EMPTY' && (
-                                <div className="text-xs text-gray-600 mt-1 bg-gray-50 p-2 rounded">
-                                  <strong>Template Name:</strong> {template.name360}<br/>
-                                  <strong>Content:</strong> {template.content}
-                                </div>
-                              )}
-                            </div>
-                          </button>
-                        ))}
-                        
-                        {filterTemplates(templates, templateSearchTerm).length === 0 && (
-                          <div className="text-center text-gray-500 py-4">
-                            {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                            {templates.length === 0 && (
-                              <div className="mt-2 text-xs">
-                                <p>Debug: No templates loaded from database.</p>
-                                <p>Check if templates exist in whatsapp_whatsapptemplate table.</p>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </>
+                      filterTemplates(templates, templateSearchTerm).map((template) => (
+                        <button
+                          key={template.id}
+                          type="button"
+                          onClick={() => {
+                            if (template.active !== 't') {
+                              toast.error('Template pending approval');
+                              return;
+                            }
+                            setSelectedTemplate(template);
+                            setShowTemplateSelector(false);
+                            setTemplateSearchTerm('');
+                          }}
+                          className={`w-full text-left p-2 rounded-lg border transition-colors ${
+                            selectedTemplate?.id === template.id 
+                              ? 'bg-green-50 border-green-300' 
+                              : 'bg-white border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <div className="font-medium text-gray-900 text-sm">{template.title}</div>
+                          {template.active === 't' ? (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 mt-1">
+                              Active
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 mt-1">
+                              Pending
+                            </span>
+                          )}
+                        </button>
+                      ))
                     )}
                   </div>
                 </div>
               )}
               
-              {/* Lock Message */}
-              {isLocked && (
-                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg mb-2">
-                  <LockClosedIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
-                  <div className="text-sm text-red-700">
-                    <p className="font-medium">Messaging window expired</p>
-                    <p className="text-xs text-red-600">More than 24 hours have passed since the client's last message. You can no longer send messages to this contact.</p>
+              {/* Template Message Selector - Desktop only */}
+              {!isMobile && (
+                <div className="px-4 pt-3 pb-2">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                      className={`btn btn-sm ${selectedTemplate ? 'btn-primary' : 'btn-outline'}`}
+                    >
+                      {selectedTemplate ? `Template: ${selectedTemplate.title}` : `Use Template (${templates.length})`}
+                    </button>
+                    
+                    {selectedTemplate && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedTemplate(null)}
+                        className="btn btn-ghost btn-sm text-red-500"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  
+                  {/* Template Dropdown - Desktop */}
+                  {showTemplateSelector && (
+                    <div className="mt-2 mb-3 p-3 bg-gray-50 rounded-lg border">
+                      <div className="text-sm font-medium mb-2">Select Template:</div>
+                      
+                      <div className="mb-3">
+                        <input
+                          type="text"
+                          placeholder="Search templates..."
+                          value={templateSearchTerm}
+                          onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        />
+                      </div>
+                      
+                      <div className="max-h-64 overflow-y-auto space-y-2">
+                        {isLoadingTemplates ? (
+                          <div className="text-center text-gray-500 py-4">
+                            <div className="loading loading-spinner loading-sm"></div>
+                            <span className="ml-2">Loading templates...</span>
+                          </div>
+                        ) : (
+                          <>
+                            {filterTemplates(templates, templateSearchTerm).map((template) => (
+                              <button
+                                key={template.id}
+                                type="button"
+                                onClick={() => {
+                                  if (template.active !== 't') {
+                                    toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
+                                    return;
+                                  }
+                                  setSelectedTemplate(template);
+                                  setShowTemplateSelector(false);
+                                  setTemplateSearchTerm('');
+                                }}
+                                className={`block w-full text-left p-3 rounded border ${
+                                  selectedTemplate?.id === template.id 
+                                    ? 'bg-blue-50 border-blue-300' 
+                                    : 'bg-white border-gray-200 hover:bg-gray-50'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="font-medium text-gray-900">{template.title}</div>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-xs text-gray-500 font-mono">{template.name360}</span>
+                                    {template.active === 't' && (
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                        Active
+                                      </span>
+                                    )}
+                                    {template.active !== 't' && (
+                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                        Pending
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="text-sm text-gray-500 mt-1">
+                                  {template.params === '1' && (
+                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800 mb-2">
+                                      Requires Parameter
+                                    </span>
+                                  )}
+                                  {template.params === '0' && (
+                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mb-2">
+                                      No Parameters
+                                    </span>
+                                  )}
+                                  {template.content && template.content !== 'EMPTY' && (
+                                    <div className="text-xs text-gray-600 mt-1 bg-gray-50 p-2 rounded">
+                                      <strong>Template Name:</strong> {template.name360}<br/>
+                                      <strong>Content:</strong> {template.content}
+                                    </div>
+                                  )}
+                                </div>
+                              </button>
+                            ))}
+                            
+                            {filterTemplates(templates, templateSearchTerm).length === 0 && (
+                              <div className="text-center text-gray-500 py-4">
+                                {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {/* Lock Message - Desktop only */}
+              {!isMobile && isLocked && (
+                <div className="px-4 pb-2">
+                  <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <LockClosedIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
+                    <div className="text-sm text-red-700">
+                      <p className="font-medium">Messaging window expired</p>
+                      <p className="text-xs text-red-600">More than 24 hours have passed since the client's last message. You can no longer send messages to this contact.</p>
+                    </div>
                   </div>
                 </div>
               )}
 
-              <form onSubmit={handleSendMessage} className="flex items-center gap-2">
-                <div className="relative">
+              {/* Input Area */}
+              <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
+                {/* Template Icon Button - Mobile only */}
+                {isMobile && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                    className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                      selectedTemplate 
+                        ? 'bg-green-500 text-white' 
+                        : 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
+                    }`}
+                  >
+                    <DocumentTextIcon className="w-5 h-5" />
+                  </button>
+                )}
+                
+                <div className="relative flex-shrink-0">
                   <button 
                     type="button" 
                     onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                    className="btn btn-ghost btn-circle"
+                    className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${isMobile ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' : 'btn btn-ghost'} text-gray-500 hover:bg-gray-100`}
                     disabled={isLocked}
                   >
-                    <FaceSmileIcon className="w-6 h-6 text-gray-500" />
+                    <FaceSmileIcon className="w-5 h-5" />
                   </button>
                   
                   {/* Emoji Picker */}
                   {isEmojiPickerOpen && !isLocked && (
-                    <div className="absolute bottom-12 left-0 z-50 emoji-picker-container">
+                    <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
                       <EmojiPicker
                         onEmojiClick={handleEmojiClick}
-                        width={350}
+                        width={isMobile ? window.innerWidth - 40 : 350}
                         height={400}
                         skinTonesDisabled={false}
                         searchDisabled={false}
@@ -1925,10 +2012,10 @@ const WhatsAppPage: React.FC = () => {
                 
                 {/* File upload button */}
                 <label 
-                  className={`btn btn-ghost btn-circle ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${isMobile ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' : 'btn btn-ghost'} text-gray-500 hover:bg-gray-100 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
                   onClick={() => !isLocked && console.log('📁 File upload button clicked')}
                 >
-                  <PaperClipIcon className="w-6 h-6 text-gray-500" />
+                  <PaperClipIcon className="w-5 h-5" />
                   <input
                     type="file"
                     className="hidden"
@@ -1940,8 +2027,8 @@ const WhatsAppPage: React.FC = () => {
 
                 {/* Selected file preview */}
                 {selectedFile && (
-                  <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-1">
-                    <span className="text-xs text-gray-600">{selectedFile.name}</span>
+                  <div className="flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50">
+                    <span className="text-xs text-gray-700">{selectedFile.name}</span>
                     <button
                       type="button"
                       onClick={() => setSelectedFile(null)}
@@ -1952,50 +2039,55 @@ const WhatsAppPage: React.FC = () => {
                   </div>
                 )}
 
+                {/* Message Input */}
                 <textarea
                   value={newMessage}
                   onChange={(e) => {
                     setNewMessage(e.target.value);
-                    // Auto-resize the textarea
                     e.target.style.height = 'auto';
                     e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
                   }}
                   onKeyDown={(e) => {
-                    // Just ignore Enter key handling - let it create new lines naturally
-                    // The form won't submit because we only have a button, no implicit submit on Enter
+                    // Let Enter create new lines
                   }}
                   placeholder={
                     isLocked 
-                      ? "Messaging window expired - use templates to send messages"
+                      ? "Window expired - use templates"
                       : selectedFile 
                         ? "Add a caption..." 
                         : selectedTemplate 
                           ? selectedTemplate.params === '1' 
-                            ? `Enter parameter for: ${selectedTemplate.title}` 
-                            : `Template: ${selectedTemplate.title} (no parameters needed)`
+                            ? `Parameter for: ${selectedTemplate.title}` 
+                            : `Template: ${selectedTemplate.title}`
                           : "Type a message..."
                   }
-                  className={`flex-1 textarea textarea-bordered rounded-2xl resize-none ${isLocked ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                  className={`flex-1 resize-none rounded-2xl transition-all ${
+                    isMobile 
+                      ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
+                      : 'textarea textarea-bordered'
+                  } ${isLocked ? 'bg-gray-100/80 cursor-not-allowed' : ''}`}
                   disabled={sending || uploadingMedia || isLocked}
                   rows={1}
                   style={{ 
                     maxHeight: '200px', 
-                    minHeight: 'auto', 
-                    paddingTop: '16px', 
-                    paddingBottom: '16px', 
+                    minHeight: '40px',
+                    paddingTop: '12px', 
+                    paddingBottom: '12px', 
                     paddingLeft: '16px', 
                     paddingRight: '16px',
                     direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
-                    textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left'
+                    textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left',
+                    fontSize: '15px'
                   }}
                 />
                 
+                {/* Send Button */}
                 {selectedFile ? (
                   <button
                     type="button"
                     onClick={handleSendMedia}
                     disabled={uploadingMedia}
-                    className="btn btn-primary btn-circle"
+                    className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
                   >
                     {uploadingMedia ? (
                       <div className="loading loading-spinner loading-sm"></div>
@@ -2006,17 +2098,8 @@ const WhatsAppPage: React.FC = () => {
                 ) : (
                   <button
                     type="submit"
-                    disabled={(() => {
-                      const isDisabled = (!newMessage.trim() && !selectedTemplate) || sending;
-                      console.log('🔘 Send button state:', { 
-                        newMessage: newMessage.trim(), 
-                        selectedTemplate: selectedTemplate?.title, 
-                        sending, 
-                        isDisabled 
-                      });
-                      return isDisabled;
-                    })()}
-                    className="btn btn-primary btn-circle h-[48px] w-[48px] flex-shrink-0"
+                    disabled={(!newMessage.trim() && !selectedTemplate) || sending}
+                    className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
                   >
                     {sending ? (
                       <div className="loading loading-spinner loading-sm"></div>
