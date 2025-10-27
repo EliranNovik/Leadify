@@ -1063,7 +1063,7 @@ const WhatsAppPage: React.FC = () => {
     <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
       <div className="h-full flex flex-col overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
         {/* Header */}
-        <div className={`flex items-center justify-between p-4 md:p-6 border-b border-gray-200 ${isMobile && isContactsHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
+        <div className={`flex items-center justify-between p-4 md:p-6 border-b border-gray-200 ${isMobile && isContactsHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'} ${isMobile && showChat ? 'hidden' : ''}`}>
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
             <div className="relative">
               <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
@@ -1177,12 +1177,14 @@ const WhatsAppPage: React.FC = () => {
                 <span className="hidden md:inline">View Client</span>
               </button>
             )}
-            <button
-              onClick={() => window.history.back()}
-              className="btn btn-ghost btn-circle flex-shrink-0"
-            >
-              <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-            </button>
+            {!isMobile && (
+              <button
+                onClick={() => window.history.back()}
+                className="btn btn-ghost btn-circle flex-shrink-0"
+              >
+                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -1300,46 +1302,44 @@ const WhatsAppPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0 } : {}}>
             {selectedClient ? (
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <div className={`flex items-center justify-between p-4 border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`}>
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={() => setShowChat(false)}
-                        className="btn btn-ghost btn-circle btn-sm"
-                      >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                        </svg>
-                      </button>
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center relative">
-                          <span className="text-green-600 font-semibold text-sm">
-                            {selectedClient.name.charAt(0).toUpperCase()}
-                          </span>
-                          {isClientLocked(messages.filter(m => m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '') && (
-                            <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
-                              <LockClosedIcon className="w-3 h-3 text-white" />
-                            </div>
-                          )}
-                        </div>
-                        <div>
-                          <h3 className="font-semibold text-gray-900 text-sm">
-                            {selectedClient.name}
-                          </h3>
-                          <p className="text-xs text-gray-500">
-                            {selectedClient.lead_number}
-                          </p>
-                        </div>
+                  <div className={`flex-shrink-0 flex items-center px-4 py-3 border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={{ zIndex: 40 }}>
+                    <button
+                      onClick={() => setShowChat(false)}
+                      className="btn btn-ghost btn-circle btn-sm flex-shrink-0 mr-3"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                    <div className="flex items-center gap-2 flex-1 min-w-0 mr-3" style={{ maxWidth: 'calc(100% - 100px)' }}>
+                      <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center relative flex-shrink-0">
+                        <span className="text-green-600 font-semibold text-sm">
+                          {selectedClient.name.charAt(0).toUpperCase()}
+                        </span>
+                        {isClientLocked(messages.filter(m => m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '') && (
+                          <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
+                            <LockClosedIcon className="w-3 h-3 text-white" />
+                          </div>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="font-semibold text-gray-900 text-sm truncate">
+                          {selectedClient.name}
+                        </h3>
+                        <p className="text-xs text-gray-500 truncate">
+                          {selectedClient.lead_number}
+                        </p>
                       </div>
                     </div>
                     {timeLeft && (
                       <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
                         isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                      }`}>
+                      }`} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
                         {isLocked ? (
                           <>
                             <LockClosedIcon className="w-4 h-4" />
@@ -1357,7 +1357,7 @@ const WhatsAppPage: React.FC = () => {
                 )}
 
             {/* Messages - Scrollable */}
-            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4">
+            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : '200px', WebkitOverflowScrolling: 'touch' } : {}}>
               {messages.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -1746,7 +1746,7 @@ const WhatsAppPage: React.FC = () => {
             </div>
 
             {/* Message Input - Fixed */}
-            <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={isMobile ? { position: 'sticky', bottom: 0, backgroundColor: 'white', zIndex: 10 } : {}}>
+            <div className={`flex-shrink-0 p-4 border-t border-gray-200 ${isMobile && isChatFooterGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={isMobile ? { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'white', zIndex: 50 } : {}}>
               
               {/* Template Message Selector */}
               <div className="mb-3 flex items-center gap-2 flex-wrap">

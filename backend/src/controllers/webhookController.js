@@ -76,7 +76,7 @@ const webhookController = {
         p_lead_email: formData.email,
         p_lead_phone: formData.phone || null,
         p_lead_topic: formData.topic || null,
-        p_lead_language: formData.language || 'English',
+        p_lead_language: formData.language || 'EN',
         p_lead_source: formData.source || 'Webhook',
         p_created_by: 'webhook@system',
         p_source_code: formData.source_code || null,

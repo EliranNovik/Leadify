@@ -6,7 +6,9 @@ export default defineConfig({
   server: {
     allowedHosts: [
       'localhost',
-      'bafe-2a00-a041-f4a8-1500-9c27-aac5-a96b-e949.ngrok-free.app'
+      'bafe-2a00-a041-f4a8-1500-9c27-aac5-a96b-e949.ngrok-free.app',
+      'fdbca99b1373.ngrok-free.app',
+      'backend-eligibility-checker.onrender.com'
     ],
     proxy: {
       '/api': {

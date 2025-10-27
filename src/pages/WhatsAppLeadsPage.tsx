@@ -1126,75 +1126,64 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0 } : {}}>
             {selectedLead ? (
               <>
                 {/* Mobile Chat Header */}
                 {isMobile && (
-                  <div className="fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={() => setShowChat(false)}
-                        className="btn btn-ghost btn-circle btn-sm"
-                      >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                        </svg>
-                      </button>
-                      <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
-                            <span className="text-green-600 font-semibold text-sm">
-                              {selectedLead.sender_name.charAt(0).toUpperCase()}
-                            </span>
-                          ) : (
-                            <PhoneIcon className="w-4 h-4 text-green-600" />
-                          )}
-                        </div>
-                        <div>
-                          <h3 className="font-semibold text-gray-900 text-sm">
-                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
-                              ? selectedLead.sender_name 
-                              : selectedLead.phone_number || 'Unknown Number'}
-                          </h3>
-                          <p className="text-xs text-gray-500">
-                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
-                              ? selectedLead.phone_number 
-                              : ''}
-                          </p>
-                          <p className="text-xs text-gray-500">
-                            {selectedLead.message_count} messages
-                          </p>
-                        </div>
+                  <div className="flex-shrink-0 flex items-center gap-2 p-4 border-b border-gray-200 bg-white" style={{ zIndex: 40 }}>
+                    <button
+                      onClick={() => setShowChat(false)}
+                      className="btn btn-ghost btn-circle btn-sm flex-shrink-0"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
+                          <span className="text-green-600 font-semibold text-sm">
+                            {selectedLead.sender_name.charAt(0).toUpperCase()}
+                          </span>
+                        ) : (
+                          <PhoneIcon className="w-4 h-4 text-green-600" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="font-semibold text-gray-900 text-sm truncate">
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
+                            ? selectedLead.sender_name 
+                            : selectedLead.phone_number || 'Unknown Number'}
+                        </h3>
+                        <p className="text-xs text-gray-500 truncate">
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
+                            ? selectedLead.phone_number 
+                            : ''}
+                        </p>
+                        <p className="text-xs text-gray-500 truncate">
+                          {selectedLead.message_count} messages
+                        </p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {/* Timer/Lock Icon */}
-                      {timeLeft && (
-                        <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
-                          isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                        }`}>
-                          {isLocked ? (
-                            <>
-                              <LockClosedIcon className="w-4 h-4" />
-                              <span>Locked</span>
-                            </>
-                          ) : (
-                            <>
-                              <ClockIcon className="w-4 h-4" />
-                              <span>{timeLeft}</span>
-                            </>
-                          )}
-                        </div>
-                      )}
-                      <button
-                        onClick={() => handleConvertToLead(selectedLead)}
-                        className="btn btn-primary btn-sm"
-                      >
-                        <UserPlusIcon className="w-4 h-4 mr-1" />
-                        Convert to Lead
-                      </button>
-                    </div>
+                    {/* Timer/Lock Icon */}
+                    {timeLeft && (
+                      <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium flex-shrink-0 ${
+                        isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                      }`}>
+                        {isLocked ? (
+                          <>
+                            <LockClosedIcon className="w-4 h-4" />
+                            <span>Locked</span>
+                          </>
+                        ) : (
+                          <>
+                            <ClockIcon className="w-4 h-4" />
+                            <span>{timeLeft}</span>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1258,7 +1247,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 )}
 
                 {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4" style={isMobile ? { paddingTop: '88px', paddingBottom: showTemplateSelector ? '240px' : '120px', height: '100vh' } : {}}>
+                <div className="flex-1 overflow-y-auto p-4 space-y-4" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '240px' : '120px', WebkitOverflowScrolling: 'touch' } : {}}>
                   {messages.length === 0 ? (
                     <div className="text-center py-8 text-gray-500">
                       <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
