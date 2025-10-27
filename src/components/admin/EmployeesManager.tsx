@@ -38,6 +38,7 @@ const getRoleDisplayName = (roleCode: string): string => {
 const EmployeesManager: React.FC = () => {
   const [departments, setDepartments] = useState<Array<{ value: string; label: string }>>([]);
   const [users, setUsers] = useState<Array<{ value: string; label: string }>>([]);
+  const [mainCategories, setMainCategories] = useState<Array<{ value: string; label: string }>>([]);
 
   // Fetch departments and users from the database
   useEffect(() => {
@@ -83,8 +84,30 @@ const EmployeesManager: React.FC = () => {
       }
     };
 
+    const fetchMainCategories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_maincategory')
+          .select('id, name')
+          .order('name');
+
+        if (error) {
+          console.error('Error fetching main categories:', error);
+        } else {
+          const categoryOptions = data?.map(cat => ({
+            value: cat.id.toString(),
+            label: cat.name
+          })) || [];
+          setMainCategories(categoryOptions);
+        }
+      } catch (error) {
+        console.error('Error fetching main categories:', error);
+      }
+    };
+
     fetchDepartments();
     fetchUsers();
+    fetchMainCategories();
   }, []);
 
   const fields = [
@@ -133,6 +156,17 @@ const EmployeesManager: React.FC = () => {
       }
     },
     {
+      name: 'preferred_category',
+      label: 'Preferred Category',
+      type: 'select' as const,
+      required: false,
+      options: mainCategories,
+      placeholder: 'Select a preferred category',
+      hideInTable: false,
+      hideInAdd: false,
+      hideInEdit: false
+    },
+    {
       name: 'mobile',
       label: 'Mobile',
       type: 'text' as const,
@@ -158,63 +192,73 @@ const EmployeesManager: React.FC = () => {
       label: 'Mobile Ext',
       type: 'text' as const,
       required: false,
-      placeholder: 'e.g., 456'
+      placeholder: 'e.g., 456',
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'last_call_from',
       label: 'Last Call',
       type: 'text' as const,
       required: false,
-      placeholder: 'e.g., +972-50-123-4567'
+      placeholder: 'e.g., +972-50-123-4567',
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'photo',
       label: 'Photo',
       type: 'text' as const,
       required: false,
-      placeholder: 'Base64 encoded photo data'
+      placeholder: 'Base64 encoded photo data',
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'is_lawyer',
       label: 'Is Lawyer',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'is_manager',
       label: 'Is Manager',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'is_reports',
       label: 'Can See Reports',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'is_router',
       label: 'Is Router',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'is_collection',
       label: 'Is Collection Manager',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'is_meeting_scheduler',
       label: 'Is Meeting Scheduler',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'is_decline_po',
       label: 'Can Decline Price Offers',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      hideInEdit: true // Hide in edit drawer only
     },
     {
       name: 'bonuses_role',

@@ -68,6 +68,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const [showAllRecords, setShowAllRecords] = useState(true); // Show all records by default
   const [foreignKeyData, setForeignKeyData] = useState<{[key: string]: {[key: string]: string}}>({});
   const [allForeignKeyOptions, setAllForeignKeyOptions] = useState<{[key: string]: {value: string; label: string}[]}>({});
+  const [preferredCategoryData, setPreferredCategoryData] = useState<{[employeeId: string]: string}>({}); // For employees preferred category
 
   // Fetch records
   const fetchRecords = async () => {
@@ -146,6 +147,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         
         // Fetch foreign key data
         await fetchForeignKeyData(transformedData);
+        
+        // Fetch preferred category data for employees table
+        if (tableName === 'tenants_employee' && fields.some(f => f.name === 'preferred_category')) {
+          await fetchPreferredCategoryData(transformedData);
+        }
       }
     } catch (error) {
       console.error(`Error fetching ${tableName}:`, error);
@@ -294,6 +300,107 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     
     console.log(`🔍 Final foreign key options:`, options);
     setAllForeignKeyOptions(options);
+  };
+
+  // Fetch preferred category data for employees
+  const fetchPreferredCategoryData = async (records: Record[]) => {
+    try {
+      const employeeIds = records.map(r => r.id);
+      
+      if (employeeIds.length === 0) {
+        setPreferredCategoryData({});
+        return;
+      }
+
+      // Fetch preferred categories for these employees
+      const { data, error } = await supabase
+        .from('tenant_employee_prefered_category')
+        .select('empoyee_id, maincategory_id, misc_maincategory!maincategory_id(name)')
+        .in('empoyee_id', employeeIds);
+
+      if (error) {
+        console.error('Error fetching preferred categories:', error);
+        return;
+      }
+
+      // Build a map of employee_id -> category name
+      const categoryMap: {[employeeId: string]: string} = {};
+      (data || []).forEach((item: any) => {
+        const empId = String(item.empoyee_id);
+        const categoryName = item.misc_maincategory?.name || 'Unknown';
+        categoryMap[empId] = categoryName;
+      });
+
+      setPreferredCategoryData(categoryMap);
+    } catch (error) {
+      console.error('Error in fetchPreferredCategoryData:', error);
+    }
+  };
+
+  // Update preferred category for an employee
+  const updatePreferredCategory = async (employeeId: string, maincategoryId: string | null | undefined) => {
+    try {
+      // If no category is selected, delete any existing preferred category
+      if (!maincategoryId || maincategoryId === '') {
+        const { error } = await supabase
+          .from('tenant_employee_prefered_category')
+          .delete()
+          .eq('empoyee_id', employeeId);
+        
+        if (error && error.code !== 'PGRST204') { // PGRST204 = no rows affected (no existing record)
+          console.error('Error deleting preferred category:', error);
+          throw error;
+        }
+        return;
+      }
+
+      // Check if a preferred category already exists for this employee
+      const { data: existing } = await supabase
+        .from('tenant_employee_prefered_category')
+        .select('id')
+        .eq('empoyee_id', employeeId)
+        .single();
+
+      if (existing) {
+        // Update existing record
+        const { error } = await supabase
+          .from('tenant_employee_prefered_category')
+          .update({ maincategory_id: parseInt(maincategoryId) })
+          .eq('empoyee_id', employeeId);
+        
+        if (error) {
+          console.error('Error updating preferred category:', error);
+          throw error;
+        }
+      } else {
+        // Create new record
+        // First, get the max ID to generate a unique one
+        const { data: maxData } = await supabase
+          .from('tenant_employee_prefered_category')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+        
+        const nextId = maxData?.id ? Number(maxData.id) + 1 : 1;
+        
+        const { error } = await supabase
+          .from('tenant_employee_prefered_category')
+          .insert({ 
+            id: nextId,
+            empoyee_id: employeeId,
+            maincategory_id: parseInt(maincategoryId)
+          });
+        
+        if (error) {
+          console.error('Error creating preferred category:', error);
+          throw error;
+        }
+      }
+    } catch (error) {
+      console.error('Error in updatePreferredCategory:', error);
+      // Don't throw - just log the error so the main record save continues
+    }
   };
 
   useEffect(() => {
@@ -572,6 +679,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             user_permissions, 
             password_hash,
             updated_by,
+            preferred_category, // Remove preferred_category as it's stored in separate table
             ...updateData 
           } = record;
           console.log(`Updating ${tableName} record with ID: ${editingRecord.id}`, updateData);
@@ -670,6 +778,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           result = data[0];
           toast.success(`${title} updated successfully`);
         }
+        
+        // Handle preferred category update for employees
+        if (tableName === 'tenants_employee' && 'preferred_category' in record) {
+          await updatePreferredCategory(editingRecord.id, record.preferred_category);
+        }
       } else {
         // Create new record
         if (tableName === 'users') {
@@ -677,15 +790,23 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           result = await createUserWithAuth(record);
         } else {
           // Regular create for other tables
+          // Remove preferred_category from the insert as it's stored in separate table
+          const { preferred_category, ...insertRecord } = record;
+          
           const { data, error } = await supabase
             .from(tableName)
-            .insert(record)
+            .insert(insertRecord)
             .select()
             .single();
 
           if (error) throw error;
           result = data;
           toast.success(`${title} created successfully`);
+          
+          // Handle preferred category creation for employees
+          if (tableName === 'tenants_employee' && preferred_category) {
+            await updatePreferredCategory(result.id, preferred_category);
+          }
         }
       }
 
@@ -697,6 +818,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         }
       });
 
+      // Refresh the records to get updated data including preferred categories
+      await fetchRecords();
+      
       closeModal();
     } catch (error) {
       console.error(`Error saving ${tableName}:`, error);
@@ -717,6 +841,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       if (error) throw error;
 
       setRecords(prev => prev.filter(r => r.id !== recordToDelete.id));
+      
+      // Refresh the records to get updated data
+      await fetchRecords();
+      
       toast.success(`${title} deleted successfully`);
       closeDeleteModal();
     } catch (error) {
@@ -725,8 +853,26 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     }
   };
 
-  const openModal = (record?: Record) => {
+  const openModal = async (record?: Record) => {
     console.log(`Opening modal for ${tableName} with record:`, record);
+    
+    // If editing an employee record, fetch the preferred category
+    if (record && tableName === 'tenants_employee') {
+      try {
+        const { data } = await supabase
+          .from('tenant_employee_prefered_category')
+          .select('maincategory_id')
+          .eq('empoyee_id', record.id)
+          .single();
+        
+        if (data) {
+          record.preferred_category = data.maincategory_id.toString();
+        }
+      } catch (error) {
+        console.error('Error fetching preferred category:', error);
+      }
+    }
+    
     setEditingRecord(record || null);
     setIsModalOpen(true);
   };
@@ -999,6 +1145,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                                 const roleCode = record[field.name];
                                 return roleMap[roleCode] || roleCode || '-';
                               })()
+                            ) : field.name === 'preferred_category' && tableName === 'tenants_employee' ? (
+                              // Display preferred category from the separate table
+                              preferredCategoryData[record.id] || '-'
                             ) : field.name === 'groups' || field.name === 'user_permissions' ? (
                               // Special handling for array fields
                               (() => {

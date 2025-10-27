@@ -143,7 +143,7 @@ const AppContentInner: React.FC = () => {
           emails: legacyEmails || [],
           closer: null,
           handler: null,
-          unactivation_reason: null,
+          unactivation_reason: legacyLead.unactivation_reason || null,
           deactivate_note: legacyLead.deactivate_note || null,
         };
         

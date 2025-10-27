@@ -502,7 +502,7 @@ const Clients: React.FC<ClientsProps> = ({
       setUserManuallyExpanded(false);
       
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+      const unactivationReason = selectedClient.unactivation_reason;
       const isUnactivated = isLegacy ? 
         (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
         (String(selectedClient.stage) === '91' || String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== ''));
@@ -515,7 +515,7 @@ const Clients: React.FC<ClientsProps> = ({
   // Manual check for unactivation (in case useEffect doesn't trigger)
   if (selectedClient) {
     const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-    const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+    const unactivationReason = selectedClient.unactivation_reason;
     const isUnactivated = isLegacy ? 
       (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
       ((unactivationReason && unactivationReason.trim() !== '') || false);
@@ -530,6 +530,7 @@ const Clients: React.FC<ClientsProps> = ({
   // State for unactivation modal
   const [showUnactivationModal, setShowUnactivationModal] = useState(false);
   const [unactivationReason, setUnactivationReason] = useState('');
+  const [customUnactivationReason, setCustomUnactivationReason] = useState('');
   
   // State for activation modal
   const [showActivationModal, setShowActivationModal] = useState(false);
@@ -803,7 +804,7 @@ const Clients: React.FC<ClientsProps> = ({
             emails: legacyEmails || [],
             closer: data.closer_id, // Use closer_id from legacy table
             handler: data.case_handler_id, // Use case_handler_id from legacy table
-            unactivation_reason: null,
+            unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
           console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
@@ -901,12 +902,12 @@ const Clients: React.FC<ClientsProps> = ({
                     console.log('🔍 Legacy query result:', { legacyLead, legacyError });
           console.log('🔍 Legacy lead data:', legacyLead);
           console.log('🔍 Legacy lead stage:', legacyLead?.stage);
-          console.log('🔍 Legacy lead deactivate_note:', legacyLead?.deactivate_note);
+          console.log('🔍 Legacy lead unactivation_reason:', legacyLead?.unactivation_reason);
           
           if (!legacyError && legacyLead) {
               console.log('🔍 Legacy lead found:', legacyLead);
               console.log('🔍 Legacy lead stage:', legacyLead.stage);
-              console.log('🔍 Legacy lead deactivate_note:', legacyLead.deactivate_note);
+              console.log('🔍 Legacy lead unactivation_reason:', legacyLead.unactivation_reason);
               // Fetch emails for legacy lead
               console.log('🔍 Fetching emails for legacy lead ID:', legacyLead.id);
             const { data: legacyEmails, error: emailsError } = await supabase
@@ -997,12 +998,11 @@ const Clients: React.FC<ClientsProps> = ({
               closer: legacyLead.closer_id, // Use closer_id from legacy table
               handler: legacyLead.case_handler_id, // Use case_handler_id from legacy table
               scheduler: schedulerName, // Use resolved scheduler name
-              unactivation_reason: null,
-              deactivate_note: legacyLead.deactivate_note || null,
+              unactivation_reason: legacyLead.unactivation_reason || null,
             };
             console.log('🔍 Transformed clientData:', clientData);
             console.log('🔍 clientData.stage:', clientData.stage);
-            console.log('🔍 clientData.deactivate_note:', clientData.deactivate_note);
+            console.log('🔍 clientData.unactivation_reason:', clientData.unactivation_reason);
             console.log('🔍 Legacy lead stage after transformation:', clientData.stage);
             console.log('🔍 Legacy lead stage type after transformation:', typeof clientData.stage);
           }
@@ -1039,7 +1039,7 @@ const Clients: React.FC<ClientsProps> = ({
           setSelectedClient(clientData);
           // Set unactivated view immediately if lead is unactivated
           const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
-          const unactivationReason = isLegacy ? clientData.deactivate_note : clientData.unactivation_reason;
+          const unactivationReason = clientData.unactivation_reason;
           const stageName = getStageName(clientData.stage);
           const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
           // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
@@ -1056,7 +1056,7 @@ const Clients: React.FC<ClientsProps> = ({
           navigate(`/clients/${latestLead.lead_number}`);
           setSelectedClient(latestLead);
           const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
-          const unactivationReason = isLegacy ? latestLead.deactivate_note : latestLead.unactivation_reason;
+          const unactivationReason = latestLead.unactivation_reason;
           const stageName = getStageName(latestLead.stage);
           const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
           // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
@@ -1246,8 +1246,11 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   const handleUnactivation = async () => {
-    if (!unactivationReason.trim()) {
-      toast.error('Please select a reason for unactivation');
+    // Validate reason
+    const finalReason = unactivationReason === 'other' ? customUnactivationReason : unactivationReason;
+    
+    if (!finalReason.trim()) {
+      toast.error('Please select or enter a reason for unactivation');
       return;
     }
     
@@ -1281,10 +1284,10 @@ const Clients: React.FC<ClientsProps> = ({
       const updateData: any = {
         unactivated_by: currentUserFullName,
         unactivated_at: new Date().toISOString(),
-        unactivation_reason: unactivationReason
+        unactivation_reason: finalReason
       };
 
-      // For legacy leads, also update the stage to the numeric ID for 'unactivated'
+      // For legacy leads, also update the stage
       if (isLegacy) {
         // Use the known numeric ID for 'unactivated' stage in legacy system
         updateData.stage = 91;
@@ -1301,6 +1304,7 @@ const Clients: React.FC<ClientsProps> = ({
       await onClientUpdate();
       setShowUnactivationModal(false);
       setUnactivationReason('');
+      setCustomUnactivationReason('');
       toast.success('Lead unactivated successfully');
     } catch (error) {
       console.error('Error unactivating lead:', error);
@@ -1330,17 +1334,29 @@ const Clients: React.FC<ClientsProps> = ({
         }
       }
 
-      const updateData = {
+      // Determine which table to update based on lead type
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      
+      const updateData: any = {
         unactivated_by: null,
         unactivated_at: null,
         unactivation_reason: null
       };
 
-      // Determine which table to update based on lead type
-      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      // For legacy leads, also need to change the stage from 91 to something else
+      // We'll set it to the stage before unactivation (if we have it), or default to 1 (Created)
+      if (isLegacy) {
+        // Try to get the previous stage before unactivation
+        // If not available, set to 1 (Created)
+        const previousStage = selectedClient.previous_stage || 1;
+        updateData.stage = previousStage;
+      }
+
       const tableName = isLegacy ? 'leads_lead' : 'leads';
       const idField = isLegacy ? 'id' : 'id';
       const clientId = isLegacy ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
+
+      console.log('🔍 Activating lead:', { tableName, clientId, updateData });
 
       const { error } = await supabase
         .from(tableName)
@@ -1348,6 +1364,8 @@ const Clients: React.FC<ClientsProps> = ({
         .eq(idField, clientId);
       
       if (error) throw error;
+      
+      console.log('🔍 Lead activation successful');
 
       // Record activation event in lead_changes table (only for new leads)
       if (!isLegacy) {
@@ -3533,25 +3551,7 @@ const Clients: React.FC<ClientsProps> = ({
             Payment request sent
           </a>
         </li>
-        {(() => {
-          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-          const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
-          return unactivationReason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant');
-        })() ? (
-          <li>
-            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleActivation()}>
-              <CheckCircleIcon className="w-5 h-5 text-green-500" />
-              <span className="text-green-500 saira-regular">Activate</span>
-            </a>
-          </li>
-        ) : (
-          <li>
-            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowUnactivationModal(true)}>
-              <NoSymbolIcon className="w-5 h-5 text-red-500" />
-              <span className="text-red-500 saira-regular">Unactivate/Spam</span>
-            </a>
-          </li>
-        )}
+
       </>
     );
   else if (selectedClient && areStagesEquivalent(currentStageName, 'payment_request_sent')) {
@@ -3580,33 +3580,6 @@ const Clients: React.FC<ClientsProps> = ({
             <BanknotesIcon className="w-5 h-5 text-black" />
             Finances & Payments plan
           </a>
-        </li>
-      </>
-    );
-  } else if (selectedClient && (() => {
-    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-    const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
-    return unactivationReason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant');
-  })()) {
-    dropdownItems = (
-      <>
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleActivation()}>
-            <CheckCircleIcon className="w-5 h-5 text-green-500" />
-            <span className="text-green-500 saira-regular">Activate</span>
-          </a>
-        </li>
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
-            <DocumentTextIcon className="w-5 h-5 text-black" />
-            Lead summary
-          </a>
-        </li>
-        <li>
-                          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}>
-                  <PencilSquareIcon className="w-5 h-5 text-black" />
-                  Edit lead
-                </a>
         </li>
       </>
     );
@@ -3665,21 +3638,6 @@ const Clients: React.FC<ClientsProps> = ({
             <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Communication Started')}>
               <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
               Communication Started
-            </a>
-          </li>
-        )}
-        {(selectedClient.unactivation_reason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant')) ? (
-          <li>
-            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleActivation()}>
-              <CheckCircleIcon className="w-5 h-5 text-green-500" />
-              <span className="text-green-500 saira-regular">Activate</span>
-            </a>
-          </li>
-        ) : (
-          <li>
-            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => setShowUnactivationModal(true)}>
-              <NoSymbolIcon className="w-5 h-5 text-red-500" />
-              <span className="text-red-500 saira-regular">Unactivate/Spam</span>
             </a>
           </li>
         )}
@@ -3821,7 +3779,7 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Check if lead is unactivated and show compact view
   const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-  const unactivationReasonForView = isLegacyForView ? selectedClient?.deactivate_note : selectedClient?.unactivation_reason;
+  const unactivationReasonForView = selectedClient?.unactivation_reason;
   const isUnactivated = isLegacyForView ? 
     (String(selectedClient?.stage) === '91' || (unactivationReasonForView && unactivationReasonForView.trim() !== '')) :
     ((unactivationReasonForView && unactivationReasonForView.trim() !== '') || false);
@@ -3928,7 +3886,7 @@ const Clients: React.FC<ClientsProps> = ({
               {(() => {
                 const stageName = getStageName(selectedClient.stage);
                 const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+                const unactivationReason = selectedClient.unactivation_reason;
                 const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
                 const isUnactivated = (unactivationReason && unactivationReason.trim() !== '') || stageUnactivated;
                 return isUnactivated;
@@ -3939,16 +3897,18 @@ const Clients: React.FC<ClientsProps> = ({
                     <span className="text-sm text-red-600 font-medium">
                       {(() => {
                         const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                        const unactivationReason = isLegacy ? selectedClient.deactivate_note : selectedClient.unactivation_reason;
+                        // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
+                        const unactivationReason = selectedClient.unactivation_reason;
                         const stageName = getStageName(selectedClient.stage);
                         
-                        // For legacy leads with stage 91 but no deactivate_note, show default reason
+                        // For legacy leads with stage 91 but no unactivation_reason, show default reason
                         if (isLegacy && String(selectedClient.stage) === '91' && !unactivationReason) {
                           return 'Reason: Dropped (Spam/Irrelevant)';
                         }
                         
+                        // Return the reason exactly as stored in the database
                         return unactivationReason ? (
-                          `Reason: ${unactivationReason.replace(/_/g, ' ').replace(/\b\w/g, (l: string) => l.toUpperCase())}`
+                          `Reason: ${unactivationReason}`
                         ) : (
                           'Status: Unactivated (Dropped/Spam/Irrelevant)'
                         );
@@ -4485,7 +4445,11 @@ const Clients: React.FC<ClientsProps> = ({
                     <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
                   </label>
                   <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
+                    {(selectedClient.unactivation_reason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant')) ? (
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                    ) : (
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                    )}
                     <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                     <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
                     <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
@@ -4538,7 +4502,11 @@ const Clients: React.FC<ClientsProps> = ({
                       <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
                     </label>
                     <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={e => { if (!window.confirm('Are you sure you want to unactivate this lead?')) e.preventDefault(); }}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate</span></a></li>
+                      {(selectedClient.unactivation_reason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant')) ? (
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                      ) : (
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                      )}
                       <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                       <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
                       <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
@@ -6195,13 +6163,21 @@ const Clients: React.FC<ClientsProps> = ({
       {/* Unactivation Modal */}
       {showUnactivationModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="fixed inset-0 bg-black/50" onClick={() => setShowUnactivationModal(false)} />
+          <div className="fixed inset-0 bg-black/50" onClick={() => {
+            setShowUnactivationModal(false);
+            setUnactivationReason('');
+            setCustomUnactivationReason('');
+          }} />
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-bold text-gray-900">Unactivate Lead</h3>
               <button 
                 className="btn btn-ghost btn-sm" 
-                onClick={() => setShowUnactivationModal(false)}
+                onClick={() => {
+                  setShowUnactivationModal(false);
+                  setUnactivationReason('');
+                  setCustomUnactivationReason('');
+                }}
               >
                 <XMarkIcon className="w-6 h-6" />
               </button>
@@ -6215,29 +6191,52 @@ const Clients: React.FC<ClientsProps> = ({
                 
                 <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
                 <select 
-                  className="select select-bordered w-full" 
+                  className="select select-bordered w-full mb-3" 
                   value={unactivationReason}
                   onChange={(e) => setUnactivationReason(e.target.value)}
                 >
                   <option value="">Select a reason...</option>
-                  <option value="spam">Spam</option>
-                  <option value="test">Test</option>
-                  <option value="not_relevant">Not Relevant</option>
-                  <option value="not_eligible">Not Eligible</option>
+                  <option value="test">test</option>
+                  <option value="spam">spam</option>
+                  <option value="double - same source">double - same source</option>
+                  <option value="double -diff. source">double -diff. source</option>
+                  <option value="no intent">no intent</option>
+                  <option value="non active category">non active category</option>
+                  <option value="IrrelevantBackground">IrrelevantBackground</option>
+                  <option value="incorrect contact">incorrect contact</option>
+                  <option value="no legal eligibility">no legal eligibility</option>
+                  <option value="no profitability">no profitability</option>
+                  <option value="can't be reached">can't be reached</option>
+                  <option value="expired">expired</option>
+                  <option value="other">Other (Enter custom reason)</option>
                 </select>
+                
+                {unactivationReason === 'other' && (
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Enter custom reason..."
+                    value={customUnactivationReason}
+                    onChange={(e) => setCustomUnactivationReason(e.target.value)}
+                  />
+                )}
               </div>
               
               <div className="flex gap-3 justify-end">
                 <button 
                   className="btn btn-outline" 
-                  onClick={() => setShowUnactivationModal(false)}
+                  onClick={() => {
+                    setShowUnactivationModal(false);
+                    setUnactivationReason('');
+                    setCustomUnactivationReason('');
+                  }}
                 >
                   Cancel
                 </button>
                 <button 
                   className="btn btn-error" 
                   onClick={handleUnactivation}
-                  disabled={!unactivationReason.trim()}
+                  disabled={!unactivationReason.trim() || (unactivationReason === 'other' && !customUnactivationReason.trim())}
                 >
                   Unactivate Lead
                 </button>

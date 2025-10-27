@@ -497,25 +497,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Helper function to extract country code and number from full phone number
 
   // Helper function to extract country code and number from full phone number
-  const parsePhoneNumber = (fullNumber: string) => {
-    if (!fullNumber || fullNumber === '---') return { countryCode: '+972', number: '' };
+  const parsePhoneNumber = (fullNumber: string | undefined | null) => {
+    // Handle null, undefined, or empty values
+    if (!fullNumber || fullNumber === '---' || fullNumber === null || fullNumber === undefined || fullNumber.trim() === '') {
+      return { countryCode: '+972', number: '' };
+    }
+    
+    // Trim the input to remove any extra spaces
+    const trimmed = fullNumber.trim();
     
     // Find matching country code
-    const matchedCode = countryCodes.find(code => fullNumber.startsWith(code.code));
+    const matchedCode = countryCodes.find(code => trimmed.startsWith(code.code));
     if (matchedCode) {
       return {
         countryCode: matchedCode.code,
-        number: fullNumber.substring(matchedCode.code.length)
+        number: trimmed.substring(matchedCode.code.length)
       };
     }
     
     // Default to Israel if no match found
-    return { countryCode: '+972', number: fullNumber };
+    return { countryCode: '+972', number: trimmed };
   };
 
   // Helper function to format phone number for display
   const formatPhoneNumber = (countryCode: string, number: string) => {
-    if (!number) return '---';
+    if (!number || number.trim() === '') return '';
     return `${countryCode}${number}`;
   };
 
@@ -747,6 +753,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 console.error('❌ Error fetching contact details:', contactsError);
               } else if (contacts) {
                 // Map contacts to their lead-contact relationships
+                let mainContactFound = false;
+                
                 leadContacts.forEach((leadContact: any, index: number) => {
                   console.log('🔍 Processing lead contact:', leadContact);
                   
@@ -754,21 +762,25 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   if (contact) {
                     console.log('🔍 Contact details found:', contact);
                     
-                    // Check if this is the main contact (by name or email matching client data)
-                    const isMainContact = (
-                      (contact.name && client.name && contact.name.toLowerCase() === client.name.toLowerCase()) ||
-                      (contact.email && client.email && contact.email.toLowerCase() === client.email.toLowerCase()) ||
-                      (contact.mobile && client.mobile && contact.mobile === client.mobile)
-                    );
+                    // Check if this is marked as main in the lead_leadcontact table
+                    const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
+                    
+                    // Only mark as main if it's explicitly marked as main AND no main contact has been found yet
+                    const isMainContact = isMarkedAsMain && !mainContactFound;
+                    
+                    if (isMainContact) {
+                      mainContactFound = true;
+                    }
                     
                     // Create contact entry with complete information from leads_contact table
+                    // Only use client data as fallback if the contact field is truly empty
                     const contactEntry: ContactEntry = {
                       id: contact.id, // Use the actual contact ID from leads_contact
-                      name: contact.name || client.name || '---',
-                      mobile: contact.mobile || client.mobile || '---',
-                      phone: contact.phone || client.phone || '---',
-                      email: contact.email || client.email || '---',
-                      isMain: isMainContact || leadContact.main === 'true' || leadContact.main === true,
+                      name: contact.name || '---',
+                      mobile: contact.mobile || '---',
+                      phone: contact.phone || '---',
+                      email: contact.email || '---',
+                      isMain: isMainContact,
                     };
                     
                     console.log('🔍 Created contact entry:', contactEntry);
@@ -794,6 +806,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           } else {
             console.log('🔍 Found', contactEntries.length, 'contacts in database, no fallback needed');
           }
+          
+          // Sort contacts: main contact first, then others by ID
+          contactEntries.sort((a, b) => {
+            // Main contact always comes first
+            if (a.isMain && !b.isMain) return -1;
+            if (!a.isMain && b.isMain) return 1;
+            // If both are main or both are not main, sort by ID
+            return a.id - b.id;
+          });
           
           console.log('🔍 Final contacts list:', contactEntries);
           setContacts(contactEntries);
@@ -835,12 +856,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         setContacts([mainContact, ...additionalContactEntries]);
       }
       
-      setEditedMainContact({
-        name: client.name || '',
-        mobile: client.mobile || '',
-        phone: client.phone || '',
-        email: client.email || ''
-      });
+      // Don't initialize editedMainContact here - it will be set when Edit button is clicked
     };
     
     fetchContacts();
@@ -919,22 +935,63 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     
     if (isLegacyLead) {
-      // For legacy leads, we need to update the leads_lead table
+      // For legacy leads, update the leads_contact table (not leads_lead)
       try {
         const legacyId = client.id.toString().replace('legacy_', '');
         
+        // Find the main contact from the current contacts list
+        const mainContactFromList = contacts.find(c => c.isMain);
+        
+        if (!mainContactFromList) {
+          console.error('No main contact found in contacts list');
+          alert('Failed to find main contact to update');
+          return;
+        }
+        
+        console.log('Updating main contact:', mainContactFromList.id);
+        console.log('Updated data:', editedMainContact);
+        
+        // Update the contact in leads_contact table using the contact ID from the list
         const { error } = await supabase
+          .from('leads_contact')
+          .update({
+            name: editedMainContact.name,
+            mobile: editedMainContact.mobile || null,
+            phone: editedMainContact.phone || null,
+            email: editedMainContact.email || null,
+            udate: new Date().toISOString().split('T')[0]
+          })
+          .eq('id', mainContactFromList.id);
+
+        if (error) {
+          console.error('Error updating contact:', error);
+          throw error;
+        }
+        
+        console.log('Contact updated successfully');
+
+        // Also update leads_lead table for backward compatibility
+        await supabase
           .from('leads_lead')
           .update({
             name: editedMainContact.name,
-            mobile: editedMainContact.mobile,
-            phone: editedMainContact.phone,
-            email: editedMainContact.email
+            mobile: editedMainContact.mobile || null,
+            phone: editedMainContact.phone || null,
+            email: editedMainContact.email || null
           })
           .eq('id', legacyId);
 
-        if (error) throw error;
-
+        // Update the local contacts state to reflect the changes immediately
+        setContacts(contacts.map(c => 
+          c.isMain ? {
+            ...c,
+            name: editedMainContact.name,
+            mobile: editedMainContact.mobile || '---',
+            phone: editedMainContact.phone || '---',
+            email: editedMainContact.email || '---'
+          } : c
+        ));
+        
         setIsEditingMainContact(false);
         
         // Refresh client data in parent component
@@ -943,7 +1000,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         }
       } catch (error) {
         console.error('Error updating legacy main contact:', error);
-        alert('Failed to update contact information');
+        alert('Failed to update contact information: ' + (error as any).message);
       }
     } else {
       // For new leads, use the existing logic
@@ -1010,40 +1067,151 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         const isNewContact = originalContact?.isEditing;
         
         if (isNewContact) {
-          // Create new contact in leads_contact table
-          const { data: newContact, error: contactError } = await supabase
-            .from('leads_contact')
-            .insert([{
-              name: contact.name,
-              mobile: contact.mobile,
-              phone: contact.phone,
-              email: contact.email,
-              cdate: new Date().toISOString().split('T')[0],
-              udate: new Date().toISOString().split('T')[0]
-            }])
-            .select('id')
-            .single();
+          console.log('Creating new legacy contact with data:', contact);
           
-          if (contactError) throw contactError;
+          // Prepare the insert data WITHOUT the timestamp ID
+          // We cannot include the id from contact (which is a timestamp)
+          const insertData: Record<string, any> = {
+            name: contact.name || '',
+            mobile: contact.mobile || null,
+            phone: contact.phone || null,
+            email: contact.email || null,
+            cdate: new Date().toISOString().split('T')[0],
+            udate: new Date().toISOString().split('T')[0]
+          };
+          
+          // console.log('Insert data (without ID):', insertData);
+          // console.log('Contact timestamp ID to ignore:', contact.id);
+          
+          // Try to insert without specifying the ID column
+          // The database should auto-generate it
+          let newContact: any = null;
+          let contactError: any = null;
+          
+          // Use RPC call instead of direct insert to avoid trigger issues
+          try {
+            // First try with direct insert
+            const result = await supabase
+              .from('leads_contact')
+              .insert([insertData])
+              .select('id')
+              .single();
+            newContact = result.data;
+            contactError = result.error;
+            
+            console.log('Direct insert result:', { newContact, contactError });
+            
+            // If direct insert fails with duplicate key, try to get the next available ID
+            if (contactError && contactError.code === '23505') {
+              console.warn('Duplicate key error. Attempting to get next available ID...');
+              
+              // Get the max ID from the table
+              const { data: maxIdData } = await supabase
+                .from('leads_contact')
+                .select('id')
+                .order('id', { ascending: false })
+                .limit(1)
+                .single();
+              
+              const nextId = maxIdData ? maxIdData.id + 1 : 1;
+              console.log('Next available ID:', nextId);
+              
+              // Try insert with explicit ID
+              const resultWithId = await supabase
+                .from('leads_contact')
+                .insert([{ ...insertData, id: nextId }])
+                .select('id')
+                .single();
+              
+              newContact = resultWithId.data;
+              contactError = resultWithId.error;
+              console.log('Insert with explicit ID result:', { newContact, contactError });
+            }
+          } catch (err) {
+            console.error('Insert failed:', err);
+            contactError = err;
+          }
+          
+          console.log('Contact insert result:', { newContact, contactError });
+          
+          if (contactError) {
+            console.error('Error creating contact:', contactError);
+            throw contactError;
+          }
           
           // Create relationship in lead_leadcontact table
-          const { error: relationshipError } = await supabase
-            .from('lead_leadcontact')
-            .insert([{
-              contact_id: newContact.id,
-              lead_id: legacyId,
-              main: 'false'
-              // ID will be auto-generated by the sequence
-            }]);
+          if (!newContact || !newContact.id) {
+            throw new Error('Failed to get new contact ID');
+          }
           
-          if (relationshipError) throw relationshipError;
+          let relationshipError: any = null;
+          
+          try {
+            // First try without specifying ID
+            const result = await supabase
+              .from('lead_leadcontact')
+              .insert([{
+                contact_id: newContact.id,
+                lead_id: legacyId,
+                main: 'false'
+              }]);
+            
+            relationshipError = result.error;
+            
+            // If duplicate key error, get next available ID and try again
+            if (relationshipError && relationshipError.code === '23505') {
+              console.warn('Duplicate key error for relationship. Getting next available ID...');
+              
+              const { data: maxIdData } = await supabase
+                .from('lead_leadcontact')
+                .select('id')
+                .order('id', { ascending: false })
+                .limit(1)
+                .single();
+              
+              const nextId = maxIdData ? maxIdData.id + 1 : 1;
+              console.log('Next available relationship ID:', nextId);
+              
+              const resultWithId = await supabase
+                .from('lead_leadcontact')
+                .insert([{
+                  id: nextId,
+                  contact_id: newContact.id,
+                  lead_id: legacyId,
+                  main: 'false'
+                }]);
+              
+              relationshipError = resultWithId.error;
+            }
+          } catch (err) {
+            console.error('Relationship insert failed:', err);
+            relationshipError = err;
+          }
+          
+          console.log('Relationship insert result:', { relationshipError });
+          
+          if (relationshipError) {
+            console.error('Error creating relationship:', relationshipError);
+            throw relationshipError;
+          }
           
           // Update local state with the new contact ID
           setContacts(contacts.map(c => 
-            c.id === id ? { ...contact, id: newContact.id, isEditing: false } : c
+            c.id === id ? { ...contact, id: newContact.id, isEditing: false, isMain: false } : c
           ));
           
+          alert('New contact created successfully!');
           console.log('New legacy contact created successfully');
+          
+          // Mark the contact as not editing in local state
+          setContacts(contacts.map(c => 
+            c.id === id ? { ...contact, id: newContact.id, isEditing: false, isMain: false } : c
+          ));
+          
+          // Refresh client data in parent component instead of reloading the page
+          if (onClientUpdate) {
+            await onClientUpdate();
+          }
         } else {
           // Update existing contact in leads_contact table
           // Find the contact_id from the current contacts list
@@ -1592,55 +1760,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               <p className="text-sm text-gray-500">Manage client contacts and contracts</p>
             </div>
             
-            {/* Debug button for legacy leads */}
-            {(client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_')) && (
-              <button 
-                className="btn btn-outline btn-warning text-xs ml-auto"
-                onClick={async () => {
-                  console.log('🧪 Testing legacy contract functionality...');
-                  console.log('🔍 Current client:', client);
-                  console.log('🔍 Current contacts:', contacts);
-                  console.log('🔍 Current contact contracts:', contactContracts);
-                  
-                  // Test fetching legacy contracts
-                  const legacyId = client.id.toString().replace('legacy_', '');
-                  console.log('🔍 Testing with legacy ID:', legacyId);
-                  
-                  const { data, error } = await supabase
-                    .from('lead_leadcontact')
-                    .select(`
-                      id,
-                      contact_id,
-                      lead_id,
-                      contract_html,
-                      signed_contract_html,
-                      main
-                    `)
-                    .eq('lead_id', legacyId);
-                  
-                  console.log('🧪 Legacy contract test result:', { data, error });
-                  
-                  if (data && data.length > 0) {
-                    console.log('🧪 Found legacy contracts:', data);
-                    data.forEach((contract, index) => {
-                      console.log(`🧪 Contract ${index + 1}:`, {
-                        id: contract.id,
-                        contact_id: contract.contact_id,
-                        has_contract_html: !!contract.contract_html,
-                        has_signed_contract_html: !!contract.signed_contract_html
-                      });
-                    });
-                  } else {
-                    console.log('🧪 No legacy contracts found');
-                  }
-                  
-                  toast.success('Check console for legacy contract test results');
-                }}
-                title="Test legacy contract functionality"
-              >
-                Test Legacy Contracts
-              </button>
-            )}
+
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 w-full pb-6">
@@ -1654,7 +1774,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   <div className="pl-6 pt-2 pb-2 w-2/5 bg-gradient-to-r from-purple-600 to-blue-600 rounded-tr-2xl rounded-br-2xl shadow-sm">
                     <div className="flex items-center justify-between">
                       <h4 className="text-lg font-semibold text-white">
-                        {contact.isMain ? 'Primary Contact' : `Contact ${index}`}
+                        {contact.isMain ? 'Primary Contact' : (contact.name && contact.name !== '---' ? contact.name : 'Contact')}
                       </h4>
                       {contact.isMain && (
                         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-white text-[#3b28c7]">
@@ -1703,10 +1823,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 className="select select-bordered w-24"
                                 value={parsePhoneNumber(editedMainContact.mobile).countryCode}
                                 onChange={(e) => {
-                                  const { number } = parsePhoneNumber(editedMainContact.mobile);
+                                  const currentMobile = editedMainContact.mobile || '';
+                                  const currentParsed = parsePhoneNumber(currentMobile);
+                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                                  console.log('Changing mobile country code:', e.target.value, 'current mobile:', currentMobile, 'new number:', newNumber);
                                   setEditedMainContact({
                                     ...editedMainContact,
-                                    mobile: formatPhoneNumber(e.target.value, number)
+                                    mobile: newNumber
                                   });
                                 }}
                               >
@@ -1736,10 +1859,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 className="select select-bordered w-24"
                                 value={parsePhoneNumber(contact.mobile).countryCode}
                                 onChange={(e) => {
-                                  const { number } = parsePhoneNumber(contact.mobile);
+                                  const currentMobile = contact.mobile || '';
+                                  const currentParsed = parsePhoneNumber(currentMobile);
+                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                                  console.log('Changing mobile country code for contact:', e.target.value, 'current mobile:', currentMobile, 'new number:', newNumber);
                                   setContacts(contacts.map(c => c.id === contact.id ? {
                                     ...c,
-                                    mobile: formatPhoneNumber(e.target.value, number)
+                                    mobile: newNumber
                                   } : c));
                                 }}
                               >
@@ -1782,10 +1908,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 className="select select-bordered w-24"
                                 value={parsePhoneNumber(editedMainContact.phone).countryCode}
                                 onChange={(e) => {
-                                  const { number } = parsePhoneNumber(editedMainContact.phone);
+                                  const currentPhone = editedMainContact.phone || '';
+                                  const currentParsed = parsePhoneNumber(currentPhone);
+                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                                  console.log('Changing phone country code:', e.target.value, 'current phone:', currentPhone, 'new number:', newNumber);
                                   setEditedMainContact({
                                     ...editedMainContact,
-                                    phone: formatPhoneNumber(e.target.value, number)
+                                    phone: newNumber
                                   });
                                 }}
                               >
@@ -1815,10 +1944,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 className="select select-bordered w-24"
                                 value={parsePhoneNumber(contact.phone).countryCode}
                                 onChange={(e) => {
-                                  const { number } = parsePhoneNumber(contact.phone);
+                                  const currentPhone = contact.phone || '';
+                                  const currentParsed = parsePhoneNumber(currentPhone);
+                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                                  console.log('Changing phone country code for contact:', e.target.value, 'current phone:', currentPhone, 'new number:', newNumber);
                                   setContacts(contacts.map(c => c.id === contact.id ? {
                                     ...c,
-                                    phone: formatPhoneNumber(e.target.value, number)
+                                    phone: newNumber
                                   } : c));
                                 }}
                               >
@@ -1952,7 +2084,25 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       {(contact.isMain && !isEditingMainContact) || (!contact.isMain && !contact.isEditing) ? (
                         <button
                           className="btn btn-ghost btn-sm bg-transparent hover:bg-transparent shadow-none"
-                          onClick={() => contact.isMain ? setIsEditingMainContact(true) : setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: true } : c))}
+                          onClick={async () => {
+                            if (contact.isMain) {
+                              console.log('🔍 Edit button clicked - current contact data:', contact);
+                              // Use the current contact data directly from the contacts array
+                              // Convert "---" to empty string for proper editing
+                              const editedData = {
+                                name: (contact.name && contact.name !== '---') ? contact.name : '',
+                                mobile: (contact.mobile && contact.mobile !== '---') ? contact.mobile : '',
+                                phone: (contact.phone && contact.phone !== '---') ? contact.phone : '',
+                                email: (contact.email && contact.email !== '---') ? contact.email : ''
+                              };
+                              console.log('🔍 Setting edited data:', editedData);
+                              setEditedMainContact(editedData);
+                              
+                              setIsEditingMainContact(true);
+                            } else {
+                              setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: true } : c));
+                            }
+                          }}
                         >
                           <PencilSquareIcon className="w-4 h-4 text-white" />
                           Edit
@@ -1962,7 +2112,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         <>
                           <button
                             className="btn btn-primary btn-sm"
-                            onClick={() => contact.isMain ? handleSaveMainContact() : handleSaveContact(contact.id, contact)}
+                            onClick={async () => {
+                              if (contact.isMain) {
+                                await handleSaveMainContact();
+                              } else {
+                                await handleSaveContact(contact.id, contact);
+                              }
+                            }}
                           >
                             <CheckIcon className="w-4 h-4" />
                             Save
