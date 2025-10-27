@@ -1362,7 +1362,8 @@ const getTemplates = async (req, res) => {
             params: hasParams ? '1' : '0',
             active: template.status === 'APPROVED' ? 't' : 'f',
             category_id: null, // Don't save category as text - should be a foreign key ID
-            content: textContent || null
+            content: textContent || null,
+            language: template.language || null // Save the language field from WhatsApp API
           };
         });
 
@@ -1389,7 +1390,8 @@ const getTemplates = async (req, res) => {
               params: template.params,
               active: template.active,
               category_id: template.category_id,
-              content: template.content
+              content: template.content,
+              language: template.language || 'en_US' // Save language field, default to en_US
             };
 
             if (existingTemplate) {

@@ -70,7 +70,20 @@ async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
     }
 
     console.log('✅ Templates fetched from database:', data?.length || 0);
-    return data || [];
+    
+    // Map database templates to our format, get language from API templates or use default
+    const mappedTemplates = (data || []).map((template: any) => {
+      // Get language from database field if exists, otherwise use 'en_US' as default
+      const language = template.language || 'en_US';
+      
+      return {
+        ...template,
+        language: language,
+        active: template.active || template.is_active ? 't' : 'f' // Handle both active and is_active fields
+      };
+    });
+    
+    return mappedTemplates || [];
   } catch (error) {
     console.error('❌ Error fetching from database:', error);
     return [];

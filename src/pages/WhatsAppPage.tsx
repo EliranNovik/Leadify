@@ -578,18 +578,30 @@ const WhatsAppPage: React.FC = () => {
         messagePayload.templateLanguage = selectedTemplate.language || 'en_US'; // Use template's language
         
         // Only add parameters if the template requires them
-        if (selectedTemplate.params === '1' && newMessage.trim()) {
-          messagePayload.templateParameters = [
-            {
-              type: 'text',
-              text: newMessage.trim()
-            }
-          ];
-          messagePayload.message = newMessage.trim();
+        if (selectedTemplate.params === '1') {
+          // Template requires parameters - use message text as parameter
+          if (newMessage.trim()) {
+            messagePayload.templateParameters = [
+              {
+                type: 'text',
+                text: newMessage.trim()
+              }
+            ];
+            messagePayload.message = newMessage.trim();
+          } else {
+            // No message provided but template requires parameters - throw error
+            throw new Error('This template requires a message parameter. Please enter a message.');
+          }
+        } else if (selectedTemplate.params === '0') {
+          // Template with no parameters - don't include message or templateParameters
+          // WhatsApp will send template as-is
+          messagePayload.message = ''; // Empty message for template without params
         }
-        // If params === '0', don't include templateParameters field at all
       } else {
         // Regular message requires message text
+        if (!newMessage.trim()) {
+          throw new Error('Message is required for non-template messages');
+        }
         messagePayload.message = newMessage.trim();
       }
 
@@ -644,20 +656,22 @@ const WhatsAppPage: React.FC = () => {
       
       // If template sending failed, offer to send as regular message
       if (selectedTemplate && error instanceof Error && error.message.includes('Template')) {
-        const shouldSendAsRegular = window.confirm(
-          `Template sending failed: ${error.message}\n\nWould you like to send this as a regular message instead?`
-        );
-        
-        if (shouldSendAsRegular) {
-          // Send as regular message without template
-          const regularPayload = {
-            leadId: selectedClient.id,
-            phoneNumber: phoneNumber,
-            sender_name: senderName,
-            message: newMessage.trim()
-          };
+        // Only offer fallback if there's a message to send
+        if (newMessage.trim()) {
+          const shouldSendAsRegular = window.confirm(
+            `Template sending failed: ${error.message}\n\nWould you like to send this as a regular message instead?`
+          );
           
-          try {
+          if (shouldSendAsRegular) {
+            // Send as regular message without template
+            const regularPayload = {
+              leadId: selectedClient.id,
+              phoneNumber: phoneNumber,
+              sender_name: senderName,
+              message: newMessage.trim()
+            };
+          
+            try {
             const regularResponse = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
               method: 'POST',
               headers: {
@@ -697,6 +711,7 @@ const WhatsAppPage: React.FC = () => {
             console.error('Error sending regular message:', regularError);
             toast.error('Failed to send as regular message: ' + (regularError as Error).message);
             return;
+          }
           }
         }
       }
