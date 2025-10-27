@@ -1131,7 +1131,7 @@ const WhatsAppLeadsPage: React.FC = () => {
               <>
                 {/* Mobile Chat Header */}
                 {isMobile && (
-                  <div className="sticky top-0 z-10 flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                  <div className="fixed top-0 left-0 right-0 z-20 flex items-center justify-between p-4 border-b border-gray-200 bg-white">
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => setShowChat(false)}
@@ -1258,7 +1258,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 )}
 
                 {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                <div className="flex-1 overflow-y-auto p-4 space-y-4" style={isMobile ? { paddingTop: '88px', paddingBottom: showTemplateSelector ? '240px' : '120px', height: '100vh' } : {}}>
                   {messages.length === 0 ? (
                     <div className="text-center py-8 text-gray-500">
                       <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -1497,7 +1497,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 )}
 
                 {/* Template Message Selector */}
-                <div className="flex-shrink-0 px-4 pt-2 border-t border-gray-200 bg-white">
+                <div className={`${isMobile ? '' : 'flex-shrink-0'} px-4 pt-2 border-t border-gray-200 bg-white`} style={isMobile ? { position: 'fixed', bottom: '88px', left: 0, right: 0, backgroundColor: 'white', zIndex: 20 } : {}}>
                   <div className="flex items-center gap-2 mb-2">
                     <button
                       type="button"
@@ -1574,7 +1574,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                 </div>
 
                 {/* Message Input */}
-                <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white" style={isMobile ? { position: 'sticky', bottom: 0, backgroundColor: 'white', zIndex: 10 } : {}}>
+                <div className="flex-shrink-0 p-4 border-t border-gray-200 bg-white" style={isMobile ? { position: 'fixed', bottom: 0, left: 0, right: 0, backgroundColor: 'white', zIndex: 20 } : {}}>
                   <form onSubmit={handleSendMessage} className="flex items-center gap-2">
                     <div className="flex-1 relative">
                       <textarea

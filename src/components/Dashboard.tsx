@@ -2990,19 +2990,19 @@ const Dashboard: React.FC = () => {
   return (
     <div className="p-0 md:p-6 space-y-8">
       {/* 1. Summary Boxes: 4 columns */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0">
+      <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0">
         {/* Meetings Today */}
         <div
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-3 md:p-6"
+          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0"
           onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <CalendarIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+              <CalendarIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{meetingsToday}</div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Meetings Today</div>
+              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{meetingsToday}</div>
+              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Meetings Today</div>
             </div>
           </div>
           {/* SVG Graph Placeholder */}
@@ -3011,16 +3011,16 @@ const Dashboard: React.FC = () => {
 
         {/* Overdue Follow-ups */}
         <div
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-3 md:p-6"
+          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto"
           onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <ExclamationTriangleIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+              <ExclamationTriangleIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{overdueFollowups}</div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Overdue Follow-ups</div>
+              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{overdueFollowups}</div>
+              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Overdue Follow-ups</div>
             </div>
           </div>
           {/* SVG Bar Chart Placeholder */}
@@ -3029,16 +3029,16 @@ const Dashboard: React.FC = () => {
 
         {/* New Messages */}
         <div
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-3 md:p-6"
+          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto"
           onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <ChatBubbleLeftRightIcon className="w-5 h-5 md:w-7 md:h-7 mr-1 text-white" />
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+              <ChatBubbleLeftRightIcon className="w-7 h-7 md:w-7 md:h-7 mr-1 text-white" />
             </div>
             <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{latestMessages.length}</div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">New Messages</div>
+              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{latestMessages.length}</div>
+              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">New Messages</div>
             </div>
           </div>
           {/* SVG Circle Placeholder */}
@@ -3047,16 +3047,16 @@ const Dashboard: React.FC = () => {
 
         {/* Action Required */}
         <div
-          className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-3 md:p-6"
+          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto"
           onClick={() => setIsAISuggestionsModalOpen(true)}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-10 h-10 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
-              <ArrowTrendingUpIcon className="w-5 h-5 md:w-7 md:h-7 text-white opacity-90" />
+            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
+              <ArrowTrendingUpIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
             </div>
             <div>
-              <div className="text-2xl md:text-4xl font-extrabold text-white leading-tight">{aiActions}</div>
-              <div className="text-white/80 text-xs md:text-sm font-medium mt-1">Action Required</div>
+              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{aiActions}</div>
+              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Action Required</div>
             </div>
           </div>
           {/* SVG Line Chart Placeholder */}
