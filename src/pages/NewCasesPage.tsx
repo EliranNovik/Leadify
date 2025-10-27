@@ -931,7 +931,12 @@ const NewCasesPage: React.FC = () => {
       // Step 2: Get lead IDs and fetch the corresponding leads with category info
       // Note: leads_leadstage.lead_id refers to legacy leads_lead table, not the new leads table
       const leadIds = schedulerAssignments.map(a => a.lead_id);
-      const { data: leads, error: leadsError } = await supabase
+      
+      let leads;
+      let leadsError;
+      
+      // Try to fetch from leads_lead table first
+      ({ data: leads, error: leadsError } = await supabase
         .from('leads_lead')
         .select(`
           id,
@@ -942,9 +947,38 @@ const NewCasesPage: React.FC = () => {
             misc_maincategory!parent_id(name)
           )
         `)
-        .in('id', leadIds);
+        .in('id', leadIds));
 
-      if (leadsError) throw leadsError;
+      // If leads_lead doesn't exist or fails, try to fetch from leads table
+      if (leadsError || !leads || leads.length === 0) {
+        console.log('leads_lead not found or failed, trying leads table instead');
+        ({ data: leads, error: leadsError } = await supabase
+          .from('leads')
+          .select(`
+            id,
+            scheduler,
+            category,
+            misc_category!category_id(
+              name,
+              misc_maincategory!parent_id(name)
+            )
+          `)
+          .in('lead_number', leadIds.map(id => `L${id}`)));
+        
+        if (!leadsError && leads && leads.length > 0) {
+          // Convert scheduler names to IDs for the stats mapping
+          leads = leads.map(lead => ({
+            ...lead,
+            meeting_scheduler_id: lead.scheduler ? 
+              employees.find(emp => emp.display_name === lead.scheduler)?.id : null
+          }));
+        }
+      }
+
+      if (leadsError) {
+        console.error('Error fetching leads:', leadsError);
+        throw leadsError;
+      }
 
       console.log('🔍 Leads with scheduler info:', {
         count: leads?.length || 0,
@@ -1576,8 +1610,17 @@ const NewCasesPage: React.FC = () => {
 
       if (leadsError) throw leadsError;
       
-      // Remove updated leads from the current leads list
-      setLeads(leads.filter(l => !selectedLeadIds.includes(l.id)));
+      // Update the leads in state to reflect the new category
+      setLeads(prevLeads => prevLeads.map(lead => {
+        if (selectedLeadIds.includes(lead.id)) {
+          return {
+            ...lead,
+            category_id: category.id,
+            category: cleanCategoryName
+          };
+        }
+        return lead;
+      }));
       
       // Clear selection
       setSelectedLeadBoxes(new Set());
