@@ -35,22 +35,14 @@ export interface WhatsAppAPITemplate {
 
 export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
   try {
-    // First try to fetch from database where params are saved
-    console.log('🔍 Fetching WhatsApp templates from database...');
-    const dbTemplates = await fetchTemplatesFromDatabase();
-    
-    // If database is empty, fall back to API
-    if (dbTemplates.length === 0) {
-      console.log('⚠️ Database is empty, fetching from API...');
-      return await fetchTemplatesFromAPI();
-    }
-    
-    return dbTemplates;
+    // TEMPORARILY: Always fetch directly from WhatsApp API instead of database
+    console.log('🔍 TEMPORARILY: Fetching WhatsApp templates directly from API (skipping database)...');
+    return await fetchTemplatesFromAPI();
   } catch (error) {
     console.error('❌ Error fetching WhatsApp templates:', error);
-    // Fallback to API if database fetch fails
-    console.log('⚠️ Falling back to API...');
-    return await fetchTemplatesFromAPI();
+    // Fallback to database if API fails
+    console.log('⚠️ API failed, falling back to database...');
+    return await fetchTemplatesFromDatabase();
   }
 }
 

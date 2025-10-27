@@ -584,6 +584,11 @@ const sendMessage = async (req, res) => {
       
       if (isTemplate) {
         console.log('📱 Sending TEMPLATE message');
+        console.log('📱 Template Name:', templateName);
+        console.log('📱 Template Language:', templateLanguage);
+        console.log('📱 Template Language Code:', templateLanguage || 'en_US');
+        console.log('📱 Template Parameters:', templateParameters);
+        
         // Send template message
         messagePayload = {
           messaging_product: 'whatsapp',
@@ -597,59 +602,20 @@ const sendMessage = async (req, res) => {
           }
         };
         
-        // Always auto-fill parameters for templates
-        // param {{1}} = client name, param {{2}} = latest meeting date/time
-        const autoFilledParameters = [];
-        
-        // First parameter: client name
-        autoFilledParameters.push({
-          type: 'text',
-          text: lead?.name || 'Client'
-        });
-        
-        // Second parameter: latest meeting date and time
-        if (lead?.meeting_date && lead?.meeting_time) {
-          const meetingDate = new Date(lead.meeting_date);
-          const formattedDate = meetingDate.toLocaleDateString('en-US', { 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric' 
-          });
-          // Format time to remove seconds (HH:MM format)
-          const timeStr = lead.meeting_time;
-          let formattedTime = timeStr;
-          // Check if time includes seconds (format HH:MM:SS or HH:MM:SS.milliseconds)
-          if (timeStr.includes(':') && (timeStr.match(/:/g) || []).length >= 2) {
-            // Extract hours and minutes only
-            const parts = timeStr.split(':');
-            formattedTime = `${parts[0]}:${parts[1]}`;
-          }
-          autoFilledParameters.push({
-            type: 'text',
-            text: `${formattedDate} at ${formattedTime}`
-          });
-        } else {
-          autoFilledParameters.push({
-            type: 'text',
-            text: 'TBD'
-          });
-        }
-        
-        // Add any additional parameters from templateParameters if provided
+        // Only add parameters if templateParameters is provided (meaning the template needs parameters)
         if (templateParameters && templateParameters.length > 0) {
-          templateParameters.slice(2).forEach(param => {
-            autoFilledParameters.push(param);
-          });
+          console.log('📱 Template requires parameters, adding components section');
+          messagePayload.template.components = [
+            {
+              type: 'body',
+              parameters: templateParameters
+            }
+          ];
+        } else {
+          console.log('📱 Template has NO parameters, sending without components section');
         }
         
-        messagePayload.template.components = [
-          {
-            type: 'body',
-            parameters: autoFilledParameters
-          }
-        ];
-        
-        console.log('📱 Template payload:', messagePayload);
+        console.log('📱 Template payload:', JSON.stringify(messagePayload, null, 2));
       } else {
         // Send regular text message
         messagePayload = {
