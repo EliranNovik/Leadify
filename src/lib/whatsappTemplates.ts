@@ -105,18 +105,30 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
 
     if (data.success && data.templates) {
       // Map API templates to our format
-      const mappedTemplates = data.templates.map((template: WhatsAppAPITemplate, index: number) => ({
-        id: index + 1,
-        title: template.name,
-        name360: template.name,
-        language: template.language,
-        params: template.components?.some(c => c.type === 'BODY' && c.text?.includes('{{1}}')) ? '1' : '0',
-        active: template.status === 'APPROVED' ? 't' : 'f',
-        category_id: template.category || '',
-        firm_id: 0,
-        number_id: 0,
-        content: template.components?.find(c => c.type === 'BODY')?.text || '',
-      }));
+      const mappedTemplates = data.templates.map((template: WhatsAppAPITemplate, index: number) => {
+        // Find the BODY component and count variables
+        const bodyComponent = template.components?.find(c => c.type === 'BODY');
+        const textContent = bodyComponent?.text || '';
+        
+        // Count ALL variables ({{1}}, {{2}}, {{3}}, etc.)
+        const variableMatches = textContent.match(/\{\{\d+\}\}/g);
+        const variableCount = variableMatches ? variableMatches.length : 0;
+        
+        console.log(`📋 Template: ${template.name}, Variables found: ${variableCount}`, variableMatches);
+        
+        return {
+          id: index + 1,
+          title: template.name,
+          name360: template.name,
+          language: template.language,
+          params: variableCount > 0 ? '1' : '0',
+          active: template.status === 'APPROVED' ? 't' : 'f',
+          category_id: template.category || '',
+          firm_id: 0,
+          number_id: 0,
+          content: textContent,
+        };
+      });
 
       console.log('📋 Mapped templates:', mappedTemplates.length);
       return mappedTemplates;

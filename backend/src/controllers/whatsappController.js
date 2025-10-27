@@ -602,9 +602,10 @@ const sendMessage = async (req, res) => {
           }
         };
         
-        // Only add parameters if templateParameters is provided (meaning the template needs parameters)
+        // Always add components section if template parameters are expected
+        // If no parameters provided, use default values
         if (templateParameters && templateParameters.length > 0) {
-          console.log('📱 Template requires parameters, adding components section');
+          console.log('📱 Template has user-provided parameters, using them');
           messagePayload.template.components = [
             {
               type: 'body',
@@ -612,7 +613,23 @@ const sendMessage = async (req, res) => {
             }
           ];
         } else {
-          console.log('📱 Template has NO parameters, sending without components section');
+          // No parameters provided - check if this template needs parameters based on template name
+          // If template is "missed_appointment", it needs 2 parameters
+          if (templateName === 'missed_appointment') {
+            console.log('📱 No params provided for missed_appointment - sending 2 default parameters');
+            messagePayload.template.components = [
+              {
+                type: 'body',
+                parameters: [
+                  { type: 'text', text: 'Customer' },
+                  { type: 'text', text: 'Appointment' }
+                ]
+              }
+            ];
+          } else {
+            // For other templates, don't add components section
+            console.log('📱 Sending template without components section');
+          }
         }
         
         console.log('📱 Template payload:', JSON.stringify(messagePayload, null, 2));

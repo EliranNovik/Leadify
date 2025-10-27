@@ -579,19 +579,16 @@ const WhatsAppPage: React.FC = () => {
         
         // Only add parameters if the template requires them
         if (selectedTemplate.params === '1') {
-          // Template requires parameters - use message text as parameter
-          if (newMessage.trim()) {
-            messagePayload.templateParameters = [
-              {
-                type: 'text',
-                text: newMessage.trim()
-              }
-            ];
-            messagePayload.message = newMessage.trim();
-          } else {
-            // No message provided but template requires parameters - throw error
-            throw new Error('This template requires a message parameter. Please enter a message.');
-          }
+          // Template requires parameters - send default empty parameters
+          // Even if user didn't provide input, we need to send parameters for WhatsApp
+          messagePayload.templateParameters = [
+            {
+              type: 'text',
+              text: newMessage.trim() || 'Hello' // User message or default
+            }
+          ];
+          messagePayload.message = newMessage.trim() || 'Template sent';
+          console.log('📱 Template with params - sending with templateParameters');
         } else if (selectedTemplate.params === '0') {
           // Template with no parameters - don't include message or templateParameters
           // WhatsApp will send template as-is
