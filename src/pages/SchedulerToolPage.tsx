@@ -2255,7 +2255,7 @@ const SchedulerToolPage: React.FC = () => {
         // Box View
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredLeads.map((lead) => (
-            <div key={lead.id} className="bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[400px] relative pb-16 md:text-lg md:leading-relaxed p-5">
+            <div key={lead.id} className={`bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[400px] relative pb-16 md:text-lg md:leading-relaxed p-5 ${openContactDropdown === lead.id ? 'z-[60] md:z-auto' : ''}`}>
               {/* Header */}
               <div onClick={() => toggleRowExpansion(lead.id)} className="flex-1 cursor-pointer flex flex-col">
                 <div className="mb-3 flex items-center gap-2">
@@ -2325,7 +2325,7 @@ const SchedulerToolPage: React.FC = () => {
                         const timezone = getCountryTimezone(lead.country, allCountries);
                         const businessInfo = getBusinessHoursInfo(timezone);
                         return timezone ? (
-                          <div className={`w-2 h-2 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
+                          <div className={`w-3 h-3 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
                                title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} />
                         ) : null;
                       })()}
@@ -2365,7 +2365,7 @@ const SchedulerToolPage: React.FC = () => {
                   />
                   
                   {/* Contact Dropdown */}
-                  <div className="relative contact-dropdown">
+                  <div className="relative contact-dropdown z-[60] md:z-auto">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
@@ -2377,17 +2377,17 @@ const SchedulerToolPage: React.FC = () => {
                       <ChatBubbleLeftRightIcon className="w-4 h-4" />
                     </button>
                     {openContactDropdown === lead.id && (
-                      <div className="absolute z-10 mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-32">
+                      <div className="absolute z-[70] md:z-[10] mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-32 md:min-w-32">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             handleCall(lead);
                             setOpenContactDropdown(null);
                           }}
-                          className="w-full px-2 py-1 text-left hover:bg-gray-100 text-xs flex items-center gap-1"
+                          className="w-full px-3 md:px-2 py-2 md:py-1 text-left hover:bg-gray-100 text-sm md:text-xs flex items-center gap-2 md:gap-1"
                           title="Call"
                         >
-                          <PhoneIcon className="w-3 h-3 text-blue-600" />
+                          <PhoneIcon className="w-4 h-4 md:w-3 md:h-3 text-blue-600" />
                           Call
                         </button>
                         <button
@@ -2396,10 +2396,10 @@ const SchedulerToolPage: React.FC = () => {
                             handleEmail(lead);
                             setOpenContactDropdown(null);
                           }}
-                          className="w-full px-2 py-1 text-left hover:bg-gray-100 text-xs flex items-center gap-1"
+                          className="w-full px-3 md:px-2 py-2 md:py-1 text-left hover:bg-gray-100 text-sm md:text-xs flex items-center gap-2 md:gap-1"
                           title="Email"
                         >
-                          <EnvelopeIcon className="w-3 h-3 text-gray-600" />
+                          <EnvelopeIcon className="w-4 h-4 md:w-3 md:h-3 text-gray-600" />
                           Email
                         </button>
                         <button
@@ -2408,10 +2408,10 @@ const SchedulerToolPage: React.FC = () => {
                             handleWhatsApp(lead);
                             setOpenContactDropdown(null);
                           }}
-                          className="w-full px-2 py-1 text-left hover:bg-gray-100 text-xs flex items-center gap-1"
+                          className="w-full px-3 md:px-2 py-2 md:py-1 text-left hover:bg-gray-100 text-sm md:text-xs flex items-center gap-2 md:gap-1"
                           title="WhatsApp"
                         >
-                          <FaWhatsapp className="w-3 h-3 text-green-600" />
+                          <FaWhatsapp className="w-4 h-4 md:w-3 md:h-3 text-green-600" />
                           WhatsApp
                         </button>
                       </div>
@@ -2712,7 +2712,7 @@ const SchedulerToolPage: React.FC = () => {
                           const timezone = getCountryTimezone(lead.country, allCountries);
                           const businessInfo = getBusinessHoursInfo(timezone);
                           return timezone ? (
-                            <div className={`w-2 h-2 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
+                            <div className={`w-3 h-3 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
                                  title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} />
                           ) : null;
                         })()}
@@ -2748,7 +2748,7 @@ const SchedulerToolPage: React.FC = () => {
                     <td>
                       <div className="flex gap-1 sm:gap-2">
                         {/* Contact Dropdown */}
-                        <div className="relative contact-dropdown">
+                        <div className="relative contact-dropdown z-[60] md:z-auto">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -2760,17 +2760,17 @@ const SchedulerToolPage: React.FC = () => {
                             <ChatBubbleLeftRightIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                           </button>
                           {openContactDropdown === lead.id && (
-                            <div className="absolute z-10 mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-32 sm:min-w-40">
+                            <div className="absolute z-[70] md:z-[10] mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-36 sm:min-w-40">
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   handleCall(lead);
                                   setOpenContactDropdown(null);
                                 }}
-                                className="w-full px-2 sm:px-3 py-1 sm:py-2 text-left hover:bg-gray-100 text-xs sm:text-sm flex items-center gap-1 sm:gap-2"
+                                className="w-full px-4 sm:px-3 py-3 sm:py-2 text-left hover:bg-gray-100 text-sm flex items-center gap-2 sm:gap-2"
                                 title="Call"
                               >
-                                <PhoneIcon className="w-3 h-3 sm:w-4 sm:h-4 text-blue-600" />
+                                <PhoneIcon className="w-5 h-5 sm:w-4 sm:h-4 text-blue-600" />
                                 Call
                               </button>
                               <button
@@ -2779,10 +2779,10 @@ const SchedulerToolPage: React.FC = () => {
                                   handleEmail(lead);
                                   setOpenContactDropdown(null);
                                 }}
-                                className="w-full px-2 sm:px-3 py-1 sm:py-2 text-left hover:bg-gray-100 text-xs sm:text-sm flex items-center gap-1 sm:gap-2"
+                                className="w-full px-4 sm:px-3 py-3 sm:py-2 text-left hover:bg-gray-100 text-sm flex items-center gap-2 sm:gap-2"
                                 title="Email"
                               >
-                                <EnvelopeIcon className="w-3 h-3 sm:w-4 sm:h-4 text-gray-600" />
+                                <EnvelopeIcon className="w-5 h-5 sm:w-4 sm:h-4 text-gray-600" />
                                 Email
                               </button>
                               <button
@@ -2791,10 +2791,10 @@ const SchedulerToolPage: React.FC = () => {
                                   handleWhatsApp(lead);
                                   setOpenContactDropdown(null);
                                 }}
-                                className="w-full px-2 sm:px-3 py-1 sm:py-2 text-left hover:bg-gray-100 text-xs sm:text-sm flex items-center gap-1 sm:gap-2"
+                                className="w-full px-4 sm:px-3 py-3 sm:py-2 text-left hover:bg-gray-100 text-sm flex items-center gap-2 sm:gap-2"
                                 title="WhatsApp"
                               >
-                                <FaWhatsapp className="w-3 h-3 sm:w-4 sm:h-4 text-green-600" />
+                                <FaWhatsapp className="w-5 h-5 sm:w-4 sm:h-4 text-green-600" />
                                 WhatsApp
                               </button>
                             </div>

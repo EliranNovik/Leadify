@@ -1331,10 +1331,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       onOpenWhatsApp();
                     }
                   }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
                 >
                   <FaWhatsapp className="w-5 h-5 text-green-500" />
                   <span className="text-sm font-medium">WhatsApp</span>
+                  {whatsappLeadsUnreadCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                      {whatsappLeadsUnreadCount > 9 ? '9+' : whatsappLeadsUnreadCount}
+                    </span>
+                  )}
                 </button>
 
                 {/* Email Thread Option */}
@@ -1498,10 +1503,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                             onOpenWhatsApp();
                           }
                         }}
-                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
+                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left relative"
                       >
                         <Icon className="w-5 h-5 text-gray-500" />
                         <span className="text-sm font-medium">{tab.label}</span>
+                        {whatsappLeadsUnreadCount > 0 && (
+                          <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                            {whatsappLeadsUnreadCount > 9 ? '9+' : whatsappLeadsUnreadCount}
+                          </span>
+                        )}
                       </button>
                     );
                   }
@@ -2111,9 +2121,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </button>
 
           {/* WhatsApp Button */}
-          <div className="relative">
+          <div className="relative hidden md:block">
             <button
-              className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
+              className="btn btn-ghost btn-circle flex items-center justify-center"
               title="Open WhatsApp"
               onClick={onOpenWhatsApp}
             >
