@@ -20,6 +20,7 @@ import {
   TrashIcon,
   XMarkIcon,
   CheckIcon,
+  PaperClipIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 
@@ -57,6 +58,8 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [uploadingMedia, setUploadingMedia] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -110,24 +113,27 @@ const WhatsAppLeadsPage: React.FC = () => {
     const fetchCurrentUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user?.email) {
-        // Try to find user in users table by email
-        const { data: userRow } = await supabase
-          .from('users')
-          .select('id, full_name, email, first_name')
-          .eq('email', user.email)
-          .single();
-        
-        if (userRow) {
-          setCurrentUser(userRow);
-        } else {
-          // Fallback: create a user object with available data
-          const fallbackUser = {
-            id: user.id,
-            full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
-            email: user.email
-          };
-          setCurrentUser(fallbackUser);
+        // Only try database lookup if it looks like an email
+        if (user.email.includes('@')) {
+          const { data: userRow } = await supabase
+            .from('users')
+            .select('id, full_name, email, first_name')
+            .eq('email', user.email)
+            .single();
+          
+          if (userRow) {
+            setCurrentUser(userRow);
+            return;
+          }
         }
+        
+        // Fallback: create a user object with available data
+        const fallbackUser = {
+          id: user.id,
+          full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
+          email: user.email
+        };
+        setCurrentUser(fallbackUser);
       }
     };
     fetchCurrentUser();
@@ -391,7 +397,9 @@ const WhatsAppLeadsPage: React.FC = () => {
           })
         );
         
-        setMessages(messagesWithSenderNames);
+        // Process template messages for display
+        const processedMessages = messagesWithSenderNames.map(processTemplateMessage);
+        setMessages(processedMessages);
         
         // Mark incoming messages as read when viewing the conversation
         if (currentUser && data && data.length > 0) {
@@ -615,7 +623,9 @@ const WhatsAppLeadsPage: React.FC = () => {
       const messagePayload: any = {
         leadId: null, // No lead ID for new WhatsApp leads
         phoneNumber: selectedLead.phone_number,
-        message: newMessage.trim(),
+        message: selectedTemplate && selectedTemplate.params === '0' 
+          ? `TEMPLATE_MARKER:${selectedTemplate.title}` 
+          : newMessage.trim(),
         sender_name: currentUser.full_name || currentUser.email,
         hasTemplate: !!selectedTemplate,
         selectedTemplate: selectedTemplate?.title
@@ -657,12 +667,27 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Add message to local state
+      // Determine the message text to display
+      let displayMessage = newMessage.trim();
+      if (selectedTemplate) {
+        if (selectedTemplate.params === '0' && selectedTemplate.content) {
+          // Template without parameters - show template content
+          displayMessage = selectedTemplate.content;
+        } else if (selectedTemplate.params === '1' && newMessage.trim()) {
+          // Template with parameters - show user input
+          displayMessage = newMessage.trim();
+        } else if (selectedTemplate.params === '1' && !newMessage.trim()) {
+          // Template with parameters but no user input - show template name
+          displayMessage = `Template: ${selectedTemplate.title}`;
+        }
+      }
+      
       const newMsg = {
         id: Date.now(), // Temporary ID
         phone_number: selectedLead.phone_number,
         sender_name: currentUser.full_name || currentUser.email,
         direction: 'out',
-        message: newMessage.trim(),
+        message: displayMessage,
         sent_at: new Date().toISOString(),
         status: 'sent',
         message_type: 'text',
@@ -701,7 +726,28 @@ const WhatsAppLeadsPage: React.FC = () => {
             index === self.findIndex(m => m.id === message.id)
           );
           
-          setMessages(uniqueMessages);
+          // Process template messages for display
+          const processedMessages = uniqueMessages.map(processTemplateMessage);
+          
+          // Only update if there are actual changes
+          setMessages(prevMessages => {
+            const hasChanges = processedMessages.length !== prevMessages.length ||
+              processedMessages.some((newMsg, index) => {
+                const prevMsg = prevMessages[index];
+                return !prevMsg || 
+                       newMsg.id !== prevMsg.id || 
+                       newMsg.message !== prevMsg.message ||
+                       newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+              });
+            
+            if (hasChanges) {
+              console.log('🔄 Refresh detected changes, updating messages (Leads)');
+              return processedMessages;
+            } else {
+              console.log('🔄 Refresh - no changes detected, keeping current messages (Leads)');
+              return prevMessages;
+            }
+          });
         } catch (error) {
           console.error('Error refreshing messages:', error);
         }
@@ -792,6 +838,101 @@ const WhatsAppLeadsPage: React.FC = () => {
       toast.error('Failed to send message: ' + (error as Error).message);
     } finally {
       setSending(false);
+    }
+  };
+
+  // Send media message
+  const handleSendMedia = async () => {
+    if (!selectedFile || !selectedLead || !currentUser) {
+      console.log('❌ Cannot send media - missing file, lead, or user:', { selectedFile, selectedLead, currentUser });
+      return;
+    }
+
+    console.log('📤 Starting to send media:', {
+      fileName: selectedFile.name,
+      fileSize: selectedFile.size,
+      fileType: selectedFile.type,
+      leadId: selectedLead.id,
+      leadName: selectedLead.sender_name
+    });
+
+    setUploadingMedia(true);
+    try {
+      const phoneNumber = selectedLead.phone_number;
+      if (!phoneNumber) {
+        toast.error('No phone number found for this lead');
+        return;
+      }
+
+      // Create FormData for file upload
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('leadId', selectedLead.lead_id || selectedLead.id.toString());
+
+      // Upload media to WhatsApp
+      const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
+        method: 'POST',
+        body: formData,
+      });
+
+      const uploadResult = await uploadResponse.json();
+
+      if (!uploadResponse.ok) {
+        throw new Error(uploadResult.error || 'Failed to upload media');
+      }
+
+      // Send media message
+      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
+      const senderName = currentUser.full_name || currentUser.email;
+      const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          leadId: selectedLead.lead_id || selectedLead.id.toString(),
+          mediaUrl: uploadResult.mediaId,
+          mediaType: mediaType,
+          caption: newMessage.trim() || undefined,
+          phoneNumber: phoneNumber,
+          sender_name: senderName
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to send media');
+      }
+
+      // Add message to local state
+      console.log('📤 Sending media with sender:', senderName, 'from user:', currentUser);
+      
+      const newMsg = {
+        id: Date.now(),
+        lead_id: selectedLead.lead_id || selectedLead.id.toString(),
+        sender_id: currentUser.id,
+        sender_name: senderName,
+        direction: 'out',
+        message: newMessage.trim() || `${mediaType} message`,
+        sent_at: new Date().toISOString(),
+        status: 'sent',
+        message_type: mediaType as any,
+        whatsapp_status: 'sent',
+        whatsapp_message_id: result.messageId,
+        media_url: uploadResult.mediaId,
+        caption: newMessage.trim() || undefined
+      };
+
+      setMessages(prev => [...prev, newMsg]);
+      setNewMessage('');
+      setSelectedFile(null);
+      toast.success('Media sent via WhatsApp!');
+    } catch (error) {
+      console.error('Error sending media:', error);
+      toast.error('Failed to send media: ' + (error as Error).message);
+    } finally {
+      setUploadingMedia(false);
     }
   };
 
@@ -958,6 +1099,108 @@ const WhatsAppLeadsPage: React.FC = () => {
     if (mimeType.includes('pdf')) return DocumentTextIcon;
     if (mimeType.includes('video/')) return FilmIcon;
     return DocumentTextIcon;
+  };
+
+  // Helper function to process template messages for display
+  const processTemplateMessage = (message: any): any => {
+    // Debug: Log the message to see what's actually stored
+    console.log('🔍 Processing message (Leads):', {
+      id: message.id,
+      direction: message.direction,
+      message: message.message,
+      messageType: message.message_type,
+      whatsappMessageId: message.whatsapp_message_id
+    });
+
+    // Check if this is a template message that needs processing
+    if (message.direction === 'out' && message.message) {
+      // First, check if the message is already properly formatted (contains actual template content)
+      const isAlreadyProperlyFormatted = templates.some(template => 
+        template.content && message.message === template.content
+      );
+      
+      if (isAlreadyProperlyFormatted) {
+        console.log('✅ Message already properly formatted (Leads), no processing needed');
+        return message;
+      }
+      
+      // Check for various template message patterns that need processing
+      const needsProcessing = 
+        message.message.includes('Template:') ||
+        message.message.includes('[Template:') || // Database format with brackets
+        message.message.includes('[template:]') ||
+        message.message.includes('template:') ||
+        message.message.includes('TEMPLATE_MARKER:') || // Our new marker
+        message.message === '' || // Empty message might be a template
+        message.message === 'Template sent'; // Default template message
+
+      if (needsProcessing) {
+        console.log('📋 Found template message that needs processing (Leads)...');
+        
+        // Try to find the template by looking for template info in the message
+        // First try bracket format, then regular format
+        const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 
+                              message.message.match(/Template:\s*(.+)/);
+        if (templateMatch) {
+          // Clean the template title: remove trailing spaces and brackets
+          let templateTitle = templateMatch[1].trim().replace(/\]$/, '');
+          console.log('🔍 Looking for template with title (Leads):', templateTitle);
+          console.log('📋 Available template titles (Leads):', templates.map(t => t.title));
+          
+          // Try case-insensitive matching on title first
+          const template = templates.find(t => 
+            t.title.toLowerCase() === templateTitle.toLowerCase()
+          );
+          if (template) {
+            console.log('✅ Found template by title (Leads):', template.title, 'Content:', template.content);
+            if (template.params === '0' && template.content) {
+              return { ...message, message: template.content };
+            } else if (template.params === '1') {
+              return { ...message, message: template.content || `Template: ${template.title}` };
+            }
+          } else {
+            console.log('❌ Template not found for title (Leads):', templateTitle);
+            // Try to find by name360 field as well (case-insensitive)
+            const templateByName = templates.find(t => 
+              t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase()
+            );
+            if (templateByName) {
+              console.log('✅ Found template by name360 (Leads):', templateByName.name360, 'Content:', templateByName.content);
+              if (templateByName.params === '0' && templateByName.content) {
+                return { ...message, message: templateByName.content };
+              } else if (templateByName.params === '1') {
+                return { ...message, message: templateByName.content || `Template: ${templateByName.title}` };
+              }
+            } else {
+              console.log('❌ Template not found by name360 either (Leads):', templateTitle);
+            }
+          }
+        }
+        
+        // Check for our TEMPLATE_MARKER
+        const templateMarkerMatch = message.message.match(/TEMPLATE_MARKER:(.+)/);
+        if (templateMarkerMatch) {
+          const templateTitle = templateMarkerMatch[1];
+          const template = templates.find(t => t.title === templateTitle);
+          if (template) {
+            console.log('✅ Found template by marker (Leads):', template.title);
+            if (template.params === '0' && template.content) {
+              return { ...message, message: template.content };
+            } else if (template.params === '1') {
+              return { ...message, message: template.content || `Template: ${template.title}` };
+            }
+          }
+        }
+        
+        // If message is empty or "Template sent", try to find the most recent template
+        if (message.message === '' || message.message === 'Template sent') {
+          console.log('🔍 Empty template message (Leads), looking for recent template...');
+          // This is a fallback - we'll show a generic template message
+          return { ...message, message: 'Template message sent' };
+        }
+      }
+    }
+    return message;
   };
 
   // Helper function to download media
@@ -1132,40 +1375,40 @@ const WhatsAppLeadsPage: React.FC = () => {
                 {/* Mobile Chat Header */}
                 {isMobile && (
                   <div className="flex-shrink-0 flex items-center gap-2 p-4 border-b border-gray-200 bg-white" style={{ zIndex: 40 }}>
-                    <button
-                      onClick={() => setShowChat(false)}
+                      <button
+                        onClick={() => setShowChat(false)}
                       className="btn btn-ghost btn-circle btn-sm flex-shrink-0"
-                    >
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                      </svg>
-                    </button>
+                      >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
                     <div className="flex items-center gap-2 flex-1 min-w-0">
                       <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
-                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
-                          <span className="text-green-600 font-semibold text-sm">
-                            {selectedLead.sender_name.charAt(0).toUpperCase()}
-                          </span>
-                        ) : (
-                          <PhoneIcon className="w-4 h-4 text-green-600" />
-                        )}
-                      </div>
+                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
+                            <span className="text-green-600 font-semibold text-sm">
+                              {selectedLead.sender_name.charAt(0).toUpperCase()}
+                            </span>
+                          ) : (
+                            <PhoneIcon className="w-4 h-4 text-green-600" />
+                          )}
+                        </div>
                       <div className="min-w-0 flex-1">
                         <h3 className="font-semibold text-gray-900 text-sm truncate">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
-                            ? selectedLead.sender_name 
-                            : selectedLead.phone_number || 'Unknown Number'}
-                        </h3>
+                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
+                              ? selectedLead.sender_name 
+                              : selectedLead.phone_number || 'Unknown Number'}
+                          </h3>
                         <p className="text-xs text-gray-500 truncate">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
-                            ? selectedLead.phone_number 
-                            : ''}
-                        </p>
+                            {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
+                              ? selectedLead.phone_number 
+                              : ''}
+                          </p>
                         <p className="text-xs text-gray-500 truncate">
-                          {selectedLead.message_count} messages
-                        </p>
+                            {selectedLead.message_count} messages
+                          </p>
+                        </div>
                       </div>
-                    </div>
                     {/* Timer/Lock Icon */}
                     {timeLeft && (
                       <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium flex-shrink-0 ${
@@ -1182,7 +1425,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                             <span>{timeLeft}</span>
                           </>
                         )}
-                      </div>
+                    </div>
                     )}
                   </div>
                 )}
@@ -1235,13 +1478,13 @@ const WhatsAppLeadsPage: React.FC = () => {
                           )}
                         </div>
                       )}
-                      <button
-                        onClick={() => handleConvertToLead(selectedLead)}
-                        className="btn btn-primary"
-                      >
-                        <UserPlusIcon className="w-4 h-4 mr-2" />
-                        Convert to Lead
-                      </button>
+                    <button
+                      onClick={() => handleConvertToLead(selectedLead)}
+                      className="btn btn-primary"
+                    >
+                      <UserPlusIcon className="w-4 h-4 mr-2" />
+                      Convert to Lead
+                    </button>
                     </div>
                   </div>
                 )}
@@ -1443,12 +1686,12 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                           <div className="flex items-center justify-between mt-1">
                             <div className="flex items-center gap-1 text-sm opacity-80">
-                              <span>
-                                {new Date(message.sent_at).toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit'
-                                })}
-                              </span>
+                            <span>
+                              {new Date(message.sent_at).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
                               {(message as any).is_edited && (
                                 <span className="text-xs opacity-60 italic">
                                   (edited{(message as any).edited_by ? ` by ${userCache[(message as any).edited_by] || '...'}` : ''})
@@ -1459,11 +1702,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   (deleted by {userCache[(message as any).deleted_by] || '...'})
                                 </span>
                               )}
-                            </div>
+                          </div>
                             
                             {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
-                          </div>
                         </div>
+                      </div>
                       </div>
                       </React.Fragment>
                     );
@@ -1496,8 +1739,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                       </div>
                       
                       <div className="mb-3">
-                        <input
-                          type="text"
+                    <input
+                      type="text"
                           placeholder="Search templates..."
                           value={templateSearchTerm}
                           onChange={(e) => setTemplateSearchTerm(e.target.value)}
@@ -1553,77 +1796,55 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Template Message Selector - Desktop only */}
-                  {!isMobile && (
+                  {/* Template Dropdown - Desktop */}
+                  {!isMobile && showTemplateSelector && (
                     <div className="px-4 pt-3 pb-2">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                          type="button"
-                          onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                          className={`btn btn-sm ${selectedTemplate ? 'btn-primary' : 'btn-outline'}`}
-                        >
-                          {selectedTemplate ? `Template: ${selectedTemplate.title}` : `Use Template (${templates.length})`}
-                        </button>
-                        {selectedTemplate && (
-                          <button
-                            type="button"
-                            onClick={() => setSelectedTemplate(null)}
-                            className="btn btn-ghost btn-sm text-red-500"
-                          >
-                            Clear
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Template Dropdown - Desktop */}
-                      {showTemplateSelector && (
-                        <div className="mt-2 mb-3 p-3 bg-gray-50 rounded-lg border">
-                          <div className="text-sm font-medium mb-2">Select Template:</div>
-                          <input
-                            type="text"
-                            className="input input-sm input-bordered w-full mb-2"
-                            placeholder="Search templates..."
-                            value={templateSearchTerm}
-                            onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                          />
-                          <div className="space-y-1 max-h-60 overflow-y-auto">
-                            {isLoadingTemplates ? (
-                              <div className="flex items-center justify-center py-2">
-                                <div className="loading loading-spinner loading-sm"></div>
-                                <span className="ml-2">Loading...</span>
-                              </div>
-                            ) : (
-                              filterTemplates(templates, templateSearchTerm).map((template) => (
-                                <button
-                                  key={template.id}
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedTemplate(template);
-                                    setShowTemplateSelector(false);
-                                    setTemplateSearchTerm('');
-                                    if (template.params === '0') {
-                                      setNewMessage(template.content || '');
-                                    } else {
-                                      setNewMessage('');
-                                    }
-                                  }}
-                                  className={`w-full text-left px-3 py-2 rounded text-sm hover:bg-gray-100 ${
-                                    template.active !== 't' ? 'opacity-50' : ''
-                                  }`}
-                                >
-                                  <div className="font-medium">{template.title}</div>
-                                  {template.content && (
-                                    <div className="text-xs text-gray-500 truncate">{template.content}</div>
-                                  )}
-                                  {template.active !== 't' && (
-                                    <span className="text-xs text-orange-600">(Pending Approval)</span>
-                                  )}
-                                </button>
-                              ))
-                            )}
-                          </div>
+                      <div className="p-3 bg-gray-50 rounded-lg border">
+                        <div className="text-sm font-medium mb-2">Select Template:</div>
+                        <input
+                          type="text"
+                          className="input input-sm input-bordered w-full mb-2"
+                          placeholder="Search templates..."
+                          value={templateSearchTerm}
+                          onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                        />
+                        <div className="space-y-1 max-h-60 overflow-y-auto">
+                          {isLoadingTemplates ? (
+                            <div className="flex items-center justify-center py-2">
+                              <div className="loading loading-spinner loading-sm"></div>
+                              <span className="ml-2">Loading...</span>
+                            </div>
+                          ) : (
+                            filterTemplates(templates, templateSearchTerm).map((template) => (
+                              <button
+                                key={template.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedTemplate(template);
+                                  setShowTemplateSelector(false);
+                                  setTemplateSearchTerm('');
+                                  if (template.params === '0') {
+                                    setNewMessage(template.content || '');
+                                  } else {
+                                    setNewMessage('');
+                                  }
+                                }}
+                                className={`w-full text-left px-3 py-2 rounded text-sm hover:bg-gray-100 ${
+                                  template.active !== 't' ? 'opacity-50' : ''
+                                }`}
+                              >
+                                <div className="font-medium">{template.title}</div>
+                                {template.content && (
+                                  <div className="text-xs text-gray-500 truncate">{template.content}</div>
+                                )}
+                                {template.active !== 't' && (
+                                  <span className="text-xs text-orange-600">(Pending Approval)</span>
+                                )}
+                              </button>
+                            ))
+                          )}
                         </div>
-                      )}
+                      </div>
                     </div>
                   )}
 
@@ -1642,19 +1863,58 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                   {/* Input Form */}
                   <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
-                    {/* Template Icon Button - Mobile only */}
-                    {isMobile && (
-                      <button
-                        type="button"
-                        onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                        className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                          selectedTemplate 
-                            ? 'bg-green-500 text-white' 
-                            : 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
-                        }`}
-                      >
-                        <DocumentTextIcon className="w-5 h-5" />
-                      </button>
+                    {/* Template Icon Button */}
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                      className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                        selectedTemplate 
+                          ? 'bg-green-500 text-white' 
+                          : isMobile 
+                            ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
+                            : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      <DocumentTextIcon className="w-5 h-5" />
+                    </button>
+
+                    {/* File upload button */}
+                    <label 
+                      className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                        isMobile 
+                          ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
+                          : 'bg-white border border-gray-300'
+                      } text-gray-500 hover:bg-gray-100 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                      onClick={() => !isLocked && console.log('📁 File upload button clicked')}
+                    >
+                      <PaperClipIcon className="w-5 h-5" />
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) {
+                            console.log('📁 File selected:', file);
+                            setSelectedFile(file);
+                          }
+                        }}
+                        disabled={uploadingMedia || isLocked}
+                      />
+                    </label>
+
+                    {/* Selected file preview */}
+                    {selectedFile && (
+                      <div className="flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50">
+                        <span className="text-xs text-gray-700">{selectedFile.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFile(null)}
+                          className="text-red-500 hover:text-red-700"
+                        >
+                          <XMarkIcon className="w-4 h-4" />
+                        </button>
+                      </div>
                     )}
 
                     {/* Message Input */}
@@ -1687,10 +1947,24 @@ const WhatsAppLeadsPage: React.FC = () => {
                     />
 
                     {/* Send Button */}
+                    {selectedFile ? (
+                      <button
+                        type="button"
+                        onClick={handleSendMedia}
+                        disabled={uploadingMedia}
+                        className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
+                      >
+                        {uploadingMedia ? (
+                          <div className="loading loading-spinner loading-sm"></div>
+                        ) : (
+                          <PaperAirplaneIcon className="w-5 h-5" />
+                        )}
+                      </button>
+                    ) : (
                     <button
                       type="submit"
-                      disabled={(!newMessage.trim() && !selectedTemplate) || sending}
-                      className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
+                        disabled={(!newMessage.trim() && !selectedTemplate) || sending}
+                        className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
                     >
                       {sending ? (
                         <div className="loading loading-spinner loading-sm"></div>
@@ -1698,6 +1972,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                         <PaperAirplaneIcon className="w-5 h-5" />
                       )}
                     </button>
+                    )}
                   </form>
                 </div>
               </>

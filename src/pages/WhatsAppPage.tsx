@@ -164,6 +164,119 @@ const WhatsAppPage: React.FC = () => {
     return hasNonAscii && isShort;
   };
 
+  // Helper function to process template messages for display
+  const processTemplateMessage = (message: WhatsAppMessage): WhatsAppMessage => {
+    // Debug: Log the message to see what's actually stored
+    console.log('🔍 Processing message:', {
+      id: message.id,
+      direction: message.direction,
+      message: message.message,
+      messageType: message.message_type,
+      whatsappMessageId: message.whatsapp_message_id,
+      timestamp: new Date().toISOString()
+    });
+    
+    // Log all available templates for comparison
+    console.log('📋 Available templates:', templates.map(t => ({
+      title: t.title,
+      name360: t.name360,
+      content: t.content,
+      params: t.params
+    })));
+
+    // Check if this is a template message that needs processing
+    if (message.direction === 'out' && message.message) {
+      // First, check if the message is already properly formatted (contains actual template content)
+      const isAlreadyProperlyFormatted = templates.some(template => 
+        template.content && message.message === template.content
+      );
+      
+      if (isAlreadyProperlyFormatted) {
+        console.log('✅ Message already properly formatted, no processing needed');
+        return message;
+      }
+      
+      // Check for various template message patterns that need processing
+      const needsProcessing = 
+        message.message.includes('Template:') ||
+        message.message.includes('[Template:') || // Database format with brackets
+        message.message.includes('[template:]') ||
+        message.message.includes('template:') ||
+        message.message.includes('TEMPLATE_MARKER:') || // Our new marker
+        message.message === '' || // Empty message might be a template
+        message.message === 'Template sent'; // Default template message
+
+      if (needsProcessing) {
+        console.log('📋 Found template message that needs processing...');
+        console.log('🔍 Message that needs processing:', message.message);
+        
+        // Try to find the template by looking for template info in the message
+        // First try bracket format, then regular format
+        const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 
+                              message.message.match(/Template:\s*(.+)/);
+        console.log('🔍 Template match result:', templateMatch);
+        if (templateMatch) {
+          // Clean the template title: remove trailing spaces and brackets
+          let templateTitle = templateMatch[1].trim().replace(/\]$/, '');
+          console.log('🔍 Looking for template with title:', templateTitle);
+          console.log('📋 Available template titles:', templates.map(t => t.title));
+          
+          // Try case-insensitive matching on title first
+          const template = templates.find(t => 
+            t.title.toLowerCase() === templateTitle.toLowerCase()
+          );
+          if (template) {
+            console.log('✅ Found template by title:', template.title, 'Content:', template.content);
+            if (template.params === '0' && template.content) {
+              return { ...message, message: template.content };
+            } else if (template.params === '1') {
+              return { ...message, message: template.content || `Template: ${template.title}` };
+            }
+          } else {
+            console.log('❌ Template not found for title:', templateTitle);
+            // Try to find by name360 field as well (case-insensitive)
+            const templateByName = templates.find(t => 
+              t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase()
+            );
+            if (templateByName) {
+              console.log('✅ Found template by name360:', templateByName.name360, 'Content:', templateByName.content);
+              if (templateByName.params === '0' && templateByName.content) {
+                return { ...message, message: templateByName.content };
+              } else if (templateByName.params === '1') {
+                return { ...message, message: templateByName.content || `Template: ${templateByName.title}` };
+              }
+            } else {
+              console.log('❌ Template not found by name360 either:', templateTitle);
+            }
+          }
+        }
+        
+        // Check for our TEMPLATE_MARKER
+        const templateMarkerMatch = message.message.match(/TEMPLATE_MARKER:(.+)/);
+        if (templateMarkerMatch) {
+          const templateTitle = templateMarkerMatch[1];
+          const template = templates.find(t => t.title === templateTitle);
+          if (template) {
+            console.log('✅ Found template by marker:', template.title);
+            if (template.params === '0' && template.content) {
+              return { ...message, message: template.content };
+            } else if (template.params === '1') {
+              return { ...message, message: template.content || `Template: ${template.title}` };
+            }
+          }
+        }
+        
+        // If message is empty or "Template sent", try to find the most recent template
+        if (message.message === '' || message.message === 'Template sent') {
+          console.log('🔍 Empty template message, looking for recent template...');
+          // This is a fallback - we'll show a generic template message
+          return { ...message, message: 'Template message sent' };
+        }
+      }
+    }
+    return message;
+  };
+
   // Helper function to render WhatsApp-style message status
   const renderMessageStatus = (status?: string) => {
     if (!status) return null;
@@ -261,27 +374,30 @@ const WhatsAppPage: React.FC = () => {
       if (user?.email) {
         console.log('🔍 Looking for user with email:', user.email);
         
-        // Try to find user in users table by email
-        const { data: userRow, error } = await supabase
-          .from('users')
-          .select('id, full_name, email')
-          .eq('email', user.email)
-          .single();
-        
-        if (userRow) {
-          console.log('✅ Found user in database:', userRow);
-          setCurrentUser(userRow);
-        } else {
-          console.log('❌ User not found in database, using auth metadata');
-          // Fallback: create a user object with available data
-          const fallbackUser = {
-            id: user.id,
-            full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
-            email: user.email
-          };
-          console.log('📝 Using fallback user:', fallbackUser);
-          setCurrentUser(fallbackUser);
+        // Only try database lookup if it looks like an email
+        if (user.email.includes('@')) {
+          const { data: userRow, error } = await supabase
+            .from('users')
+            .select('id, full_name, email')
+            .eq('email', user.email)
+            .single();
+          
+          if (userRow) {
+            console.log('✅ Found user in database:', userRow);
+            setCurrentUser(userRow);
+            return;
+          }
         }
+        
+        console.log('❌ User not found in database, using auth metadata');
+        // Fallback: create a user object with available data
+        const fallbackUser = {
+          id: user.id,
+          full_name: user.user_metadata?.full_name || user.user_metadata?.name || user.email,
+          email: user.email
+        };
+        console.log('📝 Using fallback user:', fallbackUser);
+        setCurrentUser(fallbackUser);
       }
     };
     fetchCurrentUser();
@@ -367,7 +483,34 @@ const WhatsAppPage: React.FC = () => {
 
         console.log('📨 Messages fetched:', data?.length || 0, 'messages');
         console.log('📋 Messages data:', data);
-        setMessages(data || []);
+        
+        // Process template messages for display
+        const processedMessages = (data || []).map(processTemplateMessage);
+        
+        // Only update messages if this is not a polling call, or if there are actual changes
+        if (!isPolling) {
+          setMessages(processedMessages);
+        } else {
+          // For polling, only update if there are new messages or changes
+          setMessages(prevMessages => {
+            const hasChanges = processedMessages.length !== prevMessages.length ||
+              processedMessages.some((newMsg, index) => {
+                const prevMsg = prevMessages[index];
+                return !prevMsg || 
+                       newMsg.id !== prevMsg.id || 
+                       newMsg.message !== prevMsg.message ||
+                       newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+              });
+            
+            if (hasChanges) {
+              console.log('🔄 Polling detected changes, updating messages');
+              return processedMessages;
+            } else {
+              console.log('🔄 Polling - no changes detected, keeping current messages');
+              return prevMessages;
+            }
+          });
+        }
         
         // Mark incoming messages as read when viewing the conversation
         if (currentUser && data && data.length > 0 && !isPolling) {
@@ -592,7 +735,7 @@ const WhatsAppPage: React.FC = () => {
         } else if (selectedTemplate.params === '0') {
           // Template with no parameters - don't include message or templateParameters
           // WhatsApp will send template as-is
-          messagePayload.message = ''; // Empty message for template without params
+          messagePayload.message = `TEMPLATE_MARKER:${selectedTemplate.title}`; // Mark as template for database storage
         }
       } else {
         // Regular message requires message text
@@ -629,13 +772,28 @@ const WhatsAppPage: React.FC = () => {
       // Add message to local state
       console.log('📤 Sending message with sender:', senderName, 'from user:', currentUser);
       
+      // Determine the message text to display
+      let displayMessage = newMessage.trim();
+      if (selectedTemplate) {
+        if (selectedTemplate.params === '0' && selectedTemplate.content) {
+          // Template without parameters - show template content
+          displayMessage = selectedTemplate.content;
+        } else if (selectedTemplate.params === '1' && newMessage.trim()) {
+          // Template with parameters - show user input
+          displayMessage = newMessage.trim();
+        } else if (selectedTemplate.params === '1' && !newMessage.trim()) {
+          // Template with parameters but no user input - show template name
+          displayMessage = `Template: ${selectedTemplate.title}`;
+        }
+      }
+      
       const newMsg: WhatsAppMessage = {
         id: Date.now(), // Temporary ID
         lead_id: selectedClient.id,
         sender_id: currentUser.id,
         sender_name: senderName,
         direction: 'out',
-        message: newMessage.trim(),
+        message: displayMessage,
         sent_at: new Date().toISOString(),
         status: 'sent',
         message_type: 'text',
@@ -1811,6 +1969,11 @@ const WhatsAppPage: React.FC = () => {
                             setSelectedTemplate(template);
                             setShowTemplateSelector(false);
                             setTemplateSearchTerm('');
+                            if (template.params === '0') {
+                              setNewMessage(template.content || '');
+                            } else {
+                              setNewMessage('');
+                            }
                           }}
                           className={`w-full text-left p-2 rounded-lg border transition-colors ${
                             selectedTemplate?.id === template.id 
@@ -1835,118 +1998,100 @@ const WhatsAppPage: React.FC = () => {
                 </div>
               )}
               
-              {/* Template Message Selector - Desktop only */}
-              {!isMobile && (
+              {/* Template Dropdown - Desktop */}
+              {!isMobile && showTemplateSelector && (
                 <div className="px-4 pt-3 pb-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      type="button"
-                      onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                      className={`btn btn-sm ${selectedTemplate ? 'btn-primary' : 'btn-outline'}`}
-                    >
-                      {selectedTemplate ? `Template: ${selectedTemplate.title}` : `Use Template (${templates.length})`}
-                    </button>
+                  <div className="p-3 bg-gray-50 rounded-lg border">
+                    <div className="text-sm font-medium mb-2">Select Template:</div>
                     
-                    {selectedTemplate && (
-                      <button
-                        type="button"
-                        onClick={() => setSelectedTemplate(null)}
-                        className="btn btn-ghost btn-sm text-red-500"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                  
-                  {/* Template Dropdown - Desktop */}
-                  {showTemplateSelector && (
-                    <div className="mt-2 mb-3 p-3 bg-gray-50 rounded-lg border">
-                      <div className="text-sm font-medium mb-2">Select Template:</div>
-                      
-                      <div className="mb-3">
-                        <input
-                          type="text"
-                          placeholder="Search templates..."
-                          value={templateSearchTerm}
-                          onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        />
-                      </div>
-                      
-                      <div className="max-h-64 overflow-y-auto space-y-2">
-                        {isLoadingTemplates ? (
-                          <div className="text-center text-gray-500 py-4">
-                            <div className="loading loading-spinner loading-sm"></div>
-                            <span className="ml-2">Loading templates...</span>
-                          </div>
-                        ) : (
-                          <>
-                            {filterTemplates(templates, templateSearchTerm).map((template) => (
-                              <button
-                                key={template.id}
-                                type="button"
-                                onClick={() => {
-                                  if (template.active !== 't') {
-                                    toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
-                                    return;
-                                  }
-                                  setSelectedTemplate(template);
-                                  setShowTemplateSelector(false);
-                                  setTemplateSearchTerm('');
-                                }}
-                                className={`block w-full text-left p-3 rounded border ${
-                                  selectedTemplate?.id === template.id 
-                                    ? 'bg-blue-50 border-blue-300' 
-                                    : 'bg-white border-gray-200 hover:bg-gray-50'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between">
-                                  <div className="font-medium text-gray-900">{template.title}</div>
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-xs text-gray-500 font-mono">{template.name360}</span>
-                                    {template.active === 't' && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                        Active
-                                      </span>
-                                    )}
-                                    {template.active !== 't' && (
-                                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                                        Pending
-                                      </span>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="text-sm text-gray-500 mt-1">
-                                  {template.params === '1' && (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800 mb-2">
-                                      Requires Parameter
-                                    </span>
-                                  )}
-                                  {template.params === '0' && (
-                                    <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mb-2">
-                                      No Parameters
-                                    </span>
-                                  )}
-                                  {template.content && template.content !== 'EMPTY' && (
-                                    <div className="text-xs text-gray-600 mt-1 bg-gray-50 p-2 rounded">
-                                      <strong>Template Name:</strong> {template.name360}<br/>
-                                      <strong>Content:</strong> {template.content}
-                                    </div>
-                                  )}
-                                </div>
-                              </button>
-                            ))}
-                            
-                            {filterTemplates(templates, templateSearchTerm).length === 0 && (
-                              <div className="text-center text-gray-500 py-4">
-                                {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </div>
+                    <div className="mb-3">
+                      <input
+                        type="text"
+                        placeholder="Search templates..."
+                        value={templateSearchTerm}
+                        onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
                     </div>
-                  )}
+                    
+                    <div className="max-h-64 overflow-y-auto space-y-2">
+                      {isLoadingTemplates ? (
+                        <div className="text-center text-gray-500 py-4">
+                          <div className="loading loading-spinner loading-sm"></div>
+                          <span className="ml-2">Loading templates...</span>
+                        </div>
+                      ) : (
+                        <>
+                          {filterTemplates(templates, templateSearchTerm).map((template) => (
+                            <button
+                              key={template.id}
+                              type="button"
+                              onClick={() => {
+                                if (template.active !== 't') {
+                                  toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
+                                  return;
+                                }
+                                setSelectedTemplate(template);
+                                setShowTemplateSelector(false);
+                                setTemplateSearchTerm('');
+                                if (template.params === '0') {
+                                  setNewMessage(template.content || '');
+                                } else {
+                                  setNewMessage('');
+                                }
+                              }}
+                              className={`block w-full text-left p-3 rounded border ${
+                                selectedTemplate?.id === template.id 
+                                  ? 'bg-blue-50 border-blue-300' 
+                                  : 'bg-white border-gray-200 hover:bg-gray-50'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="font-medium text-gray-900">{template.title}</div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-xs text-gray-500 font-mono">{template.name360}</span>
+                                  {template.active === 't' && (
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                      Active
+                                    </span>
+                                  )}
+                                  {template.active !== 't' && (
+                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                      Pending
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="text-sm text-gray-500 mt-1">
+                                {template.params === '1' && (
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800 mb-2">
+                                    Requires Parameter
+                                  </span>
+                                )}
+                                {template.params === '0' && (
+                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mb-2">
+                                    No Parameters
+                                  </span>
+                                )}
+                                {template.content && template.content !== 'EMPTY' && (
+                                  <div className="text-xs text-gray-600 mt-1 bg-gray-50 p-2 rounded">
+                                    <strong>Template Name:</strong> {template.name360}<br/>
+                                    <strong>Content:</strong> {template.content}
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                          
+                          {filterTemplates(templates, templateSearchTerm).length === 0 && (
+                            <div className="text-center text-gray-500 py-4">
+                              {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
               
@@ -1965,26 +2110,49 @@ const WhatsAppPage: React.FC = () => {
 
               {/* Input Area */}
               <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
-                {/* Template Icon Button - Mobile only */}
-                {isMobile && (
-                  <button
-                    type="button"
-                    onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                    className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                      selectedTemplate 
-                        ? 'bg-green-500 text-white' 
-                        : 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
-                    }`}
-                  >
-                    <DocumentTextIcon className="w-5 h-5" />
-                  </button>
-                )}
+                {/* Template Icon Button */}
+                <button
+                  type="button"
+                  onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                    selectedTemplate 
+                      ? 'bg-green-500 text-white' 
+                      : isMobile 
+                        ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
+                        : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
+                  }`}
+                >
+                  <DocumentTextIcon className="w-5 h-5" />
+                </button>
+                
+                {/* File upload button */}
+                <label 
+                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                    isMobile 
+                      ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
+                      : 'bg-white border border-gray-300'
+                  } text-gray-500 hover:bg-gray-100 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                  onClick={() => !isLocked && console.log('📁 File upload button clicked')}
+                >
+                  <PaperClipIcon className="w-5 h-5" />
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                    onChange={handleFileSelect}
+                    disabled={uploadingMedia || isLocked}
+                  />
+                </label>
                 
                 <div className="relative flex-shrink-0">
                   <button 
                     type="button" 
                     onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                    className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${isMobile ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' : 'btn btn-ghost'} text-gray-500 hover:bg-gray-100`}
+                    className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
+                      isMobile 
+                        ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
+                        : 'bg-white border border-gray-300'
+                    } text-gray-500 hover:bg-gray-100`}
                     disabled={isLocked}
                   >
                     <FaceSmileIcon className="w-5 h-5" />
@@ -2009,21 +2177,6 @@ const WhatsAppPage: React.FC = () => {
                     </div>
                   )}
                 </div>
-                
-                {/* File upload button */}
-                <label 
-                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${isMobile ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' : 'btn btn-ghost'} text-gray-500 hover:bg-gray-100 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                  onClick={() => !isLocked && console.log('📁 File upload button clicked')}
-                >
-                  <PaperClipIcon className="w-5 h-5" />
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                    onChange={handleFileSelect}
-                    disabled={uploadingMedia || isLocked}
-                  />
-                </label>
 
                 {/* Selected file preview */}
                 {selectedFile && (
