@@ -621,6 +621,14 @@ const WhatsAppPage: React.FC = () => {
   const [templateSearchTerm, setTemplateSearchTerm] = useState('');
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   
+  // AI suggestions state
+  const [isLoadingAI, setIsLoadingAI] = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [showAISuggestions, setShowAISuggestions] = useState(false);
+  
+  // Mobile dropdown state
+  const [showMobileDropdown, setShowMobileDropdown] = useState(false);
+  
   useEffect(() => {
     if (shouldAutoScroll && messages.length > 0) {
       // Add a small delay to ensure messages are rendered
@@ -631,13 +639,20 @@ const WhatsAppPage: React.FC = () => {
     }
   }, [messages, shouldAutoScroll]);
 
-  // Handle click outside to close emoji picker
+  // Handle click outside to close emoji picker and mobile dropdown
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      
       if (isEmojiPickerOpen) {
-        const target = event.target as HTMLElement;
         if (!target.closest('.emoji-picker-container') && !target.closest('button[type="button"]')) {
           setIsEmojiPickerOpen(false);
+        }
+      }
+      
+      if (showMobileDropdown) {
+        if (!target.closest('.mobile-dropdown-container')) {
+          setShowMobileDropdown(false);
         }
       }
     };
@@ -646,7 +661,7 @@ const WhatsAppPage: React.FC = () => {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEmojiPickerOpen]);
+  }, [isEmojiPickerOpen, showMobileDropdown]);
 
   // Filter clients based on search term
   const filteredClients = clients.filter(client =>
@@ -965,6 +980,70 @@ const WhatsAppPage: React.FC = () => {
     const emoji = emojiObject.emoji;
     setNewMessage(prev => prev + emoji);
     setIsEmojiPickerOpen(false);
+  };
+
+  // Handle AI suggestions
+  const handleAISuggestions = async () => {
+    if (!selectedClient || isLoadingAI) return;
+
+    setIsLoadingAI(true);
+    setShowAISuggestions(true);
+    
+    try {
+      const requestType = newMessage.trim() ? 'improve' : 'suggest';
+      
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({
+          currentMessage: newMessage.trim(),
+          conversationHistory: messages.map(msg => ({
+            id: msg.id,
+            direction: msg.direction,
+            message: msg.message,
+            sent_at: msg.sent_at,
+            sender_name: msg.sender_name
+          })),
+          clientName: selectedClient.name,
+          requestType
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        // Get the single suggestion and clean it
+        const suggestion = result.suggestion.trim();
+        setAiSuggestions([suggestion]);
+      } else {
+        if (result.code === 'OPENAI_QUOTA') {
+          toast.error('AI quota exceeded. Please check plan/billing or try again later.');
+          setAiSuggestions(['Sorry, AI is temporarily unavailable (quota exceeded).']);
+          return;
+        }
+        throw new Error(result.error || 'Failed to get AI suggestions');
+      }
+    } catch (error) {
+      console.error('Error getting AI suggestions:', error);
+      toast.error('Failed to get AI suggestions. Please try again later.');
+      setAiSuggestions(['Sorry, AI suggestions are not available right now.']);
+    } finally {
+      setIsLoadingAI(false);
+    }
+  };
+
+  // Apply AI suggestion
+  const applyAISuggestion = (suggestion: string) => {
+    setNewMessage(suggestion);
+    setShowAISuggestions(false);
+    setAiSuggestions([]);
   };
 
   // Handle edit message
@@ -1998,6 +2077,43 @@ const WhatsAppPage: React.FC = () => {
                 </div>
               )}
               
+              {/* AI Suggestions Dropdown */}
+              {showAISuggestions && (
+                <div className={`${isMobile ? 'absolute bottom-full left-0 right-0 mb-2 p-3 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto' : 'px-4 pt-3 pb-2'}`}>
+                  <div className={`${isMobile ? 'flex items-center justify-between mb-2' : 'p-3 bg-gray-50 rounded-lg border'}`}>
+                    <div className="text-sm font-semibold text-gray-900">
+                      {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAISuggestions(false);
+                        setAiSuggestions([]);
+                      }}
+                      className="btn btn-ghost btn-xs"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    {isLoadingAI ? (
+                      <div className="text-center text-gray-500 py-4">
+                        <div className="loading loading-spinner loading-sm"></div>
+                        <span className="ml-2">Getting AI suggestions...</span>
+                      </div>
+                    ) : (
+                      <div 
+                        className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
+                        onClick={() => applyAISuggestion(aiSuggestions[0])}
+                      >
+                        <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+              
               {/* Template Dropdown - Desktop */}
               {!isMobile && showTemplateSelector && (
                 <div className="px-4 pt-3 pb-2">
@@ -2125,58 +2241,158 @@ const WhatsAppPage: React.FC = () => {
                   <DocumentTextIcon className="w-5 h-5" />
                 </button>
                 
-                {/* File upload button */}
-                <label 
-                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                    isMobile 
-                      ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
-                      : 'bg-white border border-gray-300'
-                  } text-gray-500 hover:bg-gray-100 ${isLocked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                  onClick={() => !isLocked && console.log('📁 File upload button clicked')}
-                >
-                  <PaperClipIcon className="w-5 h-5" />
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                    onChange={handleFileSelect}
-                    disabled={uploadingMedia || isLocked}
-                  />
-                </label>
-                
-                <div className="relative flex-shrink-0">
-                  <button 
-                    type="button" 
-                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                    className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                      isMobile 
-                        ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
-                        : 'bg-white border border-gray-300'
-                    } text-gray-500 hover:bg-gray-100`}
-                    disabled={isLocked}
-                  >
-                    <FaceSmileIcon className="w-5 h-5" />
-                  </button>
-                  
-                  {/* Emoji Picker */}
-                  {isEmojiPickerOpen && !isLocked && (
-                    <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
-                      <EmojiPicker
-                        onEmojiClick={handleEmojiClick}
-                        width={isMobile ? window.innerWidth - 40 : 350}
-                        height={400}
-                        skinTonesDisabled={false}
-                        searchDisabled={false}
-                        previewConfig={{
-                          showPreview: true,
-                          defaultEmoji: '1f60a',
-                          defaultCaption: 'Choose your emoji!'
-                        }}
-                        lazyLoadEmojis={false}
+                    {/* Mobile Dropdown Button */}
+                    {isMobile ? (
+                      <div className="relative flex-shrink-0 mobile-dropdown-container">
+                    <button
+                      type="button"
+                      onClick={() => setShowMobileDropdown(!showMobileDropdown)}
+                      className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                    </button>
+                    
+                    {/* Mobile Dropdown */}
+                    {showMobileDropdown && (
+                      <div className="absolute bottom-14 left-0 z-50 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-lg border border-gray-200 shadow-lg p-2 min-w-[120px]">
+                        {/* File upload option */}
+                        <label className="flex items-center gap-2 p-2 rounded hover:bg-gray-100 cursor-pointer">
+                          <PaperClipIcon className="w-4 h-4 text-gray-600" />
+                          <span className="text-sm text-gray-700">Attachment</span>
+                          <input
+                            type="file"
+                            className="hidden"
+                            accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                            onChange={handleFileSelect}
+                            disabled={uploadingMedia || isLocked}
+                          />
+                        </label>
+                        
+                        {/* Emoji option */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsEmojiPickerOpen(!isEmojiPickerOpen);
+                            setShowMobileDropdown(false);
+                          }}
+                          disabled={isLocked}
+                          className="w-full flex items-center gap-2 p-2 rounded hover:bg-gray-100 text-left"
+                        >
+                          <FaceSmileIcon className="w-4 h-4 text-gray-600" />
+                          <span className="text-sm text-gray-700">Emoji</span>
+                        </button>
+                        
+                        {/* AI option */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleAISuggestions();
+                            setShowMobileDropdown(false);
+                          }}
+                          disabled={isLoadingAI || isLocked || !selectedClient}
+                          className="w-full flex items-center gap-2 p-2 rounded hover:bg-gray-100 text-left"
+                        >
+                          {isLoadingAI ? (
+                            <div className="loading loading-spinner loading-xs"></div>
+                          ) : (
+                            <svg className="w-4 h-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                            </svg>
+                          )}
+                          <span className="text-sm text-gray-700">AI</span>
+                        </button>
+                      </div>
+                    )}
+                    
+                    {/* Mobile Emoji Picker */}
+                    {isEmojiPickerOpen && !isLocked && (
+                      <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
+                        <EmojiPicker
+                          onEmojiClick={handleEmojiClick}
+                          width={window.innerWidth - 40}
+                          height={400}
+                          skinTonesDisabled={false}
+                          searchDisabled={false}
+                          previewConfig={{
+                            showPreview: true,
+                            defaultEmoji: '1f60a',
+                            defaultCaption: 'Choose your emoji!'
+                          }}
+                          lazyLoadEmojis={false}
+                        />
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    {/* Desktop File upload button */}
+                    <label 
+                      className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100 cursor-pointer"
+                      onClick={() => !isLocked && console.log('📁 File upload button clicked')}
+                    >
+                      <PaperClipIcon className="w-5 h-5" />
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                        onChange={handleFileSelect}
+                        disabled={uploadingMedia || isLocked}
                       />
+                    </label>
+                    
+                    {/* Desktop Emoji Button */}
+                    <div className="relative flex-shrink-0">
+                      <button 
+                        type="button" 
+                        onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                        className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100"
+                        disabled={isLocked}
+                      >
+                        <FaceSmileIcon className="w-5 h-5" />
+                      </button>
+                      
+                      {/* Emoji Picker */}
+                      {isEmojiPickerOpen && !isLocked && (
+                        <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
+                          <EmojiPicker
+                            onEmojiClick={handleEmojiClick}
+                            width={350}
+                            height={400}
+                            skinTonesDisabled={false}
+                            searchDisabled={false}
+                            previewConfig={{
+                              showPreview: true,
+                              defaultEmoji: '1f60a',
+                              defaultCaption: 'Choose your emoji!'
+                            }}
+                            lazyLoadEmojis={false}
+                          />
+                        </div>
+                      )}
                     </div>
-                  )}
-                </div>
+
+                    {/* Desktop AI Suggestions Button */}
+                    <button
+                      type="button"
+                      onClick={handleAISuggestions}
+                      disabled={isLoadingAI || isLocked || !selectedClient}
+                      className={`flex-shrink-0 px-3 py-2 rounded-full flex items-center justify-center transition-all text-sm font-medium ${
+                        isLoadingAI
+                          ? 'bg-blue-500 text-white'
+                          : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
+                      } ${isLocked || !selectedClient ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                      title={newMessage.trim() ? "Improve message with AI" : "Get AI suggestions"}
+                    >
+                      {isLoadingAI ? (
+                        <div className="loading loading-spinner loading-sm"></div>
+                      ) : (
+                        'AI'
+                      )}
+                    </button>
+                  </>
+                )}
 
                 {/* Selected file preview */}
                 {selectedFile && (

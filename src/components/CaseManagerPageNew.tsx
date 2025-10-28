@@ -49,6 +49,7 @@ interface HandlerLead {
   scheduler?: string;
   manager?: string;
   notes?: string;
+  lead_type?: 'new' | 'legacy';
 }
 
 interface UploadedFile {
@@ -86,6 +87,14 @@ const CaseManagerPageNew: React.FC = () => {
   const [uploadedFiles, setUploadedFiles] = useState<{ [leadId: string]: UploadedFile[] }>({});
   const [isUploading, setIsUploading] = useState(false);
   const mainContainerRef = useRef<HTMLDivElement>(null);
+
+  // User authentication state
+  const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
+  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+
+  // Data for resolving IDs to names
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
 
   // Dashboard specific states
   const [handlerCasesCount, setHandlerCasesCount] = useState(0);
@@ -125,6 +134,118 @@ const CaseManagerPageNew: React.FC = () => {
     }
   };
 
+  // Helper function to get employee display name from ID
+  const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
+    if (!employeeId) return 'Unknown';
+    // Convert both to string for comparison since employeeId might be bigint
+    const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+    return employee ? employee.display_name : 'Unknown';
+  };
+
+  // Helper function to get category name from ID or name with main category
+  const getCategoryDisplayName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
+    if (!categoryId || categoryId === '---' || categoryId === '--') {
+      // If no category_id but we have a fallback category, try to find it in the loaded categories
+      if (fallbackCategory && String(fallbackCategory).trim() !== '') {
+        // Try to find the fallback category in the loaded categories
+        let foundCategory = null;
+        if (typeof fallbackCategory === 'number') {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.id.toString() === fallbackCategory.toString()
+          );
+        }
+        
+        if (!foundCategory) {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.name.toLowerCase().trim() === String(fallbackCategory).toLowerCase().trim()
+          );
+        }
+        
+        if (foundCategory) {
+          // Return category name with main category in parentheses
+          if (foundCategory.misc_maincategory?.name) {
+            return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
+          } else {
+            return foundCategory.name;
+          }
+        } else {
+          return String(fallbackCategory);
+        }
+      }
+      return 'Not specified';
+    }
+    
+    // If allCategories is not loaded yet, return the original value
+    if (!allCategories || allCategories.length === 0) {
+      return String(categoryId);
+    }
+    
+    // First try to find by ID
+    const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (categoryById) {
+      // Return category name with main category in parentheses
+      if (categoryById.misc_maincategory?.name) {
+        return `${categoryById.name} (${categoryById.misc_maincategory.name})`;
+      } else {
+        return categoryById.name;
+      }
+    }
+    
+    // If not found by ID, try to find by name (in case it's already a name)
+    const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
+    if (categoryByName) {
+      // Return category name with main category in parentheses
+      if (categoryByName.misc_maincategory?.name) {
+        return `${categoryByName.name} (${categoryByName.misc_maincategory.name})`;
+      } else {
+        return categoryByName.name;
+      }
+    }
+    
+    return String(categoryId);
+  };
+
+  // Helper function to get stage name from stage ID or name
+  const getStageDisplayName = (stage: string | number | null | undefined) => {
+    if (!stage || (typeof stage === 'string' && !stage.trim())) {
+      return 'No Stage';
+    }
+    
+    const stageStr = String(stage);
+    
+    // If it's already text (not a numeric ID), return as-is with proper formatting
+    if (typeof stage === 'string' && !stage.match(/^\d+$/)) {
+      return stageStr.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+    }
+    
+    // For numeric IDs, use comprehensive mapping (same as Calendar page)
+    const stageMapping: { [key: string]: string } = {
+      '0': 'Created',
+      '10': 'Scheduler Assigned',
+      '11': 'Handler Started',
+      '15': 'Success',
+      '20': 'Meeting Scheduled',
+      '35': 'Meeting Irrelevant',
+      '50': 'Meeting Scheduled',
+      '51': 'Client Declined Price Offer',
+      '60': 'Handler Assigned',
+      '91': 'Dropped (Spam/Irrelevant)',
+      '105': 'Success',
+      '110': 'Handler Assigned',
+      '200': 'Meeting Scheduled',
+      'meeting_scheduled': 'Meeting Scheduled',
+      'scheduler_assigned': 'Scheduler Assigned',
+      'handler_started': 'Handler Started',
+      'handler_assigned': 'Handler Assigned',
+      'success': 'Success',
+      'created': 'Created'
+    };
+    
+    const stageName = stageMapping[stageStr] || stageStr;
+    
+    return stageName;
+  };
+
   const fetchTaskCount = async () => {
     try {
       const { count, error } = await supabase
@@ -138,17 +259,78 @@ const CaseManagerPageNew: React.FC = () => {
     }
   };
 
+  // Fetch reference data (employees and categories)
+  const fetchReferenceData = async () => {
+    try {
+      // Fetch all employees
+      const { data: employeesData, error: employeesError } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, official_name')
+        .order('display_name');
+
+      if (employeesError) {
+        console.error('Error fetching employees:', employeesError);
+      } else {
+        setAllEmployees(employeesData || []);
+      }
+
+      // Fetch all categories with their parent main category names using JOINs
+      const { data: categoriesData, error: categoriesError } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id (
+            id,
+            name
+          )
+        `)
+        .order('name', { ascending: true });
+
+      if (categoriesError) {
+        console.error('Error fetching categories:', categoriesError);
+      } else {
+        setAllCategories(categoriesData || []);
+      }
+    } catch (error) {
+      console.error('Error fetching reference data:', error);
+    }
+  };
+
   const fetchHandlerStageStats = async () => {
     try {
-      const { count, error } = await supabase
+      // Count new leads with handler assigned
+      let newLeadsQuery = supabase
         .from('leads')
         .select('*', { count: 'exact', head: true })
         .not('handler', 'is', null)
         .not('handler', 'eq', '')
         .not('handler', 'eq', '---');
 
-      if (error) throw error;
-      setHandlerCasesCount(count || 0);
+      if (currentUserFullName) {
+        newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
+      }
+
+      const { count: newLeadsCount, error: newLeadsError } = await newLeadsQuery;
+
+      if (newLeadsError) throw newLeadsError;
+
+      // Count legacy leads with handler assigned
+      let legacyLeadsQuery = supabase
+        .from('leads_lead')
+        .select('*', { count: 'exact', head: true })
+        .not('case_handler_id', 'is', null);
+
+      if (currentUserEmployeeId) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('case_handler_id', currentUserEmployeeId);
+      }
+
+      const { count: legacyLeadsCount, error: legacyLeadsError } = await legacyLeadsQuery;
+
+      if (legacyLeadsError) throw legacyLeadsError;
+
+      setHandlerCasesCount((newLeadsCount || 0) + (legacyLeadsCount || 0));
     } catch (error) {
       console.error('Error fetching handler stage stats:', error);
     }
@@ -241,55 +423,63 @@ const CaseManagerPageNew: React.FC = () => {
 
   const fetchCaseStatistics = async () => {
     try {
-      // Fetch cases in process (handler_assigned stage)
-      const { count: inProcess, error: inProcessError } = await supabase
+      // Helper function to count leads by stage for new leads
+      const countNewLeadsByStage = async (stage: string) => {
+        let query = supabase
         .from('leads')
         .select('*', { count: 'exact', head: true })
-        .eq('stage', 'handler_assigned')
+          .eq('stage', stage)
         .not('handler', 'is', null)
         .not('handler', 'eq', '')
         .not('handler', 'eq', '---');
 
-      if (inProcessError) throw inProcessError;
+        if (currentUserFullName) {
+          query = query.eq('handler', currentUserFullName);
+        }
+
+        const { count, error } = await query;
+        if (error) throw error;
+        return count || 0;
+      };
+
+      // Helper function to count leads by stage for legacy leads
+      const countLegacyLeadsByStage = async (stage: string) => {
+        let query = supabase
+          .from('leads_lead')
+        .select('*', { count: 'exact', head: true })
+          .eq('stage', stage)
+          .not('case_handler_id', 'is', null);
+
+        if (currentUserEmployeeId) {
+          query = query.eq('case_handler_id', currentUserEmployeeId);
+        }
+
+        const { count, error } = await query;
+        if (error) throw error;
+        return count || 0;
+      };
+
+      // Fetch cases in process (handler_assigned stage)
+      const newInProcess = await countNewLeadsByStage('handler_assigned');
+      const legacyInProcess = await countLegacyLeadsByStage('handler_assigned');
 
       // Fetch cases with applications sent (applications_sent stage)
-      const { count: applicationsSent, error: applicationsSentError } = await supabase
-        .from('leads')
-        .select('*', { count: 'exact', head: true })
-        .eq('stage', 'applications_sent')
-        .not('handler', 'is', null)
-        .not('handler', 'eq', '')
-        .not('handler', 'eq', '---');
-
-      if (applicationsSentError) throw applicationsSentError;
+      const newApplicationsSent = await countNewLeadsByStage('applications_sent');
+      const legacyApplicationsSent = await countLegacyLeadsByStage('applications_sent');
 
       // Fetch approved cases
-      const { count: approved, error: approvedError } = await supabase
-        .from('leads')
-        .select('*', { count: 'exact', head: true })
-        .eq('stage', 'approved')
-        .not('handler', 'is', null)
-        .not('handler', 'eq', '')
-        .not('handler', 'eq', '---');
-
-      if (approvedError) throw approvedError;
+      const newApproved = await countNewLeadsByStage('approved');
+      const legacyApproved = await countLegacyLeadsByStage('approved');
 
       // Fetch declined cases
-      const { count: declined, error: declinedError } = await supabase
-        .from('leads')
-        .select('*', { count: 'exact', head: true })
-        .eq('stage', 'declined')
-        .not('handler', 'is', null)
-        .not('handler', 'eq', '')
-        .not('handler', 'eq', '---');
-
-      if (declinedError) throw declinedError;
+      const newDeclined = await countNewLeadsByStage('declined');
+      const legacyDeclined = await countLegacyLeadsByStage('declined');
 
       setCaseStats({
-        inProcess: inProcess || 0,
-        applicationsSent: applicationsSent || 0,
-        approved: approved || 0,
-        declined: declined || 0
+        inProcess: newInProcess + legacyInProcess,
+        applicationsSent: newApplicationsSent + legacyApplicationsSent,
+        approved: newApproved + legacyApproved,
+        declined: newDeclined + legacyDeclined
       });
     } catch (error) {
       console.error('Error fetching case statistics:', error);
@@ -298,32 +488,38 @@ const CaseManagerPageNew: React.FC = () => {
 
   const fetchTotalBalance = async () => {
     try {
-      // Get payment plans for all leads with handlers assigned
-      const { data: leadsWithHandlers, error: leadsError } = await supabase
+      // Get payment plans for new leads with handlers assigned
+      let newLeadsQuery = supabase
         .from('leads')
         .select('id, lead_number')
         .not('handler', 'is', null)
         .not('handler', 'eq', '')
         .not('handler', 'eq', '---');
 
-      if (leadsError) throw leadsError;
+      if (currentUserFullName) {
+        newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
+      }
 
-      if (!leadsWithHandlers || leadsWithHandlers.length === 0) {
+      const { data: newLeadsWithHandlers, error: newLeadsError } = await newLeadsQuery;
+
+      if (newLeadsError) throw newLeadsError;
+
+      if (!newLeadsWithHandlers || newLeadsWithHandlers.length === 0) {
         setTotalBalance(0);
         return;
       }
 
-      const leadIds = leadsWithHandlers.map(lead => lead.id);
+      const newLeadIds = newLeadsWithHandlers.map(lead => lead.id);
 
       // Create date range for selected month and year
       const startDate = new Date(selectedYear, selectedMonth, 1).toISOString();
       const endDate = new Date(selectedYear, selectedMonth + 1, 0, 23, 59, 59, 999).toISOString();
 
-      // Get payment plans for these leads with date filter
+      // Get payment plans for these leads with date filter (only new leads have payment plans)
       const { data: paymentPlans, error: paymentError } = await supabase
         .from('payment_plans')
         .select('id, value, paid, lead_id, paid_at')
-        .in('lead_id', leadIds)
+        .in('lead_id', newLeadIds)
         .eq('paid', true)
         .gte('paid_at', startDate)
         .lte('paid_at', endDate);
@@ -343,16 +539,139 @@ const CaseManagerPageNew: React.FC = () => {
   const fetchLeads = async () => {
     setLoading(true);
     try {
-      const { data, error } = await supabase
+      // Fetch new leads with JOINs for related data
+      let newLeadsQuery = supabase
         .from('leads')
-        .select('*')
+        .select(`
+          *,
+          misc_category!category_id(
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          )
+        `)
         .not('handler', 'is', null)
         .not('handler', 'eq', '')
-        .not('handler', 'eq', '---')
-        .order('created_at', { ascending: false });
+        .not('handler', 'eq', '---');
 
-      if (error) throw error;
-      setLeads(data || []);
+      // Filter new leads by handler field if we have user's full name
+      if (currentUserFullName) {
+        newLeadsQuery = newLeadsQuery.eq('handler', currentUserFullName);
+        console.log('🔍 Filtering new leads by handler:', currentUserFullName);
+      }
+
+      const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
+
+      if (newLeadsError) {
+        console.error('Error fetching new leads:', newLeadsError);
+        throw newLeadsError;
+      }
+
+      // Fetch legacy leads with JOINs for related data
+      let legacyLeadsQuery = supabase
+        .from('leads_lead')
+        .select(`
+          *,
+          misc_category!category_id(
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          ),
+          case_handler:tenants_employee!case_handler_id(
+            id,
+            display_name
+          ),
+          expert:tenants_employee!expert_id(
+            id,
+            display_name
+          )
+        `)
+        .not('case_handler_id', 'is', null);
+
+      // Filter legacy leads by case_handler_id if we have the employee ID
+      if (currentUserEmployeeId) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('case_handler_id', currentUserEmployeeId);
+        console.log('🔍 Filtering legacy leads by case_handler_id:', currentUserEmployeeId);
+      }
+
+      const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.order('cdate', { ascending: false });
+
+      if (legacyLeadsError) {
+        console.error('Error fetching legacy leads:', legacyLeadsError);
+        throw legacyLeadsError;
+      }
+
+      // Transform new leads to include resolved names
+      const transformedNewLeads = (newLeadsData || []).map(lead => {
+        // Debug logging for category JOIN data
+        if (lead.category_id && Math.random() < 0.1) { // Log 10% for debugging
+          console.log('🔍 New lead category debug:', {
+            leadId: lead.id,
+            categoryId: lead.category_id,
+            miscCategory: lead.misc_category,
+            fallbackCategory: lead.category
+          });
+        }
+        
+        return {
+          ...lead,
+          lead_type: 'new' as const,
+          handler: lead.handler || 'Not assigned',
+          expert: lead.expert || '--',
+          category: lead.misc_category?.name 
+            ? (lead.misc_category.misc_maincategory?.name 
+                ? `${lead.misc_category.name} (${lead.misc_category.misc_maincategory.name})`
+                : lead.misc_category.name)
+            : getCategoryDisplayName(lead.category_id, lead.category)
+        };
+      });
+
+      // Transform legacy leads to match HandlerLead interface with resolved names
+      const transformedLegacyLeads = (legacyLeadsData || []).map(lead => {
+        // Debug logging for category JOIN data
+        if (lead.category_id && Math.random() < 0.1) { // Log 10% for debugging
+          console.log('🔍 Legacy lead category debug:', {
+            leadId: lead.id,
+            categoryId: lead.category_id,
+            miscCategory: lead.misc_category,
+            fallbackCategory: lead.category
+          });
+        }
+        
+        return {
+          ...lead,
+          id: `legacy_${lead.id}`,
+          lead_number: String(lead.id),
+          created_at: lead.cdate,
+          lead_type: 'legacy' as const,
+          handler: lead.case_handler?.display_name || getEmployeeDisplayName(lead.case_handler_id) || 'Not assigned',
+          expert: lead.expert?.display_name || getEmployeeDisplayName(lead.expert_id) || '--',
+          category: lead.misc_category?.name 
+            ? (lead.misc_category.misc_maincategory?.name 
+                ? `${lead.misc_category.name} (${lead.misc_category.misc_maincategory.name})`
+                : lead.misc_category.name)
+            : getCategoryDisplayName(lead.category_id, lead.category),
+          balance: lead.total || 0,
+          balance_currency: lead.currency_id === 1 ? '₪' : lead.currency_id === 2 ? '$' : lead.currency_id === 3 ? '€' : '₪'
+        };
+      });
+
+      // Combine new leads and legacy leads
+      const allLeads = [
+        ...transformedNewLeads,
+        ...transformedLegacyLeads
+      ];
+
+      setLeads(allLeads);
+      console.log('🔍 Total leads fetched:', allLeads.length, '(New:', transformedNewLeads.length, 'Legacy:', transformedLegacyLeads.length, ')');
     } catch (error) {
       console.error('Error fetching leads:', error);
       toast.error('Failed to fetch leads');
@@ -454,7 +773,69 @@ const CaseManagerPageNew: React.FC = () => {
     setActiveTab('cases');
   };
 
+  // User authentication effect
   useEffect(() => {
+    (async () => {
+      try {
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError) {
+          console.error('🔍 Authentication error:', authError);
+          setCurrentUserFullName('Unknown User');
+          return;
+        }
+        
+        // Fetch current user's data with employee relationship using JOIN
+        if (user?.id) {
+          const { data: userData, error: userError } = await supabase
+            .from('users')
+            .select(`
+              id,
+              full_name,
+              email,
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name
+              )
+            `)
+            .eq('auth_id', user.id)
+            .single();
+          
+          if (userError) {
+            console.error('🔍 User data fetch error details:', userError);
+            setCurrentUserFullName('Unknown User');
+            return;
+          }
+          
+          if (userData?.full_name) {
+            setCurrentUserFullName(userData.full_name);
+          } else if (userData?.tenants_employee && Array.isArray(userData.tenants_employee) && userData.tenants_employee.length > 0) {
+            setCurrentUserFullName(userData.tenants_employee[0].display_name);
+          } else {
+            setCurrentUserFullName('Unknown User');
+          }
+          
+          // Store employee ID for efficient filtering
+          if (userData?.employee_id && typeof userData.employee_id === 'number') {
+            setCurrentUserEmployeeId(userData.employee_id);
+          } else {
+            setCurrentUserEmployeeId(null);
+          }
+        } else {
+          setCurrentUserFullName('Unknown User');
+        }
+      } catch (error) {
+        console.error('🔍 Error in user data fetching:', error);
+        setCurrentUserFullName('Unknown User');
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    // Only fetch leads when we have user authentication data
+    if (currentUserFullName || currentUserEmployeeId) {
+      fetchReferenceData(); // Fetch reference data first
     fetchLeads();
     fetchHandlerStageStats();
     fetchNewMessages();
@@ -462,7 +843,8 @@ const CaseManagerPageNew: React.FC = () => {
     fetchDocumentsPending();
     fetchCaseStatistics();
     fetchTotalBalance();
-  }, []);
+    }
+  }, [currentUserFullName, currentUserEmployeeId]);
 
   // Scroll to top when component first mounts with a selected case
   useEffect(() => {
@@ -533,7 +915,8 @@ const CaseManagerPageNew: React.FC = () => {
       isUploading,
       handleFileInput,
       refreshLeads,
-      refreshDashboardData
+      refreshDashboardData,
+      getStageDisplayName
     };
 
     switch (activeTab) {
@@ -1078,6 +1461,7 @@ const CaseManagerPageNew: React.FC = () => {
               onCaseSelect={handleCaseSelect}
               showCaseCards={showCaseCards}
               setShowCaseCards={setShowCaseCards}
+              getStageDisplayName={getStageDisplayName}
             />
           </div>
         )}

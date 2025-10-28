@@ -46,6 +46,8 @@ interface HandlerLead {
   closer?: string;
   scheduler?: string;
   manager?: string;
+  manual_interactions?: any[];
+  topic?: string;
 }
 
 interface Attachment {
@@ -692,7 +694,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({ leads }) => {
       }));
       // 2. Email interactions - Fetch from database instead of relying on leads[0].emails
       let clientEmails: any[] = [];
-      if (leads[0]?.id) {
+      if (leads[0]?.id && !leads[0].id.startsWith('legacy_')) {
         try {
           const { data: emailsData, error: emailsError } = await supabase
             .from('emails')
@@ -709,6 +711,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({ leads }) => {
         } catch (fetchError) {
           console.error('Error fetching emails:', fetchError);
         }
+      } else if (leads[0]?.id?.startsWith('legacy_')) {
+        console.log(`Skipping legacy lead ${leads[0].id} for emails fetch`);
       }
       
       const emailInteractions = clientEmails.map((e: any) => {

@@ -82,6 +82,12 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
         const allHistory: ActivityHistory[] = [];
         
         for (const lead of leads) {
+          // Skip legacy leads for document and stage history queries
+          if (lead.id.startsWith('legacy_')) {
+            console.log(`Skipping legacy lead ${lead.id} for document and stage history queries`);
+            continue;
+          }
+          
           // Fetch document status history
           const { data: docData, error: docError } = await supabase.rpc('get_document_status_history', {
             p_lead_id: lead.id
@@ -135,10 +141,18 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
       if (leads.length === 0) return;
       
       try {
+        // Only fetch for new leads (legacy leads don't have required documents in the new system)
+        const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+        
+        if (newLeads.length === 0) {
+          setMissingDocumentsCount(0);
+          return;
+        }
+        
         const { data, error } = await supabase
           .from('lead_required_documents')
           .select('status')
-          .in('lead_id', leads.map(lead => lead.id))
+          .in('lead_id', newLeads.map(lead => lead.id))
           .eq('status', 'missing');
         
         if (error) {
@@ -156,10 +170,18 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
       if (leads.length === 0) return;
       
       try {
+        // Only fetch for new leads (legacy leads don't have contacts in the new system)
+        const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+        
+        if (newLeads.length === 0) {
+          setApplicantsCount(0);
+          return;
+        }
+        
         const { data, error } = await supabase
           .from('contacts')
           .select('is_persecuted')
-          .in('lead_id', leads.map(lead => lead.id))
+          .in('lead_id', newLeads.map(lead => lead.id))
           .eq('is_persecuted', false);
         
         if (error) {
@@ -177,10 +199,18 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
       if (leads.length === 0) return;
       
       try {
+        // Only fetch for new leads (legacy leads don't have tasks in the new system)
+        const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+        
+        if (newLeads.length === 0) {
+          setOpenTasksCount(0);
+          return;
+        }
+        
         const { data: allTasks, error: allTasksError } = await supabase
           .from('handler_tasks')
           .select('id, status, lead_id')
-          .in('lead_id', leads.map(lead => lead.id));
+          .in('lead_id', newLeads.map(lead => lead.id));
         
         if (allTasksError) {
           console.error('Error fetching all tasks:', allTasksError);
@@ -204,11 +234,19 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
       if (leads.length === 0) return;
       
       try {
+        // Only fetch for new leads (legacy leads don't have payment plans in the new system)
+        const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+        
+        if (newLeads.length === 0) {
+          setPaymentsPaidCount('0');
+          return;
+        }
+        
         // Get total payments count
         const { data: totalData, error: totalError } = await supabase
           .from('payment_plans')
           .select('paid')
-          .in('lead_id', leads.map(lead => lead.id));
+          .in('lead_id', newLeads.map(lead => lead.id));
         
         if (totalError) {
           console.error('Error fetching total payments count:', totalError);
@@ -219,7 +257,7 @@ const StatusTab: React.FC<HandlerTabProps> = ({ leads, refreshLeads }) => {
         const { data: paidData, error: paidError } = await supabase
           .from('payment_plans')
           .select('paid')
-          .in('lead_id', leads.map(lead => lead.id))
+          .in('lead_id', newLeads.map(lead => lead.id))
           .eq('paid', true);
         
         if (paidError) {

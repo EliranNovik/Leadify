@@ -61,6 +61,7 @@ interface HandlerTabProps {
   isUploading: boolean;
   handleFileInput: (lead: HandlerLead, e: React.ChangeEvent<HTMLInputElement>) => void;
   refreshLeads: () => Promise<void>;
+  getStageDisplayName?: (stage: string | number | null | undefined) => string;
 }
 
 const CasesTab: React.FC<HandlerTabProps> = ({ 
@@ -69,7 +70,8 @@ const CasesTab: React.FC<HandlerTabProps> = ({
   uploadingLeadId, 
   uploadedFiles, 
   isUploading, 
-  handleFileInput 
+  handleFileInput,
+  getStageDisplayName
 }) => {
   const [selectedLead, setSelectedLead] = useState<HandlerLead | null>(null);
   const [caseData, setCaseData] = useState<{[key: string]: any}>({});
@@ -85,18 +87,34 @@ const CasesTab: React.FC<HandlerTabProps> = ({
     const fetchCaseData = async () => {
       if (leads.length > 0) {
         try {
-          const { data, error } = await supabase
-            .from('leads')
-            .select('*')
-            .in('id', leads.map(lead => lead.id));
-
-          if (error) throw error;
+          // Separate new leads from legacy leads
+          const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+          const legacyLeads = leads.filter(lead => lead.id.startsWith('legacy_'));
           
           const caseDataMap: {[key: string]: any} = {};
-          data?.forEach(lead => {
+          
+          // Fetch data for new leads from leads table
+          if (newLeads.length > 0) {
+            const { data, error } = await supabase
+              .from('leads')
+              .select('*')
+              .in('id', newLeads.map(lead => lead.id));
+
+            if (error) throw error;
+            
+            data?.forEach(lead => {
+              caseDataMap[lead.id] = lead;
+              console.log('New lead data for', lead.id, ':', lead); // Debug log
+            });
+          }
+          
+          // For legacy leads, we don't need to fetch additional data since they already have all the data
+          // Just add them to the caseDataMap with their existing data
+          legacyLeads.forEach(lead => {
             caseDataMap[lead.id] = lead;
-            console.log('Lead data for', lead.id, ':', lead); // Debug log
+            console.log('Legacy lead data for', lead.id, ':', lead); // Debug log
           });
+          
           setCaseData(caseDataMap);
         } catch (error) {
           console.error('Error fetching case data:', error);
@@ -112,10 +130,20 @@ const CasesTab: React.FC<HandlerTabProps> = ({
     const fetchContractData = async () => {
       if (leads.length > 0) {
         try {
+          // Only fetch contracts for new leads (legacy leads don't have contracts in the new system)
+          const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+          
+          if (newLeads.length === 0) {
+            // No new leads, just set empty maps
+            setApplicantCounts({});
+            setContractLinks({});
+            return;
+          }
+          
           const { data, error } = await supabase
             .from('contracts')
             .select('client_id, applicant_count, contact_name, id, public_token')
-            .in('client_id', leads.map(lead => lead.id));
+            .in('client_id', newLeads.map(lead => lead.id));
 
           if (error) throw error;
           
@@ -321,7 +349,7 @@ const CasesTab: React.FC<HandlerTabProps> = ({
                     <span className="text-xs sm:text-sm font-medium text-gray-700">Stage:</span>
                     <div className="text-right">
                       <span className="badge badge-xs sm:badge-sm badge-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-transparent">
-                        {lead.stage ? lead.stage.replace(/_/g, ' ') : 'N/A'}
+                        {getStageDisplayName ? getStageDisplayName(lead.handler_stage || lead.stage) : (lead.stage ? String(lead.stage).replace(/_/g, ' ') : 'N/A')}
                       </span>
                     </div>
                   </div>

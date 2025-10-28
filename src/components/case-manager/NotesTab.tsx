@@ -92,6 +92,16 @@ const NotesTab: React.FC<HandlerTabProps> = ({ leads }) => {
 
   const fetchNotes = async (leadId: string) => {
     try {
+      // Skip legacy leads (they don't have notes in the new system)
+      if (leadId.startsWith('legacy_')) {
+        console.log(`Skipping legacy lead ${leadId} for notes fetch`);
+        setNotes(prev => ({
+          ...prev,
+          [leadId]: []
+        }));
+        return;
+      }
+      
       const { data, error } = await supabase
         .from('lead_notes')
         .select(`
@@ -115,6 +125,16 @@ const NotesTab: React.FC<HandlerTabProps> = ({ leads }) => {
 
   const fetchContacts = async (leadId: string) => {
     try {
+      // Skip legacy leads (they don't have contacts in the new system)
+      if (leadId.startsWith('legacy_')) {
+        console.log(`Skipping legacy lead ${leadId} for contacts fetch`);
+        setContacts(prev => ({
+          ...prev,
+          [leadId]: []
+        }));
+        return;
+      }
+      
       const { data, error } = await supabase
         .from('contacts')
         .select('id, name, relationship')

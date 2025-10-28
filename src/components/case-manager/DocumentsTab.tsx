@@ -261,10 +261,18 @@ const DocumentsTab: React.FC<HandlerTabProps> = ({ leads, uploadFiles, uploading
       if (leads.length === 0) return;
       
       try {
+        // Only fetch for new leads (legacy leads don't have contacts in the new system)
+        const newLeads = leads.filter(lead => !lead.id.startsWith('legacy_'));
+        
+        if (newLeads.length === 0) {
+          setContacts([]);
+          return;
+        }
+        
         const { data, error } = await supabase
           .from('contacts')
           .select('*')
-          .in('lead_id', leads.map(lead => lead.id))
+          .in('lead_id', newLeads.map(lead => lead.id))
           .order('is_main_applicant', { ascending: false })
           .order('created_at', { ascending: true });
         

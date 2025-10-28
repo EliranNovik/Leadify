@@ -36,9 +36,10 @@ interface DashboardTabProps extends HandlerTabProps {
   onCaseSelect: (lead: HandlerLead) => void;
   showCaseCards: boolean;
   setShowCaseCards: (show: boolean) => void;
+  getStageDisplayName: (stage: string | number | null | undefined) => string;
 }
 
-const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCaseSelect, showCaseCards, setShowCaseCards }) => {
+const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCaseSelect, showCaseCards, setShowCaseCards, getStageDisplayName }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
@@ -314,7 +315,7 @@ const DashboardTab: React.FC<DashboardTabProps> = ({ leads, refreshLeads, onCase
                     <div className="text-sm text-gray-700">{new Date(lead.created_at).toLocaleDateString()}</div>
                     <div>
                       <span className="badge bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none text-xs">
-                        {(lead.handler_stage || lead.stage).replace(/_/g, ' ')}
+                        {getStageDisplayName(lead.handler_stage || lead.stage)}
                       </span>
                     </div>
                   </div>

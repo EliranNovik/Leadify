@@ -1461,9 +1461,22 @@ const Clients: React.FC<ClientsProps> = ({
       // Refresh client data
       await onClientUpdate();
       setSelectedStage(null);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating lead stage:', error);
-      alert('Failed to update lead stage. Please try again.');
+      
+      // Check if this is a category validation error from RLS policy
+      if (error?.message && error.message.includes('category')) {
+        toast.error('Please set a category for this client before performing this action.', {
+          duration: 4000,
+          style: {
+            background: '#fee2e2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+          },
+        });
+      } else {
+        toast.error('Failed to update lead stage. Please try again.');
+      }
     }
   };
 
@@ -1562,9 +1575,22 @@ const Clients: React.FC<ClientsProps> = ({
       
       // Refresh client data
       await onClientUpdate();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating scheduler:', error);
-      alert('Failed to update scheduler. Please try again.');
+      
+      // Check if this is a category validation error from RLS policy
+      if (error?.message && error.message.includes('category')) {
+        toast.error('Please set a category for this client before performing this action.', {
+          duration: 4000,
+          style: {
+            background: '#fee2e2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+          },
+        });
+      } else {
+        toast.error('Failed to update scheduler. Please try again.');
+      }
     }
   };
 
@@ -2110,18 +2136,31 @@ const Clients: React.FC<ClientsProps> = ({
       
       setShowMeetingEndedDrawer(false);
       await onClientUpdate();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving meeting ended data:', error);
-      toast.error('Failed to save meeting data. Please ensure the new fields exist in the database.', {
-        duration: 5000,
-        position: 'top-right',
-        style: {
-          background: '#ef4444',
-          color: '#fff',
-          fontWeight: '500',
-        },
-        icon: '❌',
-      });
+      
+      // Check if this is a category validation error from RLS policy
+      if (error?.message && error.message.includes('category')) {
+        toast.error('Please set a category for this client before performing this action.', {
+          duration: 4000,
+          style: {
+            background: '#fee2e2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+          },
+        });
+      } else {
+        toast.error('Failed to save meeting data. Please ensure the new fields exist in the database.', {
+          duration: 5000,
+          position: 'top-right',
+          style: {
+            background: '#ef4444',
+            color: '#fff',
+            fontWeight: '500',
+          },
+          icon: '❌',
+        });
+      }
     } finally {
       setIsSavingMeetingEnded(false);
     }
@@ -2188,9 +2227,22 @@ const Clients: React.FC<ClientsProps> = ({
       setFollowup('');
       setPotentialApplicants('');
       if (onClientUpdate) await onClientUpdate();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error in handleSaveUpdateDrawer:', err);
-      alert('Failed to update lead.');
+      
+      // Check if this is a category validation error from RLS policy
+      if (err?.message && err.message.includes('category')) {
+        toast.error('Please set a category for this client before performing this action.', {
+          duration: 4000,
+          style: {
+            background: '#fee2e2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+          },
+        });
+      } else {
+        toast.error('Failed to update lead.');
+      }
     } finally {
       setIsSavingUpdate(false);
     }
@@ -2284,8 +2336,22 @@ const Clients: React.FC<ClientsProps> = ({
       toast.success('Offer email sent!');
       setShowSendOfferDrawer(false);
       await onClientUpdate();
-    } catch (e) {
-      toast.error('Failed to send offer email.');
+    } catch (e: any) {
+      console.error('Error sending offer email:', e);
+      
+      // Check if this is a category validation error from RLS policy
+      if (e?.message && e.message.includes('category')) {
+        toast.error('Please set a category for this client before performing this action.', {
+          duration: 4000,
+          style: {
+            background: '#fee2e2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+          },
+        });
+      } else {
+        toast.error('Failed to send offer email.');
+      }
     }
     setOfferSending(false);
   };
@@ -4142,6 +4208,7 @@ const Clients: React.FC<ClientsProps> = ({
           <ClientInformationBox 
             selectedClient={selectedClient} 
             getEmployeeDisplayName={getEmployeeDisplayName}
+            onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
           />
 
           {/* Progress & Follow-up card - Hidden on mobile (now inline in ClientInformationBox) */}
@@ -4193,7 +4260,7 @@ const Clients: React.FC<ClientsProps> = ({
           <div className="pt-0">
             <div className="flex flex-col lg:flex-row justify-between gap-8">
               <div className="w-full lg:w-80">
-                <ClientInformationBox selectedClient={selectedClient} />
+                <ClientInformationBox selectedClient={selectedClient} onClientUpdate={async () => await refreshClientData(selectedClient?.id)} />
               </div>
               <div className="w-full lg:w-48 flex flex-col items-center">
                 {/* Next Payment Due Indicator */}
@@ -4326,6 +4393,18 @@ const Clients: React.FC<ClientsProps> = ({
                         </li>
                       ))}
                     </ul>
+                  </div>
+                )}
+                
+                {/* Category Prompt Message - Under stage badge */}
+                {(!selectedClient?.category_id && !selectedClient?.category) && (
+                  <div className="text-center mb-3">
+                    <div className="text-sm text-orange-600 bg-orange-50 px-3 py-2 rounded-lg border border-orange-200 inline-block animate-pulse shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-105" style={{
+                      boxShadow: '0 4px 8px rgba(0,0,0,0.1), 0 8px 16px rgba(0,0,0,0.1), inset 0 1px 0 rgba(255,255,255,0.2)',
+                      animation: 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite'
+                    }}>
+                      Please add a category for this lead
+                    </div>
                   </div>
                 )}
                 

@@ -76,6 +76,15 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
   const fetchFinanceData = async (leadId: string) => {
     setLoading(true);
     try {
+      // Skip legacy leads (they don't have payment plans in the new system)
+      if (leadId.startsWith('legacy_')) {
+        console.log(`Skipping legacy lead ${leadId} for finance data fetch`);
+        setFinancePlan(null);
+        setContacts([]);
+        setLoading(false);
+        return;
+      }
+      
       // Fetch payment plans
       const { data: paymentPlans, error: paymentError } = await supabase
         .from('payment_plans')
