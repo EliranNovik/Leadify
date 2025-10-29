@@ -38,6 +38,7 @@ import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../../lib/api';
 import { fetchLegacyInteractions, testLegacyInteractionsAccess } from '../../lib/legacyInteractionsApi';
 import { appendEmailSignature } from '../../lib/emailSignature';
+import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
 
 interface Attachment {
   id: string;
@@ -2860,295 +2861,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         document.body
       )}
       {/* WhatsApp Modal */}
-      {isWhatsAppOpen && createPortal(
-        <div className="fixed inset-0 bg-white z-[9999]">
-          <div className="h-full flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
-              <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-                <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
-                <h2 className="text-lg md:text-2xl font-bold text-gray-900">WhatsApp</h2>
-                <div className="flex items-center gap-2 min-w-0">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm md:text-lg font-semibold text-gray-900 truncate">
-                      {client.name}
-                    </span>
-                    <span className="text-xs md:text-sm text-gray-500 font-mono flex-shrink-0">
-                      ({client.lead_number})
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={handleWhatsAppClose}
-                className="btn btn-ghost btn-circle flex-shrink-0"
-              >
-                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-              </button>
-            </div>
-
-            {/* Messages - Scrollable */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {whatsAppMessages.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p className="text-lg font-medium">No messages yet</p>
-                  <p className="text-sm">Start the conversation with {client.name}</p>
-                </div>
-              ) : (
-                whatsAppMessages.map((message, index) => (
-                  <div
-                    key={message.id || index}
-                    className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
-                  >
-                    {message.direction === 'out' && (
-                      <span className="text-xs text-gray-500 mb-1 mr-2">
-                        {message.sender_name || 'You'}
-                      </span>
-                    )}
-                    {message.direction === 'in' && (
-                      <span className="text-xs text-gray-500 mb-1 ml-2">
-                        {message.sender_name || client.name}
-                      </span>
-                    )}
-                    <div
-                      className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
-                        message.direction === 'out'
-                          ? isEmojiOnly(message.message)
-                            ? 'bg-white text-gray-900'
-                            : 'bg-green-600 text-white'
-                          : 'bg-white text-gray-900 border border-gray-200'
-                      }`}
-                    >
-                      {/* Message content based on type */}
-                      {message.message_type === 'text' && (
-                        <p className={`break-words ${
-                          isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
-                        }`}>
-                          {message.message}
-                        </p>
-                      )}
-                      
-                      {message.message_type === 'image' && (
-                        <div>
-                          {message.media_url && (
-                            <div className="relative inline-block">
-                              <img 
-                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                alt="Image"
-                                className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
-                                onClick={() => message.media_url && setSelectedMedia({
-                                  url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                  type: 'image',
-                                  caption: message.caption
-                                })}
-                                onError={(e) => {
-                                  console.log('Failed to load image:', message.media_url);
-                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
-                                  e.currentTarget.style.border = '1px solid #e5e7eb';
-                                  e.currentTarget.style.borderRadius = '0.5rem';
-                                }}
-                              />
-                              <button
-                                onClick={() => {
-                                  if (!message.media_url) return;
-                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
-                                  const link = document.createElement('a');
-                                  link.href = url;
-                                  link.download = `image_${Date.now()}.jpg`;
-                                  link.click();
-                                }}
-                                className="absolute top-2 right-2 btn btn-ghost btn-xs bg-black bg-opacity-50 text-white hover:bg-opacity-70"
-                                title="Download"
-                              >
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                </svg>
-                              </button>
-                            </div>
-                          )}
-                          {message.caption && (
-                            <p className="text-sm break-words">{message.caption}</p>
-                          )}
-                        </div>
-                      )}
-                      
-                      {message.message_type === 'video' && (
-                        <div>
-                          {message.media_url && (
-                            <video 
-                              controls
-                              className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
-                              onClick={() => message.media_url && setSelectedMedia({
-                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                type: 'video',
-                                caption: message.caption
-                              })}
-                              onError={(e) => {
-                                console.log('Failed to load video:', message.media_url);
-                                e.currentTarget.style.display = 'none';
-                                const errorDiv = document.createElement('div');
-                                errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';
-                                errorDiv.innerHTML = `
-                                  <FilmIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
-                                  <p class="text-xs font-medium">Video Unavailable</p>
-                                  <p class="text-xs opacity-70">Media may have expired</p>
-                                `;
-                                e.currentTarget.parentNode?.appendChild(errorDiv);
-                              }}
-                            >
-                              <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
-                              Your browser does not support the video tag.
-                            </video>
-                          )}
-                          {message.caption && (
-                            <p className="text-sm break-words">{message.caption}</p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Message status and time */}
-                      <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
-                        <span>
-                          {new Date(message.sent_at).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </span>
-                        {message.direction === 'out' && (
-                          <span className="inline-block align-middle text-current">
-                            {renderMessageStatus(message.whatsapp_status, message.error_message)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* Error Display Area */}
-            {whatsAppError && (
-              <div className="flex-shrink-0 p-4 bg-red-50 border-t border-red-200">
-                <div className="flex items-center gap-2 p-3 bg-red-100 border border-red-300 rounded-lg">
-                  <ExclamationTriangleIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
-                  <div className="flex-1">
-                    <p className="text-sm text-red-800 font-medium">{whatsAppError}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setWhatsAppError(null)}
-                    className="text-red-600 hover:text-red-800"
-                  >
-                    <XMarkIcon className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Message Input - Fixed */}
-            <div className="flex-shrink-0 p-4 bg-white border-t border-gray-200">
-              <form onSubmit={handleSendWhatsApp} className="flex items-center gap-2">
-                <div className="relative">
-                  <button 
-                    type="button" 
-                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                    className="btn btn-ghost btn-circle"
-                  >
-                    <FaceSmileIcon className="w-6 h-6 text-gray-500" />
-                  </button>
-                  
-                  {/* Emoji Picker */}
-                  {isEmojiPickerOpen && (
-                    <div className="absolute bottom-12 left-0 z-50 emoji-picker-container">
-                      <EmojiPicker
-                        onEmojiClick={handleEmojiClick}
-                        width={350}
-                        height={400}
-                        skinTonesDisabled={false}
-                        searchDisabled={false}
-                        previewConfig={{
-                          showPreview: true,
-                          defaultEmoji: '1f60a',
-                          defaultCaption: 'Choose your emoji!'
-                        }}
-                        lazyLoadEmojis={false}
-                      />
-                    </div>
-                  )}
-                </div>
-                
-                {/* File upload button */}
-                <label 
-                  className="btn btn-ghost btn-circle cursor-pointer"
-                  onClick={() => console.log('📁 File upload button clicked')}
-                >
-                  <PaperClipIcon className="w-6 h-6 text-gray-500" />
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                    onChange={handleFileSelect}
-                    disabled={uploadingMedia}
-                  />
-                </label>
-
-                {/* Selected file preview */}
-                {selectedFile && (
-                  <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-1">
-                    <span className="text-xs text-gray-600">{selectedFile.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedFile(null)}
-                      className="text-red-500 hover:text-red-700"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                <input
-                  type="text"
-                  value={whatsAppInput}
-                  onChange={(e) => setWhatsAppInput(e.target.value)}
-                  placeholder={selectedFile ? "Add a caption..." : "Type a message..."}
-                  className="flex-1 input input-bordered rounded-full"
-                  disabled={sending || uploadingMedia}
-                />
-                
-                {selectedFile ? (
-                  <button
-                    type="button"
-                    onClick={handleSendMedia}
-                    disabled={uploadingMedia}
-                    className="btn btn-primary btn-circle"
-                  >
-                    {uploadingMedia ? (
-                      <div className="loading loading-spinner loading-sm"></div>
-                    ) : (
-                      <PaperAirplaneIcon className="w-5 h-5" />
-                    )}
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={!whatsAppInput.trim() || sending}
-                    className="btn btn-primary btn-circle"
-                  >
-                    {sending ? (
-                      <div className="loading loading-spinner loading-sm"></div>
-                    ) : (
-                      <PaperAirplaneIcon className="w-5 h-5" />
-                    )}
-                  </button>
-                )}
-              </form>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      <SchedulerWhatsAppModal
+        isOpen={isWhatsAppOpen}
+        onClose={handleWhatsAppClose}
+        client={client ? {
+          id: client.id,
+          name: client.name,
+          lead_number: client.lead_number,
+          phone: client.phone,
+          mobile: client.mobile,
+          lead_type: client.lead_type
+        } : undefined}
+        onClientUpdate={async () => {
+          // Refresh interactions when WhatsApp messages are updated
+          if (onClientUpdate) {
+            await onClientUpdate();
+          }
+          // Trigger re-fetch of interactions by updating a dependency
+          // The useEffect with client.id dependency will handle the refresh
+        }}
+      />
       {/* Details Drawer for Interactions */}
       {detailsDrawerOpen && activeInteraction && createPortal(
         <div className="fixed inset-0 z-[999] flex">

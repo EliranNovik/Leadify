@@ -692,20 +692,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
 
       // First, get user's last_read_at for each conversation
-      const { data: userParticipants, error: participantsError } = await supabase
-        .from('conversation_participants')
-        .select('conversation_id, last_read_at')
-        .eq('user_id', currentUser.id)
-        .in('conversation_id', conversationIds);
+      // Only query if we have conversation IDs to avoid empty array issues
+      let userParticipants: any[] = [];
+      let lastReadMap = new Map();
+      
+      try {
+        const { data, error: participantsError } = await supabase
+          .from('conversation_participants')
+          .select('conversation_id, last_read_at')
+          .eq('user_id', currentUser.id)
+          .in('conversation_id', conversationIds);
 
-      if (participantsError) {
-        console.error('Error fetching user participants:', participantsError);
-        return;
+        if (participantsError) {
+          console.error('Error fetching user participants:', participantsError);
+          // Continue with empty map if participants query fails
+        } else {
+          userParticipants = data || [];
+        }
+      } catch (err) {
+        console.error('Error fetching user participants:', err);
+        // Continue with empty map
       }
 
       // Create a map of conversation_id -> last_read_at
-      const lastReadMap = new Map();
-      userParticipants?.forEach(participant => {
+      userParticipants.forEach(participant => {
         lastReadMap.set(participant.conversation_id, participant.last_read_at);
       });
 
@@ -786,21 +796,36 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     try {
       // Fetch incoming WhatsApp messages from numbers not connected to existing clients
       // These are messages where lead_id is null and direction is 'in' and not read yet
-      const { data: whatsappMessages, error } = await supabase
-        .from('whatsapp_messages')
-        .select('*')
-        .is('lead_id', null)
-        .eq('direction', 'in')
-        .or('is_read.is.null,is_read.eq.false')
-        .order('sent_at', { ascending: false })
-        .limit(10); // Get latest 10 unread messages
+      let whatsappMessages: any[] = [];
+      
+      try {
+        const { data, error } = await supabase
+          .from('whatsapp_messages')
+          .select('*')
+          .is('lead_id', null)
+          .eq('direction', 'in')
+          .or('is_read.is.null,is_read.eq.false')
+          .order('sent_at', { ascending: false })
+          .limit(10); // Get latest 10 unread messages
 
-      if (error) {
-        console.error('Error fetching WhatsApp leads messages:', error);
+        if (error) {
+          console.error('Error fetching WhatsApp leads messages:', error);
+          // Set empty state on error
+          setWhatsappLeadsMessages([]);
+          setWhatsappLeadsUnreadCount(0);
+          return;
+        }
+        
+        whatsappMessages = data || [];
+      } catch (err) {
+        console.error('Error fetching WhatsApp leads messages:', err);
+        // Set empty state on error
+        setWhatsappLeadsMessages([]);
+        setWhatsappLeadsUnreadCount(0);
         return;
       }
 
-      if (!whatsappMessages) {
+      if (!whatsappMessages || whatsappMessages.length === 0) {
         setWhatsappLeadsMessages([]);
         setWhatsappLeadsUnreadCount(0);
         return;

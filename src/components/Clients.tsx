@@ -397,6 +397,9 @@ const Clients: React.FC<ClientsProps> = ({
   const [sources, setSources] = useState<string[]>([]);
   const [languagesList, setLanguagesList] = useState<string[]>([]);
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
+  const [allTags, setAllTags] = useState<any[]>([]);
+  const [tagsList, setTagsList] = useState<string[]>([]);
+  const [currentLeadTags, setCurrentLeadTags] = useState<string>('');
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
@@ -1080,7 +1083,7 @@ const Clients: React.FC<ClientsProps> = ({
       setBackgroundLoading(true);
       try {
         // Fetch all non-essential data in parallel for better performance
-        const [categoriesResult, sourcesResult, languagesResult, currenciesResult, meetingLocationsResult] = await Promise.all([
+        const [categoriesResult, sourcesResult, languagesResult, currenciesResult, meetingLocationsResult, tagsResult] = await Promise.all([
           // Fetch categories with their parent main category names using JOINs
           supabase.from('misc_category')
             .select(`
@@ -1100,7 +1103,9 @@ const Clients: React.FC<ClientsProps> = ({
             supabase.from('currencies').select('id, front_name, iso_code, name').order('id'),
             supabase.from('accounting_currencies').select('id, name, iso_code').order('id')
           ]).then(([newCurrencies, legacyCurrencies]) => ({ newCurrencies, legacyCurrencies })),
-          supabase.from('meeting_locations').select('id, name').eq('is_active', true).order('order_value', { ascending: true })
+          supabase.from('meeting_locations').select('id, name').eq('is_active', true).order('order_value', { ascending: true }),
+          // Fetch tags
+          supabase.from('misc_leadtag').select('id, name, order').eq('active', true).order('order', { ascending: true })
         ]);
         
         // Process dropdown data results
@@ -1152,6 +1157,13 @@ const Clients: React.FC<ClientsProps> = ({
         // Process meeting locations
         if (!meetingLocationsResult.error && meetingLocationsResult.data) {
           setMeetingLocations(meetingLocationsResult.data);
+        }
+        
+        // Process tags
+        if (!tagsResult.error && tagsResult.data) {
+          setAllTags(tagsResult.data);
+          const tagNames = tagsResult.data.map((tag: any) => tag.name);
+          setTagsList(tagNames);
         }
         
         console.log('✅ Background data loading completed');
@@ -2471,16 +2483,181 @@ const Clients: React.FC<ClientsProps> = ({
     setEditLeadData(prev => ({ ...prev, [field]: value }));
   };
 
-  const openEditLeadDrawer = () => {
+  // Fetch current lead tags for editing
+  const fetchCurrentLeadTags = async (leadId: string) => {
+    try {
+      // Check if it's a legacy lead
+      const isLegacyLead = leadId.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        const legacyId = parseInt(leadId.replace('legacy_', ''));
+        const { data, error } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            id,
+            leadtag_id,
+            misc_leadtag (
+              id,
+              name
+            )
+          `)
+          .eq('lead_id', legacyId);
+        
+        if (!error && data) {
+          const tags = data
+            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
+            .map(item => (item.misc_leadtag as any).name);
+          
+          // Join tags with comma and space
+          const tagsString = tags.join(', ');
+          setCurrentLeadTags(tagsString);
+          return tagsString;
+        } else {
+          console.error('Error fetching current lead tags (legacy):', error);
+          setCurrentLeadTags('');
+          return '';
+        }
+      } else {
+        // For new leads, fetch from leads_lead_tags table using newlead_id
+        const { data, error } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            id,
+            leadtag_id,
+            misc_leadtag (
+              id,
+              name
+            )
+          `)
+          .eq('newlead_id', leadId);
+        
+        if (!error && data) {
+          const tags = data
+            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
+            .map(item => (item.misc_leadtag as any).name);
+          
+          // Join tags with comma and space
+          const tagsString = tags.join(', ');
+          setCurrentLeadTags(tagsString);
+          return tagsString;
+        } else {
+          console.error('Error fetching current lead tags (new):', error);
+          setCurrentLeadTags('');
+          return '';
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching current lead tags:', error);
+      setCurrentLeadTags('');
+      return '';
+    }
+  };
+
+  // Save lead tags
+  const saveLeadTags = async (leadId: string, tagsString: string) => {
+    try {
+      const isLegacyLead = leadId.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        const legacyId = parseInt(leadId.replace('legacy_', ''));
+        
+        // First, remove all existing tags for this legacy lead
+        const { error: deleteError } = await supabase
+          .from('leads_lead_tags')
+          .delete()
+          .eq('lead_id', legacyId);
+        
+        if (deleteError) {
+          console.error('Error deleting existing tags (legacy):', deleteError);
+          return;
+        }
+        
+        // Parse the tags string and find matching tag IDs
+        if (tagsString.trim()) {
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          
+          // Find tag IDs for the provided tag names
+          const tagIds = tagNames
+            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
+            .filter(id => id !== undefined);
+          
+          // Insert new tags for legacy lead
+          if (tagIds.length > 0) {
+            const tagInserts = tagIds.map(tagId => ({
+              lead_id: legacyId,
+              leadtag_id: tagId
+            }));
+            
+            const { error: insertError } = await supabase
+              .from('leads_lead_tags')
+              .insert(tagInserts);
+            
+            if (insertError) {
+              console.error('Error inserting new tags (legacy):', insertError);
+              return;
+            }
+          }
+        }
+        
+      } else {
+        // For new leads, use the newlead_id column
+        // First, remove all existing tags for this new lead
+        const { error: deleteError } = await supabase
+          .from('leads_lead_tags')
+          .delete()
+          .eq('newlead_id', leadId);
+        
+        if (deleteError) {
+          console.error('Error deleting existing tags (new):', deleteError);
+          return;
+        }
+        
+        // Parse the tags string and find matching tag IDs
+        if (tagsString.trim()) {
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          
+          // Find tag IDs for the provided tag names
+          const tagIds = tagNames
+            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
+            .filter(id => id !== undefined);
+          
+          // Insert new tags for new lead
+          if (tagIds.length > 0) {
+            const tagInserts = tagIds.map(tagId => ({
+              newlead_id: leadId,
+              leadtag_id: tagId
+            }));
+            
+            const { error: insertError } = await supabase
+              .from('leads_lead_tags')
+              .insert(tagInserts);
+            
+            if (insertError) {
+              console.error('Error inserting new tags (new):', insertError);
+              return;
+            }
+          }
+        }
+        
+      }
+    } catch (error) {
+      console.error('Error saving tags:', error);
+    }
+  };
+
+  const openEditLeadDrawer = async () => {
     // Get the correct currency for this lead (handles both new and legacy leads)
     const currentCurrency = getCurrencySymbol(
       selectedClient?.currency_id || selectedClient?.meeting_total_currency_id,
       selectedClient?.balance_currency
     );
     
+    // Fetch current tags for this lead
+    const tagsString = await fetchCurrentLeadTags(selectedClient?.id || '');
+    
     // Reset the edit form data with current client data
     setEditLeadData({
-      tags: selectedClient?.tags || '',
+      tags: tagsString || selectedClient?.tags || '',
       source: selectedClient?.source || '',
       name: selectedClient?.name || '',
       language: selectedClient?.language || '',
@@ -2590,10 +2767,17 @@ const Clients: React.FC<ClientsProps> = ({
             }
           }
         }
+        
+        // Handle tags separately for legacy leads (using saveLeadTags function)
+        const currentTagsString = await fetchCurrentLeadTags(selectedClient.id);
+        if (editLeadData.tags !== currentTagsString) {
+          await saveLeadTags(selectedClient.id, editLeadData.tags);
+        }
       } else {
         // For regular leads, check each field and only include if it has changed
         if (editLeadData.tags !== selectedClient.tags) {
-          updateData.tags = editLeadData.tags;
+          // Use saveLeadTags function for proper tag management
+          await saveLeadTags(selectedClient.id, editLeadData.tags);
         }
         if (editLeadData.source !== selectedClient.source) {
           updateData.source = editLeadData.source;
@@ -5227,7 +5411,19 @@ const Clients: React.FC<ClientsProps> = ({
             <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
               <div>
                 <label className="block font-semibold mb-1">Tags</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.tags} onChange={e => handleEditLeadChange('tags', e.target.value)} />
+                <input 
+                  type="text" 
+                  className="input input-bordered w-full" 
+                  placeholder="Search or select tags..."
+                  value={editLeadData.tags} 
+                  onChange={e => handleEditLeadChange('tags', e.target.value)}
+                  list="tags-options"
+                />
+                <datalist id="tags-options">
+                  {tagsList.map((name, index) => (
+                    <option key={`${name}-${index}`} value={name} />
+                  ))}
+                </datalist>
               </div>
               <div>
                 <label className="block font-semibold mb-1">Source</label>
@@ -5291,7 +5487,19 @@ const Clients: React.FC<ClientsProps> = ({
               </div>
               <div>
                 <label className="block font-semibold mb-1">Probability</label>
-                <input type="number" min="0" max="100" className="input input-bordered w-full" value={editLeadData.probability} onChange={e => handleEditLeadChange('probability', e.target.value)} />
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    className="range range-primary flex-1"
+                    value={editLeadData.probability || 0}
+                    onChange={e => handleEditLeadChange('probability', parseInt(e.target.value))}
+                  />
+                  <span className="text-sm font-medium text-gray-700 min-w-[50px] text-right">
+                    {editLeadData.probability || 0}%
+                  </span>
+                </div>
               </div>
               <div>
                 <label className="block font-semibold mb-1">Number of Applicants</label>

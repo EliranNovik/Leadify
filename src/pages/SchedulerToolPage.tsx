@@ -3116,7 +3116,19 @@ const SchedulerToolPage: React.FC = () => {
               </div>
               <div>
                 <label className="block font-semibold mb-1">Probability</label>
-                <input type="number" min="0" max="100" className="input input-bordered w-full" value={editLeadData.probability} onChange={e => handleEditLeadChange('probability', e.target.value)} />
+                <div className="flex items-center gap-3">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    className="range range-primary flex-1"
+                    value={editLeadData.probability || 0}
+                    onChange={e => handleEditLeadChange('probability', parseInt(e.target.value))}
+                  />
+                  <span className="text-sm font-medium text-gray-700 min-w-[50px] text-right">
+                    {editLeadData.probability || 0}%
+                  </span>
+                </div>
               </div>
               <div>
                 <label className="block font-semibold mb-1">Number of Applicants</label>

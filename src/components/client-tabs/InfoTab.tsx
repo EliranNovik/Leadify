@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
-import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
+import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 
@@ -116,6 +116,16 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return status || '';
   };
 
+  const getEligibleStatus = () => {
+    // For new leads, 'eligible' is a boolean
+    // For legacy leads, 'eligibile' is stored as 'yes' or 'no'
+    if (isLegacy) {
+      const eligibile = getFieldValue(client, 'eligibile');
+      return eligibile === 'yes' || eligibile === true;
+    }
+    return getFieldValue(client, 'eligible') === true || getFieldValue(client, 'eligible') === 'true';
+  };
+
   const getNextFollowup = () => {
     return getFieldValue(client, 'next_followup');
   };
@@ -126,6 +136,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [isEditingTags, setIsEditingTags] = useState(false);
   const [isEditingAnchor, setIsEditingAnchor] = useState(false);
   const [isEditingFacts, setIsEditingFacts] = useState(false);
+  const [eligible, setEligible] = useState(getEligibleStatus());
+  const [isAddingFollowup, setIsAddingFollowup] = useState(false);
+  const [isEditingFollowup, setIsEditingFollowup] = useState(false);
+  const [followupDate, setFollowupDate] = useState('');
   
   const [specialNotes, setSpecialNotes] = useState(getSpecialNotes());
   const [generalNotes, setGeneralNotes] = useState(getGeneralNotes());
@@ -145,27 +159,153 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return '';
   });
 
-  // Update state when client data changes (e.g., after page refresh)
+  // Tags state and functionality
+  const [allTags, setAllTags] = useState<any[]>([]);
+  const [tagsList, setTagsList] = useState<string[]>([]);
+
+  // Fetch all tags on mount
   useEffect(() => {
-    setProbability(getProbability());
-    setSpecialNotes(getSpecialNotes());
-    setGeneralNotes(getGeneralNotes());
-    setTags(getTags());
-    setAnchor(getAnchor());
-    setFactsOfCase(getFacts());
+    const fetchTags = async () => {
+      try {
+        const { data: tagsData, error: tagsError } = await supabase
+          .from('misc_leadtag')
+          .select('id, name, order')
+          .eq('active', true)
+          .order('order', { ascending: true });
+        
+        if (!tagsError && tagsData) {
+          setAllTags(tagsData);
+          const tagNames = tagsData.map(tag => tag.name);
+          setTagsList(tagNames);
+        }
+      } catch (error) {
+        console.error('Error fetching tags:', error);
+      }
+    };
     
-    // Update edited values as well
-    setEditedSpecialNotes(getSpecialNotes().join('\n'));
-    setEditedGeneralNotes(getGeneralNotes());
-    setEditedTags(getTags());
-    setEditedAnchor(getAnchor());
-    setEditedFacts(() => {
-      const facts = getFacts();
-      if (Array.isArray(facts)) {
-        return facts.map(fact => `${fact.key}: ${fact.value}`).join('\n');
+    fetchTags();
+  }, []);
+
+  // Fetch current lead tags
+  const fetchCurrentLeadTags = async (leadId: string) => {
+    try {
+      const isLegacy = leadId.toString().startsWith('legacy_');
+      
+      if (isLegacy) {
+        const legacyId = parseInt(leadId.replace('legacy_', ''));
+        const { data, error } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            id,
+            leadtag_id,
+            misc_leadtag (
+              id,
+              name
+            )
+          `)
+          .eq('lead_id', legacyId);
+        
+        if (!error && data) {
+          const tags = data
+            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
+            .map(item => (item.misc_leadtag as any).name);
+          return tags.join(', ');
+        }
+      } else {
+        const { data, error } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            id,
+            leadtag_id,
+            misc_leadtag (
+              id,
+              name
+            )
+          `)
+          .eq('newlead_id', leadId);
+        
+        if (!error && data) {
+          const tags = data
+            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
+            .map(item => (item.misc_leadtag as any).name);
+          return tags.join(', ');
+        }
       }
       return '';
-    });
+    } catch (error) {
+      console.error('Error fetching current lead tags:', error);
+      return '';
+    }
+  };
+
+  // Save lead tags
+  const saveLeadTags = async (leadId: string, tagsString: string) => {
+    try {
+      const isLegacy = leadId.toString().startsWith('legacy_');
+      
+      if (isLegacy) {
+        const legacyId = parseInt(leadId.replace('legacy_', ''));
+        await supabase
+          .from('leads_lead_tags')
+          .delete()
+          .eq('lead_id', legacyId);
+        
+        if (tagsString.trim()) {
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          const tagIds = tagNames
+            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
+            .filter(id => id !== undefined);
+          
+          if (tagIds.length > 0) {
+            const tagInserts = tagIds.map(tagId => ({
+              lead_id: legacyId,
+              leadtag_id: tagId
+            }));
+            await supabase.from('leads_lead_tags').insert(tagInserts);
+          }
+        }
+      } else {
+        await supabase
+          .from('leads_lead_tags')
+          .delete()
+          .eq('newlead_id', leadId);
+        
+        if (tagsString.trim()) {
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          const tagIds = tagNames
+            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
+            .filter(id => id !== undefined);
+          
+          if (tagIds.length > 0) {
+            const tagInserts = tagIds.map(tagId => ({
+              newlead_id: leadId,
+              leadtag_id: tagId
+            }));
+            await supabase.from('leads_lead_tags').insert(tagInserts);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error saving tags:', error);
+    }
+  };
+
+  // Update tags when client changes
+  useEffect(() => {
+    const loadTags = async () => {
+      const tagsString = await fetchCurrentLeadTags(client.id);
+      setTags(tagsString);
+      setEditedTags(tagsString);
+    };
+    
+    if (client?.id) {
+      loadTags();
+    }
+  }, [client?.id]);
+
+  // Update eligible status when client changes
+  useEffect(() => {
+    setEligible(getEligibleStatus());
   }, [client]);
 
   // State to hold current user's display name
@@ -214,6 +354,127 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     } catch (error) {
       console.error('Error updating probability:', error);
       alert('Failed to update probability');
+    }
+  };
+
+  const handleEligibleToggle = async (newEligible: boolean) => {
+    try {
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const idField = isLegacy ? 'id' : 'id';
+      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+      
+      // For legacy leads, convert boolean to 'yes'/'no', for new leads use boolean
+      const updateData = isLegacy 
+        ? { eligibile: (newEligible ? 'yes' : 'no') } 
+        : { eligible: newEligible };
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq(idField, clientId);
+      
+      if (error) throw error;
+      
+      setEligible(newEligible);
+      
+      // Refresh client data in parent component
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error) {
+      console.error('Error updating eligible status:', error);
+      alert('Failed to update eligible status');
+    }
+  };
+
+  const handleAddFollowup = async () => {
+    if (!followupDate) {
+      alert('Please select a follow-up date');
+      return;
+    }
+
+    try {
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const idField = isLegacy ? 'id' : 'id';
+      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+      
+      const { error } = await supabase
+        .from(tableName)
+        .update({ next_followup: followupDate })
+        .eq(idField, clientId);
+      
+      if (error) throw error;
+      
+      setIsAddingFollowup(false);
+      setIsEditingFollowup(false);
+      setFollowupDate('');
+      
+      // Refresh client data in parent component
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error) {
+      console.error('Error adding follow-up:', error);
+      alert('Failed to add follow-up date');
+    }
+  };
+
+  const handleUpdateFollowup = async () => {
+    if (!followupDate) {
+      alert('Please select a follow-up date');
+      return;
+    }
+
+    try {
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const idField = isLegacy ? 'id' : 'id';
+      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+      
+      const { error } = await supabase
+        .from(tableName)
+        .update({ next_followup: followupDate })
+        .eq(idField, clientId);
+      
+      if (error) throw error;
+      
+      setIsEditingFollowup(false);
+      setFollowupDate('');
+      
+      // Refresh client data in parent component
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error) {
+      console.error('Error updating follow-up:', error);
+      alert('Failed to update follow-up date');
+    }
+  };
+
+  const handleDeleteFollowup = async () => {
+    if (!window.confirm('Are you sure you want to delete this follow-up?')) {
+      return;
+    }
+
+    try {
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const idField = isLegacy ? 'id' : 'id';
+      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+      
+      // Set next_followup to null to clear it
+      const { error } = await supabase
+        .from(tableName)
+        .update({ next_followup: null })
+        .eq(idField, clientId);
+      
+      if (error) throw error;
+      
+      // Refresh client data in parent component
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error) {
+      console.error('Error deleting follow-up:', error);
+      alert('Failed to delete follow-up date');
     }
   };
 
@@ -357,10 +618,73 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
             <div className="p-6">
               <div className="space-y-4">
-                {nextFollowupDate && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-500">Next Follow-up</span>
-                    <span className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</span>
+                {nextFollowupDate && !isEditingFollowup ? (
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm font-medium text-gray-500">Next Follow-up</span>
+                      <span className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</span>
+                    </div>
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        className="btn btn-primary btn-sm gap-2"
+                        onClick={() => {
+                          setIsEditingFollowup(true);
+                          setFollowupDate(nextFollowupDate.toISOString().split('T')[0]);
+                        }}
+                      >
+                        <PencilSquareIcon className="w-4 h-4" />
+                        Change Follow-up
+                      </button>
+                      <button
+                        className="btn btn-error btn-sm gap-2"
+                        onClick={handleDeleteFollowup}
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ) : isAddingFollowup || isEditingFollowup ? (
+                  <div className="space-y-3">
+                    <div className="flex flex-col gap-2">
+                      <label className="text-sm font-medium text-gray-500">Select Follow-up Date</label>
+                      <input
+                        type="date"
+                        className="input input-bordered w-full"
+                        value={followupDate}
+                        onChange={(e) => setFollowupDate(e.target.value)}
+                        min={new Date().toISOString().split('T')[0]}
+                      />
+                    </div>
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => {
+                          setIsAddingFollowup(false);
+                          setIsEditingFollowup(false);
+                          setFollowupDate('');
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm"
+                        onClick={isEditingFollowup ? handleUpdateFollowup : handleAddFollowup}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-4">
+                    <p className="text-sm text-gray-500 mb-3">No follow-up scheduled</p>
+                    <button
+                      className="btn btn-primary btn-sm gap-2"
+                      onClick={() => setIsAddingFollowup(true)}
+                    >
+                      <PlusIcon className="w-4 h-4" />
+                      Add Follow-up
+                    </button>
                   </div>
                 )}
               </div>
@@ -373,9 +697,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               <h4 className="text-lg font-semibold text-black">Eligibility Status</h4>
               <div className="border-b border-gray-200 mt-2"></div>
             </div>
-            <div className="p-6">
+            <div className="p-6 space-y-4">
               <div className="flex justify-between items-center">
-                <span className="text-sm font-medium text-gray-500">Current Status</span>
+                <span className="text-sm font-medium text-gray-500">Expert Status</span>
                 <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-[#3b28c7] text-white ${getEligibilityStatus() === 'feasible_no_check' ? 'px-4 py-2 text-base rounded-xl' : ''}`}>
                   {eligibilityDisplay.text}
                   {['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && (client.section_eligibility ?? '') && (
@@ -394,6 +718,20 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     </span>
                   )}
                 </span>
+              </div>
+              <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+                <span className="text-sm font-medium text-gray-500">Eligibility Determined</span>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-success"
+                    checked={eligible}
+                    onChange={(e) => handleEligibleToggle(e.target.checked)}
+                  />
+                  <span className="text-sm font-medium text-gray-700">
+                    {eligible ? 'Yes' : 'No'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -590,7 +928,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       
                       if (error) throw error;
                       
-                      setFactsOfCase(formatNoteText(editedFacts).split('\n').filter(fact => fact.trim() !== ''));
+                      setFactsOfCase(formatNoteText(editedFacts).split('\n').filter(fact => fact.trim() !== '').map(line => {
+                        const [key, ...valueParts] = line.split(':');
+                        return {
+                          key: key.trim(),
+                          value: valueParts.join(':').trim()
+                        };
+                      }));
                       setIsEditingFacts(false);
                       
                       // Refresh client data in parent component
@@ -621,14 +965,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
                     {factsOfCase.length > 0 ? (
-                      <div className="flex flex-wrap gap-4">
-                        {factsOfCase.map((fact, index) => (
-                          <div key={index} className="bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
-                            <span className="text-sm font-medium text-gray-600 capitalize">{fact.key}:</span>
-                            <span className="text-sm text-gray-900 ml-1">{fact.value}</span>
-                          </div>
-                        ))}
-                      </div>
+                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => `${fact.key}: ${fact.value}`).join('\n'))}`}>
+                        {factsOfCase.map(fact => `${fact.key}: ${fact.value}`).join('\n')}
+                      </p>
                     ) : (
                       <span className="text-gray-500">No case facts added</span>
                     )}
@@ -737,20 +1076,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   onSave={async () => {
                     try {
                       const userName = currentUserName;
-                      const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      const idField = isLegacy ? 'id' : 'id';
                       const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
                       
-                      const { error } = await supabase
-                        .from(tableName)
-                        .update({
-                          [isLegacy ? 'category' : 'tags']: editedTags,
-                          [isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by']: userName,
-                          [isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at']: new Date().toISOString(),
-                        })
-                        .eq(idField, clientId);
-                      
-                      if (error) throw error;
+                      // Use saveLeadTags function for proper tag management
+                      await saveLeadTags(client.id, editedTags);
                       
                       setTags(editedTags);
                       setIsEditingTags(false);
@@ -773,12 +1102,21 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
             <div className="p-6">
               {isEditingTags ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-32"
-                  value={editedTags}
-                  onChange={(e) => setEditedTags(e.target.value)}
-                  placeholder="Add tags here..."
-                />
+                <>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Search or select tags..."
+                    value={editedTags}
+                    onChange={(e) => setEditedTags(e.target.value)}
+                    list="tags-options"
+                  />
+                  <datalist id="tags-options">
+                    {tagsList.map((name, index) => (
+                      <option key={`${name}-${index}`} value={name} />
+                    ))}
+                  </datalist>
+                </>
               ) : (
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
