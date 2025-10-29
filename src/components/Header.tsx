@@ -83,6 +83,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const currentSearchIdRef = useRef(0);
   const isMouseOverSearchRef = useRef(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -315,21 +316,36 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       clearTimeout(searchTimeoutRef.current);
     }
 
+    // Clear results immediately when search value changes
+    setSearchResults([]);
+    setIsSearching(false);
+    
+    // Increment search ID to invalidate any pending searches
+    const searchId = Date.now(); // Use timestamp for unique ID
+    currentSearchIdRef.current = searchId;
+
     if (searchValue.trim()) {
       setIsSearching(true);
       searchTimeoutRef.current = setTimeout(async () => {
         try {
+          console.log('[Header] search start', { searchValue, searchId });
           const results = await searchLeads(searchValue);
-          setSearchResults(results);
+          
+          // Only set results if this is still the current search
+          if (searchId === currentSearchIdRef.current) {
+            console.log('[Header] search results', { count: results.length, first: results[0]?.lead_number, searchId });
+            setSearchResults(results);
+            setIsSearching(false);
+          }
         } catch (error) {
           console.error('Search error:', error);
-          setSearchResults([]);
-        } finally {
-          setIsSearching(false);
+          // Only clear results if this is still the current search
+          if (searchId === currentSearchIdRef.current) {
+            setSearchResults([]);
+            setIsSearching(false);
+          }
         }
-      }, 150); // Reduced to 150ms for even faster response
-    } else {
-      setSearchResults([]);
+      }, 50); // Reduced to 50ms for much faster response
     }
 
     return () => {
@@ -916,7 +932,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchValue(e.target.value);
+    const newValue = e.target.value;
+    setSearchValue(newValue);
+    
+    // Clear results immediately when user types to prevent showing old results
+    if (newValue.trim() !== searchValue.trim()) {
+      setSearchResults([]);
+    }
   };
 
   const handleSearchResultClick = (lead: CombinedLead) => {
@@ -929,6 +951,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setSearchResults([]);
     setIsSearchActive(false);
     setHasAppliedFilters(false);
+    setIsSearching(false);
     searchInputRef.current?.blur();
   };
 
@@ -938,6 +961,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setSearchValue('');
     setHasAppliedFilters(false);
     setShowFilterDropdown(false);
+    setIsSearching(false);
     searchInputRef.current?.blur();
   };
 
@@ -1678,12 +1702,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             ) : searchResults.length > 0 ? (
               <div>
                 {(() => {
-                  // Separate exact matches from other results
-                  const exactMatches = searchResults.filter(result => 
-                    result.name.toLowerCase() === searchValue.toLowerCase() ||
-                    result.lead_number === searchValue ||
-                    result.email.toLowerCase() === searchValue.toLowerCase()
-                  );
+                  // Use the same exact matching logic as the search function
+                  const trimmedQuery = searchValue.trim();
+                  const digitsOnly = trimmedQuery.replace(/\D/g, '');
+                  const lastFiveDigits = digitsOnly.slice(-5);
+                  const isPhoneQuery = lastFiveDigits.length === 5;
+                  
+                  const exactMatches = searchResults.filter(result => {
+                    // For phone queries, check if the last 5 digits match exactly
+                    if (isPhoneQuery) {
+                      const resultPhoneDigits = (result.phone || '').replace(/\D/g, '');
+                      const resultMobileDigits = (result.mobile || '').replace(/\D/g, '');
+                      return resultPhoneDigits.endsWith(lastFiveDigits) || resultMobileDigits.endsWith(lastFiveDigits);
+                    }
+                    
+                    // For other queries, use exact string matching
+                    return result.name.toLowerCase() === trimmedQuery.toLowerCase() ||
+                           result.lead_number === trimmedQuery ||
+                           result.email.toLowerCase() === trimmedQuery.toLowerCase() ||
+                           result.phone === trimmedQuery ||
+                           result.mobile === trimmedQuery;
+                  });
                   
                   const otherResults = searchResults.filter(result => !exactMatches.includes(result));
                   
@@ -1739,15 +1778,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         </div>
                       )}
                       
-                      {/* Separator and "Did you mean" section */}
-                      {exactMatches.length > 0 && otherResults.length > 0 && (
+                      {/* Separator and "Did you mean" section - only show if no exact matches */}
+                      {exactMatches.length === 0 && otherResults.length > 0 && (
                         <div className="px-4 py-2 border-t border-gray-200 bg-gray-50">
                           <div className="text-xs font-medium text-gray-600">Did you mean...</div>
                         </div>
                       )}
                       
-                      {/* Other Results Section */}
-                      {otherResults.length > 0 && (
+                      {/* Other Results Section - only show if no exact matches */}
+                      {exactMatches.length === 0 && otherResults.length > 0 && (
                         <div className="divide-y divide-gray-100">
                           {otherResults.map((result) => (
                             <button
@@ -1766,11 +1805,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                                     <div className="flex items-center gap-2">
                                       <span className="font-semibold text-gray-900">{result.name}</span>
                                       <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
-                                      {result.isFuzzyMatch && (
-                                        <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">
-                                          Similar match
-                                        </span>
-                                      )}
                                     </div>
                                   </div>
                                   {result.stage && (
