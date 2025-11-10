@@ -1,7 +1,11 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon } from '@heroicons/react/24/solid';
 import FullSearchReport from './FullSearchReport';
 import { supabase } from '../lib/supabase';
+import EmployeeLeadDrawer, {
+  EmployeeLeadDrawerItem,
+  LeadBaseDetail,
+} from '../components/reports/EmployeeLeadDrawer';
 
 // Stage Search Report Component
 const StageSearchReport = () => {
@@ -288,7 +292,7 @@ const AnchorSearchReport = () => {
   return (
     <div>
       {/* Search Form */}
-      <div className="card bg-base-200 shadow-lg p-6 mb-8">
+      <div className="bg-white mb-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Name</span></label>
@@ -755,14 +759,16 @@ const SourcesPieReport = () => {
 
       const total = Object.values(sourceCounts).reduce((sum: number, count: any) => sum + count, 0);
       
-      const processedSourceData = Object.entries(sourceCounts).map(([source, count]) => ({
+      const processedSourceDataArray = Object.entries(sourceCounts).map(([source, count]) => ({
         source,
         count,
         percentage: total > 0 ? ((count as number / total) * 100).toFixed(1) : '0.0',
         link: sourceLinks[source as keyof typeof sourceLinks] || 'https://lawoffice.org.il/unknown-source'
-      })).sort((a, b) => b.count - a.count);
+      })) as Array<{ source: string; count: number; percentage: string; link: string }>;
 
-      setSourceData(processedSourceData);
+      processedSourceDataArray.sort((a, b) => b.count - a.count);
+
+      setSourceData(processedSourceDataArray);
     } catch (error) {
       console.error('Error searching leads:', error);
       alert('Failed to search for leads.');
@@ -1090,7 +1096,7 @@ const SourcesPieReport = () => {
                             </div>
                           </td>
                           <td className="text-center">
-                            <span className="badge badge-primary">{item.count}</span>
+                            <span className="font-semibold text-gray-800">{item.count}</span>
                           </td>
                           <td className="text-center">
                             <span className="font-bold text-lg">{item.percentage}%</span>
@@ -1194,13 +1200,15 @@ const CategorySourceReport = () => {
         originalStage: stage,
         total: count,
         priority: stagePriority[stage] || 0
-      })).sort((a, b) => {
+      })) as Array<{ stage: string; originalStage: string; total: number; priority: number }>;
+
+      processedStageData.sort((a, b) => {
         // First sort by priority (higher priority = more advanced stage)
         if (a.priority !== b.priority) {
           return b.priority - a.priority;
         }
         // If same priority, sort by count
-        return b.total - a.total;
+        return (b.total ?? 0) - (a.total ?? 0);
       });
 
       setStageData(processedStageData);
@@ -1231,7 +1239,7 @@ const CategorySourceReport = () => {
       <div className="card bg-base-200 shadow-lg p-6 mb-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="form-control">
-            <label className="label mb-2"><span className="label-text">From Signed Date</span></label>
+            <label className="label mb-2"><span className="label-text">From Meeting Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -1239,7 +1247,7 @@ const CategorySourceReport = () => {
             />
           </div>
           <div className="form-control">
-            <label className="label mb-2"><span className="label-text">To Signed Date</span></label>
+            <label className="label mb-2"><span className="label-text">To Meeting Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -1582,13 +1590,13 @@ const ConvertionReport = () => {
             <div>
               {/* Summary Cards */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
-                <div className="card shadow-lg border-0 bg-gradient-to-br from-blue-500 via-blue-600 to-blue-700 text-white">
+                <div className="card shadow-lg border-0 text-white" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body text-center">
                     <h3 className="text-lg font-semibold text-blue-100">Total Leads</h3>
                     <p className="text-3xl font-bold text-white">{results.length}</p>
                   </div>
                 </div>
-                <div className="card shadow-lg border-0 bg-gradient-to-br from-green-500 via-green-600 to-green-700 text-white">
+                <div className="card shadow-lg border-0 text-white" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body text-center">
                     <h3 className="text-lg font-semibold text-green-100">Total Meetings</h3>
                     <p className="text-3xl font-bold text-white">
@@ -1596,7 +1604,7 @@ const ConvertionReport = () => {
                     </p>
                   </div>
                 </div>
-                <div className="card shadow-lg border-0 bg-gradient-to-br from-purple-500 via-purple-600 to-purple-700 text-white">
+                <div className="card shadow-lg border-0 text-white" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body text-center">
                     <h3 className="text-lg font-semibold text-purple-100">Price Offers</h3>
                     <p className="text-3xl font-bold text-white">
@@ -1604,7 +1612,7 @@ const ConvertionReport = () => {
                     </p>
                   </div>
                 </div>
-                <div className="card shadow-lg border-0 bg-gradient-to-br from-orange-500 via-orange-600 to-orange-700 text-white">
+                <div className="card shadow-lg border-0 text-white" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body text-center">
                     <h3 className="text-lg font-semibold text-orange-100">Total Expenses</h3>
                     <p className="text-3xl font-bold text-white">
@@ -1658,7 +1666,7 @@ const ConvertionReport = () => {
                             <span className="text-lg font-bold text-purple-600">{item.meetings}</span>
                           </td>
                           <td className="text-center">
-                            <span className="badge badge-info font-semibold">{item.meetingRate}</span>
+                            <span className="text-sm font-semibold text-blue-600">{item.meetingRate}</span>
                           </td>
                           <td className="text-center">
                             <span className="text-lg font-bold text-orange-600">{item.priceOffers}</span>
@@ -1672,10 +1680,8 @@ const ConvertionReport = () => {
                               {formatCurrency(item.total)}
                             </span>
                           </td>
-                          <td className="text-center">
-                            <span className="badge badge-primary font-semibold text-base">
+                          <td className="text-center text-indigo-600 font-semibold">
                               {item.rate}
-                            </span>
                           </td>
                         </tr>
                       ))}
@@ -1695,12 +1701,10 @@ const ConvertionReport = () => {
                         <td className="text-center text-purple-600">
                           {conversionData.reduce((sum, item) => sum + item.meetings, 0)}
                         </td>
-                        <td className="text-center">
-                          <span className="badge badge-info">
+                        <td className="text-center text-blue-600 font-semibold">
                             {results.length > 0 ? 
                               ((conversionData.reduce((sum, item) => sum + item.meetings, 0) / results.length) * 100).toFixed(1) 
                               : '0.0'}%
-                          </span>
                         </td>
                         <td className="text-center text-orange-600">
                           {conversionData.reduce((sum, item) => sum + item.priceOffers, 0)}
@@ -1711,9 +1715,7 @@ const ConvertionReport = () => {
                         <td className="text-center text-gray-800">
                           {formatCurrency(conversionData.reduce((sum, item) => sum + item.total, 0))}
                         </td>
-                        <td className="text-center">
-                          <span className="badge badge-primary">0.0%</span>
-                        </td>
+                        <td className="text-center text-indigo-600 font-semibold">0.0%</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -1849,10 +1851,10 @@ const ConvertionStepsReport = () => {
   return (
     <div>
       {/* Search Form */}
-      <div className="card bg-base-200 shadow-lg p-6 mb-8">
+      <div className="bg-white mb-8">
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="form-control">
-            <label className="label"><span className="label-text">From Signed Date</span></label>
+            <label className="label"><span className="label-text">From Meeting Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -1861,7 +1863,7 @@ const ConvertionStepsReport = () => {
             />
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">To Signed Date</span></label>
+            <label className="label"><span className="label-text">To Meeting Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -1939,7 +1941,7 @@ const ConvertionStepsReport = () => {
                 <div className="card-body">
                   <h3 className="text-xl font-bold mb-6">Conversion Funnel</h3>
                   <div className="overflow-x-auto">
-                    <table className="table table-zebra w-full">
+                    <table className="table w-full">
                       <thead>
                         <tr>
                           <th>Stage</th>
@@ -2028,14 +2030,41 @@ const ConvertionStepsReport = () => {
     </div>
   );
 };
+type EmployeeLeadBuckets = {
+  meetingScheduled: string[];
+  precommunication: string[];
+  communicationStarted: string[];
+  setAsUnactive: string[];
+};
+
+type EmployeeMetricKey = keyof EmployeeLeadBuckets | 'total';
+
 const ScheduledReport = () => {
+  const today = useMemo(() => new Date().toISOString().split('T')[0], []);
   const [filters, setFilters] = useState({
-    fromDate: '',
-    toDate: '',
+    fromDate: today,
+    toDate: today,
   });
   const [results, setResults] = useState<any>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [searchPerformed, setSearchPerformed] = useState(false);
+  const [drawerState, setDrawerState] = useState<{
+    isOpen: boolean;
+    title: string;
+    leads: EmployeeLeadDrawerItem[];
+  }>({
+    isOpen: false,
+    title: '',
+    leads: [],
+  });
+
+  const metricLabels: Record<EmployeeMetricKey, string> = {
+    meetingScheduled: 'Meetings Scheduled',
+    precommunication: 'Precommunication',
+    communicationStarted: 'Communication Started',
+    setAsUnactive: 'Set As Unactive',
+    total: 'Total',
+  };
 
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
@@ -2048,10 +2077,145 @@ const ScheduledReport = () => {
       // Get all users first
       const { data: usersData, error: usersError } = await supabase
         .from('users')
-        .select('email, full_name');
+        .select(`
+          email,
+          full_name,
+          employee_id,
+          tenants_employee!employee_id (
+            id,
+            display_name
+          )
+        `);
       if (usersError) throw usersError;
 
       console.log('Users data:', usersData);
+
+      // Fetch employee records for ID/display name mapping
+      const { data: employeesData, error: employeesError } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name');
+      if (employeesError) throw employeesError;
+
+      const employeeIdToName: Record<string, string> = {};
+      const displayNameToId: Record<string, string> = {};
+      const emailToEmployeeId: Record<string, string> = {};
+
+      employeesData?.forEach((emp: any) => {
+        if (emp?.id === null || emp?.id === undefined) return;
+        const idStr = emp.id.toString();
+        const displayName = (emp.display_name || '').trim();
+        if (displayName && !displayName.includes('@')) {
+          employeeIdToName[idStr] = displayName;
+          displayNameToId[displayName] = idStr;
+        }
+      });
+
+      usersData?.forEach((user: any) => {
+        const employeeRelation = Array.isArray(user.tenants_employee)
+          ? user.tenants_employee[0]
+          : user.tenants_employee;
+
+        const employeeId = user.employee_id ?? employeeRelation?.id;
+        if (employeeId !== undefined && employeeId !== null) {
+          const idStr = employeeId.toString();
+          const displayName = (
+            employeeRelation?.display_name ||
+            employeeIdToName[idStr] ||
+            user.full_name ||
+            ''
+          ).trim();
+
+          if (displayName && !displayName.includes('@')) {
+            employeeIdToName[idStr] = displayName;
+            displayNameToId[displayName] = idStr;
+            if (user.email) {
+              emailToEmployeeId[user.email.toLowerCase()] = idStr;
+            }
+          }
+        }
+      });
+
+      const { data: stageDefinitions, error: stageDefinitionsError } = await supabase
+        .from('lead_stages')
+        .select('id, name');
+      if (stageDefinitionsError) throw stageDefinitionsError;
+
+      const normalizeStageName = (value?: string | null) =>
+        value ? value.toLowerCase().replace(/[\s_-]/g, '') : '';
+
+      const stageIdToNormalizedName: Record<number, string> = {};
+      stageDefinitions?.forEach(def => {
+        if (def?.id !== null && def?.id !== undefined) {
+          stageIdToNormalizedName[Number(def.id)] = normalizeStageName(def.name);
+        }
+      });
+
+      const collectStageIds = (targetName: string, fallbacks: number[]) => {
+        const ids = new Set<number>();
+        const normalizedTarget = normalizeStageName(targetName);
+        stageDefinitions
+          ?.filter(def => normalizeStageName(def.name) === normalizedTarget)
+          ?.forEach(def => {
+            if (def?.id !== null && def?.id !== undefined) {
+              ids.add(Number(def.id));
+            }
+          });
+        fallbacks.forEach(num => {
+          if (Number.isFinite(num)) {
+            ids.add(Number(num));
+          }
+        });
+        return Array.from(ids);
+      };
+
+      const precommunicationStageIds = collectStageIds('Precommunication', [11, 0]);
+      const communicationStartedStageIds = collectStageIds('Communication Started', [15]);
+      const setAsUnactiveStageIds = collectStageIds('Set As Unactive', [91]);
+      const meetingScheduledStageIds = collectStageIds('Meeting Scheduled', [20]);
+      console.log('🔍 Scheduled Report - stage ID collections:', {
+        precommunicationStageIds,
+        communicationStartedStageIds,
+        setAsUnactiveStageIds,
+        meetingScheduledStageIds,
+      });
+
+      const precommunicationStageIdSet = new Set(precommunicationStageIds.map(id => Number(id)));
+      const communicationStartedStageIdSet = new Set(
+        communicationStartedStageIds.map(id => Number(id))
+      );
+      const setAsUnactiveStageIdSet = new Set(setAsUnactiveStageIds.map(id => Number(id)));
+      const meetingScheduledStageIdSet = new Set(meetingScheduledStageIds.map(id => Number(id)));
+
+      const precommunicationStageNameSet = new Set<string>(['precommunication']);
+      precommunicationStageIds.forEach(id => {
+        const name = stageIdToNormalizedName[Number(id)];
+        if (name) precommunicationStageNameSet.add(name);
+      });
+
+      const communicationStartedStageNameSet = new Set<string>([
+        'communicationstarted',
+        'communicationstart',
+      ]);
+      communicationStartedStageIds.forEach(id => {
+        const name = stageIdToNormalizedName[Number(id)];
+        if (name) communicationStartedStageNameSet.add(name);
+      });
+
+      const setAsUnactiveStageNameSet = new Set<string>([
+        'setasunactive',
+        'setasuninvolved',
+        'unactivated',
+      ]);
+      setAsUnactiveStageIds.forEach(id => {
+        const name = stageIdToNormalizedName[Number(id)];
+        if (name) setAsUnactiveStageNameSet.add(name);
+      });
+
+      const meetingScheduledStageNameSet = new Set<string>(['meetingscheduled']);
+      meetingScheduledStageIds.forEach(id => {
+        const name = stageIdToNormalizedName[Number(id)];
+        if (name) meetingScheduledStageNameSet.add(name);
+      });
 
       // Get meetings with date filters and join with leads
       let meetingsQuery = supabase
@@ -2067,14 +2231,49 @@ const ScheduledReport = () => {
           expert,
           status,
           created_at,
-          leads:client_id (
+          meeting_currency,
+          meeting_amount,
+          client_id,
+          legacy_lead_id,
+          lead:leads!client_id (
             id,
             lead_number,
             name,
             stage,
             status,
             scheduler,
-            created_at
+            created_at,
+            category,
+            category_id,
+            misc_category!category_id (
+              id,
+              name,
+              misc_maincategory!parent_id (
+                id,
+                name
+              )
+            )
+          ),
+          legacy_lead:leads_lead!legacy_lead_id (
+            id,
+            name,
+            stage,
+            status,
+            meeting_scheduler_id,
+            meeting_manager_id,
+            meeting_lawyer_id,
+            category,
+            category_id,
+            total,
+            currency_id,
+            misc_category!category_id (
+              id,
+              name,
+              misc_maincategory!parent_id (
+                id,
+                name
+              )
+            )
           )
         `);
       
@@ -2089,6 +2288,8 @@ const ScheduledReport = () => {
       // Get leads data for stage analysis (filtered by date)
       let leadsQuery = supabase.from('leads').select(`
         id, 
+        lead_number,
+        name,
         scheduler, 
         stage, 
         manager, 
@@ -2101,7 +2302,17 @@ const ScheduledReport = () => {
         unactivated_by,
         unactivated_at,
         stage_changed_by,
-        stage_changed_at
+        stage_changed_at,
+        category,
+        category_id,
+        misc_category!category_id (
+          id,
+          name,
+          misc_maincategory!parent_id (
+            id,
+            name
+          )
+        )
       `);
       if (filters.fromDate) leadsQuery = leadsQuery.gte('created_at', filters.fromDate);
       if (filters.toDate) leadsQuery = leadsQuery.lte('created_at', filters.toDate);
@@ -2111,23 +2322,291 @@ const ScheduledReport = () => {
 
       console.log('Leads data:', leadsData);
 
-      // Create a map of emails to full names
-      const emailToNameMap = usersData?.reduce((acc: any, user: any) => {
-        acc[user.email] = user.full_name || user.email;
-        return acc;
-      }, {}) || {};
+      const chunkArray = <T,>(items: T[], size: number): T[][] => {
+        const chunks: T[][] = [];
+        for (let i = 0; i < items.length; i += size) {
+          chunks.push(items.slice(i, i + size));
+        }
+        return chunks;
+      };
 
-      console.log('Email to name mapping:', emailToNameMap);
+      const stageHistoryStageIds = Array.from(
+        new Set([
+          ...precommunicationStageIds,
+          ...communicationStartedStageIds,
+          ...setAsUnactiveStageIds,
+          ...meetingScheduledStageIds,
+        ])
+      ).filter(id => id !== null && id !== undefined);
+
+      let stageHistoryData: any[] = [];
+      const newLeadIdsSet = new Set<string>();
+      const legacyLeadIdsSet = new Set<string>();
+      console.log('🔍 Scheduled Report - stage history stage IDs used in query:', stageHistoryStageIds);
+
+      if (stageHistoryStageIds.length > 0) {
+        let stageHistoryQuery = supabase
+          .from('leads_leadstage')
+          .select('id, stage, cdate, creator_id, lead_id, newlead_id');
+        stageHistoryQuery = stageHistoryQuery.in('stage', stageHistoryStageIds.map(id => Number(id)));
+
+        if (filters.fromDate) {
+          console.log('🔍 Scheduled Report - applying fromDate filter (cdate >=):', `${filters.fromDate}T00:00:00`);
+          stageHistoryQuery = stageHistoryQuery.gte('cdate', `${filters.fromDate}T00:00:00`);
+        }
+        if (filters.toDate) {
+          console.log('🔍 Scheduled Report - applying toDate filter (cdate <=):', `${filters.toDate}T23:59:59`);
+          stageHistoryQuery = stageHistoryQuery.lte('cdate', `${filters.toDate}T23:59:59`);
+        }
+
+        const { data: stageHistoryRaw, error: stageHistoryError } = await stageHistoryQuery;
+        if (stageHistoryError) throw stageHistoryError;
+        stageHistoryData =
+          stageHistoryRaw?.filter((entry: any) => {
+            const stageIdNum = Number(entry.stage);
+            const normalizedName = stageIdToNormalizedName[stageIdNum] || normalizeStageName(entry.stage?.toString());
+            return (
+              precommunicationStageIdSet.has(stageIdNum) ||
+              communicationStartedStageIdSet.has(stageIdNum) ||
+              setAsUnactiveStageIdSet.has(stageIdNum) ||
+              meetingScheduledStageIdSet.has(stageIdNum) ||
+              precommunicationStageNameSet.has(normalizedName) ||
+              communicationStartedStageNameSet.has(normalizedName) ||
+              setAsUnactiveStageNameSet.has(normalizedName) ||
+              meetingScheduledStageNameSet.has(normalizedName)
+            );
+          }) || [];
+
+        stageHistoryData.forEach((entry: any) => {
+          if (entry.newlead_id) {
+            newLeadIdsSet.add(entry.newlead_id.toString());
+          }
+          if (entry.lead_id !== null && entry.lead_id !== undefined) {
+            legacyLeadIdsSet.add(entry.lead_id.toString());
+          }
+        });
+      }
+    console.log('🔍 Scheduled Report - stage history count:', stageHistoryData.length);
+    console.log('🔍 Scheduled Report - stage history sample:', stageHistoryData.slice(0, 10));
+      console.log(
+        '🔍 Scheduled Report - stage history distinct stages:',
+        Array.from(new Set(stageHistoryData.map((entry: any) => entry.stage)))
+      );
+    const stageBucketSummary = stageHistoryData.reduce(
+      (acc: Record<string, { count: number; creators: Set<string> }>, entry: any) => {
+        const key = String(entry.stage ?? 'null');
+        if (!acc[key]) {
+          acc[key] = { count: 0, creators: new Set<string>() };
+        }
+        acc[key].count += 1;
+        if (entry.creator_id !== null && entry.creator_id !== undefined) {
+          acc[key].creators.add(String(entry.creator_id));
+        }
+        return acc;
+      },
+      {}
+    );
+    console.log(
+      '🔍 Scheduled Report - stage bucket summary:',
+      Object.fromEntries(
+        Object.entries(stageBucketSummary).map(([stage, info]) => [
+          stage,
+          { count: info.count, creators: Array.from(info.creators).slice(0, 10) },
+        ])
+      )
+    );
+      const precommunicationSamples = stageHistoryData
+        .filter((entry: any) => Number(entry.stage) === 0 || Number(entry.stage) === 11)
+        .slice(0, 5);
+      const meetingScheduledSamples = stageHistoryData
+        .filter((entry: any) => Number(entry.stage) === 20)
+        .slice(0, 5);
+      console.log('🔍 Scheduled Report - stage 0 sample:', precommunicationSamples);
+      console.log('🔍 Scheduled Report - stage 50 sample:', meetingScheduledSamples);
+
+      const newLeadMap = new Map<string, any>();
+      const legacyLeadMap = new Map<string, any>();
+      const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+      const hydrateLeadMaps = async () => {
+        newLeadMap.clear();
+        legacyLeadMap.clear();
+
+        const newLeadIds = Array.from(newLeadIdsSet);
+        const legacyLeadIds = Array.from(legacyLeadIdsSet);
+        console.log('🔍 Scheduled Report - new leads to hydrate:', newLeadIds.length);
+        console.log('🔍 Scheduled Report - legacy leads to hydrate:', legacyLeadIds.length);
+
+        (leadsData as any[])?.forEach((lead: any) => {
+          if (lead?.id) {
+            newLeadMap.set(lead.id.toString(), lead);
+          }
+        });
+
+        for (const chunk of chunkArray(newLeadIds, 200)) {
+          const validUuidChunk = chunk.filter(id => {
+            if (!uuidRegex.test(id)) {
+              console.warn('🔍 Scheduled Report - skipping invalid new lead UUID:', id);
+              return false;
+            }
+            return true;
+          });
+          if (validUuidChunk.length === 0) continue;
+          const { data, error } = await supabase
+            .from('leads')
+            .select(`
+              id,
+              lead_number,
+              name,
+              scheduler,
+              manager,
+              category,
+              category_id,
+              misc_category!category_id(
+                id,
+                name,
+                misc_maincategory!parent_id(
+                  id,
+                  name
+                )
+              )
+            `)
+            .in('id', validUuidChunk);
+          if (error) throw error;
+          data?.forEach((lead: any) => {
+            if (lead?.id !== undefined && lead?.id !== null) {
+              newLeadMap.set(lead.id.toString(), lead);
+            }
+          });
+        }
+
+        for (const chunk of chunkArray(legacyLeadIds, 200)) {
+          const numericChunk = chunk
+            .map(id => {
+              const num = Number(id);
+              if (!Number.isFinite(num) || Number.isNaN(num)) {
+                console.warn('🔍 Scheduled Report - skipping invalid legacy lead ID:', id);
+                return null;
+              }
+              return num;
+            })
+            .filter((id): id is number => id !== null);
+          if (numericChunk.length === 0) continue;
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              manual_id,
+              lead_number,
+              name,
+              meeting_scheduler_id,
+              meeting_manager_id,
+              category,
+              category_id,
+              misc_category!category_id(
+                id,
+                name,
+                misc_maincategory!parent_id(
+                  id,
+                  name
+                )
+              )
+            `)
+            .in('id', numericChunk);
+          if (error) throw error;
+          data?.forEach((lead: any) => {
+            if (lead?.id !== undefined && lead?.id !== null) {
+              legacyLeadMap.set(lead.id.toString(), lead);
+            }
+          });
+        }
+      };
+
+      const normalizeIdentifier = (raw: any): { key: string; displayName: string } | null => {
+        if (raw === null || raw === undefined) return null;
+        const value = raw.toString().trim();
+        if (!value) return null;
+
+        const numericId = Number(value);
+        if (!isNaN(numericId) && employeeIdToName[value]) {
+          return { key: value, displayName: employeeIdToName[value] };
+        }
+
+        if (displayNameToId[value]) {
+          const employeeId = displayNameToId[value];
+          const displayName = employeeIdToName[employeeId];
+          if (displayName) {
+            return { key: employeeId, displayName };
+          }
+        }
+
+        const lower = value.toLowerCase();
+        if (emailToEmployeeId[lower]) {
+          const employeeId = emailToEmployeeId[lower];
+          const displayName = employeeIdToName[employeeId];
+          if (displayName) {
+            return { key: employeeId, displayName };
+          }
+        }
+
+        return null;
+      };
 
       // Initialize employee stats
       const employeeStats: any = {};
 
+      const parseLeadKey = (leadKey: string): { type: 'new' | 'legacy'; id: string } | null => {
+        if (leadKey.startsWith('new-')) {
+          return { type: 'new', id: leadKey.slice(4) };
+        }
+        if (leadKey.startsWith('legacy-')) {
+          return { type: 'legacy', id: leadKey.slice(7) };
+        }
+        return null;
+      };
+
+      const meetingScheduledLeadSet = new Set<string>();
+      let totalMeetingEvents = 0;
+      const schedulerStageStats: Record<string, { leads: Set<string>; eventCount: number }> = {};
+
+      const stageLeadSets: Record<
+        string,
+        {
+          precommunication: Set<string>;
+          communicationStarted: Set<string>;
+          setAsUnactive: Set<string>;
+          meetingScheduled: Set<string>;
+        }
+      > = {};
+      const meetingStageEntries: Array<{ leadKey: string; fallbackIdentifier: string | number | null }> = [];
+      const deferredStageAssignments: Array<{
+        stageType: 'precommunication' | 'communicationStarted' | 'setAsUnactive';
+        leadKey: string;
+        fallbackIdentifier: string | number | null;
+      }> = [];
+
+      const ensureStageLeadSets = (identifier: string) => {
+        if (!stageLeadSets[identifier]) {
+          stageLeadSets[identifier] = {
+            precommunication: new Set<string>(),
+            communicationStarted: new Set<string>(),
+            setAsUnactive: new Set<string>(),
+            meetingScheduled: new Set<string>(),
+          };
+        }
+        if (!schedulerStageStats[identifier]) {
+          schedulerStageStats[identifier] = { leads: new Set<string>(), eventCount: 0 };
+        }
+      };
+
       // Helper function to initialize employee if not exists
       const initializeEmployee = (identifier: string) => {
+        if (!identifier) return;
+        const displayName = employeeIdToName[identifier];
+        if (!displayName || displayName.includes('@')) return;
         if (!employeeStats[identifier]) {
           employeeStats[identifier] = {
-            fullName: emailToNameMap[identifier] || identifier,
-            email: identifier,
+            id: identifier,
+            fullName: displayName,
             meetingsScheduled: 0,
             precommunication: 0,
             communicationStarted: 0,
@@ -2135,87 +2614,500 @@ const ScheduledReport = () => {
             total: 0
           };
         }
+        ensureStageLeadSets(identifier);
       };
 
-      // 1. Count actual meetings scheduled (from meetings table)
-      meetingsData?.forEach((meeting: any) => {
-        const scheduler = meeting.scheduler;
-        if (scheduler) {
-          initializeEmployee(scheduler);
-          employeeStats[scheduler].meetingsScheduled++;
-          employeeStats[scheduler].total++;
-        }
-      });
+      const recordMeetingForScheduler = (schedulerKey: string, leadKey: string) => {
+        if (!schedulerKey || !leadKey) return;
+        initializeEmployee(schedulerKey);
+        if (!employeeStats[schedulerKey]) return;
+        ensureStageLeadSets(schedulerKey);
+
+        schedulerStageStats[schedulerKey].leads.add(leadKey);
+        schedulerStageStats[schedulerKey].eventCount += 1;
+        meetingScheduledLeadSet.add(leadKey);
+        totalMeetingEvents += 1;
+      };
 
       console.log('After processing meetings:', Object.keys(employeeStats).length, 'employees found');
 
-      // 2. Count lead stages based on who performed each action
-      leadsData?.forEach((lead: any) => {
-        // Count precommunication: scheduler in created/scheduler_assigned stages
-        if (lead.scheduler && (lead.stage === 'created' || lead.stage === 'scheduler_assigned')) {
-          initializeEmployee(lead.scheduler);
-          employeeStats[lead.scheduler].precommunication++;
-          
-          // Only count towards total if this lead doesn't have a scheduled meeting
-          const hasScheduledMeeting = meetingsData?.some(m => m.leads?.id === lead.id);
-          if (!hasScheduledMeeting) {
-            employeeStats[lead.scheduler].total++;
+      const globalStageLeadSet = new Set<string>();
+      const ensureLeadTracked = (leadKey: string) => {
+        const parsed = parseLeadKey(leadKey);
+        if (!parsed || !parsed.id) return;
+        if (parsed.type === 'new') {
+          newLeadIdsSet.add(parsed.id);
+        } else if (parsed.type === 'legacy') {
+          legacyLeadIdsSet.add(parsed.id);
+        }
+      };
+
+      stageHistoryData.forEach(entry => {
+        const stageId = Number(entry.stage);
+        const normalizedStageName = stageIdToNormalizedName[stageId] || '';
+        if (stageId === 20 || normalizedStageName === 'meetingscheduled') {
+          console.log('🔍 Stage entry hitting meeting-scheduled bucket candidate:', entry);
+        }
+        if (stageId === 11 || normalizedStageName === 'precommunication') {
+          console.log('🔍 Stage entry hitting precommunication candidate:', entry);
+        }
+
+        const stageNormalizedName = stageIdToNormalizedName[stageId] || '';
+
+        let stageType:
+          | 'precommunication'
+          | 'communicationStarted'
+          | 'setAsUnactive'
+          | 'meetingScheduled'
+          | null = null;
+        if (
+          precommunicationStageIdSet.has(stageId) ||
+          precommunicationStageNameSet.has(stageNormalizedName)
+        ) {
+          stageType = 'precommunication';
+        } else if (
+          communicationStartedStageIdSet.has(stageId) ||
+          communicationStartedStageNameSet.has(stageNormalizedName)
+        ) {
+          stageType = 'communicationStarted';
+        } else if (
+          setAsUnactiveStageIdSet.has(stageId) ||
+          setAsUnactiveStageNameSet.has(stageNormalizedName)
+        ) {
+          stageType = 'setAsUnactive';
+        } else if (
+          meetingScheduledStageIdSet.has(stageId) ||
+          meetingScheduledStageNameSet.has(stageNormalizedName)
+        ) {
+          stageType = 'meetingScheduled';
+        }
+
+        if (!stageType) return;
+
+        let leadKey: string | null = null;
+        if (entry.newlead_id) {
+          leadKey = `new-${entry.newlead_id.toString()}`;
+        } else if (entry.lead_id !== null && entry.lead_id !== undefined) {
+          leadKey = `legacy-${entry.lead_id.toString()}`;
+        }
+        if (!leadKey) return;
+
+        const leadIdentifierKey = leadKey!;
+        ensureLeadTracked(leadIdentifierKey);
+
+        if (stageType === 'meetingScheduled') {
+          meetingStageEntries.push({
+            leadKey: leadIdentifierKey,
+            fallbackIdentifier: entry.creator_id ?? null,
+          });
+          return;
+        }
+
+        const schedulerInfo = normalizeIdentifier(entry.creator_id);
+        if (!schedulerInfo) {
+          deferredStageAssignments.push({
+            stageType,
+            leadKey: leadIdentifierKey,
+            fallbackIdentifier: entry.creator_id ?? null,
+          });
+          return;
+        }
+
+        initializeEmployee(schedulerInfo.key);
+        if (!employeeStats[schedulerInfo.key]) return;
+        ensureStageLeadSets(schedulerInfo.key);
+
+        stageLeadSets[schedulerInfo.key][stageType].add(leadIdentifierKey);
+        globalStageLeadSet.add(leadIdentifierKey);
+      });
+
+      const registerUnactivatedLead = (rawIdentifier: any, leadKey: string, source: string) => {
+        if (!leadKey) return;
+        ensureLeadTracked(leadKey);
+        let normalized = normalizeIdentifier(rawIdentifier);
+        if (!normalized && rawIdentifier && typeof rawIdentifier === 'string') {
+          const matchedDisplay = Object.entries(employeeIdToName).find(
+            ([, name]) => name.toLowerCase() === rawIdentifier.toString().toLowerCase()
+          );
+          if (matchedDisplay) {
+            normalized = { key: matchedDisplay[0], displayName: matchedDisplay[1] };
+          } else {
+            const parts = rawIdentifier
+              .toString()
+              .split('-')
+              .map((part: string) => part.trim())
+              .filter(Boolean);
+            for (const part of parts) {
+              if (part && part.toLowerCase() !== rawIdentifier.toString().toLowerCase()) {
+                const partMatch = normalizeIdentifier(part);
+                if (partMatch) {
+                  normalized = partMatch;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        if (!normalized) {
+          console.warn(
+            '🔍 Scheduled Report - unable to map unactivated_by to employee',
+            rawIdentifier,
+            'for lead',
+            leadKey,
+            'source:',
+            source
+          );
+          return;
+        }
+        initializeEmployee(normalized.key);
+        ensureStageLeadSets(normalized.key);
+        stageLeadSets[normalized.key].setAsUnactive.add(leadKey);
+        globalStageLeadSet.add(leadKey);
+      };
+
+      const fetchUnactivatedLeads = async () => {
+        let newUnactivatedQuery = supabase
+          .from('leads')
+          .select('id, unactivated_by, unactivated_at')
+          .not('unactivated_at', 'is', null);
+        if (filters.fromDate) {
+          newUnactivatedQuery = newUnactivatedQuery.gte('unactivated_at', `${filters.fromDate}T00:00:00`);
+        }
+        if (filters.toDate) {
+          newUnactivatedQuery = newUnactivatedQuery.lte('unactivated_at', `${filters.toDate}T23:59:59`);
+        }
+        const { data: newUnactivatedData, error: newUnactivatedError } = await newUnactivatedQuery;
+        if (newUnactivatedError) throw newUnactivatedError;
+        newUnactivatedData?.forEach((row: any) => {
+          const leadKey = `new-${row.id}`;
+          registerUnactivatedLead(row.unactivated_by, leadKey, 'new');
+        });
+
+        let legacyUnactivatedQuery = supabase
+          .from('leads_lead')
+          .select('id, unactivated_by, unactivated_at')
+          .not('unactivated_at', 'is', null);
+        if (filters.fromDate) {
+          legacyUnactivatedQuery = legacyUnactivatedQuery.gte('unactivated_at', `${filters.fromDate}T00:00:00`);
+        }
+        if (filters.toDate) {
+          legacyUnactivatedQuery = legacyUnactivatedQuery.lte('unactivated_at', `${filters.toDate}T23:59:59`);
+        }
+        const { data: legacyUnactivatedData, error: legacyUnactivatedError } = await legacyUnactivatedQuery;
+        if (legacyUnactivatedError) throw legacyUnactivatedError;
+        legacyUnactivatedData?.forEach((row: any) => {
+          const leadKey = `legacy-${row.id}`;
+          registerUnactivatedLead(row.unactivated_by, leadKey, 'legacy');
+        });
+
+        console.log('🔍 Scheduled Report - unactivated leads fetched:', {
+          new: newUnactivatedData?.length || 0,
+          legacy: legacyUnactivatedData?.length || 0,
+        });
+      };
+
+      await fetchUnactivatedLeads();
+      await hydrateLeadMaps();
+
+      const resolveSchedulerForLead = (
+        leadKey: string,
+        fallbackIdentifier: string | number | null
+      ): { key: string; displayName: string } | null => {
+        const parsed = parseLeadKey(leadKey);
+        const schedulerCandidates: Array<any> = [];
+
+        if (parsed) {
+          if (parsed.type === 'new') {
+            const leadRecord = newLeadMap.get(parsed.id);
+            if (leadRecord) {
+              schedulerCandidates.push(leadRecord.scheduler, leadRecord.manager);
+            }
+          } else if (parsed.type === 'legacy') {
+            const leadRecord = legacyLeadMap.get(parsed.id);
+            if (leadRecord) {
+              schedulerCandidates.push(
+                leadRecord.meeting_scheduler_id,
+                leadRecord.meeting_manager_id
+              );
+            }
           }
         }
 
-        // Count communication started: user who moved to communication_started
-        if (lead.communication_started_by) {
-          initializeEmployee(lead.communication_started_by);
-          employeeStats[lead.communication_started_by].communicationStarted++;
-          
-          // Count towards total if not already counted elsewhere
-          const hasScheduledMeeting = meetingsData?.some(m => m.leads?.id === lead.id);
-          const hasSchedulerAction = lead.scheduler && (lead.stage === 'created' || lead.stage === 'scheduler_assigned');
-          if (!hasScheduledMeeting && !hasSchedulerAction) {
-            employeeStats[lead.communication_started_by].total++;
+        if (fallbackIdentifier !== undefined && fallbackIdentifier !== null) {
+          schedulerCandidates.push(fallbackIdentifier);
+        }
+
+        for (const candidate of schedulerCandidates) {
+          const info = normalizeIdentifier(candidate);
+          if (info) {
+            return info;
           }
         }
 
-        // Count unactivated: user who moved to unactivated/declined
-        if (lead.unactivated_by) {
-          initializeEmployee(lead.unactivated_by);
-          employeeStats[lead.unactivated_by].setAsUnactive++;
-          
-          // Count towards total if not already counted elsewhere
-          const hasScheduledMeeting = meetingsData?.some(m => m.leads?.id === lead.id);
-          const hasSchedulerAction = lead.scheduler && (lead.stage === 'created' || lead.stage === 'scheduler_assigned');
-          const hasCommunicationAction = lead.communication_started_by;
-          if (!hasScheduledMeeting && !hasSchedulerAction && !hasCommunicationAction) {
-            employeeStats[lead.unactivated_by].total++;
-          }
+        return null;
+      };
+
+      meetingStageEntries.forEach(({ leadKey, fallbackIdentifier }) => {
+        const schedulerInfo = resolveSchedulerForLead(leadKey, fallbackIdentifier);
+        if (!schedulerInfo) return;
+
+        recordMeetingForScheduler(schedulerInfo.key, leadKey);
+        ensureStageLeadSets(schedulerInfo.key);
+        stageLeadSets[schedulerInfo.key].meetingScheduled.add(leadKey);
+        globalStageLeadSet.add(leadKey);
+      });
+
+      deferredStageAssignments.forEach(({ stageType, leadKey, fallbackIdentifier }) => {
+        const schedulerInfo = resolveSchedulerForLead(leadKey, fallbackIdentifier);
+        if (!schedulerInfo) return;
+
+        initializeEmployee(schedulerInfo.key);
+        if (!employeeStats[schedulerInfo.key]) return;
+        ensureStageLeadSets(schedulerInfo.key);
+        stageLeadSets[schedulerInfo.key][stageType].add(leadKey);
+        globalStageLeadSet.add(leadKey);
+      });
+
+      const globalMeetingLeadSet = new Set<string>(meetingScheduledLeadSet);
+      Object.entries(stageLeadSets).forEach(([empId, stageSetGroup]) => {
+        if (
+          stageSetGroup.precommunication.size > 0 ||
+          stageSetGroup.communicationStarted.size > 0 ||
+          stageSetGroup.setAsUnactive.size > 0 ||
+          stageSetGroup.meetingScheduled.size > 0
+        ) {
+          console.log('🔍 Scheduled Report - stage sets for employee', empId, {
+            precommunication: Array.from(stageSetGroup.precommunication).slice(0, 10),
+            communicationStarted: Array.from(stageSetGroup.communicationStarted).slice(0, 10),
+            setAsUnactive: Array.from(stageSetGroup.setAsUnactive).slice(0, 10),
+            meetingScheduled: Array.from(stageSetGroup.meetingScheduled).slice(0, 10),
+          });
         }
       });
+      console.log(
+        '🔍 Scheduled Report - stage lead set sizes:',
+        Object.fromEntries(
+          Object.entries(stageLeadSets).map(([empId, sets]) => [
+            empId,
+            {
+              precommunication: sets.precommunication.size,
+              communicationStarted: sets.communicationStarted.size,
+              setAsUnactive: sets.setAsUnactive.size,
+              meetingScheduled: sets.meetingScheduled.size,
+            },
+          ])
+        )
+      );
+
+      Object.keys(employeeStats).forEach(empId => {
+        ensureStageLeadSets(empId);
+        const stageSets = stageLeadSets[empId];
+        const schedulerStats = schedulerStageStats[empId] || { leads: new Set<string>(), eventCount: 0 };
+
+        employeeStats[empId].meetingsScheduled = schedulerStats.leads.size;
+        employeeStats[empId].precommunication = stageSets.precommunication.size;
+        employeeStats[empId].communicationStarted = stageSets.communicationStarted.size;
+        employeeStats[empId].setAsUnactive = stageSets.setAsUnactive.size;
+        employeeStats[empId].total =
+          employeeStats[empId].precommunication +
+          employeeStats[empId].communicationStarted +
+          employeeStats[empId].setAsUnactive +
+          employeeStats[empId].meetingsScheduled;
+      });
+
+      const resolveCategoryFromRecord = (record: any): { main: string; sub: string } | null => {
+        if (!record) return null;
+        const categoryData = record.misc_category;
+        if (categoryData) {
+          const entry = Array.isArray(categoryData) ? categoryData[0] : categoryData;
+          if (entry) {
+            const miscMain = entry.misc_maincategory;
+            const mainName = Array.isArray(miscMain) ? miscMain?.[0]?.name : miscMain?.name;
+            const subName = entry.name;
+            if (subName) {
+              return {
+                main: mainName || 'Uncategorized',
+                sub: subName,
+              };
+            }
+          }
+        }
+        if (record.category) {
+          return {
+            main: 'Uncategorized',
+            sub: record.category,
+          };
+        }
+        if (record.category_id) {
+          return {
+            main: 'Uncategorized',
+            sub: String(record.category_id),
+          };
+        }
+        return null;
+      };
+
+      const resolveCategoryForLeadKey = (leadKey: string): { main: string; sub: string } | null => {
+        const parsed = parseLeadKey(leadKey);
+        if (!parsed) return null;
+        if (parsed.type === 'new') {
+          const leadRecord = newLeadMap.get(parsed.id);
+          const categoryInfo = resolveCategoryFromRecord(leadRecord);
+          if (!categoryInfo) {
+            console.warn('🔍 Scheduled Report - missing category info for new lead', parsed.id, leadRecord);
+          }
+          return categoryInfo;
+        }
+        if (parsed.type === 'legacy') {
+          const leadRecord = legacyLeadMap.get(parsed.id);
+          const categoryInfo = resolveCategoryFromRecord(leadRecord);
+          if (!categoryInfo) {
+            console.warn('🔍 Scheduled Report - missing category info for legacy lead', parsed.id, leadRecord);
+          }
+          return categoryInfo;
+        }
+        return null;
+      };
+
+      const leadDetailsByKey: Record<string, LeadBaseDetail> = {};
+      const ensureLeadDetail = (leadKey: string) => {
+        if (!leadKey || leadDetailsByKey[leadKey]) return;
+        const parsed = parseLeadKey(leadKey);
+        if (!parsed) return;
+        const record =
+          parsed.type === 'new' ? newLeadMap.get(parsed.id) : legacyLeadMap.get(parsed.id);
+        const categoryInfo = resolveCategoryForLeadKey(leadKey);
+        const manualId = record?.manual_id;
+        const leadNumberValue =
+          (manualId ?? record?.lead_number ?? record?.leadNumber ?? parsed.id) as string | number;
+        const leadNumber = typeof leadNumberValue === 'string'
+          ? leadNumberValue
+          : leadNumberValue !== undefined && leadNumberValue !== null
+          ? String(leadNumberValue)
+          : parsed.id;
+        const clientName =
+          record?.name ||
+          record?.full_name ||
+          record?.client_name ||
+          `Lead ${leadNumber}`;
+        leadDetailsByKey[leadKey] = {
+          leadKey,
+          leadId: parsed.id,
+          leadNumber,
+          clientName,
+          categoryMain: categoryInfo?.main ?? 'Uncategorized',
+          categorySub: categoryInfo?.sub ?? 'N/A',
+          leadType: parsed.type,
+        };
+      };
+
+      const employeeLeadBuckets: Record<string, EmployeeLeadBuckets> = {};
+      Object.entries(stageLeadSets).forEach(([empId, sets]) => {
+        const meetingScheduledKeys = Array.from(sets.meetingScheduled);
+        const precommunicationKeys = Array.from(sets.precommunication);
+        const communicationStartedKeys = Array.from(sets.communicationStarted);
+        const setAsUnactiveKeys = Array.from(sets.setAsUnactive);
+
+        meetingScheduledKeys.forEach(ensureLeadDetail);
+        precommunicationKeys.forEach(ensureLeadDetail);
+        communicationStartedKeys.forEach(ensureLeadDetail);
+        setAsUnactiveKeys.forEach(ensureLeadDetail);
+
+        employeeLeadBuckets[empId] = {
+          meetingScheduled: meetingScheduledKeys,
+          precommunication: precommunicationKeys,
+          communicationStarted: communicationStartedKeys,
+          setAsUnactive: setAsUnactiveKeys,
+        };
+      });
+
+      meetingScheduledLeadSet.forEach(ensureLeadDetail);
+      globalStageLeadSet.forEach(ensureLeadDetail);
+
+      const categoryCounts: Record<string, { main: string; sub: string; leadKeys: Set<string> }> = {};
+
+      meetingScheduledLeadSet.forEach(leadKey => {
+        const categoryInfo = resolveCategoryForLeadKey(leadKey);
+        if (!categoryInfo) return;
+        const key = `${categoryInfo.main}|||${categoryInfo.sub}`;
+        if (!categoryCounts[key]) {
+          categoryCounts[key] = { ...categoryInfo, leadKeys: new Set<string>() };
+        }
+        categoryCounts[key].leadKeys.add(leadKey);
+      });
+
+      const categoryChartDataArray = Object.values(categoryCounts).map((entry: any) => ({
+        main: entry.main,
+        sub: entry.sub,
+        count: entry.leadKeys.size,
+      })) as Array<{ main: string; sub: string; count: number }>;
 
       console.log('Employee stats:', employeeStats);
 
       // Convert to array and filter out employees with no activity
-      const employeeArray = Object.entries(employeeStats)
-        .map(([email, stats]: [string, any]) => ({ email, ...stats }))
-        .filter(emp => emp.total > 0)
+      const employeeArray = (Object.entries(employeeStats) as Array<[string, any]>)
+        .map(([id, stats]) => ({ id, ...stats }))
+        .filter(emp => (emp.total > 0 || emp.meetingsScheduled > 0) && emp.fullName)
         .sort((a, b) => b.meetingsScheduled - a.meetingsScheduled);
 
       console.log('Employee array:', employeeArray);
 
       // Prepare chart data
-      const chartData = employeeArray.map(emp => ({
-        name: emp.fullName || emp.email,
+      const chartData = employeeArray
+        .filter(emp => emp.meetingsScheduled > 0)
+        .map(emp => ({
+          name: emp.fullName,
         meetings: emp.meetingsScheduled
       }));
 
       console.log('Chart data:', chartData);
+      console.log(
+        '🔍 Scheduled Report - employee breakdown:',
+        employeeArray.map(emp => ({
+          id: emp.id,
+          name: emp.fullName,
+          meetingsScheduled: emp.meetingsScheduled,
+          precommunication: emp.precommunication,
+          communicationStarted: emp.communicationStarted,
+          setAsUnactive: emp.setAsUnactive,
+          total: emp.total,
+        }))
+      );
+
+      categoryChartDataArray.sort((a, b) => b.count - a.count);
+      const categoryChartData = categoryChartDataArray;
+      const categoryTableData = categoryChartDataArray.map(item => ({
+        category: `${item.main} › ${item.sub}`,
+        count: item.count,
+      }));
+
+      const totalMeetingOccurrences = totalMeetingEvents;
+
+      const schedulerLeadArray = Object.entries(schedulerStageStats)
+        .map(([id, stats]) => ({
+          id,
+          fullName: employeeIdToName[id] || employeeStats[id]?.fullName || id,
+          meetingCount: stats.leads.size,
+        }))
+        .filter(item => item.meetingCount > 0);
+      schedulerLeadArray.sort((a, b) => b.meetingCount - a.meetingCount);
+      const topScheduler = schedulerLeadArray[0] || null;
 
       setResults({
         employeeStats: employeeArray,
         chartData,
-        totalMeetings: employeeArray.reduce((sum, emp) => sum + emp.meetingsScheduled, 0),
+        totalMeetings: meetingScheduledLeadSet.size,
         totalEmployees: employeeArray.length,
-        totalRecords: meetingsData?.length || 0,
-        totalLeads: leadsData?.length || 0
+        topScheduler,
+        totalMeetingOccurrences,
+        totalLeads: new Set<string>([
+          ...Array.from(globalStageLeadSet),
+          ...Array.from(globalMeetingLeadSet),
+        ]).size,
+        categoryChartData,
+        categoryTableData,
+        employeeLeadBuckets,
+        leadDetailsByKey,
       });
 
     } catch (error) {
@@ -2227,13 +3119,93 @@ const ScheduledReport = () => {
     }
   };
 
+  const closeDrawer = () => {
+    setDrawerState({
+      isOpen: false,
+      title: '',
+      leads: [],
+    });
+  };
+
+  const openEmployeeLeadDrawer = (
+    employeeId: string,
+    metric: EmployeeMetricKey,
+    employeeName: string
+  ) => {
+    if (!results?.employeeLeadBuckets || !results?.leadDetailsByKey) return;
+    const bucket: EmployeeLeadBuckets | undefined = results.employeeLeadBuckets[employeeId];
+    if (!bucket) return;
+
+    const stageSegments =
+      metric === 'total'
+        ? [
+            { keys: bucket.meetingScheduled, label: metricLabels.meetingScheduled },
+            { keys: bucket.precommunication, label: metricLabels.precommunication },
+            { keys: bucket.communicationStarted, label: metricLabels.communicationStarted },
+            { keys: bucket.setAsUnactive, label: metricLabels.setAsUnactive },
+          ]
+        : [
+            {
+              keys: bucket[metric as Exclude<EmployeeMetricKey, 'total'>],
+              label: metricLabels[metric],
+            },
+          ];
+
+    const drawerLeads: EmployeeLeadDrawerItem[] = [];
+    stageSegments.forEach(segment => {
+      segment.keys.forEach(leadKey => {
+        const base: LeadBaseDetail | undefined = results.leadDetailsByKey[leadKey];
+        if (base) {
+          drawerLeads.push({
+            ...base,
+            stageLabel: segment.label,
+          });
+        }
+      });
+    });
+
+    setDrawerState({
+      isOpen: true,
+      title: `${employeeName} • ${metricLabels[metric]}`,
+      leads: drawerLeads,
+    });
+  };
+
+  const renderMetricButton = (
+    employeeId: string,
+    employeeName: string,
+    metric: EmployeeMetricKey,
+    value: number
+  ) => {
+    const disabled = !value;
+    const handleClick = () => {
+      if (!disabled) {
+        openEmployeeLeadDrawer(employeeId, metric, employeeName);
+      }
+    };
+    return (
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={disabled}
+        className={`w-full text-center font-semibold focus:outline-none ${
+          disabled
+            ? 'text-gray-400 cursor-not-allowed'
+            : 'text-gray-800 hover:text-primary underline decoration-dotted'
+        }`}
+      >
+        {value}
+      </button>
+    );
+  };
+
   return (
     <div>
       {/* Search Form */}
-      <div className="card bg-base-200 shadow-lg p-6 mb-8">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="bg-white mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-end">
           <div className="form-control">
-            <label className="label"><span className="label-text">From Signed Date</span></label>
+            <label className="label"><span className="label-text">From Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -2242,7 +3214,7 @@ const ScheduledReport = () => {
             />
           </div>
           <div className="form-control">
-            <label className="label"><span className="label-text">To Signed Date</span></label>
+            <label className="label"><span className="label-text">To Date</span></label>
             <input 
               type="date" 
               className="input input-bordered" 
@@ -2250,15 +3222,15 @@ const ScheduledReport = () => {
               onChange={e => handleFilterChange('toDate', e.target.value)} 
             />
           </div>
-        </div>
-        <div className="mt-6">
+          <div className="form-control md:flex md:items-end">
           <button 
-            className="btn btn-primary" 
+              className="btn btn-primary w-full md:w-auto" 
             onClick={handleSearch}
             disabled={isSearching}
           >
-            {isSearching ? 'Analyzing...' : 'Analyze Scheduled Meetings'}
+              {isSearching ? 'Analyzing...' : 'Show'}
           </button>
+          </div>
         </div>
       </div>
 
@@ -2273,30 +3245,32 @@ const ScheduledReport = () => {
             <div className="space-y-6">
               {/* Summary Cards */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-                <div className="card bg-gradient-to-br from-blue-500 via-blue-600 to-blue-700 text-white shadow-lg">
+                <div className="card text-white shadow-lg" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body">
                     <h3 className="text-lg font-semibold opacity-90">Total Meetings Scheduled</h3>
                     <p className="text-3xl font-bold">{results.totalMeetings}</p>
                   </div>
                 </div>
-                <div className="card bg-gradient-to-br from-green-500 via-green-600 to-green-700 text-white shadow-lg">
+                <div className="card text-white shadow-lg" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body">
                     <h3 className="text-lg font-semibold opacity-90">Active Employees</h3>
                     <p className="text-3xl font-bold">{results.totalEmployees}</p>
                   </div>
                 </div>
-                <div className="card bg-gradient-to-br from-purple-500 via-purple-600 to-purple-700 text-white shadow-lg">
+                <div className="card text-white shadow-lg" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body">
-                    <h3 className="text-lg font-semibold opacity-90">Meeting Records</h3>
-                    <p className="text-3xl font-bold">{results.totalRecords}</p>
-                    <p className="text-sm opacity-80">From meetings table</p>
+                    <h3 className="text-lg font-semibold opacity-90">Top Scheduler</h3>
+                    <p className="text-3xl font-bold">{results.topScheduler ? results.topScheduler.fullName : '--'}</p>
+                    <p className="text-sm opacity-80">
+                      {results.topScheduler ? `${results.topScheduler.meetingCount} meetings` : 'No meetings found'}
+                    </p>
                   </div>
                 </div>
-                <div className="card bg-gradient-to-br from-orange-500 via-orange-600 to-orange-700 text-white shadow-lg">
+                <div className="card text-white shadow-lg" style={{ backgroundColor: '#4218CC' }}>
                   <div className="card-body">
-                    <h3 className="text-lg font-semibold opacity-90">Total Leads</h3>
-                    <p className="text-3xl font-bold">{results.totalLeads}</p>
-                    <p className="text-sm opacity-80">With schedulers assigned</p>
+                    <h3 className="text-lg font-semibold opacity-90">Total Meetings Created</h3>
+                    <p className="text-3xl font-bold">{results.totalMeetingOccurrences}</p>
+                    <p className="text-sm opacity-80">Includes multiple meetings per lead</p>
                   </div>
                 </div>
               </div>
@@ -2306,9 +3280,9 @@ const ScheduledReport = () => {
                 <div className="card bg-white shadow-lg">
                   <div className="card-body">
                     <h3 className="text-xl font-bold mb-6">Meetings Scheduled by Employee</h3>
-                    <div className="h-96">
+                    <div>
                       {results.chartData.length > 0 ? (
-                        <div className="space-y-3 h-full overflow-y-auto">
+                        <div className="space-y-3">
                           {results.chartData.map((item: any, index: number) => (
                             <div key={index} className="flex items-center gap-4">
                               <div className="w-32 text-sm font-medium text-right truncate">
@@ -2333,7 +3307,7 @@ const ScheduledReport = () => {
                           ))}
                         </div>
                       ) : (
-                        <div className="flex items-center justify-center h-full text-gray-500">
+                        <div className="flex items-center justify-center py-12 text-gray-500">
                           No data available
                         </div>
                       )}
@@ -2345,8 +3319,8 @@ const ScheduledReport = () => {
                 <div className="card bg-white shadow-lg">
                   <div className="card-body">
                     <h3 className="text-xl font-bold mb-6">Employee Performance Details</h3>
-                    <div className="overflow-x-auto h-96">
-                      <table className="table table-zebra table-pin-rows w-full text-sm">
+                    <div className="overflow-x-auto">
+                      <table className="table w-full text-sm">
                         <thead>
                           <tr>
                             <th className="text-xs">Employee</th>
@@ -2360,39 +3334,102 @@ const ScheduledReport = () => {
                         <tbody>
                           {results.employeeStats.map((emp: any, index: number) => (
                             <tr key={index}>
-                              <td className="font-medium">
-                                <div className="flex flex-col">
-                                  <span className="text-xs text-gray-600">{emp.email}</span>
-                                  <span className="font-semibold">{emp.fullName}</span>
-                                </div>
+                              <td className="font-medium">{emp.fullName}</td>
+                              <td className="text-center align-middle">
+                                {renderMetricButton(emp.id, emp.fullName, 'meetingScheduled', emp.meetingsScheduled)}
                               </td>
-                              <td>
-                                <span className="badge badge-primary badge-sm">
-                                  {emp.meetingsScheduled}
-                                </span>
+                              <td className="text-center align-middle">
+                                {renderMetricButton(emp.id, emp.fullName, 'precommunication', emp.precommunication)}
                               </td>
-                              <td>
-                                <span className="badge badge-warning badge-sm">
-                                  {emp.precommunication}
-                                </span>
+                              <td className="text-center align-middle">
+                                {renderMetricButton(
+                                  emp.id,
+                                  emp.fullName,
+                                  'communicationStarted',
+                                  emp.communicationStarted
+                                )}
                               </td>
-                              <td>
-                                <span className="badge badge-success badge-sm">
-                                  {emp.communicationStarted}
-                                </span>
+                              <td className="text-center align-middle">
+                                {renderMetricButton(emp.id, emp.fullName, 'setAsUnactive', emp.setAsUnactive)}
                               </td>
-                              <td>
-                                <span className="badge badge-error badge-sm">
-                                  {emp.setAsUnactive}
-                                </span>
-                              </td>
-                              <td>
-                                <span className="badge badge-neutral badge-sm">
-                                  {emp.total}
-                                </span>
+                              <td className="text-center align-middle">
+                                {renderMetricButton(emp.id, emp.fullName, 'total', emp.total)}
                               </td>
                             </tr>
                           ))}
+                        </tbody>
+                      </table>
+                                </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Category Breakdown */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="card bg-white shadow-lg">
+                  <div className="card-body">
+                    <h3 className="text-xl font-bold mb-6">Meetings Scheduled by Category</h3>
+                    <div className="space-y-3">
+                      {results.categoryChartData && results.categoryChartData.length > 0 ? (
+                        results.categoryChartData.map((item: any, index: number) => {
+                          const maxCount = Math.max(...results.categoryChartData.map((d: any) => d.count || 0), 1);
+                          const percentage = Math.max(15, (item.count / maxCount) * 100);
+                          return (
+                            <div key={index} className="flex items-center gap-4">
+                              <div className="w-48 text-sm font-medium text-right truncate">
+                                {item.main} › {item.sub}
+                              </div>
+                              <div className="flex-1 flex items-center gap-2">
+                                <div className="flex-1 bg-gray-200 rounded-full h-6 relative">
+                                  <div
+                                    className="bg-gradient-to-r from-emerald-500 to-emerald-600 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold transition-all duration-300"
+                                    style={{ width: `${percentage}%` }}
+                                  >
+                                    {item.count}
+                                  </div>
+                                </div>
+                                <span className="text-sm font-bold text-gray-600 w-8">
+                                  {item.count}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="flex items-center justify-center h-32 text-gray-500">
+                          No category data available
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="card bg-white shadow-lg">
+                  <div className="card-body">
+                    <h3 className="text-xl font-bold mb-6">Meetings by Category</h3>
+                    <div className="overflow-x-auto">
+                      <table className="table w-full text-sm">
+                        <thead>
+                          <tr>
+                            <th className="text-xs">Category</th>
+                            <th className="text-xs text-right">Meetings</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {results.categoryTableData && results.categoryTableData.length > 0 ? (
+                            results.categoryTableData.map((row: any, index: number) => (
+                              <tr key={index}>
+                                <td className="font-medium">{row.category}</td>
+                                <td className="text-right font-semibold text-gray-800">{row.count}</td>
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan={2} className="text-center py-6 text-gray-500">
+                                No meetings found for the selected criteria.
+                              </td>
+                            </tr>
+                          )}
                         </tbody>
                       </table>
                     </div>
@@ -2407,6 +3444,12 @@ const ScheduledReport = () => {
           )}
         </div>
       )}
+      <EmployeeLeadDrawer
+        isOpen={drawerState.isOpen}
+        onClose={closeDrawer}
+        title={drawerState.title}
+        leads={drawerState.leads}
+      />
     </div>
   );
 };
@@ -2651,14 +3694,14 @@ const BonusesV4Report = () => {
   return (
     <div className="space-y-6">
       {/* Filters Section */}
-      <div className="card bg-base-100 shadow-md">
+      <div className="bg-white shadow-none">
         <div className="card-body">
           <h3 className="card-title text-lg font-semibold mb-4">Filters</h3>
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             <div>
               <label className="label">
-                <span className="label-text font-medium">From Signed Date</span>
+                <span className="label-text font-medium">From Meeting Date</span>
               </label>
               <input
                 type="date"
@@ -2670,7 +3713,7 @@ const BonusesV4Report = () => {
 
             <div>
               <label className="label">
-                <span className="label-text font-medium">To Signed Date</span>
+                <span className="label-text font-medium">To Meeting Date</span>
               </label>
               <input
                 type="date"

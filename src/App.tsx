@@ -17,6 +17,7 @@ import LeadSearchPage from './pages/LeadSearchPage';
 import { Routes, Route, useLocation } from 'react-router-dom';
 import ExpertPage from './components/ExpertPage';
 import CalendarPage from './components/CalendarPage';
+import WaitingForPriceOfferPage from './components/WaitingForPriceOfferPage';
 import CreateNewLead from './components/CreateNewLead';
 import LoginPage from './components/LoginPage';
 import ProtectedRoute from './components/ProtectedRoute';
@@ -395,6 +396,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients/:lead_number/*" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
                     <Route path="/calendar" element={<CalendarPage />} />
                     <Route path="/outlook-calendar" element={<OutlookCalendarPage />} />
+                    <Route path="/waiting-for-price-offer" element={<WaitingForPriceOfferPage />} />
                     <Route path="/expert" element={<ExpertPage />} />
                     <Route path="/create" element={<CreateNewLead />} />
                     <Route path="/lead-search" element={<LeadSearchPage />} />

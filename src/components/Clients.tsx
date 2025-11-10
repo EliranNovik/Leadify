@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import BalanceEditModal from './BalanceEditModal';
 import {
@@ -316,7 +317,30 @@ const Clients: React.FC<ClientsProps> = ({
   };
   const { lead_number = "" } = useParams();
   const location = useLocation();
+  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const requestedLeadNumber = searchParams.get('lead');
   const fullLeadNumber = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, ''));
+
+  const buildClientRoute = useCallback((manualId?: string | null, leadNumberValue?: string | null) => {
+    const manualString = manualId?.toString().trim() || '';
+    const leadString = leadNumberValue?.toString().trim() || '';
+    const isSubLeadNumber = leadString.includes('/');
+
+    if (isSubLeadNumber && manualString !== '') {
+      const query = leadString !== '' ? `?lead=${encodeURIComponent(leadString)}` : '';
+      return `/clients/${encodeURIComponent(manualString)}` + query;
+    }
+
+    if (leadString !== '') {
+      return `/clients/${encodeURIComponent(leadString)}`;
+    }
+
+    if (manualString !== '') {
+      return `/clients/${encodeURIComponent(manualString)}`;
+    }
+
+    return '/clients';
+  }, []);
   const [activeTab, setActiveTab] = useState('info');
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
@@ -349,6 +373,9 @@ const Clients: React.FC<ClientsProps> = ({
   const [isSavingUpdate, setIsSavingUpdate] = useState(false);
   const [showMeetingEndedDrawer, setShowMeetingEndedDrawer] = useState(false);
   const [isSavingMeetingEnded, setIsSavingMeetingEnded] = useState(false);
+  const [showMeetingIrrelevantModal, setShowMeetingIrrelevantModal] = useState(false);
+  const [meetingIrrelevantReason, setMeetingIrrelevantReason] = useState('');
+  const [isProcessingMeetingIrrelevant, setIsProcessingMeetingIrrelevant] = useState(false);
   const [latestMeetingDate, setLatestMeetingDate] = useState<string | null>(null);
   const [meetingEndedData, setMeetingEndedData] = useState({
     probability: 50,
@@ -413,14 +440,64 @@ const Clients: React.FC<ClientsProps> = ({
   // Fetch all employees, categories, and currencies for name lookup
   useEffect(() => {
     const fetchEmployees = async () => {
-      const { data, error } = await supabase
-        .from('tenants_employee')
-        .select('id, display_name, bonuses_role')
-        .order('display_name', { ascending: true });
-      
-      if (!error && data) {
-  
-        setAllEmployees(data);
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select(`
+            id,
+            full_name,
+            email,
+            active,
+            employee_id,
+            tenants_employee!employee_id (
+              id,
+              display_name,
+              active,
+              is_active
+            )
+          `)
+          .eq('active', true)
+          .order('full_name', { ascending: true });
+
+        if (!error && data) {
+          const mapped = data
+            .map(user => {
+              const employee = Array.isArray(user.tenants_employee)
+                ? user.tenants_employee[0]
+                : user.tenants_employee;
+              const id = employee?.id ?? user.employee_id;
+              if (!id) return null;
+              const label = employee?.display_name || user.full_name || user.email || '';
+              if (!label) return null;
+              return {
+                id,
+                display_name: label,
+                active: true,
+                source: 'users',
+              };
+            })
+            .filter(Boolean);
+
+          if (mapped.length > 0) {
+            setAllEmployees(mapped);
+            return;
+          }
+        }
+      } catch (error) {
+        console.error('Clients: Error fetching employees from users table:', error);
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, active, is_active, bonuses_role')
+          .order('display_name', { ascending: true });
+
+        if (!error && data) {
+          setAllEmployees(data);
+        }
+      } catch (fallbackError) {
+        console.error('Clients: Error fetching employees from tenants_employee table:', fallbackError);
       }
     };
 
@@ -517,7 +594,7 @@ const Clients: React.FC<ClientsProps> = ({
   
   // Manual check for unactivation (in case useEffect doesn't trigger)
   if (selectedClient) {
-    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
     const unactivationReason = selectedClient.unactivation_reason;
     const isUnactivated = isLegacy ? 
       (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
@@ -551,7 +628,7 @@ const Clients: React.FC<ClientsProps> = ({
     manager: '',
     helper: '',
     amount: '',
-    currency: '₪',
+    currency: 'NIS',
   });
   const [meetingToDelete, setMeetingToDelete] = useState(null);
 
@@ -670,12 +747,24 @@ const Clients: React.FC<ClientsProps> = ({
         updateData.closer = successForm.handler;
       }
       
+      const actor = await fetchStageActorInfo();
+      const stageTimestamp = new Date().toISOString();
+      updateData.stage_changed_by = actor.fullName;
+      updateData.stage_changed_at = stageTimestamp;
+
       const { error } = await supabase
         .from('leads')
         .update(updateData)
         .eq('id', selectedClient.id);
       
       if (error) throw error;
+
+      await recordLeadStageChange({
+        lead: selectedClient,
+        stage: 'Success',
+        actor,
+        timestamp: stageTimestamp,
+      });
       
       // Update local state immediately
       setSelectedClient((prev: any) => ({
@@ -699,7 +788,6 @@ const Clients: React.FC<ClientsProps> = ({
       toast.error('Failed to update lead.');
     }
   };
-
   // Add useEffect to fetch meetings when reschedule drawer opens
   useEffect(() => {
     const fetchMeetings = async () => {
@@ -808,6 +896,7 @@ const Clients: React.FC<ClientsProps> = ({
             closer: data.closer_id, // Use closer_id from legacy table
             handler: data.case_handler_id, // Use case_handler_id from legacy table
             unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
+            potential_total: data.potential_total || null, // Include potential_total for legacy leads
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
           console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
@@ -865,7 +954,6 @@ const Clients: React.FC<ClientsProps> = ({
     
     refreshClientData();
   }, [allCategories, selectedClient?.id, onClientUpdate]);
-
   // Essential data loading for initial page display
   useEffect(() => {
     let isMounted = true;
@@ -880,11 +968,62 @@ const Clients: React.FC<ClientsProps> = ({
         // Try to find the lead in both tables
         let clientData = null;
         
+        const isManualIdCandidate = /^\d+$/.test(fullLeadNumber);
+        console.log('🔍 Treating as manual_id candidate:', isManualIdCandidate, 'requestedLeadNumber:', requestedLeadNumber);
+        
+        if (isManualIdCandidate) {
+          console.log('🔍 Querying new leads by manual_id:', fullLeadNumber);
+          const { data: manualResults, error: manualError } = await supabase
+            .from('leads')
+            .select('*, client_country, emails (*), closer, handler')
+            .eq('manual_id', fullLeadNumber);
+
+          if (manualError) {
+            console.error('❌ Error querying leads by manual_id:', manualError);
+          } else if (manualResults && manualResults.length > 0) {
+            console.log('✅ Found leads with matching manual_id:', manualResults.length);
+            let chosenLead = null;
+
+            if (requestedLeadNumber) {
+              chosenLead = manualResults.find(lead => lead.lead_number === requestedLeadNumber);
+              console.log('🔍 Requested lead_number match:', {
+                requestedLeadNumber,
+                found: !!chosenLead,
+              });
+            }
+
+            if (!chosenLead) {
+              chosenLead = manualResults.find(lead => typeof lead.lead_number === 'string' && lead.lead_number.includes('/1'));
+              if (chosenLead) {
+                console.log('🔍 Defaulting to master lead with /1 suffix:', chosenLead.lead_number);
+              }
+            }
+
+            if (!chosenLead) {
+              chosenLead = manualResults[0];
+              console.log('🔍 Defaulting to first lead for manual_id:', chosenLead?.id);
+            }
+
+            if (chosenLead) {
+              const categoryName = getCategoryName(chosenLead.category_id, chosenLead.category);
+              clientData = {
+                ...chosenLead,
+                category: categoryName,
+              };
+              console.log('✅ Selected client from manual_id lookup:', {
+                id: clientData.id,
+                manual_id: clientData.manual_id,
+                lead_number: clientData.lead_number,
+              });
+            }
+          }
+        }
+        
         // Check if this looks like a legacy lead ID (numeric)
         const isLegacyLeadId = /^\d+$/.test(fullLeadNumber);
         console.log('🔍 isLegacyLeadId:', isLegacyLeadId);
         
-        if (isLegacyLeadId) {
+        if (!clientData && isLegacyLeadId) {
           // For numeric IDs, try legacy table first
           console.log('🔍 Querying legacy table for ID:', parseInt(fullLeadNumber));
           const { data: legacyLead, error: legacyError } = await supabase
@@ -1009,7 +1148,7 @@ const Clients: React.FC<ClientsProps> = ({
             console.log('🔍 Legacy lead stage after transformation:', clientData.stage);
             console.log('🔍 Legacy lead stage type after transformation:', typeof clientData.stage);
           }
-        } else {
+        } else if (!clientData) {
           // For non-numeric IDs, try new leads table first
           const { data: newLead, error: newError } = await supabase
             .from('leads')
@@ -1056,7 +1195,9 @@ const Clients: React.FC<ClientsProps> = ({
         const allLeads = await fetchAllLeads();
         if (allLeads.length > 0 && isMounted) {
           const latestLead = allLeads[0];
-          navigate(`/clients/${latestLead.lead_number}`);
+          const latestManualId = (latestLead as any)?.manual_id;
+          const latestLeadNumber = (latestLead as any)?.lead_number;
+          navigate(buildClientRoute(latestManualId, latestLeadNumber));
           setSelectedClient(latestLead);
           const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
           const unactivationReason = latestLead.unactivation_reason;
@@ -1075,7 +1216,7 @@ const Clients: React.FC<ClientsProps> = ({
     fetchEssentialData();
     
     return () => { isMounted = false; };
-  }, [lead_number, navigate, setSelectedClient, fullLeadNumber]); // Removed selectedClient dependencies to prevent infinite loops
+  }, [lead_number, navigate, setSelectedClient, fullLeadNumber, requestedLeadNumber]); // Removed selectedClient dependencies to prevent infinite loops
 
   // Background loading for non-essential data (runs after essential data is loaded)
   useEffect(() => {
@@ -1303,7 +1444,13 @@ const Clients: React.FC<ClientsProps> = ({
       if (isLegacy) {
         // Use the known numeric ID for 'unactivated' stage in legacy system
         updateData.stage = 91;
+      } else {
+        updateData.stage = '91';
       }
+
+      const stageActor = await fetchStageActorInfo();
+      updateData.stage_changed_by = currentUserFullName;
+      updateData.stage_changed_at = updateData.unactivated_at;
 
       const { error } = await supabase
         .from(tableName)
@@ -1311,6 +1458,13 @@ const Clients: React.FC<ClientsProps> = ({
         .eq(idField, clientId);
       
       if (error) throw error;
+
+      await recordLeadStageChange({
+        lead: selectedClient,
+        stage: isLegacy ? 91 : '91',
+        actor: stageActor,
+        timestamp: updateData.unactivated_at,
+      });
       
       // Refresh client data
       await onClientUpdate();
@@ -1323,7 +1477,6 @@ const Clients: React.FC<ClientsProps> = ({
       toast.error('Failed to unactivate lead');
     }
   };
-
   const handleActivation = async () => {
     try {
       // Get current Supabase auth user
@@ -1355,13 +1508,27 @@ const Clients: React.FC<ClientsProps> = ({
         unactivation_reason: null
       };
 
-      // For legacy leads, also need to change the stage from 91 to something else
-      // We'll set it to the stage before unactivation (if we have it), or default to 1 (Created)
-      if (isLegacy) {
-        // Try to get the previous stage before unactivation
-        // If not available, set to 1 (Created)
-        const previousStage = selectedClient.previous_stage || 1;
-        updateData.stage = previousStage;
+      const stageActor = await fetchStageActorInfo();
+      const stageTimestamp = new Date().toISOString();
+      let stageForHistory: number | null = await getLatestStageBeforeStage(selectedClient);
+
+      if (stageForHistory === null) {
+        const previousStage = selectedClient.previous_stage ?? (isLegacy ? 1 : null);
+        if (previousStage !== null && previousStage !== undefined) {
+          const numericPrevious =
+            typeof previousStage === 'number'
+              ? previousStage
+              : Number.parseInt(String(previousStage), 10);
+          if (Number.isFinite(numericPrevious)) {
+            stageForHistory = numericPrevious;
+          }
+        }
+      }
+
+      if (stageForHistory !== null) {
+        updateData.stage = isLegacy ? stageForHistory : stageForHistory.toString();
+        updateData.stage_changed_by = currentUserFullName;
+        updateData.stage_changed_at = stageTimestamp;
       }
 
       const tableName = isLegacy ? 'leads_lead' : 'leads';
@@ -1378,6 +1545,15 @@ const Clients: React.FC<ClientsProps> = ({
       if (error) throw error;
       
       console.log('🔍 Lead activation successful');
+
+      if (stageForHistory !== null) {
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: stageForHistory,
+          actor: stageActor,
+          timestamp: stageTimestamp,
+        });
+      }
 
       // Record activation event in lead_changes table (only for new leads)
       if (!isLegacy) {
@@ -1407,76 +1583,33 @@ const Clients: React.FC<ClientsProps> = ({
       toast.error('Failed to activate lead');
     }
   };
-
-  const updateLeadStage = async (stage: string) => {
+  const updateLeadStage = async (stage: string | number) => {
     if (!selectedClient) return;
     
     try {
-      // Get current user info
-      const account = instance?.getAllAccounts()[0];
-      let currentUserFullName = account?.name || 'Unknown User';
-      
-      // Try to get full_name from database
-      if (account?.username) {
-        try {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('full_name')
-            .eq('email', account.username)
-            .single();
-          
-          if (userData?.full_name) {
-            currentUserFullName = userData.full_name;
-          }
-        } catch (error) {
-          console.log('Could not fetch user full_name, using account.name as fallback');
-        }
-      }
-
-      // Prepare update data
-      const updateData: any = { 
-        stage,
-        stage_changed_by: currentUserFullName,
-        stage_changed_at: new Date().toISOString()
-      };
-
-      // Add specific tracking for important stages (keeping existing logic for backward compatibility)
-      if (stage === 'communication_started') {
-        updateData.communication_started_by = currentUserFullName;
-        updateData.communication_started_at = new Date().toISOString();
-      }
-
-      console.log('Updating lead stage with tracking:', updateData);
-
-      // Check if this is a legacy lead
+      const actor = await fetchStageActorInfo();
+      const timestamp = new Date().toISOString();
       const isLegacyLead = selectedClient.id.startsWith('legacy_');
       
-      if (isLegacyLead) {
-        // For legacy leads, update the leads_lead table
-        const legacyId = selectedClient.id.replace('legacy_', '');
-        const { error } = await supabase
-          .from('leads_lead')
-          .update(updateData)
-          .eq('id', legacyId);
-        
-        if (error) throw error;
-      } else {
-        // For new leads, update the leads table
-        const { error } = await supabase
-          .from('leads')
-          .update(updateData)
-          .eq('id', selectedClient.id);
-        
-        if (error) throw error;
+      const additionalFields: Record<string, any> = {};
+      if (!isLegacyLead && stage === 'communication_started') {
+        additionalFields.communication_started_by = actor.fullName;
+        additionalFields.communication_started_at = timestamp;
       }
+
+      await updateLeadStageWithHistory({
+        lead: selectedClient,
+        stage,
+        additionalFields,
+        actor,
+        timestamp,
+      });
       
-      // Refresh client data
       await onClientUpdate();
       setSelectedStage(null);
     } catch (error: any) {
       console.error('Error updating lead stage:', error);
       
-      // Check if this is a category validation error from RLS policy
       if (error?.message && error.message.includes('category')) {
         toast.error('Please set a category for this client before performing this action.', {
           duration: 4000,
@@ -1496,101 +1629,78 @@ const Clients: React.FC<ClientsProps> = ({
   const handleStageChange = async (newStageId: string) => {
     await updateLeadStage(newStageId);
   };
-
   const updateScheduler = async (scheduler: string) => {
     if (!selectedClient) return;
     
     try {
-      // Get current user info
-      const account = instance?.getAllAccounts()[0];
-      let currentUserFullName = account?.name || 'Unknown User';
-      
-      // Try to get full_name from database
-      if (account?.username) {
-        try {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('full_name')
-            .eq('email', account.username)
-            .single();
-          
-          if (userData?.full_name) {
-            currentUserFullName = userData.full_name;
-          }
-        } catch (error) {
-          console.log('Could not fetch user full_name, using account.name as fallback');
-        }
-      }
-
-      // Check if this is a legacy lead
+      const actor = await fetchStageActorInfo();
+      const timestamp = new Date().toISOString();
       const isLegacyLead = selectedClient.id.startsWith('legacy_');
       
       if (isLegacyLead) {
-        // For legacy leads, the current logged-in user should become the scheduler
-        // Get current user's full_name from users table
-        const { data: currentUserData, error: userError } = await supabase
-          .from('users')
-          .select('full_name')
-          .eq('auth_id', (await supabase.auth.getUser()).data.user?.id)
-          .single();
-        
-        if (userError || !currentUserData?.full_name) {
-          console.error('Error getting current user:', userError);
-          throw new Error('Could not get current user information');
-        }
-        
-        console.log('Current user full_name:', currentUserData.full_name);
-        
-        // Find the corresponding employee record in tenants_employee table
-        const { data: employeeData, error: employeeError } = await supabase
-          .from('tenants_employee')
-          .select('id')
-          .eq('name', currentUserData.full_name)
-          .single();
-        
-        if (employeeError) {
-          console.error('Error finding employee in tenants_employee:', employeeError);
-          throw new Error('Could not find employee record for current user');
-        }
-        
-        if (!employeeData?.id) {
-          throw new Error('No employee found in tenants_employee for current user');
-        }
-        
-        console.log('Found employee ID:', employeeData.id);
-        
-        // For legacy leads, update the leads_lead table with meeting_scheduler_id
         const legacyId = selectedClient.id.replace('legacy_', '');
+
+        let schedulerEmployeeId = actor.employeeId;
+
+        if (!schedulerEmployeeId) {
+          const { data: fallbackEmployee } = await supabase
+            .from('tenants_employee')
+            .select('id')
+            .eq('display_name', actor.fullName)
+            .single();
+
+          if (fallbackEmployee?.id) {
+            schedulerEmployeeId = fallbackEmployee.id;
+          }
+        }
+
+        if (!schedulerEmployeeId) {
+          throw new Error('Current user is not linked to an employee record.');
+        }
+
         const { error } = await supabase
           .from('leads_lead')
           .update({ 
-            meeting_scheduler_id: employeeData.id, // Save the employee ID from tenants_employee
-            stage: 10 // 'scheduler_assigned' stage ID
+            meeting_scheduler_id: schedulerEmployeeId,
+            stage: 10,
+            stage_changed_by: actor.fullName,
+            stage_changed_at: timestamp,
           })
           .eq('id', legacyId);
         
         if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: 10,
+          actor,
+          timestamp,
+        });
       } else {
-        // For new leads, update the leads table
         const { error } = await supabase
           .from('leads')
           .update({ 
-            scheduler: scheduler, 
+            scheduler,
             stage: 'scheduler_assigned',
-            stage_changed_by: currentUserFullName,
-            stage_changed_at: new Date().toISOString()
+            stage_changed_by: actor.fullName,
+            stage_changed_at: timestamp,
           })
           .eq('id', selectedClient.id);
         
         if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: 'scheduler_assigned',
+          actor,
+          timestamp,
+        });
       }
       
-      // Refresh client data
       await onClientUpdate();
     } catch (error: any) {
       console.error('Error updating scheduler:', error);
       
-      // Check if this is a category validation error from RLS policy
       if (error?.message && error.message.includes('category')) {
         toast.error('Please set a category for this client before performing this action.', {
           duration: 4000,
@@ -1696,7 +1806,6 @@ const Clients: React.FC<ClientsProps> = ({
       return false;
     }
   };
-
   // Function to create calendar event in selected calendar
   const createCalendarEvent = async (accessToken: string, meetingDetails: {
     subject: string;
@@ -2013,25 +2122,48 @@ const Clients: React.FC<ClientsProps> = ({
 
 
       // Update lead stage to 'meeting_scheduled' and set scheduler
+      const stageActor = await fetchStageActorInfo();
+      const stageTimestamp = new Date().toISOString();
+
       if (isLegacyLead) {
-        // For legacy leads, update the leads_lead table
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
-        await supabase
+        const { error } = await supabase
           .from('leads_lead')
           .update({ 
             stage: 'meeting_scheduled',
-            meeting_scheduler_id: currentUserFullName
+            meeting_scheduler_id: currentUserFullName,
+            stage_changed_by: stageActor.fullName,
+            stage_changed_at: stageTimestamp,
           })
           .eq('id', legacyId);
+
+        if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: 'meeting_scheduled',
+          actor: stageActor,
+          timestamp: stageTimestamp,
+        });
       } else {
-        // For new leads, update the leads table
-        await supabase
+        const { error } = await supabase
           .from('leads')
           .update({ 
             stage: 'meeting_scheduled',
-            scheduler: currentUserFullName
+            scheduler: currentUserFullName,
+            stage_changed_by: stageActor.fullName,
+            stage_changed_at: stageTimestamp,
           })
           .eq('id', selectedClient.id);
+
+        if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: 'meeting_scheduled',
+          actor: stageActor,
+          timestamp: stageTimestamp,
+        });
       }
 
       // Update UI
@@ -2090,18 +2222,79 @@ const Clients: React.FC<ClientsProps> = ({
     setMeetingEndedData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleMeetingIrrelevant = async () => {
-    await updateLeadStage('unactivated');
-    setShowMeetingEndedDrawer(false);
+  const handleMeetingIrrelevant = () => {
+    setMeetingIrrelevantReason('');
+    setShowMeetingIrrelevantModal(true);
   };
 
+  const handleCancelMeetingIrrelevant = () => {
+    if (isProcessingMeetingIrrelevant) return;
+    setShowMeetingIrrelevantModal(false);
+    setMeetingIrrelevantReason('');
+  };
+
+  const handleConfirmMeetingIrrelevant = async () => {
+    if (!selectedClient) return;
+
+    const trimmedReason = meetingIrrelevantReason.trim();
+    if (!trimmedReason) {
+      toast.error('Please provide a reason for marking the lead as irrelevant');
+      return;
+    }
+
+    setIsProcessingMeetingIrrelevant(true);
+
+    try {
+      const actor = await fetchStageActorInfo();
+      const currentUserFullName = actor.fullName;
+      const timestamp = new Date().toISOString();
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const tableName = isLegacyLead ? 'leads_lead' : 'leads';
+      const clientId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
+      const stageValue = isLegacyLead ? 91 : '91';
+
+      const updateData: Record<string, any> = {
+        unactivated_by: currentUserFullName,
+        unactivated_at: timestamp,
+        unactivation_reason: trimmedReason,
+        stage_changed_by: currentUserFullName,
+        stage_changed_at: timestamp,
+        stage: stageValue,
+      };
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      await recordLeadStageChange({
+        lead: selectedClient,
+        stage: stageValue,
+        actor,
+        timestamp,
+      });
+
+      toast.success('Lead marked as irrelevant successfully');
+      setShowMeetingIrrelevantModal(false);
+      setMeetingIrrelevantReason('');
+      setShowMeetingEndedDrawer(false);
+      await onClientUpdate();
+    } catch (error) {
+      console.error('Error marking lead as irrelevant:', error);
+      toast.error('Failed to mark lead as irrelevant. Please try again.');
+    } finally {
+      setIsProcessingMeetingIrrelevant(false);
+    }
+  };
   const handleSendPriceOffer = async () => {
     if (!selectedClient) return;
     setIsSavingMeetingEnded(true);
 
     // If proposalTotal is changed, update balance as well
     const proposalTotal = parseFloat(meetingEndedData.proposalTotal);
-    const updateData = {
+    const updateData: Record<string, any> = {
       probability: meetingEndedData.probability,
       meeting_brief: meetingEndedData.meetingBrief,
       number_of_applicants_meeting: meetingEndedData.numberOfApplicants,
@@ -2114,6 +2307,12 @@ const Clients: React.FC<ClientsProps> = ({
     };
 
     try {
+      const actor = await fetchStageActorInfo();
+      const stageTimestamp = new Date().toISOString();
+      updateData.stage_changed_by = actor.fullName;
+      updateData.stage_changed_at = stageTimestamp;
+      updateData.stage = 'waiting_for_mtng_sum';
+
       // First, find the most recent meeting to update it
       const { data: meetings, error: meetingsError } = await supabase
         .from('meetings')
@@ -2145,6 +2344,13 @@ const Clients: React.FC<ClientsProps> = ({
         .eq('id', selectedClient.id);
       
       if (error) throw error;
+
+      await recordLeadStageChange({
+        lead: selectedClient,
+        stage: 'waiting_for_mtng_sum',
+        actor,
+        timestamp: stageTimestamp,
+      });
       
       setShowMeetingEndedDrawer(false);
       await onClientUpdate();
@@ -2177,11 +2383,9 @@ const Clients: React.FC<ClientsProps> = ({
       setIsSavingMeetingEnded(false);
     }
   };
-
   const handleUpdateMeeting = async (details: any) => {
     // Implementation of handleUpdateMeeting
   };
-
   const handleSaveUpdateDrawer = async () => {
     if (!selectedClient) return;
     setIsSavingUpdate(true);
@@ -2191,6 +2395,8 @@ const Clients: React.FC<ClientsProps> = ({
       
       console.log('handleSaveUpdateDrawer - Is legacy lead:', isLegacyLead);
       
+      const actor = await fetchStageActorInfo();
+      const stageTimestamp = new Date().toISOString();
       let updateData;
       
       if (isLegacyLead) {
@@ -2201,6 +2407,8 @@ const Clients: React.FC<ClientsProps> = ({
           followup_log: followup, // Map to followup_log column
           potential_applicants: potentialApplicants,
           stage: 15, // 'communication_started' stage ID for legacy leads
+          stage_changed_by: actor.fullName,
+          stage_changed_at: stageTimestamp,
         };
         
         // For legacy leads, update the leads_lead table
@@ -2213,6 +2421,13 @@ const Clients: React.FC<ClientsProps> = ({
           .eq('id', legacyId);
         
         if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: 15,
+          actor,
+          timestamp: stageTimestamp,
+        });
       } else {
         // For new leads, update the leads table
         updateData = {
@@ -2221,6 +2436,8 @@ const Clients: React.FC<ClientsProps> = ({
           followup: followup,
           potential_applicants: potentialApplicants,
           stage: 'communication_started',
+          stage_changed_by: actor.fullName,
+          stage_changed_at: stageTimestamp,
         };
         
         console.log('Updating new lead with ID:', selectedClient.id);
@@ -2231,6 +2448,13 @@ const Clients: React.FC<ClientsProps> = ({
           .eq('id', selectedClient.id);
         
         if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: 'communication_started',
+          actor,
+          timestamp: stageTimestamp,
+        });
       }
       
       setShowUpdateDrawer(false);
@@ -2283,7 +2507,6 @@ const Clients: React.FC<ClientsProps> = ({
     setOfferCurrency(selectedClient?.proposal_currency || '₪');
     setShowSendOfferDrawer(true);
   };
-
   // Send offer email logic (reuse InteractionsTab logic)
   const handleSendOfferEmail = async () => {
     if (!selectedClient.email) return;
@@ -2316,6 +2539,9 @@ const Clients: React.FC<ClientsProps> = ({
         body: offerBody.replace(/\n/g, '<br>'),
       });
       // Save the offer body, total, currency, closer, and update stage
+      const stageActor = await fetchStageActorInfo();
+      const stageTimestamp = new Date().toISOString();
+
       await supabase
         .from('leads')
         .update({
@@ -2324,10 +2550,19 @@ const Clients: React.FC<ClientsProps> = ({
           proposal_currency: offerCurrency,
           closer: closerName,
           stage: 'Mtng sum+Agreement sent',
+          stage_changed_by: stageActor.fullName,
+          stage_changed_at: stageTimestamp,
           balance: offerTotal ? parseFloat(offerTotal) : null, // Sync balance to proposal_total
           balance_currency: offerCurrency
         })
         .eq('id', selectedClient.id);
+
+      await recordLeadStageChange({
+        lead: selectedClient,
+        stage: 'Mtng sum+Agreement sent',
+        actor: stageActor,
+        timestamp: stageTimestamp,
+      });
       // --- Upsert sent offer email to emails table for Interactions tab ---
       const now = new Date();
       await supabase.from('emails').upsert([
@@ -2404,26 +2639,9 @@ const Clients: React.FC<ClientsProps> = ({
     if (!selectedClient) return;
     
     try {
-      // Get current user info
-      const account = instance?.getAllAccounts()[0];
-      let currentUserFullName = account?.name || 'Unknown User';
-      
-      // Try to get full_name from database
-      if (account?.username) {
-        try {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('full_name')
-            .eq('email', account.username)
-            .single();
-          
-          if (userData?.full_name) {
-            currentUserFullName = userData.full_name;
-          }
-        } catch (error) {
-          console.log('Could not fetch user full_name, using account.name as fallback');
-        }
-      }
+      const actor = await fetchStageActorInfo();
+      const currentUserFullName = actor.fullName;
+      const stageTimestamp = new Date().toISOString();
 
       await supabase
         .from('leads')
@@ -2431,9 +2649,16 @@ const Clients: React.FC<ClientsProps> = ({
           stage: 'Client signed agreement', 
           date_signed: signedDate,
           stage_changed_by: currentUserFullName,
-          stage_changed_at: new Date().toISOString()
+          stage_changed_at: stageTimestamp
         })
         .eq('id', selectedClient.id);
+
+      await recordLeadStageChange({
+        lead: selectedClient,
+        stage: 'Client signed agreement',
+        actor,
+        timestamp: stageTimestamp,
+      });
       setShowSignedDrawer(false);
       await onClientUpdate();
     } catch (error) {
@@ -2552,7 +2777,6 @@ const Clients: React.FC<ClientsProps> = ({
       return '';
     }
   };
-
   // Save lead tags
   const saveLeadTags = async (leadId: string, tagsString: string) => {
     try {
@@ -2673,6 +2897,87 @@ const Clients: React.FC<ClientsProps> = ({
     });
     setShowEditLeadDrawer(true);
   };
+  const categoryOptions = useMemo(() => {
+    const categories = allCategories || [];
+    const options = categories
+      .map(cat => {
+        if (!cat) return null;
+        const id = cat.id != null ? String(cat.id) : '';
+        if (!id) return null;
+        const mainName = cat.misc_maincategory?.name || null;
+        const label = mainName ? `${mainName} › ${cat.name}` : cat.name || '';
+        if (!label) return null;
+        return {
+          id,
+          label,
+          raw: cat,
+        };
+      })
+      .filter(Boolean) as Array<{ id: string; label: string; raw: any }>;
+
+    options.sort((a, b) => a.label.localeCompare(b.label));
+    return options;
+  }, [allCategories]);
+
+  const categoryOptionsMap = useMemo(() => {
+    const map = new Map<string, { id: string; label: string; raw: any }>();
+    categoryOptions.forEach(opt => {
+      map.set(opt.id, opt);
+    });
+    return map;
+  }, [categoryOptions]);
+
+  const handlerOptions = useMemo(() => {
+    const employees = allEmployees || [];
+    const map = new Map<string, string>();
+
+    employees.forEach(emp => {
+      if (!emp) return;
+      const id = emp.id != null ? String(emp.id) : emp.employee_id != null ? String(emp.employee_id) : '';
+      if (!id) return;
+
+      const candidateName = emp.display_name || emp.full_name || emp.name || emp.email || '';
+      if (!candidateName) return;
+
+      const activeFlags = [
+        emp.active,
+        emp.is_active,
+        emp.user_active,
+        emp.enabled,
+        emp.status === 'active',
+      ];
+      const hasActiveInfo = activeFlags.some(flag => flag !== undefined && flag !== null);
+      const isActive = activeFlags.some(flag =>
+        flag === true ||
+        flag === 'true' ||
+        flag === 't' ||
+        flag === '1' ||
+        flag === 1
+      );
+
+      if (hasActiveInfo && !isActive) {
+        return;
+      }
+
+      if (!map.has(id)) {
+        map.set(id, candidateName);
+      }
+    });
+
+    const options = Array.from(map.entries())
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+    return options;
+  }, [allEmployees]);
+
+  const handlerOptionsMap = useMemo(() => {
+    const map = new Map<string, string>();
+    handlerOptions.forEach(opt => {
+      map.set(opt.id, opt.label);
+    });
+    return map;
+  }, [handlerOptions]);
 
   const handleSaveEditLead = async () => {
     if (!selectedClient) return;
@@ -2983,7 +3288,6 @@ const Clients: React.FC<ClientsProps> = ({
       toast.error('Failed to update lead.');
     }
   };
-
   // Add the reschedule save handler
   const handleRescheduleMeeting = async () => {
     if (!selectedClient || !meetingToDelete || !rescheduleFormData.date || !rescheduleFormData.time) return;
@@ -3456,7 +3760,6 @@ const Clients: React.FC<ClientsProps> = ({
       createdBy: createdBy,
     });
   };
-
   // Handler for create proforma
   const handleCreateProforma = async () => {
     if (!proformaData) return;
@@ -3559,15 +3862,11 @@ const Clients: React.FC<ClientsProps> = ({
   // Check if this is a sub-lead by looking at the lead_number in the database
   // Logic: If database lead_number contains '/', then it's a sub-lead
   // Example: lead_number = "192974/1" means this is a sub-lead of master lead "192974"
-  const isSubLead = fullLeadNumber.includes('/') || 
-                   (selectedClient && selectedClient.master_id) ||
-                   (selectedClient && selectedClient.lead_number && selectedClient.lead_number.includes('/'));
-  
-  const masterLeadNumber = isSubLead ? 
-    (fullLeadNumber.includes('/') ? fullLeadNumber.split('/')[0] : 
-     selectedClient?.lead_number?.includes('/') ? selectedClient.lead_number.split('/')[0] :
-     selectedClient?.master_id) : 
-    null;
+  const clientLeadNumber = selectedClient?.lead_number ?? '';
+  const isSubLead = !!clientLeadNumber && clientLeadNumber.includes('/');
+  const masterLeadNumber = isSubLead
+    ? clientLeadNumber.split('/')[0]
+    : selectedClient?.master_id || null;
   
   // Persist sub-lead detection when first detected
   useEffect(() => {
@@ -3587,15 +3886,16 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Debug logging for master lead detection
   console.log('🔍 Master lead detection:', {
-    fullLeadNumber,
+    routeIdentifier: fullLeadNumber,
     isSubLead,
     masterLeadNumber,
     persistentIsSubLead,
     persistentMasterLeadNumber,
     selectedClientId: selectedClient?.id,
     selectedClientLeadNumber: selectedClient?.lead_number,
+    selectedClientManualId: selectedClient?.manual_id,
     masterId: selectedClient?.master_id,
-    hasSlash: fullLeadNumber.includes('/'),
+    hasSlash: !!clientLeadNumber && clientLeadNumber.includes('/'),
     hasMasterId: !!(selectedClient && selectedClient.master_id),
     selectedClientData: selectedClient ? {
       id: selectedClient.id,
@@ -3603,41 +3903,58 @@ const Clients: React.FC<ClientsProps> = ({
       master_id: selectedClient.master_id,
       manual_id: selectedClient.manual_id
     } : null,
-    // Clear explanation of the logic
-    explanation: selectedClient?.lead_number?.includes('/') ? 
-      `Lead number "${selectedClient.lead_number}" contains "/" → Sub-lead detected` :
-      fullLeadNumber.includes('/') ? 
-      `URL fullLeadNumber "${fullLeadNumber}" contains "/" → Sub-lead detected` :
-      'No sub-lead detected'
+    explanation: clientLeadNumber && clientLeadNumber.includes('/')
+      ? `Lead number "${clientLeadNumber}" contains "/" → Sub-lead detected`
+      : 'No sub-lead detected'
   });
 
   // Function to fetch sub-leads for master leads
-  const fetchSubLeads = useCallback(async (leadNumber: string) => {
-    if (!leadNumber || leadNumber.includes('/')) return; // Not a master lead
-    
+  const fetchSubLeads = useCallback(async (baseLeadNumber: string) => {
+    if (!baseLeadNumber || baseLeadNumber.trim() === '') {
+      setSubLeads([]);
+      setIsMasterLead(false);
+      return [];
+    }
+
+    const normalizedBase = baseLeadNumber.trim();
+
     try {
       const { data, error } = await supabase
         .from('leads')
-        .select('lead_number, name, stage')
-        .like('lead_number', `${leadNumber}/%`)
+        .select('lead_number, name, stage, manual_id')
+        .like('lead_number', `${normalizedBase}/%`)
         .order('lead_number', { ascending: true });
-      
+
       if (error) {
         console.error('Error fetching sub-leads:', error);
-        return;
+        return [];
       }
-      
+
       if (data && data.length > 0) {
-        setSubLeads(data);
-        setIsMasterLead(true);
+        const filtered = data.filter(lead => {
+          const leadNumberValue = lead.lead_number || '';
+          return !!leadNumberValue && leadNumberValue.includes('/');
+        });
+
+        if (filtered.length > 0) {
+          setSubLeads(filtered);
+          setIsMasterLead(!(selectedClient?.master_id && String(selectedClient.master_id).trim() !== ''));
+          return filtered;
+        } else {
+          setSubLeads([]);
+          setIsMasterLead(false);
+          return [];
+        }
       } else {
         setSubLeads([]);
         setIsMasterLead(false);
+        return [];
       }
     } catch (error) {
       console.error('Error fetching sub-leads:', error);
+      return [];
     }
-  }, []);
+  }, [selectedClient?.master_id]);
 
   // Function to fetch next due payment
   const fetchNextDuePayment = useCallback(async (clientId: string) => {
@@ -3721,13 +4038,26 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Fetch sub-leads when client changes
   useEffect(() => {
-    if (selectedClient?.lead_number && !selectedClient.lead_number.includes('/')) {
-      fetchSubLeads(selectedClient.lead_number);
+    const subLeadBase =
+      selectedClient?.lead_number && String(selectedClient.lead_number).trim() !== ''
+        ? (() => {
+            const trimmed = String(selectedClient.lead_number).trim();
+            return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+          })()
+        : selectedClient?.master_id && String(selectedClient.master_id).trim() !== ''
+          ? (() => {
+              const trimmed = String(selectedClient.master_id).trim();
+              return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+            })()
+          : '';
+
+    if (subLeadBase) {
+      fetchSubLeads(subLeadBase);
     } else {
       setSubLeads([]);
       setIsMasterLead(false);
     }
-  }, [selectedClient?.lead_number, fetchSubLeads]);
+  }, [selectedClient?.lead_number, selectedClient?.master_id, fetchSubLeads]);
 
   // Fetch next due payment when client changes
   useEffect(() => {
@@ -3765,15 +4095,11 @@ const Clients: React.FC<ClientsProps> = ({
       coldLeadText = 'Follow up with client!';
     }
   }
-
   const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component;
-
   // Before the return statement, add:
   let dropdownItems = null;
-  
   // Get the stage name for comparison
   const currentStageName = selectedClient ? getStageName(selectedClient.stage) : '';
-  
   if (selectedClient && areStagesEquivalent(currentStageName, 'Client signed agreement'))
     dropdownItems = (
       <>
@@ -3804,6 +4130,13 @@ const Clients: React.FC<ClientsProps> = ({
 
       </>
     );
+  else if (selectedClient && (areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant') || areStagesEquivalent(currentStageName, 'unactivated'))) {
+    dropdownItems = (
+      <li className="px-2 py-2 text-sm text-gray-500">
+        Please activate lead in actions first.
+      </li>
+    );
+  }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'payment_request_sent')) {
     dropdownItems = (
       <>
@@ -3940,6 +4273,7 @@ const Clients: React.FC<ClientsProps> = ({
     email: '',
     phone: '',
     category: '',
+    categoryId: '',
     topic: '',
     special_notes: '',
     source: '',
@@ -3947,39 +4281,399 @@ const Clients: React.FC<ClientsProps> = ({
     tags: '',
     // Details step fields
     handler: '',
-          currency: '₪',
+    handlerId: '',
+    currency: 'NIS',
     numApplicants: '',
     proposal: '',
     potentialValue: '',
   });
+  const [isSavingSubLead, setIsSavingSubLead] = useState(false);
 
-  // Helper to generate sub-lead number
-  const generateSubLeadNumber = async (baseLeadNumber: string): Promise<string> => {
-    const { data, error } = await supabase
-      .from('leads')
-      .select('lead_number')
-      .like('lead_number', `${baseLeadNumber}/%`);
-    let max = 0;
-    if (data) {
-      data.forEach((l: any) => {
-        const match = l.lead_number.match(/\/(\d+)$/);
-        if (match) max = Math.max(max, parseInt(match[1]));
-      });
+  const normalizeCurrencyForForm = useCallback((value: string | null | undefined) => {
+    if (!value) return 'NIS';
+    const normalized = value.trim();
+    if (normalized === '') return 'NIS';
+    switch (normalized) {
+      case '₪':
+      case 'ILS':
+      case 'NIS':
+        return 'NIS';
+      case '$':
+      case 'USD':
+        return 'USD';
+      case '€':
+      case 'EUR':
+        return 'EUR';
+      default:
+        return normalized;
     }
-    return `${baseLeadNumber}/${max + 1}`;
+  }, []);
+
+  const convertCurrencyForInsert = useCallback((value: string | null | undefined) => {
+    if (!value) return '₪';
+    switch (value.trim()) {
+      case 'NIS':
+      case 'ILS':
+        return '₪';
+      case 'USD':
+        return 'USD';
+      case 'EUR':
+        return 'EUR';
+      default:
+        return value;
+    }
+  }, []);
+  const toBigIntSafe = (value: any): bigint | null => {
+    if (value === null || value === undefined || value === '') return null;
+    try {
+      if (typeof value === 'bigint') return value;
+      const normalized = typeof value === 'number' ? Math.trunc(value) : (value as string).trim();
+      if (normalized === '') return null;
+      return BigInt(normalized);
+    } catch {
+      return null;
+    }
   };
+
+const extractDigits = (value: any): string | null => {
+  if (value === null || value === undefined) return null;
+  const digits = String(value).match(/\d+/g)?.join('');
+  if (!digits || digits.trim() === '') return null;
+  return digits.replace(/^0+(?=\d)/, '') || '0';
+};
+
+const getMaxNumericValue = (rows: any[] | null | undefined, key: string): bigint => {
+  let max = BigInt(0);
+  rows?.forEach(row => {
+    const digits = extractDigits((row as any)[key]);
+    if (digits) {
+      try {
+        const value = BigInt(digits);
+        if (value > max) {
+          max = value;
+        }
+      } catch {
+        // Ignore values that cannot be parsed to BigInt
+      }
+    }
+  });
+  return max;
+};
+
+const getMaxManualIdFromLeads = async (): Promise<bigint> => {
+  const { data, error } = await supabase
+    .from('leads')
+    .select('manual_id');
+
+  if (error) throw error;
+  return getMaxNumericValue(data, 'manual_id');
+};
+
+const getMaxManualIdFromLegacy = async (): Promise<bigint> => {
+  const { data, error } = await supabase
+    .from('leads_lead')
+    .select('manual_id');
+
+  if (error) throw error;
+  return getMaxNumericValue(data, 'manual_id');
+};
+
+const getMaxLeadNumberFromLeads = async (): Promise<bigint> => {
+  const { data, error } = await supabase
+    .from('leads')
+    .select('lead_number');
+
+  if (error) throw error;
+  return getMaxNumericValue(data, 'lead_number');
+};
+
+const getMaxLeadNumberFromLegacy = async (): Promise<bigint> => {
+  const { data, error } = await supabase
+    .from('leads_lead')
+    .select('lead_number');
+
+  if (error) throw error;
+  return getMaxNumericValue(data, 'lead_number');
+};
+
+  const getMaxLegacyLeadId = async (): Promise<bigint> => {
+    const { data, error } = await supabase
+      .from('leads_lead')
+      .select('id')
+      .order('id', { ascending: false })
+      .limit(1);
+
+    if (error) throw error;
+    const legacyId = data?.[0]?.id;
+    const parsed = toBigIntSafe(legacyId);
+    return parsed ?? BigInt(0);
+  };
+
+const manualIdExists = async (manualId: bigint): Promise<boolean> => {
+  const manualString = manualId.toString();
+
+  const [leadsCheck, legacyCheck] = await Promise.all([
+    supabase
+      .from('leads')
+      .select('id', { count: 'exact', head: true })
+      .or(
+        [
+          `manual_id.eq.${manualString}`,
+          `lead_number.eq.${manualString}`,
+          `lead_number.eq.L${manualString}`,
+          `lead_number.like.${manualString}/%`,
+          `lead_number.like.L${manualString}/%`,
+        ].join(',')
+      ),
+    supabase
+      .from('leads_lead')
+      .select('id', { count: 'exact', head: true })
+      .or(`manual_id.eq.${manualString},lead_number.eq.${manualString},id.eq.${manualString}`),
+  ]);
+
+  if (leadsCheck.error) throw leadsCheck.error;
+  if (legacyCheck.error) throw legacyCheck.error;
+
+  return (leadsCheck.count ?? 0) > 0 || (legacyCheck.count ?? 0) > 0;
+};
+
+const ensureUniqueManualId = async (initialManualId: bigint): Promise<bigint> => {
+  let candidate = initialManualId;
+  let attempts = 0;
+
+  while (attempts < 1000) {
+    const exists = await manualIdExists(candidate);
+    if (!exists) return candidate;
+    candidate += BigInt(1);
+    attempts += 1;
+  }
+
+  throw new Error('Unable to determine a unique manual_id');
+};
+
+const getNextAvailableManualId = async (): Promise<bigint> => {
+  const [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax] = await Promise.all([
+    getMaxManualIdFromLeads(),
+    getMaxManualIdFromLegacy(),
+    getMaxLeadNumberFromLeads(),
+    getMaxLeadNumberFromLegacy(),
+    getMaxLegacyLeadId(),
+  ]);
+  const currentMax = [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax].reduce(
+    (acc, value) => (value > acc ? value : acc),
+    BigInt(0)
+  );
+  return ensureUniqueManualId(currentMax + BigInt(1));
+};
+
+const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number> => {
+  if (!baseLeadNumber || baseLeadNumber.trim() === '') {
+    throw new Error('Invalid base lead number for sub-lead suffix calculation');
+  }
+
+  const normalizedBase = baseLeadNumber.trim();
+  const normalizedNumericBase = extractDigits(normalizedBase);
+  const suffixes: number[] = [];
+
+  const { data: newLeadRows, error: newLeadsError } = await supabase
+    .from('leads')
+    .select('lead_number')
+    .like('lead_number', `${normalizedBase}/%`);
+
+  if (newLeadsError) throw newLeadsError;
+  newLeadRows?.forEach(row => {
+    const leadNumber = row.lead_number ? String(row.lead_number) : '';
+    const match = leadNumber.match(/\/(\d+)$/);
+    if (match) {
+      const parsed = parseInt(match[1], 10);
+      if (!Number.isNaN(parsed)) {
+        suffixes.push(parsed);
+      }
+    }
+  });
+
+  let legacySuffixes: number[] = [];
+  const legacyLikeConditions: string[] = [];
+  if (normalizedBase) {
+    legacyLikeConditions.push(`manual_id.like.${normalizedBase}/%`);
+  }
+  if (normalizedNumericBase) {
+    legacyLikeConditions.push(`manual_id.like.${normalizedNumericBase}/%`);
+  }
+
+  if (legacyLikeConditions.length > 0) {
+    const { data: legacyRows, error: legacyError } = await supabase
+      .from('leads_lead')
+      .select('manual_id')
+      .or(legacyLikeConditions.join(','));
+
+    if (legacyError) throw legacyError;
+    legacyRows?.forEach(row => {
+      const manualValue = row.manual_id ? String(row.manual_id) : '';
+      const match = manualValue.match(/\/(\d+)$/);
+      if (match) {
+        const parsed = parseInt(match[1], 10);
+        if (!Number.isNaN(parsed)) {
+          legacySuffixes.push(parsed);
+        }
+      }
+    });
+  }
+
+  suffixes.push(...legacySuffixes);
+
+  const calculatedSuffix = suffixes.length > 0 ? Math.max(...suffixes) + 1 : 2;
+  return Math.max(calculatedSuffix, 2);
+};
+  const prefillSubLeadFormFromClient = useCallback(() => {
+    if (!selectedClient) return;
+
+    const baseCategoryId = selectedClient.category_id != null ? String(selectedClient.category_id) : '';
+    const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
+
+    const rawHandlerId =
+      selectedClient.case_handler_id != null
+        ? String(selectedClient.case_handler_id)
+        : (() => {
+            if (!selectedClient.handler) return '';
+            const found = handlerOptions.find(opt => opt.label === selectedClient.handler);
+            return found?.id || '';
+          })();
+
+    const handlerLabel = rawHandlerId
+      ? handlerOptionsMap.get(rawHandlerId) || selectedClient.handler || ''
+      : selectedClient.handler || '';
+
+    const resolvedCurrency =
+      selectedClient.balance_currency ||
+      selectedClient.meeting_total_currency ||
+      selectedClient.proposal_currency ||
+      selectedClient.currency ||
+      subLeadForm.currency ||
+      '₪';
+
+    const resolvedApplicants =
+      selectedClient.number_of_applicants_meeting != null
+        ? String(selectedClient.number_of_applicants_meeting)
+        : selectedClient.number_of_applicants != null
+          ? String(selectedClient.number_of_applicants)
+          : '';
+
+    setSubLeadForm(prev => ({
+      ...prev,
+      name: selectedClient.name || '',
+      email: selectedClient.email || '',
+      phone: selectedClient.phone || '',
+      category: categoryOption?.label || selectedClient.category || '',
+      categoryId: baseCategoryId || '',
+      topic: selectedClient.topic || '',
+      special_notes: selectedClient.special_notes || '',
+      source: selectedClient.source || '',
+      language: selectedClient.language || '',
+      tags: (() => {
+        if (Array.isArray(selectedClient.tags)) {
+          return selectedClient.tags.join(', ');
+        }
+        if (typeof selectedClient.tags === 'string') {
+          return selectedClient.tags;
+        }
+        return prev.tags;
+      })(),
+      handler: handlerLabel || '',
+      handlerId: rawHandlerId || '',
+      currency: normalizeCurrencyForForm(resolvedCurrency),
+      numApplicants: resolvedApplicants,
+      proposal: '',
+      potentialValue: '',
+    }));
+  }, [
+    categoryOptionsMap,
+    handlerOptions,
+    handlerOptionsMap,
+    selectedClient,
+    subLeadForm.currency,
+    normalizeCurrencyForForm,
+  ]);
 
   // Handler to save sub-lead
   const handleSaveSubLead = async () => {
-    if (!selectedClient) return;
+    if (!selectedClient || isSavingSubLead) return;
+
+    const trimmedName = subLeadForm.name.trim();
+    const validationErrors: string[] = [];
+
+    if (!trimmedName) {
+      validationErrors.push('Name is required to create a sub-lead.');
+    }
+
+    if (!subLeadForm.categoryId && !subLeadForm.category.trim()) {
+      validationErrors.push('Please select a category for the sub-lead.');
+    }
+
+    if (validationErrors.length > 0) {
+      toast.error(validationErrors[0]);
+      return;
+    }
+
+    const masterBaseNumber = (() => {
+      if (selectedClient.lead_number && String(selectedClient.lead_number).trim() !== '') {
+        const trimmed = String(selectedClient.lead_number).trim();
+        return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+      }
+      if (selectedClient.master_id && String(selectedClient.master_id).trim() !== '') {
+        const trimmed = String(selectedClient.master_id).trim();
+        return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+      }
+      return '';
+    })();
+
+    if (!masterBaseNumber) {
+      toast.error('Unable to determine master lead number for sub-lead creation.');
+      return;
+    }
+
+    setIsSavingSubLead(true);
     try {
-      const subLeadNumber = await generateSubLeadNumber(selectedClient.lead_number);
-      const newLeadData = {
+      const manualId = await getNextAvailableManualId();
+      const manualIdString = manualId.toString();
+
+      const nextSuffix = await computeNextSubLeadSuffix(masterBaseNumber);
+      const subLeadNumber = `${masterBaseNumber}/${nextSuffix}`;
+      const masterIdValue = extractDigits(masterBaseNumber) ?? masterBaseNumber;
+
+      const selectedCategoryOption = subLeadForm.categoryId ? categoryOptionsMap.get(subLeadForm.categoryId) : undefined;
+      const categoryIdValue = subLeadForm.categoryId ? Number(subLeadForm.categoryId) : null;
+      const categoryName = selectedCategoryOption?.raw?.name || selectedCategoryOption?.label || subLeadForm.category || null;
+
+      let handlerIdValue: string | number | null = null;
+      if (subLeadForm.handlerId && subLeadForm.handlerId.trim() !== '') {
+        const trimmedHandlerId = subLeadForm.handlerId.trim();
+        handlerIdValue = /^\d+$/.test(trimmedHandlerId) ? Number(trimmedHandlerId) : trimmedHandlerId;
+      }
+      const handlerLabel = subLeadForm.handlerId
+        ? handlerOptionsMap.get(subLeadForm.handlerId) || subLeadForm.handler || ''
+        : subLeadForm.handler || '';
+
+      const parseNumericInput = (value: string) => {
+        if (!value) return null;
+        const parsed = Number(value);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+
+      const proposalAmount = parseNumericInput(subLeadForm.proposal);
+      const potentialValueAmount = parseNumericInput(subLeadForm.potentialValue);
+      const applicantCount = parseNumericInput(subLeadForm.numApplicants);
+      const currencyValue = convertCurrencyForInsert(subLeadForm.currency);
+
+      const newLeadData: Record<string, any> = {
+        manual_id: manualIdString,
+        master_id: masterIdValue,
         lead_number: subLeadNumber,
-        name: subLeadForm.name,
+        name: trimmedName,
         email: subLeadForm.email,
         phone: subLeadForm.phone,
-        category: subLeadForm.category,
+        category: categoryName,
+        category_id: categoryIdValue,
         topic: subLeadForm.topic,
         special_notes: subLeadForm.special_notes,
         source: subLeadForm.source,
@@ -3987,45 +4681,55 @@ const Clients: React.FC<ClientsProps> = ({
         tags: subLeadForm.tags,
         stage: 'Created',
         probability: 0,
-        balance: 0,
-        balance_currency: subLeadForm.currency || '₪',
-        handler: subLeadForm.handler,
-        number_of_applicants_meeting: subLeadForm.numApplicants === '' ? null : Number(subLeadForm.numApplicants),
-        proposal_total: subLeadForm.proposal === '' ? null : Number(subLeadForm.proposal),
-        potential_value: subLeadForm.potentialValue === '' ? null : Number(subLeadForm.potentialValue),
+        balance: proposalAmount ?? 0,
+        balance_currency: currencyValue,
+        meeting_total: proposalAmount,
+        meeting_total_currency: currencyValue,
+        proposal_total: proposalAmount,
+        potential_value: potentialValueAmount,
+        handler: handlerLabel || null,
+        case_handler_id: handlerIdValue,
+        number_of_applicants_meeting: applicantCount,
         created_at: new Date().toISOString(),
       };
+
+      if (!categoryName) {
+        newLeadData.category = null;
+      }
       const { error } = await supabase.from('leads').insert([newLeadData]);
       if (error) throw error;
+      await fetchSubLeads(masterBaseNumber);
       toast.success(`Sub-lead created: ${subLeadNumber}`);
       setShowSubLeadDrawer(false);
       setSubLeadStep('initial');
       setSubLeadForm({
-        name: '', email: '', phone: '', category: '', topic: '', special_notes: '', source: '', language: '', tags: '', handler: '', currency: 'NIS', numApplicants: '', proposal: '', potentialValue: '',
+        name: '',
+        email: '',
+        phone: '',
+        category: '',
+        categoryId: '',
+        topic: '',
+        special_notes: '',
+        source: '',
+        language: '',
+        tags: '',
+        handler: '',
+        handlerId: '',
+        currency: 'NIS',
+        numApplicants: '',
+        proposal: '',
+        potentialValue: '',
       });
       
       // Navigate to the newly created sub-lead's page
-      navigate(`/clients/${subLeadNumber}`);
+      navigate(buildClientRoute(manualIdString, subLeadNumber));
     } catch (error) {
       console.error('Error creating sub-lead:', error);
-      toast.error('Failed to create sub-lead.');
+      toast.error(error instanceof Error ? error.message : 'Failed to create sub-lead.');
+    } finally {
+      setIsSavingSubLead(false);
     }
   };
-
-  // Example options for category and topic
-  const categoryOptions = [
-    'Citizenship',
-    'Immigration',
-    'Legal Advice',
-    'Other',
-  ];
-  const topicOptions = [
-    'German Citizenship',
-    'Austrian Citizenship',
-    'Visa',
-    'Consultation',
-    'Other',
-  ];
 
   // Check if lead is unactivated and show compact view
   const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
@@ -4203,7 +4907,6 @@ const Clients: React.FC<ClientsProps> = ({
       </div>
     );
   }
-
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900">
       {/* Background loading indicator */}
@@ -4284,57 +4987,75 @@ const Clients: React.FC<ClientsProps> = ({
               title="Click to edit balance"
             >
               <div className="text-center">
-                <div className="text-white text-2xl font-bold">
-                  {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                <div className="text-white text-2xl font-bold whitespace-nowrap">
                   {(() => {
                     const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
                     const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                    // Show base amount minus subcontractor fee
                     const mainAmount = baseAmount - subcontractorFee;
-                    return Number(mainAmount.toFixed(2)).toLocaleString();
-                  })()}
-                </div>
-                {(() => {
-                  // Calculate VAT for legacy leads or use stored VAT for new leads
-                  let vatAmount = 0;
-                  if (selectedClient?.id?.toString().startsWith('legacy_')) {
-                    // For legacy leads, always calculate VAT dynamically to ensure consistency
-                    // For legacy leads, calculate VAT dynamically (18% for ILS currency)
-                    // Use the same base amount as BalanceEditModal (total field from leads_lead table)
-                    const baseAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
-                    const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
-                    if (currency === '₪' || currency === 'ILS') {
-                      vatAmount = baseAmount * 0.18;
-                    }
-                  } else {
-                    // For new leads, calculate VAT dynamically or use stored VAT value
-                    const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
                     const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
                     
-                    if (currency === '₪' || currency === 'ILS') {
-                      // Calculate VAT dynamically for ILS currency
-                      vatAmount = baseAmount * 0.18;
-                    } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                      // Use stored VAT value for other currencies
-                      vatAmount = Number(selectedClient.vat_value);
+                    // Calculate VAT
+                    let vatAmount = 0;
+                    if (selectedClient?.id?.toString().startsWith('legacy_')) {
+                      const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                      if (currency === '₪' || currency === 'ILS') {
+                        vatAmount = totalAmount * 0.18;
+                      }
+                    } else {
+                      const totalAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                      if (currency === '₪' || currency === 'ILS') {
+                        vatAmount = totalAmount * 0.18;
+                      } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                        vatAmount = Number(selectedClient.vat_value);
+                      }
                     }
-                  }
-                  return vatAmount > 0 ? (
-                    <div className="text-white text-sm opacity-90 mt-1">
-                      +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
-                    </div>
-                  ) : null;
-                })()}
-                {Number(selectedClient?.subcontractor_fee ?? 0) > 0 && (
-                  <div className="text-white text-sm opacity-90 mt-1">
-                    Total: {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                    
+                    return (
+                      <span>
+                        {getCurrencySymbol(currency)}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                        {vatAmount > 0 && (
+                          <span className="text-white text-base opacity-90 font-normal ml-2">
+                            +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })()}
+                </div>
+                {/* Always show Total */}
+                <div className="text-white text-sm opacity-90 mt-1">
+                  Total: {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                  {(() => {
+                    const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                    return Number(baseAmount.toFixed(2)).toLocaleString();
+                  })()}
+                </div>
+                {/* Always show Potential Value */}
+                <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
+                  <div className="font-medium">Potential Value:</div>
+                  <div className="text-white">
                     {(() => {
-                      const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
-                      // Show original base amount as total
-                      return Number(baseAmount.toFixed(2)).toLocaleString();
+                      // Check both potential_total and potential_value for both types
+                      const potentialValue = (selectedClient as any)?.potential_total || (selectedClient as any)?.potential_value || null;
+                      
+                      if (potentialValue !== null && potentialValue !== undefined) {
+                        const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
+                        if (!isNaN(numValue) && numValue > 0) {
+                          const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                          const formattedValue = typeof potentialValue === 'string' 
+                            ? potentialValue 
+                            : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+                          return (
+                            <span className="text-white">
+                              {getCurrencySymbol(currency)}{formattedValue}
+                            </span>
+                          );
+                        }
+                      }
+                      return <span className="text-white opacity-60">Not set</span>;
                     })()}
                   </div>
-                )}
+                </div>
               </div>
             </div>
 
@@ -4489,53 +5210,73 @@ const Clients: React.FC<ClientsProps> = ({
                   title="Click to edit balance"
                 >
                   <div className="text-center">
-                    <div className="text-white text-2xl font-bold">
-                      {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
+                    <div className="text-white text-2xl font-bold whitespace-nowrap">
                       {(() => {
+                        // Get base amount and subtract subcontractor fee for main display value
                         const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
                         const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                        // Show base amount minus subcontractor fee
-                        const mainAmount = baseAmount - subcontractorFee;
-                        return Number(mainAmount.toFixed(2)).toLocaleString();
-                      })()}
-                    </div>
-                    {(() => {
-                      // Calculate VAT for legacy leads or use stored VAT for new leads
-                      let vatAmount = 0;
-                      if (selectedClient?.id?.toString().startsWith('legacy_')) {
-                        // For legacy leads, always calculate VAT dynamically to ensure consistency
-                        // For legacy leads, calculate VAT dynamically (18% for ILS currency)
-                        // Use the same base amount as BalanceEditModal (total field from leads_lead table)
-                        const baseAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
-                        const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
-                        if (currency === '₪' || currency === 'ILS') {
-                          vatAmount = baseAmount * 0.18;
-                        }
-                      } else {
-                        // For new leads, calculate VAT dynamically or use stored VAT value
-                        const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                        const mainAmount = baseAmount - subcontractorFee; // Main value after subtracting subcontractor fee
                         const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
                         
-                        if (currency === '₪' || currency === 'ILS') {
-                          // Calculate VAT dynamically for ILS currency
-                          vatAmount = baseAmount * 0.18;
-                        } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                          // Use stored VAT value for other currencies
-                          vatAmount = Number(selectedClient.vat_value);
+                        // Calculate VAT based on base amount (before subtracting subcontractor fee)
+                        let vatAmount = 0;
+                        if (selectedClient?.id?.toString().startsWith('legacy_')) {
+                          const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                          if (currency === '₪' || currency === 'ILS') {
+                            vatAmount = totalAmount * 0.18;
+                          }
+                        } else {
+                          const totalAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                          if (currency === '₪' || currency === 'ILS') {
+                            vatAmount = totalAmount * 0.18;
+                          } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                            vatAmount = Number(selectedClient.vat_value);
+                          }
+                        }
+                        
+                        return (
+                          <span>
+                            {getCurrencySymbol(currency)}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                            {vatAmount > 0 && (
+                              <span className="text-white text-base opacity-90 font-normal ml-2">
+                                +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
+                              </span>
+                            )}
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    {/* Conditionally show Potential Value - only if set */}
+                    {(() => {
+                      const potentialValue = (selectedClient as any)?.potential_total || (selectedClient as any)?.potential_value || null;
+                      if (potentialValue !== null && potentialValue !== undefined) {
+                        const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
+                        if (!isNaN(numValue) && numValue > 0) {
+                          const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                          const formattedValue = typeof potentialValue === 'string' 
+                            ? potentialValue 
+                            : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+                          return (
+                            <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
+                              <div className="font-medium">Potential Value:</div>
+                              <div className="text-white">
+                                <span className="text-white">
+                                  {getCurrencySymbol(currency)}{formattedValue}
+                                </span>
+                              </div>
+                            </div>
+                          );
                         }
                       }
-                      return vatAmount > 0 ? (
-                        <div className="text-white text-sm opacity-90 mt-1">
-                          +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
-                        </div>
-                      ) : null;
+                      return null;
                     })()}
+                    {/* Conditionally show Total - only if subcontractor fee exists */}
                     {Number(selectedClient?.subcontractor_fee ?? 0) > 0 && (
-                      <div className="text-white text-sm opacity-90 mt-1">
+                      <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
                         Total: {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
                         {(() => {
+                          // Total is the base amount from database, not calculated as value + VAT
                           const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
-                          // Show original base amount as total
                           return Number(baseAmount.toFixed(2)).toLocaleString();
                         })()}
                       </div>
@@ -4834,7 +5575,6 @@ const Clients: React.FC<ClientsProps> = ({
                           {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} onCreateFinancePlan={activeTab === 'finances' ? () => setShowPaymentsPlanDrawer(true) : undefined} />}
           </div>
         </div>
-
       {/* Schedule Meeting Right Panel */}
       {showScheduleMeetingPanel && (
         <div className="fixed inset-0 z-50 flex">
@@ -5104,7 +5844,7 @@ const Clients: React.FC<ClientsProps> = ({
 
       {/* Meeting Ended Drawer */}
       {showMeetingEndedDrawer && (
-        <div className="fixed inset-0 z-50 flex">
+        <div className="fixed inset-0 z-[60] flex">
           <div
             className="fixed inset-0 bg-black/30"
             onClick={() => setShowMeetingEndedDrawer(false)}
@@ -5256,6 +5996,75 @@ const Clients: React.FC<ClientsProps> = ({
         </div>
       )}
 
+      {showMeetingIrrelevantModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center">
+          <div
+            className="fixed inset-0 bg-black/50"
+            onClick={() => {
+              if (!isProcessingMeetingIrrelevant) {
+                handleCancelMeetingIrrelevant();
+              }
+            }}
+          />
+          <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full mx-4 z-10">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="flex items-center gap-3 text-2xl font-bold text-gray-900">
+                <ExclamationTriangleIcon className="w-7 h-7 text-red-500" />
+                Mark Lead as Irrelevant
+              </h3>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={handleCancelMeetingIrrelevant}
+                disabled={isProcessingMeetingIrrelevant}
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="space-y-5">
+              <p className="text-sm text-red-600 leading-relaxed">
+                Marking this lead as irrelevant should only be done when you are certain there is no legal eligibility. If you are unsure, please click cancel.
+              </p>
+
+              <div>
+                <label className="block font-semibold mb-2 text-gray-900">Reason for this action</label>
+                <textarea
+                  className="textarea textarea-bordered w-full min-h-[120px]"
+                  placeholder="Provide details about why this lead is irrelevant..."
+                  value={meetingIrrelevantReason}
+                  onChange={(e) => setMeetingIrrelevantReason(e.target.value)}
+                  disabled={isProcessingMeetingIrrelevant}
+                />
+                <p className="text-xs text-gray-500 mt-2">
+                  This reason will be saved to the lead history for future reference.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 mt-6">
+              <button
+                className="btn btn-outline"
+                onClick={handleCancelMeetingIrrelevant}
+                disabled={isProcessingMeetingIrrelevant}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-error"
+                onClick={handleConfirmMeetingIrrelevant}
+                disabled={isProcessingMeetingIrrelevant || !meetingIrrelevantReason.trim()}
+              >
+                {isProcessingMeetingIrrelevant ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  'Confirm'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Send Offer Drawer */}
       {showSendOfferDrawer && (
         <div className="fixed inset-0 z-[60] flex">
@@ -5321,7 +6130,6 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
-
       {/* Client Signed Drawer */}
       {showSignedDrawer && (
         <div className="fixed inset-0 z-[60] flex">
@@ -5564,7 +6372,6 @@ const Clients: React.FC<ClientsProps> = ({
           <span className="loading loading-spinner loading-lg text-primary"></span>
         </div>
       )}
-
       {/* 3. Add the rescheduling drawer skeleton after the Schedule Meeting drawer */}
       {showRescheduleDrawer && (
         <div className="fixed inset-0 z-50 flex">
@@ -5696,7 +6503,6 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
-
       {/* Payments Plan Drawer */}
       {showPaymentsPlanDrawer && (
         <div className="fixed inset-0 z-50 flex">
@@ -5996,7 +6802,6 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
-
       {showProformaDrawer && proformaData && (
         <div className="fixed inset-0 z-50 flex">
           {/* Overlay */}
@@ -6329,22 +7134,44 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
-
       {showSubLeadDrawer && (
         <div className="fixed inset-0 z-50 flex">
-          <div className="fixed inset-0 bg-black/30" onClick={() => { setShowSubLeadDrawer(false); setSubLeadStep('initial'); }} />
+          <div
+            className="fixed inset-0 bg-black/30"
+            onClick={() => {
+              setShowSubLeadDrawer(false);
+              setSubLeadStep('initial');
+              setIsSavingSubLead(false);
+            }}
+          />
           <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-bold">Create Sub-Lead</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowSubLeadDrawer(false)}>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  setShowSubLeadDrawer(false);
+                  setIsSavingSubLead(false);
+                }}
+              >
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
             <div className="flex flex-col gap-4 flex-1">
               {subLeadStep === 'initial' && (
                 <>
-                  <button className="btn btn-primary mb-4" onClick={() => { setSubLeadStep('newProcedure'); setSubLeadForm(f => ({ ...f, ...selectedClient })); }}>New Procedure (Same Contact)</button>
-                  <button className="btn btn-outline" onClick={() => setSubLeadStep('newContact')}>Add New Contact</button>
+                  <button
+                    className="btn btn-primary mb-4"
+                    onClick={() => {
+                      prefillSubLeadFormFromClient();
+                      setSubLeadStep('details');
+                    }}
+                  >
+                    New Procedure (Same Contact)
+                  </button>
+                  <button className="btn btn-outline" onClick={() => setSubLeadStep('newContact')}>
+                    Add New Contact
+                  </button>
                 </>
               )}
               {subLeadStep === 'newContact' && (
@@ -6356,27 +7183,60 @@ const Clients: React.FC<ClientsProps> = ({
                   <label className="block font-semibold mb-1">Phone</label>
                   <input className="input input-bordered w-full" value={subLeadForm.phone} onChange={e => setSubLeadForm(f => ({ ...f, phone: e.target.value }))} />
                   <label className="block font-semibold mb-1">Category</label>
-                  <select className="select select-bordered w-full" value={subLeadForm.category} onChange={e => setSubLeadForm(f => ({ ...f, category: e.target.value }))}>
+                  <select
+                    className="select select-bordered w-full"
+                    value={subLeadForm.categoryId}
+                    onChange={e => {
+                      const value = e.target.value;
+                      const selected = categoryOptionsMap.get(value);
+                      setSubLeadForm(f => ({
+                        ...f,
+                        categoryId: value,
+                        category: selected?.label || '',
+                      }));
+                    }}
+                  >
                     <option value="">Select category...</option>
-                    {categoryOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                    {categoryOptions.map(opt => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
                   </select>
                   <label className="block font-semibold mb-1">Topic</label>
-                  <select className="select select-bordered w-full" value={subLeadForm.topic} onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}>
-                    <option value="">Select topic...</option>
-                    {topicOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                  </select>
+                  <input
+                    className="input input-bordered w-full"
+                    value={subLeadForm.topic}
+                    onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
+                    placeholder="Enter topic"
+                  />
                   <label className="block font-semibold mb-1">Special Notes</label>
                   <textarea className="textarea textarea-bordered w-full" value={subLeadForm.special_notes} onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))} />
                   <button className="btn btn-primary mt-4" onClick={() => setSubLeadStep('details')}>Save & Next</button>
                 </>
               )}
-              {subLeadStep === 'newProcedure' && (
-                <button className="btn btn-primary mt-4" onClick={() => setSubLeadStep('details')}>Next</button>
-              )}
               {subLeadStep === 'details' && (
                 <>
                   <label className="block font-semibold mb-1">Handler</label>
-                  <input className="input input-bordered w-full" value={subLeadForm.handler} onChange={e => setSubLeadForm(f => ({ ...f, handler: e.target.value }))} />
+                  <select
+                    className="select select-bordered w-full"
+                    value={subLeadForm.handlerId}
+                    onChange={e => {
+                      const value = e.target.value;
+                      setSubLeadForm(f => ({
+                        ...f,
+                        handlerId: value,
+                        handler: handlerOptionsMap.get(value) || '',
+                      }));
+                    }}
+                  >
+                    <option value="">Select handler...</option>
+                    {handlerOptions.map(opt => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
                   <label className="block font-semibold mb-1">Currency</label>
                   <select className="select select-bordered w-full" value={subLeadForm.currency} onChange={e => setSubLeadForm(f => ({ ...f, currency: e.target.value }))}>
                     <option value="NIS">NIS</option>
@@ -6389,7 +7249,9 @@ const Clients: React.FC<ClientsProps> = ({
                   <input className="input input-bordered w-full" value={subLeadForm.proposal} onChange={e => setSubLeadForm(f => ({ ...f, proposal: e.target.value }))} />
                   <label className="block font-semibold mb-1">Potential Value</label>
                   <input className="input input-bordered w-full" value={subLeadForm.potentialValue} onChange={e => setSubLeadForm(f => ({ ...f, potentialValue: e.target.value }))} />
-                  <button className="btn btn-primary mt-4" onClick={handleSaveSubLead}>Save Sub-Lead</button>
+                  <button className="btn btn-primary mt-4" onClick={handleSaveSubLead} disabled={isSavingSubLead}>
+                    {isSavingSubLead ? 'Saving...' : 'Save Sub-Lead'}
+                  </button>
                 </>
               )}
             </div>
@@ -6446,7 +7308,6 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
         </div>
       )}
-
       {/* Unactivation Modal */}
       {showUnactivationModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">

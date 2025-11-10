@@ -895,10 +895,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         dbError = error;
       } else {
         // For new meetings, update the meetings table
+        // Convert location ID to location name for new leads
+        const locationText = getMeetingLocationName(editedMeeting.location);
+        
         const updateData: any = {
           meeting_date: editedMeeting.date,
           meeting_time: editedMeeting.time,
-          meeting_location: editedMeeting.location,
+          meeting_location: locationText, // Use location name (text) for new leads
           meeting_manager: editedMeeting.manager,
           meeting_currency: editedMeeting.currency,
           meeting_amount: editedMeeting.amount,

@@ -27,6 +27,7 @@ import {
   PhoneIcon,
   FireIcon,
   DocumentArrowUpIcon,
+  ReceiptRefundIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 
@@ -50,6 +51,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
   { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
+  { icon: ReceiptRefundIcon, label: 'Waiting for Price Offer', path: '/waiting-for-price-offer' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
   { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
   { icon: UserIcon, label: 'Expert', path: '/expert' },
@@ -86,6 +88,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
   { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
+  { icon: ReceiptRefundIcon, label: 'Waiting for Price Offer', path: '/waiting-for-price-offer' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
   { icon: ChartBarIcon, label: 'Pipeline', path: '/pipeline' },
   { icon: UserIcon, label: 'Expert', path: '/expert' },

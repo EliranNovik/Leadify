@@ -318,8 +318,8 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
           <div className="flex items-center gap-2">
             <span className="text-xl font-bold text-gray-900">
               {selectedClient ? (() => {
-                // Use manual_id if available, otherwise use lead_number or id
-                let displayNumber = selectedClient.manual_id || selectedClient.lead_number || selectedClient.id || '---';
+                // Prefer the formatted lead number (e.g. "L18/2"), fall back to manual_id and finally to id
+                let displayNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
                 
                 // Debug logging
                 console.log('🔍 ClientInformationBox - Lead number logic:', {

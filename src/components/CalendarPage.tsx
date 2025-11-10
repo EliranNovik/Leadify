@@ -1488,10 +1488,7 @@ const CalendarPage: React.FC = () => {
   const getStageBadge = (stage: string | number) => {
     if (!stage || (typeof stage === 'string' && !stage.trim())) {
       return (
-        <span
-          className="btn btn-primary btn-sm pointer-events-none font-semibold whitespace-nowrap"
-          style={{ background: '#3b28c7' }}
-        >
+        <span className="text-sm font-medium text-gray-500">
           No Stage
         </span>
       );
@@ -1522,10 +1519,7 @@ const CalendarPage: React.FC = () => {
     });
     
     return (
-      <span
-        className="btn btn-primary btn-sm pointer-events-none font-semibold whitespace-nowrap"
-        style={{ background: '#3b28c7' }}
-      >
+      <span className="text-sm font-medium text-gray-700">
         {stageName}
       </span>
     );

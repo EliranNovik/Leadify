@@ -434,137 +434,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Expert name state
   const [expertName, setExpertName] = useState<string>(client.expert || 'Not assigned');
 
-  // I need an expert feature
-  const [isAssigningExpert, setIsAssigningExpert] = useState(false);
-  const handleAssignRandomExpert = async () => {
-    setIsAssigningExpert(true);
-    
-    // Check if this is a legacy lead
-    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
-    try {
-      // Fetch all available experts from tenants_employee table
-      const { data: employeesData, error: employeesError } = await supabase
-        .from('tenants_employee')
-        .select('id, display_name, bonuses_role')
-        .eq('bonuses_role', 'e') // 'e' for expert role
-        .limit(100);
-      
-      if (employeesError || !employeesData || employeesData.length === 0) {
-        // Fallback: try to get experts from employees table
-        const { data: fallbackData, error: fallbackError } = await supabase
-          .from('employees')
-          .select('id, full_name, role')
-          .eq('role', 'expert')
-          .limit(100);
-        
-        if (fallbackError || !fallbackData || fallbackData.length === 0) {
-          // Final fallback: try to get experts from leads table
-          const { data: leadsData, error: leadsError } = await supabase
-            .from('leads')
-            .select('expert')
-            .not('expert', 'is', null)
-            .neq('expert', '')
-            .limit(100);
-          
-          if (leadsError || !leadsData || leadsData.length === 0) {
-            setIsAssigningExpert(false);
-            alert('No available experts found.');
-            return;
-          }
-          
-          // Get unique expert names from leads
-          const experts = Array.from(new Set(leadsData.map((row: any) => row.expert).filter(Boolean)));
-          if (experts.length === 0) {
-            setIsAssigningExpert(false);
-            alert('No available experts found.');
-            return;
-          }
-          
-          // Pick one at random
-          const randomExpert = experts[Math.floor(Math.random() * experts.length)];
-          
-          // Save to appropriate table
-          if (isLegacyLead) {
-            const legacyId = client.id.toString().replace('legacy_', '');
-            await supabase
-              .from('leads_lead')
-              .update({ expert_id: randomExpert })
-              .eq('id', legacyId);
-          } else {
-            await supabase
-              .from('leads')
-              .update({ expert: randomExpert })
-              .eq('id', client.id);
-          }
-        } else {
-          // Use employees table data
-          const experts = fallbackData.filter((emp: any) => emp.full_name);
-          if (experts.length === 0) {
-            setIsAssigningExpert(false);
-            alert('No available experts found.');
-            return;
-          }
-          
-          // Pick one at random
-          const randomExpert = experts[Math.floor(Math.random() * experts.length)];
-          
-          // Save to appropriate table
-          if (isLegacyLead) {
-            const legacyId = client.id.toString().replace('legacy_', '');
-            await supabase
-              .from('leads_lead')
-              .update({ expert_id: randomExpert.id })
-              .eq('id', legacyId);
-          } else {
-            await supabase
-              .from('leads')
-              .update({ expert: randomExpert.full_name })
-              .eq('id', client.id);
-          }
-        }
-      } else {
-        // Use tenants_employee table data
-        const experts = employeesData.filter((emp: any) => emp.display_name);
-        if (experts.length === 0) {
-          setIsAssigningExpert(false);
-          alert('No available experts found.');
-          return;
-        }
-        
-        // Pick one at random
-        const randomExpert = experts[Math.floor(Math.random() * experts.length)];
-        
-        // Save to appropriate table
-        if (isLegacyLead) {
-          const legacyId = client.id.toString().replace('legacy_', '');
-          await supabase
-            .from('leads_lead')
-            .update({ expert_id: randomExpert.id })
-            .eq('id', legacyId);
-        } else {
-          await supabase
-            .from('leads')
-            .update({ expert: randomExpert.display_name })
-            .eq('id', client.id);
-        }
-      }
-      
-      setIsAssigningExpert(false);
-      if (onClientUpdate) await onClientUpdate();
-      
-      // Refresh expert data for legacy leads
-      if (isLegacyLead) {
-        await fetchLegacyExpertData();
-        await fetchExpertId(); // Also refresh the expert name display
-      }
-    } catch (error) {
-      console.error('Error assigning expert:', error);
-      setIsAssigningExpert(false);
-      alert('Failed to assign expert. Please try again.');
-    }
-  };
-
   // Save section/eligibility to DB
   const handleSectionChange = async (value: string) => {
     setSelectedSection(value);
@@ -1073,7 +942,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   })
                   .eq('id', client.id);
             }
-            
+            u
             if (onClientUpdate) {
                 await onClientUpdate();
             }
@@ -1168,18 +1037,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               <div className="flex items-center gap-3">
                 <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
                 <span className="text-2xl font-bold text-gray-900">{expertName}</span>
-                {(!expertName || expertName === '---' || expertName === 'Not assigned') && (
-                  <button
-                    className="btn btn-sm text-white border-none"
-                    style={{ backgroundColor: '#3b28c7' }}
-                    onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#2d1b69'}
-                    onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#3b28c7'}
-                    onClick={handleAssignRandomExpert}
-                    disabled={isAssigningExpert}
-                  >
-                    {isAssigningExpert ? 'Assigning...' : 'I need an expert'}
-                  </button>
-                )}
               </div>
               <div className="space-y-2">
                 <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>

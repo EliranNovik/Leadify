@@ -16,6 +16,7 @@ import { FaWhatsapp } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 import { getStageName } from '../lib/stageUtils';
 import EmployeeScoreboard from './EmployeeScoreboard';
+import { formatMeetingValue } from '../lib/meetingValue';
 
 
 
@@ -308,15 +309,57 @@ const Dashboard: React.FC = () => {
     return '';
   };
 
+  // Helper function to check if location is online/teams/zoom
+  const isOnlineLocation = (location: string | undefined): boolean => {
+    if (!location) return false;
+    const locationLower = location.toLowerCase().trim();
+    return locationLower === 'online' || locationLower === 'teams' || locationLower === 'zoom';
+  };
+
   // --- Add state for today's meetings (real data) ---
   const [todayMeetings, setTodayMeetings] = useState<any[]>([]);
   const [meetingsLoading, setMeetingsLoading] = useState(false);
+  const [meetingsInNextHour, setMeetingsInNextHour] = useState(0);
+  const [nextHourMeetings, setNextHourMeetings] = useState<any[]>([]);
 
   useEffect(() => {
     // Fetch today's meetings (real data, similar to Calendar page)
     const fetchMeetings = async () => {
       setMeetingsLoading(true);
       try {
+        // First, fetch current user's employee_id and display name
+        const { data: { user } } = await supabase.auth.getUser();
+        let userEmployeeId: number | null = null;
+        let userDisplayName: string | null = null;
+        
+        if (user) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select(`
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name
+              )
+            `)
+            .eq('auth_id', user.id)
+            .single();
+          
+          if (userData?.employee_id) {
+            userEmployeeId = userData.employee_id;
+          }
+          
+          // Get display name from employee relationship
+          if (userData?.tenants_employee) {
+            const empData = Array.isArray(userData.tenants_employee) 
+              ? userData.tenants_employee[0] 
+              : userData.tenants_employee;
+            if (empData?.display_name) {
+              userDisplayName = empData.display_name;
+            }
+          }
+        }
+        
         const today = new Date();
         const todayStr = today.toISOString().split('T')[0];
         
@@ -336,10 +379,10 @@ const Dashboard: React.FC = () => {
             teams_meeting_url,
             meeting_brief,
             lead:leads!client_id(
-              id, name, lead_number, manager, topic
+              id, name, lead_number, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency
             ),
             legacy_lead:leads_lead!legacy_lead_id(
-              id, name, meeting_manager_id, meeting_lawyer_id, category, category_id
+              id, name, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id, expert_id, stage, closer_id, case_handler_id, total, currency_id
             )
           `)
           .eq('meeting_date', todayStr)
@@ -347,8 +390,137 @@ const Dashboard: React.FC = () => {
           .or('status.is.null,status.neq.canceled');
           
         if (!error && meetings) {
+          // Fetch employee names for ID mapping
+          const employeeIds = new Set<string>();
+          meetings.forEach((meeting: any) => {
+            const addValidId = (id: any) => {
+              if (id && id !== '---' && id !== '' && id !== null && id !== undefined) {
+                employeeIds.add(id.toString());
+              }
+            };
+            
+            addValidId(meeting.legacy_lead?.expert_id);
+            addValidId(meeting.legacy_lead?.meeting_manager_id);
+            addValidId(meeting.legacy_lead?.meeting_lawyer_id);
+            addValidId(meeting.legacy_lead?.meeting_scheduler_id);
+            addValidId(meeting.legacy_lead?.case_handler_id);
+            addValidId(meeting.expert);
+            addValidId(meeting.meeting_manager);
+            addValidId(meeting.helper);
+            // For new leads, expert might be an ID
+            if (meeting.lead?.expert && !isNaN(Number(meeting.lead.expert))) {
+              addValidId(meeting.lead.expert);
+            }
+            // For new leads, scheduler might be an ID
+            if (meeting.lead?.scheduler && !isNaN(Number(meeting.lead.scheduler))) {
+              addValidId(meeting.lead.scheduler);
+            }
+            // For new leads, helper might be an ID
+            if (meeting.lead?.helper && !isNaN(Number(meeting.lead.helper))) {
+              addValidId(meeting.lead.helper);
+            }
+            // For new leads, closer might be an ID
+            if (meeting.lead?.closer && !isNaN(Number(meeting.lead.closer))) {
+              addValidId(meeting.lead.closer);
+            }
+            // For new leads, manager might be an ID
+            if (meeting.lead?.manager && !isNaN(Number(meeting.lead.manager))) {
+              addValidId(meeting.lead.manager);
+            }
+            // For new leads, handler might be an ID
+            if (meeting.lead?.handler && !isNaN(Number(meeting.lead.handler))) {
+              addValidId(meeting.lead.handler);
+            }
+          });
+
+          let employeeNameMap: Record<string, string> = {};
+          if (employeeIds.size > 0) {
+            const { data: employees, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('id', Array.from(employeeIds));
+            
+            if (!employeeError && employees) {
+              employeeNameMap = employees.reduce((acc, emp) => {
+                acc[emp.id.toString()] = emp.display_name;
+                return acc;
+              }, {} as Record<string, string>);
+            }
+          }
+
+          // Filter meetings to only include those where user's employee_id matches a role
+          // Helper function to check if user matches any role
+          const userMatchesRole = (meeting: any): boolean => {
+            if (!userEmployeeId) return true; // If no user employee_id, show all meetings
+            
+            // Check legacy lead roles
+            if (meeting.legacy_lead) {
+              const legacyLead = meeting.legacy_lead;
+              return (
+                legacyLead.meeting_scheduler_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.meeting_manager_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.meeting_lawyer_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.expert_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.closer_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.case_handler_id?.toString() === userEmployeeId.toString()
+              );
+            }
+            
+            // Check new lead roles
+            if (meeting.lead) {
+              const newLead = meeting.lead;
+              // For new leads, fields might be IDs or display names
+              // We need to check both the lead fields and the meeting fields
+              const checkField = (field: any): boolean => {
+                if (!field) return false;
+                // If it's a number/ID, compare directly with employee_id
+                if (!isNaN(Number(field))) {
+                  return field.toString() === userEmployeeId?.toString();
+                }
+                // If it's a string (display name), compare with user's display name
+                if (typeof field === 'string' && userDisplayName) {
+                  return field.trim() === userDisplayName.trim();
+                }
+                return false;
+              };
+              
+              return (
+                checkField(newLead.scheduler) ||
+                checkField(newLead.manager) ||
+                checkField(newLead.helper) ||
+                checkField(newLead.expert) ||
+                checkField(newLead.closer) ||
+                checkField(newLead.handler) ||
+                checkField(meeting.meeting_manager) ||
+                checkField(meeting.expert) ||
+                checkField(meeting.helper)
+              );
+            }
+            
+            // Fallback: check meeting-level fields
+            if (userEmployeeId) {
+              return (
+                meeting.meeting_manager?.toString() === userEmployeeId.toString() ||
+                meeting.expert?.toString() === userEmployeeId.toString() ||
+                meeting.helper?.toString() === userEmployeeId.toString()
+              );
+            }
+            // If we have display name, check against meeting fields that might be display names
+            if (userDisplayName) {
+              return (
+                (typeof meeting.meeting_manager === 'string' && meeting.meeting_manager.trim() === userDisplayName.trim()) ||
+                (typeof meeting.expert === 'string' && meeting.expert.trim() === userDisplayName.trim()) ||
+                (typeof meeting.helper === 'string' && meeting.helper.trim() === userDisplayName.trim())
+              );
+            }
+            return false;
+          };
+          
+          // Filter meetings by user role
+          const filteredMeetings = (meetings || []).filter(userMatchesRole);
+          
           // Process the meetings to combine lead data from both tables
-          const processedMeetings = (meetings || []).map((meeting: any) => {
+          const processedMeetings = filteredMeetings.map((meeting: any) => {
             // Determine which lead data to use
             let leadData = null;
             
@@ -379,31 +551,646 @@ const Dashboard: React.FC = () => {
             };
           });
           
-          setTodayMeetings(
-            processedMeetings.map((meeting: any) => ({
+          // Calculate meetings in next hour
+          const now = new Date();
+          const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+          
+          // Store processed meetings first
+          const processedMeetingsList = processedMeetings.map((meeting: any) => {
+            // Determine expert name
+            let expertName = 'Unassigned';
+            if (meeting.legacy_lead?.expert_id) {
+              expertName = employeeNameMap[meeting.legacy_lead.expert_id.toString()] || meeting.legacy_lead.expert_id.toString();
+            } else if (meeting.lead?.expert) {
+              // For new leads, expert might be a name or ID
+              if (isNaN(Number(meeting.lead.expert))) {
+                expertName = meeting.lead.expert;
+              } else {
+                expertName = employeeNameMap[meeting.lead.expert.toString()] || meeting.lead.expert;
+              }
+            } else if (meeting.expert) {
+              // Fallback to meeting.expert
+              if (isNaN(Number(meeting.expert))) {
+                expertName = meeting.expert;
+              } else {
+                expertName = employeeNameMap[meeting.expert.toString()] || meeting.expert;
+              }
+            }
+
+            // Determine scheduler name
+            let schedulerName = '---';
+            if (meeting.legacy_lead?.meeting_scheduler_id) {
+              // For legacy leads, use meeting_scheduler_id
+              schedulerName = employeeNameMap[meeting.legacy_lead.meeting_scheduler_id.toString()] || meeting.legacy_lead.meeting_scheduler_id.toString();
+            } else if (meeting.lead?.scheduler) {
+              // For new leads, first check lead.scheduler field
+              const schedulerField = meeting.lead.scheduler;
+              if (!isNaN(Number(schedulerField))) {
+                // If it's an ID, look it up
+                schedulerName = employeeNameMap[schedulerField.toString()] || schedulerField.toString();
+              } else {
+                // If it's a display name, use it directly
+                schedulerName = schedulerField;
+              }
+            } else if (meeting.meeting_manager) {
+              // Fallback to meeting_manager if scheduler is not set
+              schedulerName = employeeNameMap[meeting.meeting_manager.toString()] || meeting.meeting_manager;
+            }
+
+            // Determine stage name
+            let stageName = 'N/A';
+            if (meeting.lead?.stage) {
+              stageName = getStageName(meeting.lead.stage.toString());
+            } else if (meeting.legacy_lead?.stage) {
+              stageName = getStageName(meeting.legacy_lead.stage.toString());
+            }
+
+            // Determine manager name
+            let managerName = 'Unassigned';
+            if (meeting.legacy_lead?.meeting_manager_id) {
+              // For legacy leads, use meeting_manager_id
+              managerName = employeeNameMap[meeting.legacy_lead.meeting_manager_id.toString()] || meeting.legacy_lead.meeting_manager_id.toString();
+            } else if (meeting.lead?.manager) {
+              // For new leads, first check lead.manager field
+              const managerField = meeting.lead.manager;
+              if (!isNaN(Number(managerField))) {
+                // If it's an ID, look it up
+                managerName = employeeNameMap[managerField.toString()] || managerField.toString();
+              } else {
+                // If it's a display name, use it directly
+                managerName = managerField;
+              }
+            } else if (meeting.meeting_manager) {
+              // Fallback to meeting_manager if manager is not set
+              managerName = employeeNameMap[meeting.meeting_manager.toString()] || meeting.meeting_manager;
+            }
+
+            // Determine helper name
+            let helperName = '---';
+            if (meeting.legacy_lead?.meeting_lawyer_id) {
+              // For legacy leads, use meeting_lawyer_id
+              helperName = employeeNameMap[meeting.legacy_lead.meeting_lawyer_id.toString()] || meeting.legacy_lead.meeting_lawyer_id.toString();
+            } else if (meeting.lead?.helper) {
+              // For new leads, first check lead.helper field
+              const helperField = meeting.lead.helper;
+              if (!isNaN(Number(helperField))) {
+                // If it's an ID, look it up
+                helperName = employeeNameMap[helperField.toString()] || helperField.toString();
+              } else {
+                // If it's a display name, use it directly
+                helperName = helperField;
+              }
+            } else if (meeting.helper) {
+              // Fallback to meeting.helper if helper is not set
+              helperName = employeeNameMap[meeting.helper.toString()] || meeting.helper;
+            }
+
+            return {
               id: meeting.id,
               lead: meeting.lead?.lead_number || 'N/A',
               name: meeting.lead?.name || 'Unknown',
               topic: meeting.lead?.topic || 'Consultation',
-              expert: meeting.expert || 'Unassigned',
+              expert: expertName,
+              scheduler: schedulerName,
+              helper: helperName,
+              stage: stageName,
               time: meeting.meeting_time,
               location: meeting.meeting_location || 'Teams',
-              manager: meeting.meeting_manager,
-              value: meeting.meeting_amount ? `${meeting.meeting_currency} ${meeting.meeting_amount}` : '0',
+              manager: managerName,
+            value: formatMeetingValue({
+              leadBalance: meeting.lead?.balance,
+              leadBalanceCurrency: meeting.lead?.balance_currency,
+              legacyTotal: meeting.legacy_lead?.total,
+              legacyCurrencyId: meeting.legacy_lead?.currency_id ?? null,
+              meetingAmount: meeting.meeting_amount,
+              meetingCurrency: meeting.meeting_currency,
+            }).display,
               link: meeting.teams_meeting_url,
-            }))
-          );
+            };
+          });
+
+          setTodayMeetings(processedMeetingsList);
+          
+          // Calculate meetings in next hour
+          const meetingsInNextHourList = processedMeetingsList
+            .map((meeting: any) => {
+              if (!meeting.time) return null;
+              
+              // Parse meeting time (format: HH:MM or HH:MM:SS)
+              const timeParts = meeting.time.split(':');
+              if (timeParts.length < 2) return null;
+              
+              const meetingHour = parseInt(timeParts[0], 10);
+              const meetingMinute = parseInt(timeParts[1], 10);
+              
+              // Create meeting datetime for today
+              const meetingDateTime = new Date(now);
+              meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
+              
+              // Check if meeting is between now and one hour from now
+              if (meetingDateTime >= now && meetingDateTime <= oneHourLater) {
+                return {
+                  ...meeting,
+                  meetingDateTime
+                };
+              }
+              return null;
+            })
+            .filter(Boolean)
+            .sort((a: any, b: any) => a.meetingDateTime.getTime() - b.meetingDateTime.getTime());
+          
+          setMeetingsInNextHour(meetingsInNextHourList.length);
+          setNextHourMeetings(meetingsInNextHourList);
         } else {
           setTodayMeetings([]);
+          setMeetingsInNextHour(0);
+          setNextHourMeetings([]);
         }
       } catch (e) {
         console.error('Error fetching meetings:', e);
         setTodayMeetings([]);
+        setMeetingsInNextHour(0);
+        setNextHourMeetings([]);
       }
       setMeetingsLoading(false);
     };
-    if (expanded === 'meetings') fetchMeetings();
+    
+    // Fetch meetings on mount and when expanded
+    fetchMeetings();
   }, [expanded]);
+
+  // Fetch meetings on initial mount and refresh every minute
+  useEffect(() => {
+    const fetchMeetings = async () => {
+      setMeetingsLoading(true);
+      try {
+        // First, fetch current user's employee_id and display name
+        const { data: { user } } = await supabase.auth.getUser();
+        let userEmployeeId: number | null = null;
+        let userDisplayName: string | null = null;
+        
+        if (user) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select(`
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name
+              )
+            `)
+            .eq('auth_id', user.id)
+            .single();
+          
+          if (userData?.employee_id) {
+            userEmployeeId = userData.employee_id;
+          }
+          
+          // Get display name from employee relationship
+          if (userData?.tenants_employee) {
+            const empData = Array.isArray(userData.tenants_employee) 
+              ? userData.tenants_employee[0] 
+              : userData.tenants_employee;
+            if (empData?.display_name) {
+              userDisplayName = empData.display_name;
+            }
+          }
+        }
+        
+        const today = new Date();
+        const todayStr = today.toISOString().split('T')[0];
+        
+        // Fetch all meetings with proper joins to both leads and leads_lead tables
+        const { data: meetings, error } = await supabase
+          .from('meetings')
+          .select(`
+            id,
+            meeting_date,
+            meeting_time,
+            meeting_location,
+            meeting_manager,
+            meeting_currency,
+            meeting_amount,
+            expert,
+            helper,
+            teams_meeting_url,
+            meeting_brief,
+            lead:leads!client_id(
+              id, name, lead_number, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency
+            ),
+            legacy_lead:leads_lead!legacy_lead_id(
+              id, name, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, category, category_id, expert_id, stage, closer_id, case_handler_id, total, currency_id
+            )
+          `)
+          .eq('meeting_date', todayStr)
+          .not('teams_meeting_url', 'is', null)
+          .or('status.is.null,status.neq.canceled');
+          
+        if (!error && meetings) {
+          // Fetch employee names for ID mapping
+          const employeeIds = new Set<string>();
+          meetings.forEach((meeting: any) => {
+            const addValidId = (id: any) => {
+              if (id && id !== '---' && id !== '' && id !== null && id !== undefined) {
+                employeeIds.add(id.toString());
+              }
+            };
+            
+            addValidId(meeting.legacy_lead?.expert_id);
+            addValidId(meeting.legacy_lead?.meeting_manager_id);
+            addValidId(meeting.legacy_lead?.meeting_lawyer_id);
+            addValidId(meeting.legacy_lead?.meeting_scheduler_id);
+            addValidId(meeting.legacy_lead?.case_handler_id);
+            addValidId(meeting.expert);
+            addValidId(meeting.meeting_manager);
+            addValidId(meeting.helper);
+            // For new leads, expert might be an ID
+            if (meeting.lead?.expert && !isNaN(Number(meeting.lead.expert))) {
+              addValidId(meeting.lead.expert);
+            }
+            // For new leads, scheduler might be an ID
+            if (meeting.lead?.scheduler && !isNaN(Number(meeting.lead.scheduler))) {
+              addValidId(meeting.lead.scheduler);
+            }
+            // For new leads, helper might be an ID
+            if (meeting.lead?.helper && !isNaN(Number(meeting.lead.helper))) {
+              addValidId(meeting.lead.helper);
+            }
+            // For new leads, closer might be an ID
+            if (meeting.lead?.closer && !isNaN(Number(meeting.lead.closer))) {
+              addValidId(meeting.lead.closer);
+            }
+            // For new leads, manager might be an ID
+            if (meeting.lead?.manager && !isNaN(Number(meeting.lead.manager))) {
+              addValidId(meeting.lead.manager);
+            }
+            // For new leads, handler might be an ID
+            if (meeting.lead?.handler && !isNaN(Number(meeting.lead.handler))) {
+              addValidId(meeting.lead.handler);
+            }
+          });
+
+          let employeeNameMap: Record<string, string> = {};
+          if (employeeIds.size > 0) {
+            const { data: employees, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('id', Array.from(employeeIds));
+            
+            if (!employeeError && employees) {
+              employeeNameMap = employees.reduce((acc, emp) => {
+                acc[emp.id.toString()] = emp.display_name;
+                return acc;
+              }, {} as Record<string, string>);
+            }
+          }
+
+          // Filter meetings to only include those where user's employee_id matches a role
+          // Helper function to check if user matches any role
+          const userMatchesRole = (meeting: any): boolean => {
+            if (!userEmployeeId) return true; // If no user employee_id, show all meetings
+            
+            // Check legacy lead roles
+            if (meeting.legacy_lead) {
+              const legacyLead = meeting.legacy_lead;
+              return (
+                legacyLead.meeting_scheduler_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.meeting_manager_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.meeting_lawyer_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.expert_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.closer_id?.toString() === userEmployeeId.toString() ||
+                legacyLead.case_handler_id?.toString() === userEmployeeId.toString()
+              );
+            }
+            
+            // Check new lead roles
+            if (meeting.lead) {
+              const newLead = meeting.lead;
+              // For new leads, fields might be IDs or display names
+              // We need to check both the lead fields and the meeting fields
+              const checkField = (field: any): boolean => {
+                if (!field) return false;
+                // If it's a number/ID, compare directly with employee_id
+                if (!isNaN(Number(field))) {
+                  return field.toString() === userEmployeeId?.toString();
+                }
+                // If it's a string (display name), compare with user's display name
+                if (typeof field === 'string' && userDisplayName) {
+                  return field.trim() === userDisplayName.trim();
+                }
+                return false;
+              };
+              
+              return (
+                checkField(newLead.scheduler) ||
+                checkField(newLead.manager) ||
+                checkField(newLead.helper) ||
+                checkField(newLead.expert) ||
+                checkField(newLead.closer) ||
+                checkField(newLead.handler) ||
+                checkField(meeting.meeting_manager) ||
+                checkField(meeting.expert) ||
+                checkField(meeting.helper)
+              );
+            }
+            
+            // Fallback: check meeting-level fields
+            if (userEmployeeId) {
+              return (
+                meeting.meeting_manager?.toString() === userEmployeeId.toString() ||
+                meeting.expert?.toString() === userEmployeeId.toString() ||
+                meeting.helper?.toString() === userEmployeeId.toString()
+              );
+            }
+            // If we have display name, check against meeting fields that might be display names
+            if (userDisplayName) {
+              return (
+                (typeof meeting.meeting_manager === 'string' && meeting.meeting_manager.trim() === userDisplayName.trim()) ||
+                (typeof meeting.expert === 'string' && meeting.expert.trim() === userDisplayName.trim()) ||
+                (typeof meeting.helper === 'string' && meeting.helper.trim() === userDisplayName.trim())
+              );
+            }
+            return false;
+          };
+          
+          // Filter meetings by user role
+          const filteredMeetings = (meetings || []).filter(userMatchesRole);
+          
+          // Process the meetings to combine lead data from both tables
+          const processedMeetings = filteredMeetings.map((meeting: any) => {
+            // Determine which lead data to use
+            let leadData = null;
+            
+            if (meeting.legacy_lead) {
+              // Use legacy lead data and map column names to match new leads structure
+              leadData = {
+                ...meeting.legacy_lead,
+                lead_type: 'legacy',
+                // Map legacy column names to new structure
+                manager: meeting.legacy_lead.meeting_manager_id,
+                helper: meeting.legacy_lead.meeting_lawyer_id,
+                // For legacy leads, use the ID as lead_number
+                lead_number: meeting.legacy_lead.id?.toString(),
+                // Use category_id if category is null
+                topic: meeting.legacy_lead.category || meeting.legacy_lead.category_id
+              };
+            } else if (meeting.lead) {
+              // Use new lead data
+              leadData = {
+                ...meeting.lead,
+                lead_type: 'new'
+              };
+            }
+            
+            return {
+              ...meeting,
+              lead: leadData
+            };
+          });
+          
+          // Calculate meetings in next hour
+          const now = new Date();
+          const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+          
+          // Store processed meetings first
+          const processedMeetingsList = processedMeetings.map((meeting: any) => {
+            // Determine expert name
+            let expertName = 'Unassigned';
+            if (meeting.legacy_lead?.expert_id) {
+              expertName = employeeNameMap[meeting.legacy_lead.expert_id.toString()] || meeting.legacy_lead.expert_id.toString();
+            } else if (meeting.lead?.expert) {
+              // For new leads, expert might be a name or ID
+              if (isNaN(Number(meeting.lead.expert))) {
+                expertName = meeting.lead.expert;
+              } else {
+                expertName = employeeNameMap[meeting.lead.expert.toString()] || meeting.lead.expert;
+              }
+            } else if (meeting.expert) {
+              // Fallback to meeting.expert
+              if (isNaN(Number(meeting.expert))) {
+                expertName = meeting.expert;
+              } else {
+                expertName = employeeNameMap[meeting.expert.toString()] || meeting.expert;
+              }
+            }
+
+            // Determine scheduler name
+            let schedulerName = '---';
+            if (meeting.legacy_lead?.meeting_scheduler_id) {
+              // For legacy leads, use meeting_scheduler_id
+              schedulerName = employeeNameMap[meeting.legacy_lead.meeting_scheduler_id.toString()] || meeting.legacy_lead.meeting_scheduler_id.toString();
+            } else if (meeting.lead?.scheduler) {
+              // For new leads, first check lead.scheduler field
+              const schedulerField = meeting.lead.scheduler;
+              if (!isNaN(Number(schedulerField))) {
+                // If it's an ID, look it up
+                schedulerName = employeeNameMap[schedulerField.toString()] || schedulerField.toString();
+              } else {
+                // If it's a display name, use it directly
+                schedulerName = schedulerField;
+              }
+            } else if (meeting.meeting_manager) {
+              // Fallback to meeting_manager if scheduler is not set
+              schedulerName = employeeNameMap[meeting.meeting_manager.toString()] || meeting.meeting_manager;
+            }
+
+            // Determine stage name
+            let stageName = 'N/A';
+            if (meeting.lead?.stage) {
+              stageName = getStageName(meeting.lead.stage.toString());
+            } else if (meeting.legacy_lead?.stage) {
+              stageName = getStageName(meeting.legacy_lead.stage.toString());
+            }
+
+            // Determine manager name
+            let managerName = 'Unassigned';
+            if (meeting.legacy_lead?.meeting_manager_id) {
+              // For legacy leads, use meeting_manager_id
+              managerName = employeeNameMap[meeting.legacy_lead.meeting_manager_id.toString()] || meeting.legacy_lead.meeting_manager_id.toString();
+            } else if (meeting.lead?.manager) {
+              // For new leads, first check lead.manager field
+              const managerField = meeting.lead.manager;
+              if (!isNaN(Number(managerField))) {
+                // If it's an ID, look it up
+                managerName = employeeNameMap[managerField.toString()] || managerField.toString();
+              } else {
+                // If it's a display name, use it directly
+                managerName = managerField;
+              }
+            } else if (meeting.meeting_manager) {
+              // Fallback to meeting_manager if manager is not set
+              managerName = employeeNameMap[meeting.meeting_manager.toString()] || meeting.meeting_manager;
+            }
+
+            // Determine helper name
+            let helperName = '---';
+            if (meeting.legacy_lead?.meeting_lawyer_id) {
+              // For legacy leads, use meeting_lawyer_id
+              helperName = employeeNameMap[meeting.legacy_lead.meeting_lawyer_id.toString()] || meeting.legacy_lead.meeting_lawyer_id.toString();
+            } else if (meeting.lead?.helper) {
+              // For new leads, first check lead.helper field
+              const helperField = meeting.lead.helper;
+              if (!isNaN(Number(helperField))) {
+                // If it's an ID, look it up
+                helperName = employeeNameMap[helperField.toString()] || helperField.toString();
+              } else {
+                // If it's a display name, use it directly
+                helperName = helperField;
+              }
+            } else if (meeting.helper) {
+              // Fallback to meeting.helper if helper is not set
+              helperName = employeeNameMap[meeting.helper.toString()] || meeting.helper;
+            }
+
+            return {
+              id: meeting.id,
+              lead: meeting.lead?.lead_number || 'N/A',
+              name: meeting.lead?.name || 'Unknown',
+              topic: meeting.lead?.topic || 'Consultation',
+              expert: expertName,
+              scheduler: schedulerName,
+              helper: helperName,
+              stage: stageName,
+              time: meeting.meeting_time,
+              location: meeting.meeting_location || 'Teams',
+              manager: managerName,
+            value: formatMeetingValue({
+              leadBalance: meeting.lead?.balance,
+              leadBalanceCurrency: meeting.lead?.balance_currency,
+              legacyTotal: meeting.legacy_lead?.total,
+              legacyCurrencyId: meeting.legacy_lead?.currency_id ?? null,
+              meetingAmount: meeting.meeting_amount,
+              meetingCurrency: meeting.meeting_currency,
+            }).display,
+              link: meeting.teams_meeting_url,
+            };
+          });
+
+          setTodayMeetings(processedMeetingsList);
+          
+          // Calculate meetings in next hour
+          const meetingsInNextHourList = processedMeetingsList
+            .map((meeting: any) => {
+              if (!meeting.time) return null;
+              
+              // Parse meeting time (format: HH:MM or HH:MM:SS)
+              const timeParts = meeting.time.split(':');
+              if (timeParts.length < 2) return null;
+              
+              const meetingHour = parseInt(timeParts[0], 10);
+              const meetingMinute = parseInt(timeParts[1], 10);
+              
+              // Create meeting datetime for today
+              const meetingDateTime = new Date(now);
+              meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
+              
+              // Check if meeting is between now and one hour from now
+              if (meetingDateTime >= now && meetingDateTime <= oneHourLater) {
+                return {
+                  ...meeting,
+                  meetingDateTime
+                };
+              }
+              return null;
+            })
+            .filter(Boolean)
+            .sort((a: any, b: any) => a.meetingDateTime.getTime() - b.meetingDateTime.getTime());
+          
+          setMeetingsInNextHour(meetingsInNextHourList.length);
+          setNextHourMeetings(meetingsInNextHourList);
+        } else {
+          setTodayMeetings([]);
+          setMeetingsInNextHour(0);
+          setNextHourMeetings([]);
+        }
+      } catch (e) {
+        console.error('Error fetching meetings:', e);
+        setTodayMeetings([]);
+        setMeetingsInNextHour(0);
+        setNextHourMeetings([]);
+      }
+      setMeetingsLoading(false);
+    };
+    
+    // Fetch immediately on mount
+    fetchMeetings();
+    
+    // Refresh meetings every minute to update the "next hour" count
+    const interval = setInterval(() => {
+      fetchMeetings();
+    }, 60000); // 60 seconds
+    
+    return () => clearInterval(interval);
+  }, []); // Empty dependency array - only run on mount
+
+  // Helper function to format time until meeting
+  const formatTimeUntil = (meetingDateTime: Date): string => {
+    const now = new Date();
+    const diffMs = meetingDateTime.getTime() - now.getTime();
+    const diffMinutes = Math.floor(diffMs / 60000);
+    
+    if (diffMinutes < 1) return 'now';
+    if (diffMinutes === 1) return 'in 1 minute';
+    if (diffMinutes < 60) return `in ${diffMinutes} minutes`;
+    
+    const hours = Math.floor(diffMinutes / 60);
+    const minutes = diffMinutes % 60;
+    if (minutes === 0) return `in ${hours} hour${hours > 1 ? 's' : ''}`;
+    return `in ${hours} hour${hours > 1 ? 's' : ''} ${minutes} minute${minutes > 1 ? 's' : ''}`;
+  };
+
+  // Note: Meetings are now fetched on mount and refreshed every minute in the main useEffect above
+  // This useEffect is kept for backwards compatibility but may be redundant
+  useEffect(() => {
+    const updateNextHourCount = () => {
+      if (todayMeetings.length === 0) {
+        setMeetingsInNextHour(0);
+        setNextHourMeetings([]);
+        return;
+      }
+
+      const now = new Date();
+      const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
+      
+      const meetingsList = todayMeetings
+        .map((meeting: any) => {
+          if (!meeting.time) return null;
+          
+          // Parse meeting time (format: HH:MM or HH:MM:SS)
+          const timeParts = meeting.time.split(':');
+          if (timeParts.length < 2) return null;
+          
+          const meetingHour = parseInt(timeParts[0], 10);
+          const meetingMinute = parseInt(timeParts[1], 10);
+          
+          // Create meeting datetime for today
+          const meetingDateTime = new Date(now);
+          meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
+          
+          // Check if meeting is between now and one hour from now
+          if (meetingDateTime >= now && meetingDateTime <= oneHourLater) {
+            return {
+              ...meeting,
+              meetingDateTime
+            };
+          }
+          return null;
+        })
+        .filter(Boolean)
+        .sort((a: any, b: any) => a.meetingDateTime.getTime() - b.meetingDateTime.getTime());
+      
+      setMeetingsInNextHour(meetingsList.length);
+      setNextHourMeetings(meetingsList);
+    };
+
+    // Update immediately
+    updateNextHourCount();
+
+    // Update every minute
+    const interval = setInterval(updateNextHourCount, 60000);
+
+    return () => clearInterval(interval);
+  }, [todayMeetings]);
 
   // Add mock client messages
   const mockMessages = [
@@ -444,14 +1231,13 @@ const Dashboard: React.FC = () => {
     }
   ];
 
+  // Update meetingsToday count when todayMeetings changes
+  useEffect(() => {
+    setMeetingsToday(todayMeetings.length);
+  }, [todayMeetings]);
+
   // Fetch summary data (mocked for now, replace with real queries)
   useEffect(() => {
-    // Fetch meetings today
-    (async () => {
-      const today = new Date().toISOString().split('T')[0];
-      const { data } = await supabase.from('meetings').select('id').eq('meeting_date', today);
-      setMeetingsToday(data?.length || 0);
-    })();
     // Fetch overdue followups - optimized count query using employee relationship
     (async () => {
       // Prevent multiple calls
@@ -2990,12 +3776,86 @@ const Dashboard: React.FC = () => {
   return (
     <div className="p-0 md:p-6 space-y-8">
       {/* 1. Summary Boxes: 4 columns */}
-      <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0">
+      <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}
         <div
-          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0"
+          className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0"
           onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}
         >
+          {/* Meetings in Next Hour Badge - Desktop: top, Mobile: bottom */}
+          {meetingsInNextHour > 0 && nextHourMeetings.length > 0 && (
+            <>
+              {/* Desktop: Top Right */}
+              <div className="hidden md:flex absolute top-1 right-2 z-10 group items-center gap-2 flex-wrap justify-end max-w-[calc(100%-1rem)]">
+                {/* Text Badge - Active - Only show first meeting */}
+                <span className="inline-flex items-center px-2.5 py-1 text-white text-xs font-semibold whitespace-nowrap break-words">
+                  Meeting {formatTimeUntil(nextHourMeetings[0].meetingDateTime)} with {nextHourMeetings[0].name} ({nextHourMeetings[0].lead})
+                </span>
+                {/* Count Badge */}
+                <span 
+                  className="inline-flex items-center justify-center min-w-[28px] h-7 px-2.5 bg-white text-red-500 text-xs font-bold rounded-full shadow-lg animate-pulse ring-2 ring-white ring-opacity-75 cursor-help flex-shrink-0"
+                  title={nextHourMeetings.map((meeting: any) => 
+                    `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
+                  ).join('\n')}
+                >
+                  {meetingsInNextHour}
+                </span>
+                {/* Custom Tooltip */}
+                <div className="absolute right-0 top-full mt-2 w-[280px] max-w-[calc(100vw-2rem)] p-2.5 sm:p-3 bg-gray-900 text-white text-xs sm:text-sm rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 pointer-events-none whitespace-normal">
+                  <div className="space-y-2">
+                    {nextHourMeetings.map((meeting: any, index: number) => (
+                      <div key={meeting.id || index} className="border-b border-gray-700 last:border-0 pb-2 last:pb-0">
+                        <div className="font-semibold text-white text-[11px] sm:text-sm break-words leading-snug">
+                          Meeting {formatTimeUntil(meeting.meetingDateTime)}
+                        </div>
+                        <div className="text-gray-300 text-[10px] sm:text-xs mt-0.5 sm:mt-1 break-words leading-relaxed">
+                          with {meeting.name} ({meeting.lead})
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Tooltip arrow */}
+                  <div className="absolute -top-2 right-4 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-gray-900"></div>
+                </div>
+              </div>
+              
+              {/* Mobile: Count Badge - Top Right */}
+              <div className="md:hidden absolute top-2 right-2 z-10 group">
+                <span 
+                  className="inline-flex items-center justify-center min-w-[24px] h-6 px-2 bg-white text-red-500 text-[10px] font-bold rounded-full shadow-lg animate-pulse ring-2 ring-white ring-opacity-75 cursor-help flex-shrink-0"
+                  title={nextHourMeetings.map((meeting: any) => 
+                    `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
+                  ).join('\n')}
+                >
+                  {meetingsInNextHour}
+                </span>
+                {/* Custom Tooltip */}
+                <div className="absolute right-0 top-full mt-2 w-[280px] max-w-[calc(100vw-2rem)] p-2.5 bg-gray-900 text-white text-xs rounded-lg shadow-xl opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-50 pointer-events-none whitespace-normal">
+                  <div className="space-y-2">
+                    {nextHourMeetings.map((meeting: any, index: number) => (
+                      <div key={meeting.id || index} className="border-b border-gray-700 last:border-0 pb-2 last:pb-0">
+                        <div className="font-semibold text-white text-[11px] break-words leading-snug">
+                          Meeting {formatTimeUntil(meeting.meetingDateTime)}
+                        </div>
+                        <div className="text-gray-300 text-[10px] mt-0.5 break-words leading-relaxed">
+                          with {meeting.name} ({meeting.lead})
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {/* Tooltip arrow */}
+                  <div className="absolute -top-2 right-4 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-gray-900"></div>
+                </div>
+              </div>
+              
+              {/* Mobile: Text Notice - Bottom */}
+              <div className="md:hidden absolute bottom-1 left-0 right-0 z-10 flex items-center justify-center px-2">
+                <span className="inline-flex items-center px-2 py-0.5 text-white text-[9px] font-semibold whitespace-normal break-words text-center leading-tight">
+                  Meeting {formatTimeUntil(nextHourMeetings[0].meetingDateTime)} with {nextHourMeetings[0].name} ({nextHourMeetings[0].lead})
+                </span>
+              </div>
+            </>
+          )}
           <div className="flex items-center gap-2 md:gap-4">
             <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20 shadow">
               <CalendarIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
@@ -3080,9 +3940,9 @@ const Dashboard: React.FC = () => {
               ) : todayMeetings.length === 0 ? (
                 <div className="text-center py-8 text-base-content/70">No meetings scheduled for today</div>
               ) : (
-              <div className="grid grid-cols-1 gap-4">
+              <div className="flex gap-4 overflow-x-auto py-4 px-1 scrollbar-hide">
                   {todayMeetings.map((meeting, index) => (
-                    <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16">
+                    <div key={meeting.id} className="min-w-[85vw] max-w-[90vw] bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16" style={{ flex: '0 0 85vw' }}>
                     <div className="flex-1 cursor-pointer flex flex-col">
                       {/* Lead Number and Name */}
                       <div className="mb-3 flex items-center gap-2">
@@ -3095,7 +3955,11 @@ const Dashboard: React.FC = () => {
                         {/* Time */}
                         <div className="flex justify-between items-center py-1">
                           <span className="text-xs font-semibold text-gray-500">Time</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.time}</span>
+                          <span className="text-sm font-bold text-gray-800">
+                            {meeting.time && meeting.time.includes(':') && meeting.time.split(':').length === 3
+                              ? meeting.time.substring(0, 5)
+                              : meeting.time}
+                          </span>
                         </div>
                         {/* Manager */}
                         <div className="flex justify-between items-center py-1">
@@ -3117,6 +3981,16 @@ const Dashboard: React.FC = () => {
                           <span className="text-xs font-semibold text-gray-500">Expert</span>
                           <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
                         </div>
+                        {/* Scheduler */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Scheduler</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.scheduler || '---'}</span>
+                        </div>
+                        {/* Stage */}
+                        <div className="flex justify-between items-center py-1">
+                          <span className="text-xs font-semibold text-gray-500">Stage</span>
+                          <span className="text-sm font-bold text-gray-800">{meeting.stage || 'N/A'}</span>
+                        </div>
                         {/* Location */}
                         <div className="flex justify-between items-center py-1">
                           <span className="text-xs font-semibold text-gray-500">Location</span>
@@ -3125,18 +3999,25 @@ const Dashboard: React.FC = () => {
                         </div>
                       </div>
                     {/* Action Buttons */}
-                      <div className="absolute bottom-4 left-4 right-4">
-                        {/* Join Meeting (Teams) */}
-                        <a
-                          className={`btn btn-primary btn-sm w-full${!getValidTeamsLink(meeting.link) ? ' pointer-events-none opacity-50' : ''}`}
-                          href={getValidTeamsLink(meeting.link) || '#'}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                        >
-                        <VideoCameraIcon className="w-4 h-4" />
-                        Join Meeting
-                        </a>
-                    </div>
+                      {isOnlineLocation(meeting.location) && getValidTeamsLink(meeting.link) && (
+                        <div className="absolute bottom-4 left-4 right-4">
+                          {/* Join Meeting (Teams) */}
+                          <button 
+                            className="btn btn-primary btn-xs sm:btn-sm w-full"
+                            onClick={() => {
+                              const url = getValidTeamsLink(meeting.link);
+                              if (url) {
+                                window.open(url, '_blank');
+                              } else {
+                                alert('No meeting URL available');
+                              }
+                            }}
+                            title="Teams Meeting"
+                          >
+                            <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                          </button>
+                        </div>
+                      )}
                   </div>
                 ))}
               </div>

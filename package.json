@@ -27,6 +27,7 @@
     "@tiptap/extension-text-align": "^3.0.0-next.3",
     "@tiptap/extension-text-style": "^3.0.0-next.3",
     "@tiptap/extension-underline": "^3.0.0-next.3",
+    "@tiptap/html": "^3.10.2",
     "@tiptap/react": "^3.0.0-next.3",
     "@tiptap/starter-kit": "^3.0.0-next.3",
     "@types/react-router-dom": "^5.3.3",

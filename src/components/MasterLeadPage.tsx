@@ -34,6 +34,7 @@ interface SubLead {
   handler?: string;
   master_id?: string;
   isMaster?: boolean;
+  route?: string;
 }
 
 const MasterLeadPage: React.FC = () => {
@@ -141,12 +142,172 @@ const MasterLeadPage: React.FC = () => {
     return <span className="badge" style={{ backgroundColor: '#391bcb', color: 'white' }}>{stageName}</span>;
   };
 
+  const buildClientRoute = (manualId?: string | null, leadNumberValue?: string | null) => {
+    const manualString = manualId?.toString().trim() || '';
+    const leadString = leadNumberValue?.toString().trim() || '';
+    const isSubLeadNumber = leadString.includes('/');
+
+    if (isSubLeadNumber && manualString !== '') {
+      const query = leadString !== '' ? `?lead=${encodeURIComponent(leadString)}` : '';
+      return `/clients/${encodeURIComponent(manualString)}` + query;
+    }
+
+    if (leadString !== '') {
+      return `/clients/${encodeURIComponent(leadString)}`;
+    }
+
+    if (manualString !== '') {
+      return `/clients/${encodeURIComponent(manualString)}`;
+    }
+
+    return '/clients';
+  };
+
+    const extractNumericId = (value: string | null | undefined) => {
+      if (!value) return null;
+      if (/^\d+$/.test(value)) return value;
+      const digitsOnly = value.replace(/\D/g, '');
+      return digitsOnly.length > 0 ? digitsOnly : null;
+    };
+
+    const attemptFetchNewMaster = async (baseLeadNumber: string): Promise<boolean> => {
+      try {
+        const { data: masterLead, error: masterError } = await supabase
+          .from('leads')
+          .select('*')
+          .eq('lead_number', baseLeadNumber)
+          .maybeSingle();
+
+        if (masterError) {
+          console.error('Error fetching new master lead:', masterError);
+        }
+
+        if (!masterLead) {
+          return false;
+        }
+
+        setSubLeadsLoading(true);
+
+        const { data: subLeadsData, error: subLeadsError } = await supabase
+          .from('leads')
+          .select('*')
+          .like('lead_number', `${baseLeadNumber}/%`)
+          .order('lead_number', { ascending: true });
+
+        if (subLeadsError) {
+          console.error('Error fetching new sub-leads:', subLeadsError);
+          setError('Failed to fetch sub-leads');
+          setMasterLeadInfo(masterLead);
+          setSubLeads([]);
+          setStageMap(new Map());
+          return true;
+        }
+
+        const { data: categories } = await supabase
+          .from('misc_category')
+          .select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          `)
+          .order('name', { ascending: true });
+
+        const processedSubLeads: SubLead[] = [];
+
+        const formatNewLead = (lead: any, isMaster: boolean): SubLead => {
+          const leadNumberValue = lead.lead_number || baseLeadNumber;
+          const manualValue = lead.manual_id ? String(lead.manual_id) : undefined;
+          const totalRaw = lead.balance ?? lead.total ?? lead.meeting_total ?? 0;
+          const totalValue = typeof totalRaw === 'number' ? totalRaw : parseFloat(totalRaw) || 0;
+          const currencyCode = (lead.balance_currency || lead.currency || 'NIS') as string;
+          const categoryName = getCategoryName(lead.category_id, categories || []) || lead.category || 'Unknown';
+          const applicantsValue = lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0;
+          const contactName = lead.anchor_full_name || lead.contact_name || lead.primary_contact_name || '---';
+          const agreementNode = lead.docs_url ? (
+            <a 
+              href={lead.docs_url} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-blue-600 hover:text-blue-800 underline"
+            >
+              View Agreement
+            </a>
+          ) : '---';
+
+          return {
+            id: String(lead.id),
+            lead_number: leadNumberValue,
+            actual_lead_id: manualValue || leadNumberValue || String(lead.id),
+            manual_id: manualValue,
+            name: lead.name || 'Unknown',
+            total: totalValue,
+            currency: currencyCode,
+            currency_symbol: getCurrencySymbol(currencyCode),
+            category: categoryName,
+            stage: lead.stage || 'Unknown',
+            contact: contactName,
+            applicants: Number(applicantsValue) || 0,
+            agreement: agreementNode,
+            scheduler: lead.scheduler || lead.meeting_scheduler || '---',
+            closer: lead.closer || lead.meeting_closer || '---',
+            handler: lead.handler || lead.case_handler || '---',
+            master_id: lead.master_id || baseLeadNumber,
+            isMaster,
+            route: buildClientRoute(manualValue, leadNumberValue),
+          };
+        };
+
+        processedSubLeads.push(formatNewLead(masterLead, true));
+        subLeadsData?.forEach((lead: any) => processedSubLeads.push(formatNewLead(lead, false)));
+
+        processedSubLeads.sort((a, b) => {
+          const extractOrder = (leadNumber: string) => {
+            const parts = leadNumber.split('/');
+            const lastPart = parts[parts.length - 1];
+            return parseInt(lastPart, 10) || 0;
+          };
+          return extractOrder(a.lead_number) - extractOrder(b.lead_number);
+        });
+
+        setMasterLeadInfo(masterLead);
+        setSubLeads(processedSubLeads);
+        setStageMap(new Map());
+        return true;
+      } catch (error) {
+        console.error('Error handling new master lead:', error);
+        setError('An unexpected error occurred while fetching master lead data');
+        return true;
+      } finally {
+        setSubLeadsLoading(false);
+      }
+    };
+
     const fetchSubLeads = async () => {
       if (!lead_number) return;
       
+      const decodedLeadNumber = decodeURIComponent(lead_number);
+      const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+
       try {
         setLoading(true);
         setError(null);
+
+        const handledNewLead = await attemptFetchNewMaster(baseLeadNumber);
+        if (handledNewLead) {
+          return;
+        }
+
+        const normalizedId = extractNumericId(baseLeadNumber);
+        if (!normalizedId) {
+          console.error('Invalid master lead number provided:', lead_number);
+          setError('Invalid master lead number');
+          return;
+        }
+        const legacyId = parseInt(normalizedId, 10);
         
         // First, get the master lead info with related data including employee joins
         const { data: masterLead, error: masterError } = await supabase
@@ -174,7 +335,7 @@ const MasterLeadPage: React.FC = () => {
               display_name
             )
           `)
-          .eq('id', parseInt(lead_number))
+          .eq('id', legacyId)
           .single();
 
         if (masterError) {
@@ -212,7 +373,7 @@ const MasterLeadPage: React.FC = () => {
               display_name
             )
           `)
-          .eq('master_id', lead_number)
+          .or(`master_id.eq.${baseLeadNumber},master_id.eq.${normalizedId}`)
           .order('id', { ascending: true })
           .limit(50);
 
@@ -386,7 +547,8 @@ const MasterLeadPage: React.FC = () => {
               return (handler as any)?.display_name || '---';
             })(),
             master_id: masterLead.master_id,
-            isMaster: true
+            isMaster: true,
+            route: `/clients/${masterLead.id}`
           });
         }
 
@@ -452,7 +614,8 @@ const MasterLeadPage: React.FC = () => {
                 return (handler as any)?.display_name || '---';
               })(),
               master_id: lead.master_id,
-              isMaster: false
+            isMaster: false,
+            route: `/clients/${lead.id}`
             });
           });
         }
@@ -500,8 +663,14 @@ const MasterLeadPage: React.FC = () => {
   }, [lead_number]);
 
   const handleSubLeadClick = (subLead: SubLead) => {
-    // Use the actual lead ID for navigation, not the display number
-    navigate(`/clients/${subLead.actual_lead_id}`);
+    if (subLead.route) {
+      navigate(subLead.route);
+      return;
+    }
+    
+    if (subLead.actual_lead_id) {
+      navigate(`/clients/${subLead.actual_lead_id}`);
+    }
   };
 
   if (loading) {
@@ -566,8 +735,8 @@ const MasterLeadPage: React.FC = () => {
                   Master lead #{(() => {
                     if (!masterLeadInfo) return lead_number;
                     
-                    // Use manual_id if available, otherwise use id
-                    let displayNumber = masterLeadInfo.manual_id || String(masterLeadInfo.id);
+                    // Use lead_number if available, then manual_id, otherwise fallback to id
+                    let displayNumber = masterLeadInfo.lead_number || masterLeadInfo.manual_id || String(masterLeadInfo.id);
                     
                     // Add "C" prefix for legacy leads with stage "100" (Success) or higher (after stage 60)
                     if (masterLeadInfo.stage === '100' || masterLeadInfo.stage === 100) {

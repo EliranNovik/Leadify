@@ -636,7 +636,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         Change Follow-up
                       </button>
                       <button
-                        className="btn btn-error btn-sm gap-2"
+                        className="btn btn-ghost btn-sm gap-2 text-gray-700 hover:text-gray-900"
                         onClick={handleDeleteFollowup}
                       >
                         <TrashIcon className="w-4 h-4" />
