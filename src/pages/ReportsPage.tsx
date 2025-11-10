@@ -6,6 +6,7 @@ import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
   LeadBaseDetail,
 } from '../components/reports/EmployeeLeadDrawer';
+import { useNavigate } from 'react-router-dom';
 
 // Stage Search Report Component
 const StageSearchReport = () => {
@@ -3458,7 +3459,6 @@ const ResultsReport = () => <div className="p-6">Results Report Content</div>;
 const CollectionReport = () => <div className="p-6">Collection Report Content</div>;
 const ActualReport = () => <div className="p-6">Actual Sales Report Content</div>;
 const TargetReport = () => <div className="p-6">Target Sales Report Content</div>;
-const SignedReport = () => <div className="p-6">Signed Sales Report Content</div>;
 const SchedulingBonusesReport = () => <div className="p-6">Scheduling Bonuses Report Content</div>;
 const BonusesV4Report = () => {
   const [filters, setFilters] = useState({
@@ -3917,7 +3917,19 @@ const ProfitabilityReport = () => <div className="p-6">Profitability Finances Co
 const CollectionDueReport = () => <div className="p-6">Collection Due Finances Content</div>;
 const SumActiveReport = () => <div className="p-6">Sum Active Cases Content</div>;
 
-const reports = [
+type ReportItem = {
+  label: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  component?: React.FC;
+  route?: string;
+};
+
+type ReportSection = {
+  category: string;
+  items: ReportItem[];
+};
+
+const reports: ReportSection[] = [
   {
     category: 'Search',
     items: [
@@ -3951,7 +3963,7 @@ const reports = [
     items: [
       { label: 'Actual', icon: UserGroupIcon, component: ActualReport },
       { label: 'Target', icon: UserIcon, component: TargetReport },
-      { label: 'Signed', icon: AcademicCapIcon, component: SignedReport },
+      { label: 'Signed', icon: AcademicCapIcon, route: '/sales/signed' },
       { label: 'Scheduling Bonuses', icon: StarIcon, component: SchedulingBonusesReport },
       { label: 'Bonuses (v4)', icon: PlusIcon, component: BonusesV4Report },
     ],
@@ -4014,7 +4026,8 @@ const reports = [
 ];
 
 export default function ReportsPage() {
-  const [selectedReport, setSelectedReport] = useState<null | { label: string; component: React.FC }>(null);
+  const navigate = useNavigate();
+  const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
 
   console.log('Selected report:', selectedReport);
 
@@ -4032,7 +4045,15 @@ export default function ReportsPage() {
                     <button
                       key={item.label}
                       className="card bg-base-100 shadow hover:shadow-lg transition-shadow border border-base-200 flex flex-col items-center justify-center p-6 cursor-pointer hover:bg-primary hover:text-white group"
-                      onClick={() => setSelectedReport(item)}
+                      onClick={() => {
+                        if (item.route) {
+                          navigate(item.route);
+                          return;
+                        }
+                        if (item.component) {
+                          setSelectedReport(item);
+                        }
+                      }}
                     >
                       <item.icon className="w-12 h-12 mb-3 text-black group-hover:text-white" />
                       <span className="font-semibold text-lg text-center group-hover:text-white">{item.label}</span>
@@ -4058,11 +4079,17 @@ export default function ReportsPage() {
               </button>
             </div>
             <div className="min-h-[400px]">
-              {React.createElement(selectedReport.component)}
+              {selectedReport.component ? (
+                React.createElement(selectedReport.component)
+              ) : (
+                <div className="h-full flex items-center justify-center text-gray-500">
+                  Report content unavailable. Please select another report.
+                </div>
+              )}
             </div>
           </div>
         </div>
       )}
     </div>
   );
-} 
+}

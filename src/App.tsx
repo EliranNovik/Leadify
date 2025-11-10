@@ -59,6 +59,7 @@ import EmployeePerformancePage from './pages/EmployeePerformancePage';
 import RMQMessagesPage from './pages/RMQMessagesPage';
 import CallsLedgerPage from './pages/CallsLedgerPage';
 import SchedulerToolPage from './pages/SchedulerToolPage';
+import SignedSalesReportPage from './pages/SignedSalesReportPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
@@ -419,6 +420,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/proforma-legacy/:id" element={<ProformaLegacyViewPage />} />
                     <Route path="/proforma-legacy/create/:leadId" element={<ProformaLegacyCreatePage />} />
                     <Route path="/reports" element={<ReportsPage />} />
+                    <Route path="/sales/signed" element={<SignedSalesReportPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
                     <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
                     <Route path="/simple-test" element={<SimpleTestPage />} />

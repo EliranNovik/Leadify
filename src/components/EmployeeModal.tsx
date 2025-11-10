@@ -1171,8 +1171,8 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
             balance: meeting.lead?.balance || meeting.legacy_lead?.total || 0,
             balance_currency: meeting.lead?.balance_currency || 
               (meeting.legacy_lead?.meeting_total_currency_id === 1 ? 'NIS' : 
-               meeting.legacy_lead?.meeting_total_currency_id === 2 ? 'USD' : 
-               meeting.legacy_lead?.meeting_total_currency_id === 3 ? 'EUR' : 'NIS'),
+               meeting.legacy_lead?.meeting_total_currency_id === 2 ? 'EUR' : 
+               meeting.legacy_lead?.meeting_total_currency_id === 3 ? 'USD' : 'NIS'),
             role_in_meeting: meeting.meeting_manager === employee.display_name ? 'Manager' : 'Helper'
           }))
           .sort((a: any, b: any) => {

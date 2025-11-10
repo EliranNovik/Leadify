@@ -12,6 +12,7 @@ import TeamsPage from './pages/TeamsPage';
 import WhatsAppPage from './pages/WhatsAppPage';
 import ProformaViewPage from './pages/ProformaViewPage';
 import ReportsPage from './pages/ReportsPage';
+import SignedSalesReportPage from './pages/SignedSalesReportPage';
 import PublicContractView from './pages/PublicContractView';
 import PublicLegacyContractView from './pages/PublicLegacyContractView';
 import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
@@ -42,6 +43,7 @@ const AppRoutes: React.FC<AppRoutesProps> = (props) => (
     <Route path="/whatsapp" element={<WhatsAppPage />} />
     <Route path="/proforma/:id" element={<ProformaViewPage />} />
     <Route path="/reports" element={<ReportsPage />} />
+    <Route path="/sales/signed" element={<SignedSalesReportPage />} />
     <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
     <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
     <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />

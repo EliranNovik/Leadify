@@ -14,16 +14,16 @@ export const currencyRates = {
 // Currency ID to symbol mapping (based on the database structure)
 export const currencyIdToSymbol = {
   1: '₪',   // NIS
-  2: '$',   // USD
-  3: '€',   // EUR
+  2: '€',   // EUR
+  3: '$',   // USD
   4: '£'    // GBP
 };
 
 // Currency ID to code mapping
 export const currencyIdToCode = {
   1: 'NIS',
-  2: 'USD', 
-  3: 'EUR',
+  2: 'EUR', 
+  3: 'USD',
   4: 'GBP'
 };
 
