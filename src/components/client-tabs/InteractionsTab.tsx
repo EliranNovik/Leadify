@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, Fragment, useMemo } from 'react';
-import { ClientTabProps } from '../../types/client';
+import { ClientTabProps, ClientInteractionsCache } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 import EmojiPicker from 'emoji-picker-react';
 import {
@@ -21,6 +21,7 @@ import {
   StopIcon,
   SpeakerWaveIcon,
   MagnifyingGlassIcon,
+  PlusIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { useMsal } from '@azure/msal-react';
@@ -39,6 +40,7 @@ import { buildApiUrl } from '../../lib/api';
 import { fetchLegacyInteractions, testLegacyInteractionsAccess } from '../../lib/legacyInteractionsApi';
 import { appendEmailSignature } from '../../lib/emailSignature';
 import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
+import { stripSignatureAndQuotedTextPreserveHtml, syncEmailsForClient } from '../../lib/graphEmailSync';
 
 interface Attachment {
   id: string;
@@ -87,6 +89,19 @@ interface Interaction {
   call_log?: CallLog; // Add call log data for call interactions
   recording_url?: string; // Add recording URL for call interactions
   call_duration?: number; // Add call duration for call interactions
+  body_html?: string | null;
+  body_preview?: string | null;
+  renderedContent?: string;
+  renderedContentFallback?: string;
+}
+
+interface EmailTemplate {
+  id: number;
+  name: string;
+  subject: string | null;
+  content: string;
+  rawContent: string;
+  languageId: string | null;
 }
 
 const contactMethods = [
@@ -98,153 +113,133 @@ const contactMethods = [
   { value: 'office', label: 'In Office' },
 ];
 
-// Function to strip signatures while preserving HTML formatting
-const stripSignatureAndQuotedTextPreserveHtml = (html: string): string => {
-  if (!html) return '';
-  
-  // Don't remove HTML tags, just work with the HTML content
-  let text = html;
-  
-  // Decode HTML entities that might be in signatures
-  text = text
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-  
-  // Enhanced markers for Outlook signatures, timestamps, and quoted text
-  const markers = [
-    // Reply/Forward indicators
-    '-------- Original Message --------',
-    '________________________________',
-    '-----Original Message-----',
-    
-    // Headers
-    'From:',
-    'Sent:',
-    'Date:',
-    'To:',
-    'Cc:',
-    'Subject:',
-    'Reply-To:',
-    
-    // Signatures and footers
-    'Best regards,',
-    'Kind regards,',
-    'Sincerely,',
-    'Thank you,',
-    'Thanks,',
-    'Decker Pex Levi Law Offices',
-    'Law Office',
-    'Attorney',
-    'Confidentiality Notice',
-    'This email is confidential',
-    'Please consider the environment',
-    
-    // Outlook automatic additions
-    'Sent from my iPhone',
-    'Sent from my iPad',
-    'Sent from Outlook',
-    'Get Outlook for',
-    
-    // Signature patterns (more aggressive)
-    'Paralegal',
-    'WE Tower TLV',
-    '150 Begin Rd.',
-    'Tel Aviv',
-    'www.lawoffice.org.il',
-    '(+972)',
-    'lawoffice.org.il',
-    'Eliran Novik',
-    '73-3656037',
-    '8th floor',
-    'Begin Rd',
-    
-    // Time-based patterns (regex-like matching for common timestamp formats)
-  ];
-
-  // Find the earliest marker position for quick truncation (case-insensitive)
-  let earliestPos = -1;
-  for (const marker of markers) {
-    const pos = text.toLowerCase().indexOf(marker.toLowerCase());
-    if (pos !== -1 && (earliestPos === -1 || pos < earliestPos)) {
-      earliestPos = pos;
-    }
-  }
-
-  let cleanedText = earliestPos !== -1 ? text.substring(0, earliestPos).trim() : text;
-  
-  // Remove common timestamp patterns
-  const timestampPatterns = [
-    /On\s+\w{3},?\s+\w{3}\s+\d{1,2},?\s+\d{4}\s+at\s+\d{1,2}:\d{2}\s*(AM|PM)/gi,
-    /Am\s+\w+\.?,?\s+\d{1,2}\.\s+\w+\s+\d{4}\s+um\s+\d{1,2}:\d{2}/gi,
-    
-    // French patterns - "Le ven. 11 juil. 2025 à 18:24"
-    /Le\s+\w{3}\.?\s+\d{1,2}\s+\w{4}\.?\s+\d{4}\s+à\s+\d{1,2}:\d{2}/gi,
-    
-    // Spanish patterns - "El vie, 11 jul 2025 a las 18:24"
-    /El\s+\w{3},?\s+\d{1,2}\s+\w{3}\s+\d{4}\s+a\s+las\s+\d{1,2}:\d{2}/gi,
-    
-    // Generic date-time patterns
-    /\d{1,2}\/\d{1,2}\/\d{4}\s+\d{1,2}:\d{2}\s*(AM|PM)?/gi,
-    /\d{1,2}-\d{1,2}-\d{4}\s+\d{1,2}:\d{2}/gi,
-    /\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}/gi,
-    
-    // "wrote:" patterns in multiple languages
-    /.*wrote:\s*$/gmi,
-    /.*schrieb:\s*$/gmi,
-    /.*écrit\s*:\s*$/gmi,
-    /.*escribió:\s*$/gmi,
-    
-    // Email signature indicators with Unicode characters
-    /‪.*?‬/g,  // Remove Unicode directional markers
-    /[\u200E\u200F\u202A-\u202E]/g,  // Remove other Unicode direction markers
-  ];
-
-  // Apply timestamp pattern removal
-  for (const pattern of timestampPatterns) {
-    cleanedText = cleanedText.replace(pattern, '');
-  }
-
-  // Additional cleaning for specific cases (HTML-aware)
-  cleanedText = cleanedText
-    // Remove HTML elements that contain signature patterns
-    .replace(/<[^>]*>.*?(Paralegal|WE Tower TLV|150 Begin Rd\.|Tel Aviv|www\.lawoffice\.org\.il|\(\+972\)|lawoffice\.org\.il|Eliran Novik|73-3656037|8th floor|Begin Rd).*?<\/[^>]*>/gi, '')
-    // Remove lines that start with common quote indicators (including HTML)
-    .replace(/<[^>]*>[\s]*[>|]+.*?<\/[^>]*>/gi, '')
-    // Remove "Von:" (German) / "From:" patterns in HTML
-    .replace(/<[^>]*>(Von|From|Gesendet|Sent|An|To|Betreff|Subject):\s*.*?<\/[^>]*>/gi, '')
-    // Remove signature patterns more aggressively (HTML-aware)
-    .replace(/<[^>]*>.*?Paralegal.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?WE Tower TLV.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?150 Begin Rd\..*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?Tel Aviv.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?www\.lawoffice\.org\.il.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?\(\+972\).*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?lawoffice\.org\.il.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?Eliran Novik.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?73-3656037.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?8th floor.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?Begin Rd.*?<\/[^>]*>/gi, '')
-    // Remove phone number patterns in HTML
-    .replace(/<[^>]*>.*?\(\+972\)\d{2}-\d{3}\d{4}.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?\(\+972\)\d{2}-\d{3}-\d{4}.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?\d{2}-\d{3}\d{4}.*?<\/[^>]*>/gi, '') // Catch 73-3656037 pattern
-    // Remove signature blocks that start with names (HTML-aware)
-    .replace(/<[^>]*>.*?[A-Za-z]+\s+[A-Za-z]+\s*-\s*Paralegal.*?<\/[^>]*>/gi, '')
-    .replace(/<[^>]*>.*?[A-Za-z]+\s+[A-Za-z]+\s*&nbsp;.*?<\/[^>]*>/gi, '')
-    // Remove Unicode directional text markers
-    .replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '')
-    // Clean up multiple spaces and newlines (but preserve HTML structure)
-    .replace(/\s+/g, ' ')
-    .replace(/\n\s*\n/g, '\n')
-    .trim();
-
-  return cleanedText;
+const extractHtmlBody = (html: string) => {
+  if (!html) return html;
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  return bodyMatch ? bodyMatch[1] : html;
 };
 
+const parseTemplateContent = (rawContent: string | null | undefined): string => {
+  if (!rawContent) return '';
+
+  const sanitizeTemplateText = (text: string) => {
+    if (!text) return '';
+
+    return text
+      .split('\n')
+      .map(line => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+  };
+
+  const tryParseDelta = (input: string) => {
+    try {
+      const parsed = JSON.parse(input);
+      const ops = parsed?.delta?.ops || parsed?.ops;
+      if (Array.isArray(ops)) {
+        const text = ops
+          .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
+          .join('');
+        return sanitizeTemplateText(text);
+      }
+    } catch (error) {
+      // ignore
+    }
+    return null;
+  };
+
+  const cleanHtml = (input: string) => {
+    let text = input;
+
+    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+    if (htmlMatch) {
+      text = htmlMatch[1];
+    }
+
+    text = text
+      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
+      .replace(/^{|}$/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\r/g, '')
+      .replace(/\\/g, '\\');
+
+    return sanitizeTemplateText(text);
+  };
+
+  let text = tryParseDelta(rawContent);
+  if (text !== null) {
+    return text;
+  }
+
+  text = tryParseDelta(
+    rawContent
+      .replace(/^"|"$/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+  );
+  if (text !== null) {
+    return text;
+  }
+
+  const normalised = rawContent
+    .replace(/\\"/g, '"')
+    .replace(/\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
+  const inserts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = insertRegex.exec(normalised))) {
+    inserts.push(match[1]);
+  }
+  if (inserts.length > 0) {
+    const combined = inserts.join('');
+    const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    return sanitizeTemplateText(decoded);
+  }
+
+  return sanitizeTemplateText(cleanHtml(rawContent));
+};
+
+const normaliseAddressList = (value: string | null | undefined) => {
+  if (!value) return [] as string[];
+  return value
+    .split(/[;,]+/)
+    .map(item => item.trim())
+    .filter(item => item.length > 0);
+};
+
+const convertBodyToHtml = (text: string) => {
+  if (!text) return '';
+  const urlRegex = /(https?:\/\/[^\s]+)/gi;
+  const escaped = text.replace(urlRegex, url => {
+    const safeUrl = url.replace(/"/g, '&quot;');
+    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+  });
+  return escaped.replace(/\n/g, '<br>');
+};
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const replaceTemplateTokens = (content: string, client: any) => {
+  if (!content) return '';
+  return content
+    .replace(/\{client_name\}/gi, client?.name || 'Client')
+    .replace(/\{lead_number\}/gi, client?.lead_number || '')
+    .replace(/\{topic\}/gi, client?.topic || '')
+    .replace(/\{closer_name\}/gi, client?.closer || '')
+    .replace(/\{lead_type\}/gi, client?.lead_type || '');
+};
+
+// Function to strip signatures while preserving HTML formatting
 // Helper to acquire token, falling back to popup if needed
 const acquireToken = async (instance: IPublicClientApplication, account: AccountInfo) => {
   try {
@@ -259,107 +254,16 @@ const acquireToken = async (instance: IPublicClientApplication, account: Account
 };
 
 // Microsoft Graph API: Fetch emails for a client and sync to DB
-async function syncClientEmails(token: string, client: ClientTabProps['client']) {
-  if (!client.email || !client.lead_number) return;
-
-  // Use $search for a more robust query. It searches across common fields.
-  // The search term should be enclosed in quotes for Graph API.
-  const searchQuery = `"${client.lead_number}" OR "${client.email}"`;
-  
-  // Optimize: Only fetch recent emails (last 30 days) and limit to 30 results
-  const thirtyDaysAgo = new Date();
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-  
-  const url = `https://graph.microsoft.com/v1.0/me/messages?$search=${encodeURIComponent(searchQuery)}&$top=30&$select=id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,conversationId,hasAttachments&$filter=receivedDateTime ge ${thirtyDaysAgo.toISOString()}`;
-  
-  const res = await fetch(url, { 
-    headers: { 
-      Authorization: `Bearer ${token}`,
-      ConsistencyLevel: 'eventual' // Required for $search
-    } 
-  });
-  if (!res.ok) {
-    const errorText = await res.text();
-    console.error("Microsoft Graph API error:", errorText);
-    // Try to parse for a more specific error from Graph
-    try {
-      const errorJson = JSON.parse(errorText);
-      if (errorJson?.error?.message) {
-        throw new Error(`Graph API Error: ${errorJson.error.message}`);
-      }
-    } catch (e) {}
-    throw new Error('Failed to fetch from Microsoft Graph');
-  }
-
-  const json = await res.json();
-  const messages = json.value || [];
-
-  // With a broad search, the client-side safeguard is even more important.
-  const clientMessages = messages.filter((msg: any) => 
-    (msg.subject && msg.subject.includes(client.lead_number!)) ||
-    (msg.from?.emailAddress?.address.toLowerCase() === client.email!.toLowerCase()) ||
-    (msg.toRecipients || []).some((r: any) => r.emailAddress.address.toLowerCase() === client.email!.toLowerCase()) ||
-    (msg.ccRecipients || []).some((r: any) => r.emailAddress.address.toLowerCase() === client.email!.toLowerCase())
-  );
-
-  if (clientMessages.length === 0) {
-    console.log("No relevant emails found after filtering.");
-    return;
-  }
-
-  // Sort the messages by date on the client side.
-  clientMessages.sort((a: any, b: any) => new Date(b.receivedDateTime).getTime() - new Date(a.receivedDateTime).getTime());
-
-  // Optimize: Skip attachment fetching for now (can be added later as needed)
-  // This significantly reduces API calls and processing time
-  // TODO: Add lazy loading for attachments when needed
-
-  // 4. Prepare data for Supabase (upsert to avoid duplicates)
-  const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-  const emailsToUpsert = clientMessages.map((msg: any) => {
-    const isOutgoing = msg.from?.emailAddress?.address.toLowerCase().includes('lawoffice.org.il');
-    const originalBody = msg.body?.content || '';
-    const processedBody = !isOutgoing ? stripSignatureAndQuotedTextPreserveHtml(originalBody) : originalBody;
-
-    return {
-      message_id: msg.id,
-      client_id: isLegacyLead ? null : client.id, // Set to null for legacy leads
-      legacy_id: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null, // Set legacy_id for legacy leads
-      thread_id: msg.conversationId,
-      sender_name: msg.from?.emailAddress?.name,
-      sender_email: msg.from?.emailAddress?.address,
-      recipient_list: (msg.toRecipients || []).map((r: any) => r.emailAddress.address).join(', '),
-      subject: msg.subject,
-      body_preview: processedBody,
-      sent_at: msg.receivedDateTime,
-      direction: isOutgoing ? 'outgoing' : 'incoming',
-      attachments: msg.attachments || null,
-    };
-  });
-
-  // 5. Upsert into our database
-  console.log('📧 Syncing emails to database:', {
-    isLegacyLead,
-    clientId: client.id,
-    legacyId: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null,
-    emailCount: emailsToUpsert.length
-  });
-  
-  if (emailsToUpsert.length > 0) {
-    console.log('📧 Sample email data:', emailsToUpsert[0]);
-  }
-  
-  const { data: syncData, error: syncError } = await supabase.from('emails').upsert(emailsToUpsert, { onConflict: 'message_id' });
-  
-  if (syncError) {
-    console.error('❌ Error syncing emails to database:', syncError);
-  } else {
-    console.log('✅ Emails synced to database successfully');
-  }
-}
-
 // Microsoft Graph API: Send email (as a new message or reply)
-async function sendClientEmail(token: string, subject: string, body: string, client: ClientTabProps['client'], senderName: string, attachments: { name: string; contentType: string; contentBytes: string }[]) {
+async function sendClientEmail(
+  token: string,
+  subject: string,
+  body: string,
+  client: ClientTabProps['client'],
+  senderName: string,
+  attachments: { name: string; contentType: string; contentBytes: string }[],
+  recipients?: { to?: string[]; cc?: string[] }
+) {
   // Get the user's email signature from the database
   const { getCurrentUserEmailSignature } = await import('../../lib/emailSignature');
   const userSignature = await getCurrentUserEmailSignature();
@@ -388,10 +292,27 @@ async function sendClientEmail(token: string, subject: string, body: string, cli
     contentBytes: att.contentBytes
   }));
 
+  const toList = recipients?.to && recipients.to.length > 0
+    ? recipients.to
+    : normaliseAddressList(client.email);
+
+  if (!toList || toList.length === 0) {
+    throw new Error('No recipient specified for the email.');
+  }
+
+  const ccList = recipients?.cc || [];
+
   const draftMessage = {
     subject,
     body: { contentType: 'HTML', content: fullBody },
-    toRecipients: [{ emailAddress: { address: client.email! } }],
+    toRecipients: toList.map(address => ({ emailAddress: { address } })),
+    ...(ccList.length > 0
+      ? {
+          ccRecipients: ccList.map(address => ({
+            emailAddress: { address },
+          })),
+        }
+      : {}),
     attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
   };
 
@@ -483,7 +404,16 @@ function sanitizeEmailHtml(html: string): string {
   });
 }
 
-const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
+const FETCH_BATCH_SIZE = 200;
+const EMAIL_MODAL_LIMIT = 100;
+
+const InteractionsTab: React.FC<ClientTabProps> = ({
+  client,
+  onClientUpdate,
+  interactionsCache,
+  onInteractionsCacheUpdate,
+  onInteractionCountUpdate,
+}) => {
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
   }
@@ -513,6 +443,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBody] = useState('');
+  const [composeToRecipients, setComposeToRecipients] = useState<string[]>([]);
+  const [composeCcRecipients, setComposeCcRecipients] = useState<string[]>([]);
+  const [composeToInput, setComposeToInput] = useState('');
+  const [composeCcInput, setComposeCcInput] = useState('');
+  const [composeRecipientError, setComposeRecipientError] = useState<string | null>(null);
+  const [showComposeLinkForm, setShowComposeLinkForm] = useState(false);
+  const [composeLinkLabel, setComposeLinkLabel] = useState('');
+  const [composeLinkUrl, setComposeLinkUrl] = useState('');
+  const [composeTemplates, setComposeTemplates] = useState<EmailTemplate[]>([]);
+  const [composeTemplateSearch, setComposeTemplateSearch] = useState('');
+  const [composeTemplateDropdownOpen, setComposeTemplateDropdownOpen] = useState(false);
+  const [selectedComposeTemplateId, setSelectedComposeTemplateId] = useState<number | null>(null);
+  const composeTemplateDropdownRef = useRef<HTMLDivElement | null>(null);
   const [sending, setSending] = useState(false);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [composeAttachments, setComposeAttachments] = useState<{ name: string; contentType: string; contentBytes: string }[]>([]);
@@ -533,6 +476,165 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadingMedia, setUploadingMedia] = useState(false);
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  const filteredComposeTemplates = useMemo(() => {
+    const query = composeTemplateSearch.trim().toLowerCase();
+    if (!query) return composeTemplates;
+    return composeTemplates.filter(template => template.name.toLowerCase().includes(query));
+  }, [composeTemplates, composeTemplateSearch]);
+
+  const pushComposeRecipient = (list: string[], address: string) => {
+    const normalized = address.trim();
+    if (!normalized) return;
+    if (!emailRegex.test(normalized)) {
+      throw new Error('Please enter a valid email address.');
+    }
+    if (!list.some(item => item.toLowerCase() === normalized.toLowerCase())) {
+      list.push(normalized);
+    }
+  };
+
+  const addComposeRecipient = (type: 'to' | 'cc', rawValue: string) => {
+    const value = rawValue.trim().replace(/[;,]+$/, '');
+    if (!value) return;
+    try {
+      if (type === 'to') {
+        const updated = [...composeToRecipients];
+        pushComposeRecipient(updated, value);
+        setComposeToRecipients(updated);
+        setComposeToInput('');
+      } else {
+        const updated = [...composeCcRecipients];
+        pushComposeRecipient(updated, value);
+        setComposeCcRecipients(updated);
+        setComposeCcInput('');
+      }
+      setComposeRecipientError(null);
+    } catch (error) {
+      setComposeRecipientError((error as Error).message);
+    }
+  };
+
+  const removeComposeRecipient = (type: 'to' | 'cc', email: string) => {
+    if (type === 'to') {
+      setComposeToRecipients(prev => prev.filter(item => item !== email));
+    } else {
+      setComposeCcRecipients(prev => prev.filter(item => item !== email));
+    }
+  };
+
+  const handleComposeRecipientKeyDown = (type: 'to' | 'cc') => (event: React.KeyboardEvent<HTMLInputElement>) => {
+    const value = type === 'to' ? composeToInput : composeCcInput;
+    const keys = ['Enter', ',', ';'];
+    if (keys.includes(event.key)) {
+      event.preventDefault();
+      if (value.trim()) {
+        addComposeRecipient(type, value);
+      }
+    } else if (event.key === 'Backspace' && !value) {
+      if (type === 'to' && composeToRecipients.length > 0) {
+        setComposeToRecipients(prev => prev.slice(0, -1));
+      }
+      if (type === 'cc' && composeCcRecipients.length > 0) {
+        setComposeCcRecipients(prev => prev.slice(0, -1));
+      }
+    }
+  };
+
+  const renderComposeRecipients = (type: 'to' | 'cc') => {
+    const items = type === 'to' ? composeToRecipients : composeCcRecipients;
+    const value = type === 'to' ? composeToInput : composeCcInput;
+    const setValue = type === 'to' ? setComposeToInput : setComposeCcInput;
+    const placeholder = type === 'to' ? 'Add recipient and press Enter' : 'Add CC and press Enter';
+
+    return (
+      <div className="border border-base-300 rounded-lg px-3 py-2 flex flex-wrap gap-2">
+        {items.map(email => (
+          <span key={`${type}-${email}`} className="bg-primary/10 text-primary px-2 py-1 rounded-full text-sm flex items-center gap-1">
+            {email}
+            <button
+              type="button"
+              onClick={() => removeComposeRecipient(type, email)}
+              className="text-primary hover:text-primary-focus"
+            >
+              <XMarkIcon className="w-4 h-4" />
+            </button>
+          </span>
+        ))}
+        <input
+          className="flex-1 min-w-[160px] outline-none bg-transparent"
+          value={value}
+          onChange={event => {
+            setValue(event.target.value);
+            if (composeRecipientError) {
+              setComposeRecipientError(null);
+            }
+          }}
+          onKeyDown={handleComposeRecipientKeyDown(type)}
+          placeholder={placeholder}
+        />
+        <button
+          type="button"
+          className="btn btn-xs btn-outline"
+          onClick={() => addComposeRecipient(type, value)}
+          disabled={!value.trim()}
+        >
+          <PlusIcon className="w-3 h-3" />
+        </button>
+      </div>
+    );
+  };
+
+  const normaliseUrl = (value: string) => {
+    if (!value) return '';
+    let url = value.trim();
+    if (!url) return '';
+    if (!/^https?:\/\//i.test(url)) {
+      url = `https://${url}`;
+    }
+    try {
+      const parsed = new URL(url);
+      return parsed.toString();
+    } catch (error) {
+      return '';
+    }
+  };
+
+  const handleCancelComposeLink = () => {
+    setShowComposeLinkForm(false);
+    setComposeLinkLabel('');
+    setComposeLinkUrl('');
+  };
+
+  const handleInsertComposeLink = () => {
+    const formattedUrl = normaliseUrl(composeLinkUrl);
+    if (!formattedUrl) {
+      toast.error('Please provide a valid URL (including the domain).');
+      return;
+    }
+
+    const label = composeLinkLabel.trim();
+    setComposeBody(prev => {
+      const existing = prev || '';
+      const trimmedExisting = existing.replace(/\s*$/, '');
+      const linkLine = label ? `${label}: ${formattedUrl}` : formattedUrl;
+      return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
+    });
+
+    handleCancelComposeLink();
+  };
+
+  const handleComposeTemplateSelect = (template: EmailTemplate) => {
+    setSelectedComposeTemplateId(template.id);
+    const templatedBody = replaceTemplateTokens(template.content, client);
+    if (template.subject && template.subject.trim()) {
+      setComposeSubject(replaceTemplateTokens(template.subject, client));
+    }
+    setComposeBody(templatedBody || template.content || template.rawContent);
+    setComposeTemplateSearch(template.name);
+    setComposeTemplateDropdownOpen(false);
+  };
 
   // Debug selectedFile state changes
   useEffect(() => {
@@ -699,9 +801,61 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   }, [whatsAppError]);
 
   // Find the index of the last email in the sorted interactions - memoized to prevent recalculation
-  const sortedInteractions = useMemo(() => 
-    [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()),
+  const INITIAL_VISIBLE_INTERACTIONS = 20;
+  const [visibleInteractionsCount, setVisibleInteractionsCount] = useState(INITIAL_VISIBLE_INTERACTIONS);
+
+  const sortedInteractions = useMemo(
+    () => [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()),
     [interactions]
+  );
+
+  useEffect(() => {
+    const nextCount = client.id
+      ? Math.min(INITIAL_VISIBLE_INTERACTIONS, sortedInteractions.length || 0)
+      : INITIAL_VISIBLE_INTERACTIONS;
+    setVisibleInteractionsCount(nextCount);
+  }, [client.id, sortedInteractions.length]);
+
+  const visibleInteractions = useMemo(
+    () => sortedInteractions.slice(0, visibleInteractionsCount),
+    [sortedInteractions, visibleInteractionsCount]
+  );
+  const hasMoreInteractions = sortedInteractions.length > visibleInteractionsCount;
+  const renderedInteractions = useMemo(
+    () =>
+      visibleInteractions.map((row) => {
+        if (row.kind !== 'email') {
+          return row;
+        }
+
+        const originalContent =
+          typeof row.content === 'string' ? row.content : row.content != null ? String(row.content) : '';
+
+        const strippedBase = stripSignatureAndQuotedTextPreserveHtml(originalContent);
+        const sanitizedBase = sanitizeEmailHtml(strippedBase);
+
+        let sanitizedWithoutSubject = sanitizedBase;
+        if (row.subject) {
+          try {
+            const subjectPattern = new RegExp(`^${escapeRegExp(row.subject)}\\s*:?\\s*[\\-–—]*`, 'i');
+            const withoutSubjectSource = originalContent.replace(subjectPattern, '').trim();
+            const strippedWithoutSubject = stripSignatureAndQuotedTextPreserveHtml(withoutSubjectSource);
+            const sanitizedCandidate = sanitizeEmailHtml(strippedWithoutSubject);
+            if (sanitizedCandidate) {
+              sanitizedWithoutSubject = sanitizedCandidate;
+            }
+          } catch (error) {
+            console.warn('Failed to strip subject prefix from email content', error);
+          }
+        }
+
+        return {
+          ...row,
+          renderedContent: sanitizedWithoutSubject || sanitizedBase,
+          renderedContentFallback: sanitizedBase,
+        };
+      }),
+    [visibleInteractions]
   );
   const lastEmailIdx = useMemo(() => 
     sortedInteractions.map(row => row.kind).lastIndexOf('email'),
@@ -1240,6 +1394,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   // In fetchAndCombineInteractions, fetch WhatsApp messages from DB and merge with manual_interactions and emails
   useEffect(() => {
     let isMounted = true;
+    const cacheForLead: ClientInteractionsCache | null =
+      interactionsCache && interactionsCache.leadId === client.id ? interactionsCache : null;
+
+    if (cacheForLead) {
+      console.log('✅ InteractionsTab using cached interactions for lead:', cacheForLead.leadId);
+      if (isMounted) {
+        setInteractions(cacheForLead.interactions || []);
+        setEmails(cacheForLead.emails || []);
+        setInteractionsLoading(false);
+      }
+      const cachedCount =
+        cacheForLead.count ?? (cacheForLead.interactions ? cacheForLead.interactions.length : 0);
+      onInteractionCountUpdate?.(cachedCount);
+      return () => {
+        isMounted = false;
+      };
+    }
+
     async function fetchAndCombineInteractions() {
       const startTime = performance.now();
       console.log('🚀 Starting InteractionsTab fetch...');
@@ -1278,13 +1450,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
 
         // Execute all database queries in parallel with aggressive limits
-        const [whatsAppResult, callLogsResult, legacyResult] = await Promise.all([
+        const [whatsAppResult, callLogsResult, legacyResult, emailsResult] = await Promise.all([
           // WhatsApp messages query - only fetch essential fields
           client?.id ? (async () => {
             let query = supabase
               .from('whatsapp_messages')
               .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message')
-              .limit(20); // Reduced from 100 to 20
+              .limit(FETCH_BATCH_SIZE);
             
             if (isLegacyLead) {
               query = query.eq('legacy_id', legacyId);
@@ -1315,7 +1487,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     display_name
                   )
                 `)
-                .limit(10); // Reduced from 50 to 10
+                .limit(FETCH_BATCH_SIZE);
               
               if (isLegacyLead) {
                 query = query.eq('lead_id', legacyId);
@@ -1335,14 +1507,34 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           isLegacyLead && client?.id ? (async () => {
             try {
               const interactions = await fetchLegacyInteractions(client.id, client.name);
-              return interactions.slice(0, 10); // Limit to 10 most recent
+              return interactions.slice(0, FETCH_BATCH_SIZE);
             } catch (error) {
               return [];
             }
-          })() : Promise.resolve([])
+          })() : Promise.resolve([]),
+
+          client?.id ? (async () => {
+            let query = supabase
+              .from('emails')
+              .select('id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments')
+              .limit(50);
+
+            if (isLegacyLead) {
+              query = query.eq('legacy_id', legacyId);
+            } else {
+              query = query.eq('client_id', client.id);
+            }
+
+            const { data, error } = await query.order('sent_at', { ascending: false });
+            return { data, error };
+          })() : Promise.resolve({ data: [], error: null })
         ]);
 
         // Process results from parallel queries
+        if (emailsResult.error) {
+          console.error('❌ Failed to fetch emails for interactions tab:', emailsResult.error);
+        }
+
         const [whatsAppDbMessages, callLogInteractions, legacyInteractions] = [
           // Process WhatsApp messages
           whatsAppResult.data?.map((msg: any) => ({
@@ -1418,9 +1610,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
           ...i,
           employee: i.direction === 'out' ? (userFullName || 'You') : i.employee || client.name,
         }));
-
-        // 2. Email interactions - use client emails from props for now (will be updated by separate email fetch)
-        const clientEmails = (client as any).emails || [];
+        // 2. Email interactions - prioritise freshly fetched emails, fallback to client prop
+        const clientEmails = emailsResult.data && emailsResult.data.length > 0
+          ? emailsResult.data
+          : (client as any).emails || [];
         
         // Skip complex deduplication for small datasets
         const uniqueEmails = clientEmails.length > 20 
@@ -1430,16 +1623,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             })
           : clientEmails; // Skip deduplication for small datasets
         
-        const emailInteractions = uniqueEmails.slice(0, 10).map((e: any) => { // Reduced from 50 to 10
+        const sortedEmails = [...uniqueEmails].sort((a: any, b: any) => {
+          const aDate = new Date(a.sent_at || 0).getTime();
+          const bDate = new Date(b.sent_at || 0).getTime();
+          return bDate - aDate;
+        });
+        
+        const emailInteractions = sortedEmails.map((e: any) => {
           const emailDate = new Date(e.sent_at);
           
-          // Use body_html instead of body_preview for better content
-          let body = e.subject || 'Email received';
-          if (e.body_html && e.body_html.length > 0) {
-            body = e.body_html;
-          } else if (e.body_preview && e.body_preview.length > 0 && e.body_preview.length < 200) {
-            body = e.body_preview;
-          }
+          const bodyHtml = e.body_html ? extractHtmlBody(e.body_html) : null;
+          const bodyPreview = e.body_preview || '';
+          const body = bodyHtml || bodyPreview || e.subject || '';
           
           return {
             id: e.message_id,
@@ -1455,6 +1650,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
             observation: e.observation || '',
             editable: true,
             status: e.status,
+            body_html: bodyHtml,
+            body_preview: bodyPreview || null,
           };
         });
       
@@ -1479,33 +1676,128 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         }
         
         // Also update the local emails state for the modal - use the same deduplicated emails
-        const formattedEmailsForModal = uniqueEmails.slice(0, 10).map((e: any) => ({ // Limit emails for modal too
-          id: e.message_id,
-          subject: e.subject,
-          from: e.sender_email,
-          to: e.recipient_list,
-          date: e.sent_at,
-          bodyPreview: e.body_html || e.body_preview || e.subject, // Use body_html first, then body_preview
-          direction: e.direction,
-          attachments: e.attachments,
-        }));
+        const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
+          const previewSource = e.body_html || e.body_preview || e.subject || '';
+          const previewHtmlSource = previewSource
+            ? (/<[a-z][\s\S]*>/i.test(previewSource) ? extractHtmlBody(previewSource) : convertBodyToHtml(previewSource))
+            : '';
+          const sanitizedPreviewBase = previewHtmlSource ? sanitizeEmailHtml(previewHtmlSource) : '';
+          const sanitizedPreview = sanitizedPreviewBase || sanitizeEmailHtml(convertBodyToHtml(e.subject || ''));
+
+          return {
+            id: e.message_id,
+            subject: e.subject,
+            from: e.sender_email,
+            to: e.recipient_list,
+            date: e.sent_at,
+            bodyPreview: sanitizedPreview,
+            direction: e.direction,
+            attachments: e.attachments,
+          };
+        });
         if (isMounted) setEmails(formattedEmailsForModal);
+
+        onInteractionCountUpdate?.(sorted.length);
+        onInteractionsCacheUpdate?.({
+          leadId: client.id,
+          interactions: sorted,
+          emails: formattedEmailsForModal,
+          count: sorted.length,
+          fetchedAt: new Date().toISOString(),
+        });
       } catch (error) {
         console.error('Error in fetchAndCombineInteractions:', error);
         if (isMounted) {
           setInteractions([]);
           setEmails([]);
         }
+        onInteractionCountUpdate?.(0);
+        onInteractionsCacheUpdate?.({
+          leadId: client.id,
+          interactions: [],
+          emails: [],
+          count: 0,
+          fetchedAt: new Date().toISOString(),
+        });
       } finally {
         if (isMounted) setInteractionsLoading(false);
       }
     }
     fetchAndCombineInteractions();
     return () => { isMounted = false; };
-  }, [client.id]); // Only run when client changes
+  }, [client.id, interactionsCache?.leadId]); // Only run when client changes or cache updates
 
 
-  // Function to fetch emails from database for the modal
+  const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview: string }[]) => {
+    if (!messages || messages.length === 0) return;
+    if (!instance || !accounts[0]) return;
+
+    const requiresHydration = messages.filter(message => {
+      const preview = (message.bodyPreview || '').trim();
+      if (!preview) return true;
+      const normalisedPreview = preview.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim();
+      return normalisedPreview.length < 8 || normalisedPreview === message.subject;
+    });
+
+    if (requiresHydration.length === 0) return;
+
+    try {
+      const tokenResponse = await acquireToken(instance, accounts[0]);
+      const accessToken = tokenResponse.accessToken;
+      const updates: Record<string, { html: string; preview: string }> = {};
+
+      await Promise.all(
+        requiresHydration.map(async message => {
+          if (!message.id) return;
+          try {
+            const response = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${message.id}?$select=body`, {
+              headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            if (!response.ok) {
+              console.warn('Failed to hydrate email body', message.id, await response.text());
+              return;
+            }
+            const graphMessage = await response.json();
+            const rawContent = graphMessage?.body?.content;
+            if (!rawContent || typeof rawContent !== 'string') return;
+
+            const cleanedHtml = sanitizeEmailHtml(extractHtmlBody(rawContent));
+            const previewHtml = cleanedHtml && cleanedHtml.trim()
+              ? cleanedHtml
+              : sanitizeEmailHtml(convertBodyToHtml(rawContent));
+
+            updates[message.id] = {
+              html: cleanedHtml,
+              preview: previewHtml,
+            };
+
+            await supabase
+              .from('emails')
+              .update({ body_html: rawContent, body_preview: rawContent })
+              .eq('message_id', message.id);
+          } catch (err) {
+            console.error('Unexpected error hydrating email body', err);
+          }
+        })
+      );
+
+      if (Object.keys(updates).length > 0) {
+        setEmails(prev =>
+          prev.map(email => {
+            const update = updates[email.id];
+            if (!update) return email;
+            return {
+              ...email,
+              bodyPreview: update.preview,
+            };
+          })
+        );
+      }
+    } catch (error) {
+      console.error('Failed to hydrate email bodies from Graph', error);
+    }
+  }, [accounts, instance]);
+
   const fetchEmailsForModal = useCallback(async () => {
     if (!client.id) return;
     
@@ -1519,13 +1811,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         const legacyId = parseInt(client.id.replace('legacy_', ''));
         emailQuery = supabase
           .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, sent_at, direction, attachments')
+          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
           .eq('legacy_id', legacyId)
           .order('sent_at', { ascending: true });
       } else {
         emailQuery = supabase
           .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, sent_at, direction, attachments')
+          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
           .eq('client_id', client.id)
           .order('sent_at', { ascending: true });
       }
@@ -1539,16 +1831,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         console.log(`📧 InteractionsTab fetched ${clientEmails.length} emails for client ${client.id}`);
         
         // Format emails for modal display
-        const formattedEmailsForModal = clientEmails.map((e: any) => ({
+        const formattedEmailsForModal = clientEmails.map((e: any) => {
+          const rawHtml = typeof e.body_html === 'string' ? e.body_html : null;
+          const rawPreview = typeof e.body_preview === 'string' ? e.body_preview : null;
+          const cleanedHtml = rawHtml && rawHtml.trim() ? extractHtmlBody(rawHtml) : null;
+          const cleanedPreview = rawPreview && rawPreview.trim() ? extractHtmlBody(rawPreview) : null;
+          const fallbackText = cleanedPreview || cleanedHtml || e.subject || '';
+          return {
           id: e.message_id,
           subject: e.subject,
           from: e.sender_email,
           to: e.recipient_list,
           date: e.sent_at,
-          bodyPreview: e.body_html || e.body_preview || e.subject,
+            bodyPreview: cleanedHtml ?? (fallbackText ? convertBodyToHtml(fallbackText) : ''),
           direction: e.direction,
           attachments: e.attachments,
-        }));
+          };
+        });
         
         setEmails(formattedEmailsForModal);
       }
@@ -1568,7 +1867,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
 
     try {
       const tokenResponse = await acquireToken(instance, accounts[0]);
-      await syncClientEmails(tokenResponse.accessToken, client);
+      await syncEmailsForClient(tokenResponse.accessToken, client);
       console.log('📧 Graph sync completed, triggering client update...');
       if (onClientUpdate) {
         await onClientUpdate(); // Refresh all client data from parent
@@ -1584,6 +1883,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   }, [client, instance, accounts, onClientUpdate]);
 
+  const syncOnComposeRef = useRef(false);
+  useEffect(() => {
+    if (showCompose) {
+      if (!syncOnComposeRef.current) {
+        syncOnComposeRef.current = true;
+        runGraphSync();
+      }
+    } else {
+      syncOnComposeRef.current = false;
+    }
+  }, [showCompose, runGraphSync]);
+
   // Effect to run the slow sync only once when the component mounts
   // DISABLED: Graph sync is too slow and blocks UI loading
   // Run Graph sync only on explicit user action (like clicking refresh)
@@ -1594,7 +1905,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
   }, [client.id]);
 
   const handleSendEmail = async () => {
-    if (!client.email || !instance || !accounts[0]) return;
+    if (!instance || !accounts[0]) return;
+
+    const finalToRecipients = [...composeToRecipients];
+    const finalCcRecipients = [...composeCcRecipients];
+
+    try {
+      if (composeToInput.trim()) {
+        pushComposeRecipient(finalToRecipients, composeToInput.trim());
+      }
+      if (composeCcInput.trim()) {
+        pushComposeRecipient(finalCcRecipients, composeCcInput.trim());
+      }
+    } catch (error) {
+      setComposeRecipientError((error as Error).message || 'Please enter a valid email address.');
+      return;
+    }
+
+    if (finalToRecipients.length === 0) {
+      setComposeRecipientError('Please add at least one recipient.');
+      return;
+    }
+
+    setComposeRecipientError(null);
+    if (composeToInput.trim()) {
+      setComposeToRecipients(finalToRecipients);
+      setComposeToInput('');
+    }
+    if (composeCcInput.trim()) {
+      setComposeCcRecipients(finalCcRecipients);
+      setComposeCcInput('');
+    }
+
     setSending(true);
     const account = accounts[0];
 
@@ -1602,22 +1944,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       const tokenResponse = await acquireToken(instance, account);
       const senderName = account?.name || 'Your Team';
 
-      // 1. Add signature to email content
-      const emailContentWithSignature = await appendEmailSignature(composeBody);
+      const bodyHtml = convertBodyToHtml(composeBody);
+      const emailContentWithSignature = await appendEmailSignature(bodyHtml);
 
-      // 2. Send email via Graph API.
       const sentEmail = await sendClientEmail(
         tokenResponse.accessToken, 
         composeSubject, 
         emailContentWithSignature, 
         client, 
         senderName,
-        composeAttachments
+        composeAttachments,
+        {
+          to: finalToRecipients,
+          cc: finalCcRecipients,
+        }
       );
       
       console.log('📧 Email sent via Graph API:', sentEmail.id);
       
-      // 3. Immediately save the sent email to our database
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const emailToSave = {
         message_id: sentEmail.id,
@@ -1626,9 +1970,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
         thread_id: sentEmail.conversationId,
         sender_name: senderName,
         sender_email: account?.username || 'unknown@lawoffice.org.il',
-        recipient_list: client.email,
+        recipient_list: [...finalToRecipients, ...finalCcRecipients].join(', '),
         subject: composeSubject,
-        body_html: emailContentWithSignature, // Use body_html with signature
+        body_html: emailContentWithSignature,
+        body_preview: emailContentWithSignature,
         sent_at: new Date().toISOString(),
         direction: 'outgoing',
         attachments: composeAttachments.length > 0 ? composeAttachments.map(att => ({
@@ -1649,20 +1994,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
       
       toast.success('Email sent and saved!');
 
-      // 4. Trigger a sync to get any other new emails from Graph
       setTimeout(async () => {
         await runGraphSync();
       }, 1000); // Reduced wait time since we already saved the email
       
-      // 5. Force refresh the client data to get updated emails
       if (onClientUpdate) {
         console.log('🔄 Triggering client data refresh after email send');
         await onClientUpdate();
       }
 
-      // Clear the body input after sending
       setComposeBody('');
       setComposeAttachments([]);
+      setShowComposeLinkForm(false);
+      setComposeLinkLabel('');
+      setComposeLinkUrl('');
+      setShowCompose(false);
     } catch (e) {
       console.error("Error in handleSendEmail:", e);
       toast.error(e instanceof Error ? e.message : "Failed to send email.");
@@ -2071,6 +2417,73 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
     }
   }, [isWhatsAppOpen, activeWhatsAppId]);
 
+  useEffect(() => {
+    if (!isEmailModalOpen) return;
+    const initialRecipients = normaliseAddressList(client.email);
+    setComposeToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
+    setComposeCcRecipients([]);
+    setComposeToInput('');
+    setComposeCcInput('');
+    setComposeRecipientError(null);
+    setShowComposeLinkForm(false);
+    setComposeLinkLabel('');
+    setComposeLinkUrl('');
+    setSelectedComposeTemplateId(null);
+    setComposeTemplateSearch('');
+  }, [isEmailModalOpen, client.email]);
+
+  useEffect(() => {
+    if (!isEmailModalOpen) return;
+
+    let isMounted = true;
+    const loadTemplates = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_emailtemplate')
+              .select('*')
+              .eq('active', 't')
+              .order('name', { ascending: true });
+
+        if (error) throw error;
+        if (!isMounted) return;
+
+        const parsed = (data || []).map((template: any) => ({
+          id: typeof template.id === 'number' ? template.id : Number(template.id),
+          name: template.name || `Template ${template.id}`,
+          subject: typeof template.subject === 'string' ? template.subject : null,
+          content: parseTemplateContent(template.content),
+          rawContent: template.content || '',
+          languageId: template.language_id ?? null,
+        }));
+
+        setComposeTemplates(parsed);
+      } catch (error) {
+        console.error('Failed to load email templates:', error);
+        if (isMounted) {
+          setComposeTemplates([]);
+        }
+      }
+    };
+
+    loadTemplates();
+    return () => {
+      isMounted = false;
+    };
+  }, [isEmailModalOpen]);
+
+  useEffect(() => {
+    if (!composeTemplateDropdownOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (composeTemplateDropdownRef.current && !composeTemplateDropdownRef.current.contains(event.target as Node)) {
+        setComposeTemplateDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [composeTemplateDropdownOpen]);
+
   return (
     <div className="p-4 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen max-w-7xl mx-auto">
       <div className="relative w-full flex-1 min-w-0">
@@ -2133,7 +2546,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
               <div className="absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-accent to-secondary shadow-lg" style={{ zIndex: 0 }} />
               
               <div className="space-y-8 md:space-y-10 lg:space-y-12">
-            {sortedInteractions.map((row, idx) => {
+              {renderedInteractions.map((row, idx) => {
               // Date formatting
               const dateObj = new Date(row.raw_date);
               const day = dateObj.getDate().toString().padStart(2, '0');
@@ -2310,13 +2723,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                                     className="max-w-none whitespace-pre-wrap overflow-visible"
                                     style={{ lineHeight: '1.6', maxHeight: 'none' }}
                                     dangerouslySetInnerHTML={{ 
-                                      __html: sanitizeEmailHtml(
-                                        stripSignatureAndQuotedTextPreserveHtml(
-                                          typeof row.content === 'string'
-                                            ? row.content.replace(new RegExp(`^${row.subject}\s*:?[\s\-]*`, 'i'), '').trim()
-                                            : row.content
-                                        )
-                                      )
+                                      __html: row.renderedContent || row.renderedContentFallback || ''
                                     }} 
                                   />
                                 </>
@@ -2325,9 +2732,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                                   className="max-w-none whitespace-pre-wrap overflow-visible"
                                   style={{ lineHeight: '1.6', maxHeight: 'none' }}
                                   dangerouslySetInnerHTML={{ 
-                                    __html: sanitizeEmailHtml(
-                                      stripSignatureAndQuotedTextPreserveHtml(row.content)
-                                    ) 
+                                    __html: row.renderedContent || row.renderedContentFallback || ''
                                   }} 
                                 />
                               )}
@@ -2396,6 +2801,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                 </div>
               );
             })}
+
+            {hasMoreInteractions && (
+              <div className="flex justify-center pt-4">
+                <button
+                  className="btn btn-outline btn-primary"
+                  onClick={() =>
+                    setVisibleInteractionsCount(prev =>
+                      Math.min(prev + INITIAL_VISIBLE_INTERACTIONS, sortedInteractions.length)
+                    )
+                  }
+                >
+                  Load more interactions ({sortedInteractions.length - visibleInteractionsCount})
+                </button>
+              </div>
+            )}
               </div>
             </div>
             
@@ -2624,17 +3044,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                           
                           {/* Complete Email Body - Full Content */}
                           <div className="email-content">
-                            {message.bodyPreview ? (
-                              <div 
-                                dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(message.bodyPreview) }}
-                                className="prose prose-sm max-w-none email-body"
-                                style={{
-                                  fontFamily: 'inherit',
-                                  lineHeight: '1.6',
-                                  color: '#374151'
-                                }}
-                              />
-                            ) : (
+                              {message.bodyPreview ? (
+                                <div 
+                                  dangerouslySetInnerHTML={{ __html: message.bodyPreview }}
+                                  className="prose prose-sm max-w-none email-body"
+                                  style={{
+                                    fontFamily: 'inherit',
+                                    lineHeight: '1.6',
+                                    color: '#374151'
+                                  }}
+                                />
+                              ) : (
                               <div className="text-gray-500 italic p-4 bg-gray-50 rounded">
                                 No email content available
                               </div>
@@ -2691,8 +3111,85 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
 
             {/* Compose Area */}
             <div className="border-t border-gray-200 p-3 md:p-6">
-              {showCompose ? (
-                <div className="space-y-4">
+              {showCompose && createPortal(
+                <div className="fixed inset-0 z-[10002]">
+                  <div className="absolute inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
+                  <div className="relative z-[10003] flex h-full w-full flex-col bg-white shadow-2xl">
+                    <div className="flex items-center justify-between px-4 py-4 border-b border-gray-200 md:px-6 lg:px-10">
+                      <h2 className="text-lg font-semibold md:text-xl">Compose Email</h2>
+                      <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
+                        <XMarkIcon className="w-5 h-5" />
+                      </button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 md:px-6 lg:px-10">
+                        <div className="space-y-2">
+                          <label className="font-semibold text-sm">To</label>
+                          {renderComposeRecipients('to')}
+                        </div>
+                        <div className="space-y-2">
+                          <label className="font-semibold text-sm">CC</label>
+                          {renderComposeRecipients('cc')}
+                        </div>
+                        {composeRecipientError && <p className="text-sm text-error">{composeRecipientError}</p>}
+
+                        <div className="flex flex-wrap items-center gap-3" ref={composeTemplateDropdownRef}>
+                          <label className="text-sm font-semibold">Template</label>
+                          <div className="relative w-full sm:w-64">
+                            <input
+                              type="text"
+                              className="input input-bordered w-full pr-8"
+                              placeholder="Search templates..."
+                              value={composeTemplateSearch}
+                              onChange={event => {
+                                setComposeTemplateSearch(event.target.value);
+                                if (!composeTemplateDropdownOpen) {
+                                  setComposeTemplateDropdownOpen(true);
+                                }
+                              }}
+                              onFocus={() => {
+                                if (!composeTemplateDropdownOpen) {
+                                  setComposeTemplateDropdownOpen(true);
+                                }
+                              }}
+                              onBlur={() => setTimeout(() => setComposeTemplateDropdownOpen(false), 150)}
+                            />
+                            <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                            {composeTemplateDropdownOpen && (
+                              <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
+                                {filteredComposeTemplates.length === 0 ? (
+                                  <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
+                                ) : (
+                                  filteredComposeTemplates.map(template => (
+                                    <div
+                                      key={template.id}
+                                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                                      onMouseDown={e => e.preventDefault()}
+                                      onClick={() => handleComposeTemplateSelect(template)}
+                                    >
+                                      {template.name}
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          {selectedComposeTemplateId !== null && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm"
+                              onClick={() => {
+                                setSelectedComposeTemplateId(null);
+                                setComposeTemplateSearch('');
+                                setComposeBody('');
+                                const defaultSubjectValue = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+                                setComposeSubject(defaultSubjectValue);
+                              }}
+                            >
+                              Clear
+                            </button>
+                          )}
+                        </div>
+
                   <input
                     type="text"
                     placeholder="Subject"
@@ -2700,15 +3197,64 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     onChange={(e) => setComposeSubject(e.target.value)}
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
+
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <label className="font-semibold text-sm">Body</label>
+                          <button
+                            type="button"
+                            className="btn btn-xs btn-outline"
+                            onClick={() => setShowComposeLinkForm(prev => !prev)}
+                          >
+                            {showComposeLinkForm ? 'Hide Link Form' : 'Add Link'}
+                          </button>
+                        </div>
+
+                        {showComposeLinkForm && (
+                          <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
+                            <div className="flex-1 flex flex-col gap-2 md:flex-row md:items-center">
+                              <input
+                                type="text"
+                                className="input input-bordered w-full md:flex-1"
+                                placeholder="Link label (optional)"
+                                value={composeLinkLabel}
+                                onChange={event => setComposeLinkLabel(event.target.value)}
+                              />
+                              <input
+                                type="url"
+                                className="input input-bordered w-full md:flex-1"
+                                placeholder="https://example.com"
+                                value={composeLinkUrl}
+                                onChange={event => setComposeLinkUrl(event.target.value)}
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-primary"
+                                onClick={handleInsertComposeLink}
+                                disabled={!composeLinkUrl.trim()}
+                              >
+                                Insert Link
+                              </button>
+                              <button
+                                type="button"
+                                className="btn btn-sm btn-ghost"
+                                onClick={handleCancelComposeLink}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
                   <textarea
                     placeholder="Type your message..."
                     value={composeBody}
                     onChange={(e) => setComposeBody(e.target.value)}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                    rows={4}
+                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
+                          rows={10}
                   />
                   
-                  {/* Attachments */}
                   {composeAttachments.length > 0 && (
                     <div className="flex flex-wrap gap-2">
                       {composeAttachments.map((file, index) => (
@@ -2726,50 +3272,71 @@ const InteractionsTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =
                     </div>
                   )}
                   
-                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="btn btn-ghost btn-sm"
-                      >
-                        <PaperClipIcon className="w-4 h-4" />
-                        <span className="hidden sm:inline">Attach</span>
-                      </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        multiple
-                        onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
-                        className="hidden"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setShowCompose(false)}
-                        className="btn btn-outline btn-sm flex-1 sm:flex-none"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={handleSendEmail}
-                        disabled={sending || !composeBody.trim()}
-                        className="btn btn-primary btn-sm flex-1 sm:flex-none"
-                      >
-                        {sending ? (
-                          <div className="loading loading-spinner loading-xs"></div>
-                        ) : (
-                          <>
-                            <PaperAirplaneIcon className="w-4 h-4" />
-                            Send
-                          </>
-                        )}
-                      </button>
+                  </div>
+                    <div className="px-4 py-4 border-t border-gray-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:px-6 lg:px-10">
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => fileInputRef.current?.click()}
+                          className="btn btn-ghost btn-sm"
+                        >
+                          <PaperClipIcon className="w-4 h-4" />
+                          <span className="hidden sm:inline">Attach</span>
+                        </button>
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          multiple
+                          onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
+                          className="hidden"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setShowCompose(false)}
+                          className="btn btn-outline btn-sm flex-1 sm:flex-none"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSendEmail}
+                          disabled={sending || !composeBody.trim()}
+                          className="btn btn-primary btn-sm flex-1 sm:flex-none"
+                        >
+                          {sending ? (
+                            <div className="loading loading-spinner loading-xs"></div>
+                          ) : (
+                            <>
+                              <PaperAirplaneIcon className="w-4 h-4" />
+                              Send
+                            </>
+                          )}
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              ) : (
+                </div>,
+                document.body
+              )}
+              {!showCompose && (
                 <button
-                  onClick={() => setShowCompose(true)}
+                  onClick={() => {
+                    const initialRecipients = normaliseAddressList(client.email);
+                    setComposeToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
+                    setComposeCcRecipients([]);
+                    setComposeToInput('');
+                    setComposeCcInput('');
+                    setComposeRecipientError(null);
+                    setShowComposeLinkForm(false);
+                    setComposeLinkLabel('');
+                    setComposeLinkUrl('');
+                    setSelectedComposeTemplateId(null);
+                    setComposeTemplateSearch('');
+                    const defaultSubjectValue = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+                    setComposeSubject(defaultSubjectValue);
+                    setComposeBody('');
+                    setComposeAttachments([]);
+                    setShowCompose(true);
+                  }}
                   className="w-full btn btn-primary"
                 >
                   <PaperAirplaneIcon className="w-4 h-4 mr-2" />

@@ -216,6 +216,80 @@ const MasterLeadPage: React.FC = () => {
           `)
           .order('name', { ascending: true });
 
+        const { data: stageDefinitions } = await supabase
+          .from('lead_stages')
+          .select('id, name');
+
+        const stageNameLookup = new Map<string, string>();
+        stageDefinitions?.forEach(stage => {
+          if (stage?.id !== undefined && stage?.id !== null) {
+            stageNameLookup.set(String(stage.id), stage.name || String(stage.id));
+          }
+        });
+
+        const leadIdsForContacts = [
+          masterLead?.id,
+          ...(subLeadsData?.map((lead: any) => lead.id) || []),
+        ].filter(Boolean);
+
+        const contactsByLead = new Map<string, any[]>();
+        if (leadIdsForContacts.length > 0) {
+          const { data: contactsData, error: contactsError } = await supabase
+            .from('contacts')
+            .select('id, lead_id, name, is_main_applicant, relationship')
+            .in('lead_id', leadIdsForContacts.map(id => String(id)));
+
+          if (contactsError) {
+            console.error('Error fetching contacts for new leads:', contactsError);
+          } else if (contactsData) {
+            contactsData.forEach(contact => {
+              if (!contact.lead_id) return;
+              const key = String(contact.lead_id);
+              const existing = contactsByLead.get(key) || [];
+              existing.push(contact);
+              contactsByLead.set(key, existing);
+            });
+          }
+        }
+
+        const isTruthy = (value: any) => value === true || value === 'true' || value === 't' || value === '1';
+
+        const resolveContactName = (lead: any) => {
+          const contactList = (contactsByLead.get(String(lead.id)) || []).slice();
+
+          if (contactList.length > 0) {
+            contactList.sort((a, b) => {
+              const aMain = isTruthy(a.is_main_applicant) || (typeof a.relationship === 'string' && a.relationship.toLowerCase() === 'persecuted_person');
+              const bMain = isTruthy(b.is_main_applicant) || (typeof b.relationship === 'string' && b.relationship.toLowerCase() === 'persecuted_person');
+              if (aMain === bMain) return 0;
+              return aMain ? -1 : 1;
+            });
+
+            const selectedContact = contactList[0];
+            if (selectedContact?.name && selectedContact.name.trim()) {
+              return selectedContact.name.trim();
+            }
+          }
+
+          if (Array.isArray(lead.additional_contacts) && lead.additional_contacts.length > 0) {
+            const additionalContact = lead.additional_contacts.find((contact: any) => contact?.name && contact.name.trim());
+            if (additionalContact?.name) {
+              return additionalContact.name.trim();
+            }
+          }
+
+          const fallbackName = lead.anchor_full_name || lead.contact_name || lead.primary_contact_name || lead.name;
+          return fallbackName && typeof fallbackName === 'string' && fallbackName.trim() ? fallbackName.trim() : '---';
+        };
+
+        const resolveStageName = (stageValue: any) => {
+          if (stageValue === null || stageValue === undefined || stageValue === '') {
+            return 'Unknown';
+          }
+          const stageKey = String(stageValue);
+          return stageNameLookup.get(stageKey) || getStageName(stageKey) || stageKey;
+        };
+
         const processedSubLeads: SubLead[] = [];
 
         const formatNewLead = (lead: any, isMaster: boolean): SubLead => {
@@ -226,7 +300,7 @@ const MasterLeadPage: React.FC = () => {
           const currencyCode = (lead.balance_currency || lead.currency || 'NIS') as string;
           const categoryName = getCategoryName(lead.category_id, categories || []) || lead.category || 'Unknown';
           const applicantsValue = lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0;
-          const contactName = lead.anchor_full_name || lead.contact_name || lead.primary_contact_name || '---';
+          const contactName = resolveContactName(lead);
           const agreementNode = lead.docs_url ? (
             <a 
               href={lead.docs_url} 
@@ -248,7 +322,7 @@ const MasterLeadPage: React.FC = () => {
             currency: currencyCode,
             currency_symbol: getCurrencySymbol(currencyCode),
             category: categoryName,
-            stage: lead.stage || 'Unknown',
+            stage: resolveStageName(lead.stage),
             contact: contactName,
             applicants: Number(applicantsValue) || 0,
             agreement: agreementNode,
@@ -275,7 +349,7 @@ const MasterLeadPage: React.FC = () => {
 
         setMasterLeadInfo(masterLead);
         setSubLeads(processedSubLeads);
-        setStageMap(new Map());
+        setStageMap(stageNameLookup);
         return true;
       } catch (error) {
         console.error('Error handling new master lead:', error);
@@ -815,7 +889,7 @@ const MasterLeadPage: React.FC = () => {
                   {subLeads.map((subLead) => (
                     <tr 
                       key={subLead.id} 
-                      className={`hover:bg-gray-50 cursor-pointer ${subLead.isMaster ? 'bg-blue-50 border-l-4 border-blue-500' : ''}`}
+                      className="hover:bg-gray-50 cursor-pointer"
                       onClick={() => handleSubLeadClick(subLead)}
                     >
                       <td className="px-3 sm:px-6 py-4 whitespace-nowrap">

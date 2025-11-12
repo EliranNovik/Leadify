@@ -30,6 +30,7 @@ import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
 import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
+import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -140,6 +141,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
+  const createdStageIdsRef = useRef<number[]>([0, 11]);
+  const schedulerStageIdsRef = useRef<number[]>([10]);
+  const stageIdsReadyRef = useRef(false);
+  const resolvingStageIdsRef = useRef<Promise<void> | null>(null);
 
   const unreadCount = rmqUnreadCount + whatsappLeadsUnreadCount;
 
@@ -865,47 +870,80 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
+  const ensureStageIds = async () => {
+    if (stageIdsReadyRef.current) {
+      return;
+    }
+
+    if (!resolvingStageIdsRef.current) {
+      resolvingStageIdsRef.current = (async () => {
+        try {
+          const stageMap = await fetchStageNames();
+          const entries = Object.entries(stageMap).filter(([, name]) => !!name);
+
+          const createdMatches = entries
+            .filter(([, name]) => areStagesEquivalent(name, 'Created'))
+            .map(([id]) => Number(id))
+            .filter(id => !Number.isNaN(id));
+
+          const schedulerMatches = entries
+            .filter(([, name]) => areStagesEquivalent(name, 'Scheduler Assigned'))
+            .map(([id]) => Number(id))
+            .filter(id => !Number.isNaN(id));
+
+          const resolvedCreated = createdMatches.length ? createdMatches : [];
+          const resolvedScheduler = schedulerMatches.length ? schedulerMatches : [];
+
+          createdStageIdsRef.current = Array.from(new Set([...resolvedCreated, 0, 11]));
+          schedulerStageIdsRef.current = Array.from(new Set([...resolvedScheduler, 10]));
+        } catch (error) {
+          console.error('Error resolving stage IDs for new leads count:', error);
+          createdStageIdsRef.current = [0, 11];
+          schedulerStageIdsRef.current = [10];
+        } finally {
+          stageIdsReadyRef.current = true;
+          resolvingStageIdsRef.current = null;
+        }
+      })();
+    }
+
+    await resolvingStageIdsRef.current;
+  };
+
   // Fetch new leads count
   const fetchNewLeadsCount = async () => {
     try {
-      // Fetch leads with stage = 'created' (text-based)
-      const { data: textBasedLeads } = await supabase
-        .from('leads')
-        .select('id')
-        .eq('stage', 'created');
+      await ensureStageIds();
 
-      // Fetch leads with stage = 11 (ID-based)
-      const { data: idBasedLeads } = await supabase
-        .from('leads')
-        .select('id')
-        .eq('stage', 11);
+      const createdFilters = createdStageIdsRef.current.length ? createdStageIdsRef.current : [0, 11];
+      const schedulerFilters = schedulerStageIdsRef.current.length ? schedulerStageIdsRef.current : [10];
 
-      // Fetch leads with stage = 'scheduler_assigned' but no scheduler assigned
-      const { data: schedulerAssignedNoSchedulerLeads } = await supabase
-        .from('leads')
-        .select('id')
-        .eq('stage', 'scheduler_assigned')
-        .or('scheduler.is.null,scheduler.eq.');
+      const [createdResult, schedulerResult] = await Promise.all([
+        supabase
+          .from('leads')
+          .select('id')
+          .in('stage', createdFilters),
+        supabase
+          .from('leads')
+          .select('id, scheduler')
+          .in('stage', schedulerFilters)
+          .or('scheduler.is.null,scheduler.eq.'),
+      ]);
 
-      // Fetch leads with stage = 10 (ID-based) but no scheduler assigned
-      const { data: schedulerAssignedNoSchedulerIdLeads } = await supabase
-        .from('leads')
-        .select('id')
-        .eq('stage', 10)
-        .or('scheduler.is.null,scheduler.eq.');
+      if (createdResult.error) {
+        console.error('Error fetching created leads for header count:', createdResult.error);
+      }
+      if (schedulerResult.error) {
+        console.error('Error fetching scheduler leads for header count:', schedulerResult.error);
+      }
 
-      // Combine all results and remove duplicates
-      const allLeads = [
-        ...(textBasedLeads || []), 
-        ...(idBasedLeads || []),
-        ...(schedulerAssignedNoSchedulerLeads || []),
-        ...(schedulerAssignedNoSchedulerIdLeads || [])
-      ];
-      const uniqueLeads = allLeads.filter((lead, index, self) => 
-        index === self.findIndex(l => l.id === lead.id)
-      );
+      const createdIds = (createdResult.data || []).map(lead => lead.id);
+      const schedulerIds = (schedulerResult.data || [])
+        .filter(lead => !lead.scheduler || String(lead.scheduler).trim().length === 0)
+        .map(lead => lead.id);
 
-      setNewLeadsCount(uniqueLeads.length);
+      const uniqueIds = new Set([...createdIds, ...schedulerIds]);
+      setNewLeadsCount(uniqueIds.size);
     } catch (error) {
       console.error('Error fetching new leads count:', error);
       setNewLeadsCount(0);

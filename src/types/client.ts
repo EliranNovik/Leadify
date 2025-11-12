@@ -43,7 +43,18 @@ export interface Client extends Lead {
   case_handler_id?: string;
 }
 
+export interface ClientInteractionsCache {
+  leadId: string | number;
+  interactions: any[];
+  emails?: any[];
+  count: number;
+  fetchedAt: string;
+}
+
 export interface ClientTabProps {
   client: Client;
   onClientUpdate?: () => Promise<void>;
-} 
+  interactionsCache?: ClientInteractionsCache | null;
+  onInteractionsCacheUpdate?: (cache: ClientInteractionsCache) => void;
+  onInteractionCountUpdate?: (count: number) => void;
+}

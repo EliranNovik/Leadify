@@ -4,6 +4,7 @@ import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarI
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
+import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 
 // This will be replaced with dynamic scheduler list based on preferred categories
 const defaultSchedulers = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', 'Yael', 'Michael R'];
@@ -131,6 +132,9 @@ const NewCasesPage: React.FC = () => {
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
   const [reassignLanguageOptions, setReassignLanguageOptions] = useState<string[]>([]);
   const [reassignSourceOptions, setReassignSourceOptions] = useState<string[]>([]);
+  const [createdStageIds, setCreatedStageIds] = useState<number[]>([]);
+  const [schedulerStageIds, setSchedulerStageIds] = useState<number[]>([]);
+  const [stageIdsResolved, setStageIdsResolved] = useState(false);
 
   // Unactivation reasons list
   const unactivationReasons = [
@@ -359,133 +363,99 @@ const NewCasesPage: React.FC = () => {
 
   useEffect(() => {
     const fetchLeads = async () => {
-      setLoading(true);
-      
-      // Fetch leads with stage = 'created' (text-based)
-      const { data: textBasedLeads, error: textError } = await supabase
-        .from('leads')
-        .select(`
-          *,
-          misc_category!category_id(
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id(
-              id,
-              name
-            )
-          )
-        `)
-        .eq('stage', 'created')
-        .order('created_at', { ascending: false });
-
-      // Fetch leads with stage = 11 (ID-based)
-      const { data: idBasedLeads, error: idError } = await supabase
-        .from('leads')
-        .select(`
-          *,
-          misc_category!category_id(
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id(
-              id,
-              name
-            )
-          )
-        `)
-        .eq('stage', 11)
-        .order('created_at', { ascending: false });
-
-      // Fetch leads with stage = 'scheduler_assigned' but no scheduler assigned
-      const { data: schedulerAssignedNoSchedulerLeads, error: schedulerError } = await supabase
-        .from('leads')
-        .select(`
-          *,
-          misc_category!category_id(
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id(
-              id,
-              name
-            )
-          )
-        `)
-        .eq('stage', 'scheduler_assigned')
-        .or('scheduler.is.null,scheduler.eq.')
-        .order('created_at', { ascending: false });
-
-      // Fetch leads with stage = 10 (ID-based) but no scheduler assigned
-      const { data: schedulerAssignedNoSchedulerIdLeads, error: schedulerIdError } = await supabase
-        .from('leads')
-        .select(`
-          *,
-          misc_category!category_id(
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id(
-              id,
-              name
-            )
-          )
-        `)
-        .eq('stage', 10)
-        .or('scheduler.is.null,scheduler.eq.')
-        .order('created_at', { ascending: false });
-
-      // Combine all results and remove duplicates
-      const allLeads = [
-        ...(textBasedLeads || []), 
-        ...(idBasedLeads || []),
-        ...(schedulerAssignedNoSchedulerLeads || []),
-        ...(schedulerAssignedNoSchedulerIdLeads || [])
-      ];
-      const uniqueLeads = allLeads.filter((lead, index, self) => 
-        index === self.findIndex(l => l.id === lead.id)
-      );
-      
-      // Apply stage mapping to convert stage IDs to stage names
-      const mappedLeads = uniqueLeads.map(lead => ({
-        ...lead,
-        stage: stageMapping.get(lead.stage) || stageMapping.get(lead.stage.toString()) || stageMapping.get(parseInt(lead.stage)) || lead.stage
-      }));
-      
-      setLeads(mappedLeads);
-      
-      // Extract main category IDs from displayed leads
-      if (uniqueLeads && uniqueLeads.length > 0) {
-        const mainCategoryIds = new Set<number>();
-        
-        uniqueLeads.forEach(lead => {
-          // Try to get main category ID from misc_category join
-          if (lead.misc_category?.misc_maincategory?.id) {
-            mainCategoryIds.add(lead.misc_category.misc_maincategory.id);
-          } else if (lead.category_id) {
-            // If no join data, try to find the main category from allCategories
-            const category = allCategories.find(cat => cat.id.toString() === lead.category_id.toString());
-            if (category?.misc_maincategory?.id) {
-              mainCategoryIds.add(category.misc_maincategory.id);
-            }
-          } else if (lead.category) {
-            // If using fallback category name, find the main category
-            const category = allCategories.find(cat => cat.name === lead.category);
-            if (category?.misc_maincategory?.id) {
-              mainCategoryIds.add(category.misc_maincategory.id);
-            }
-          }
-        });
-        
-        setDisplayedMainCategoryIds(Array.from(mainCategoryIds));
-        
-        
+      if (!stageIdsResolved) {
+        return;
       }
-      
-      setLoading(false);
+
+      setLoading(true);
+      try {
+        const createdFilters = createdStageIds.length ? createdStageIds : [0];
+        const schedulerFilters = schedulerStageIds.length ? schedulerStageIds : [10];
+
+        const baseSelect = `
+          *,
+          misc_category!category_id(
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          )
+        `;
+
+        const [createdResult, schedulerResult] = await Promise.all([
+          supabase
+            .from('leads')
+            .select(baseSelect)
+            .in('stage', createdFilters)
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('leads')
+            .select(baseSelect)
+            .in('stage', schedulerFilters)
+            .or('scheduler.is.null,scheduler.eq.')
+            .order('created_at', { ascending: false }),
+        ]);
+
+        if (createdResult.error) {
+          console.error('Error fetching created leads:', createdResult.error);
+        }
+        if (schedulerResult.error) {
+          console.error('Error fetching scheduler leads:', schedulerResult.error);
+        }
+
+        const allLeads = [
+          ...(createdResult.data || []),
+          ...(schedulerResult.data || []),
+        ];
+        const uniqueLeads = allLeads.filter((lead, index, self) =>
+          index === self.findIndex(l => l.id === lead.id)
+        );
+
+        const mappedLeads = uniqueLeads.map(lead => {
+          const stageValue = lead.stage;
+          const numericStage = typeof stageValue === 'number' ? stageValue : parseInt(stageValue, 10);
+          return {
+            ...lead,
+            stage:
+              stageMapping.get(stageValue) ||
+              stageMapping.get(stageValue?.toString?.()) ||
+              stageMapping.get(numericStage) ||
+              stageValue,
+          };
+        });
+
+        setLeads(mappedLeads);
+
+        if (uniqueLeads && uniqueLeads.length > 0) {
+          const mainCategoryIds = new Set<number>();
+
+          uniqueLeads.forEach(lead => {
+            if (lead.misc_category?.misc_maincategory?.id) {
+              mainCategoryIds.add(lead.misc_category.misc_maincategory.id);
+            } else if (lead.category_id) {
+              const category = allCategories.find(cat => cat.id.toString() === lead.category_id.toString());
+              if (category?.misc_maincategory?.id) {
+                mainCategoryIds.add(category.misc_maincategory.id);
+              }
+            } else if (lead.category) {
+              const category = allCategories.find(cat => cat.name === lead.category);
+              if (category?.misc_maincategory?.id) {
+                mainCategoryIds.add(category.misc_maincategory.id);
+              }
+            }
+          });
+
+          setDisplayedMainCategoryIds(Array.from(mainCategoryIds));
+        }
+      } finally {
+        setLoading(false);
+      }
     };
     fetchLeads();
-  }, [allCategories, stages]); // Re-fetch when categories and stages are loaded
+  }, [allCategories, createdStageIds, schedulerStageIds, stageIdsResolved, stageMapping]);
 
   // Fetch employees
   useEffect(() => {
@@ -537,85 +507,54 @@ const NewCasesPage: React.FC = () => {
     fetchEmployees();
   }, []);
 
-  // Fetch stages and create mapping
+  // Fetch stages, create mapping, and resolve key stage IDs
   useEffect(() => {
-    const fetchStages = async () => {
+    const loadStages = async () => {
       try {
-        const { data, error } = await supabase
-          .from('lead_stages')
-          .select('id, name')
-          .order('id');
-        
-        if (error) {
-          console.error('Error fetching stages:', error);
-          return;
-        }
-        
-        setStages(data || []);
-        
-        // Create stage mapping
+        const stageMap = await fetchStageNames();
+        const entries = Object.entries(stageMap);
+
+        const createdMatches = entries
+          .filter(([, name]) => areStagesEquivalent(name, 'Created'))
+          .map(([id]) => Number(id))
+          .filter(id => !Number.isNaN(id));
+
+        const schedulerMatches = entries
+          .filter(([, name]) => areStagesEquivalent(name, 'Scheduler Assigned'))
+          .map(([id]) => Number(id))
+          .filter(id => !Number.isNaN(id));
+
+        const resolvedCreated = Array.from(new Set([...createdMatches, 0, 11]));
+        const resolvedScheduler = Array.from(new Set([...schedulerMatches, 10]));
+
+        setCreatedStageIds(Array.from(new Set(resolvedCreated)));
+        setSchedulerStageIds(Array.from(new Set(resolvedScheduler)));
+        setStageIdsResolved(true);
+
         const mapping = new Map<string | number, string>();
-        
-        // Add common stage name mappings first (these take precedence)
-        const commonStageMappings = {
-          'created': 'Created',
-          'scheduler_assigned': 'Scheduler Assigned',
-          'meeting_scheduled': 'Meeting Scheduled',
-          'meeting_completed': 'Meeting Completed',
-          'proposal_sent': 'Proposal Sent',
-          'contract_signed': 'Contract Signed',
-          'case_closed': 'Case Closed',
-          'dropped': 'Dropped',
-          'unactivated': 'Unactivated',
-          'unactivate_spam': 'Unactivate/Spam',
-          'dropped_spam_irrelevant': 'Dropped/Spam/Irrelevant'
-        };
-        
-        Object.entries(commonStageMappings).forEach(([key, value]) => {
-          mapping.set(key, value);
-          mapping.set(key.toLowerCase(), value);
-          mapping.set(value, value); // Map display name to itself
+        entries.forEach(([id, name]) => {
+          if (!name) {
+            return;
+          }
+          mapping.set(Number(id), name);
+          mapping.set(id, name);
+          mapping.set(name, name);
+          mapping.set(name.toLowerCase(), name);
         });
-        
-        // Ensure stage ID 10 maps to Scheduler Assigned
-        mapping.set(10, 'Scheduler Assigned');
-        mapping.set('10', 'Scheduler Assigned');
+        mapping.set('created', 'Created');
         mapping.set('scheduler_assigned', 'Scheduler Assigned');
-        mapping.set('Scheduler Assigned', 'Scheduler Assigned');
-        
-        // Then add database mappings (only if not already set)
-        if (data) {
-          data.forEach(stage => {
-            // Only set if not already mapped
-            if (!mapping.has(stage.id)) {
-              mapping.set(stage.id, stage.name);
-            }
-            if (!mapping.has(stage.id.toString())) {
-              mapping.set(stage.id.toString(), stage.name);
-            }
-            if (!mapping.has(parseInt(stage.id))) {
-              mapping.set(parseInt(stage.id), stage.name);
-            }
-            
-            // Only set name mappings if not already set
-            if (!mapping.has(stage.name)) {
-              mapping.set(stage.name, stage.name);
-            }
-            if (!mapping.has(stage.name.toLowerCase())) {
-              mapping.set(stage.name.toLowerCase(), stage.name);
-            }
-          });
-        }
         setStageMapping(mapping);
-        
-        console.log('✅ Loaded stages:', data?.length || 0);
-        console.log('🔍 Stage mapping:', Array.from(mapping.entries()));
+
+        setStages(entries.map(([id, name]) => ({ id: Number(id), name })));
       } catch (error) {
         console.error('Error fetching stages:', error);
+        setCreatedStageIds([0, 11]);
+        setSchedulerStageIds([10]);
+        setStageIdsResolved(true);
       }
     };
-    
-    fetchStages();
+
+    loadStages();
   }, []);
 
   // Fetch categories with main categories

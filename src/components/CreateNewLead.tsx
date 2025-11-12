@@ -3,26 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
 
-const sources = [
-  '',
-  'Website',
-  'Referral',
-  'Phone',
-  'Email',
-  'Social Media',
-  'Other',
-];
-
-const languages = [
-  '',
-  'English',
-  'Hebrew',
-  'German',
-  'French',
-  'Russian',
-  'Other',
-];
-
 interface NewLeadResult {
   id: string; // This will be a UUID string
   lead_number: string;
@@ -47,6 +27,8 @@ const CreateNewLead: React.FC = () => {
     proposal_currency: 'NIS',
   });
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
+  const [sourceOptions, setSourceOptions] = useState<Array<{ id: number; name: string }>>([]);
+  const [languageOptions, setLanguageOptions] = useState<Array<{ id: number; name: string | null }>>([]);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -62,6 +44,45 @@ const CreateNewLead: React.FC = () => {
     };
     fetchUser();
   }, [instance]);
+
+  useEffect(() => {
+    const fetchSourcesAndLanguages = async () => {
+      try {
+        const [{ data: sourcesData, error: sourcesError }, { data: languagesData, error: languagesError }] =
+          await Promise.all([
+            supabase
+              .from('misc_leadsource')
+              .select('id, name')
+              .eq('active', true)
+              .order('order', { ascending: true }),
+            supabase
+              .from('misc_language')
+              .select('id, name')
+              .order('name', { ascending: true }),
+          ]);
+
+        if (!sourcesError && sourcesData) {
+          setSourceOptions(
+            sourcesData
+              .filter(source => source?.name)
+              .map(source => ({ id: source.id, name: source.name }))
+          );
+        }
+
+        if (!languagesError && languagesData) {
+          setLanguageOptions(
+            languagesData
+              .filter(language => language?.name)
+              .map(language => ({ id: language.id, name: language.name }))
+          );
+        }
+      } catch (fetchError) {
+        console.error('Error fetching source/language options:', fetchError);
+      }
+    };
+
+    fetchSourcesAndLanguages();
+  }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -144,8 +165,8 @@ const CreateNewLead: React.FC = () => {
             required
           >
             <option value="">----------</option>
-            {sources.slice(1).map((src) => (
-              <option key={src} value={src}>{src}</option>
+            {sourceOptions.map(source => (
+              <option key={source.id} value={source.name}>{source.name}</option>
             ))}
           </select>
         </div>
@@ -159,8 +180,8 @@ const CreateNewLead: React.FC = () => {
             required
           >
             <option value="">----------</option>
-            {languages.slice(1).map((lang) => (
-              <option key={lang} value={lang}>{lang}</option>
+            {languageOptions.map(language => (
+              <option key={language.id} value={language.name ?? ''}>{language.name}</option>
             ))}
           </select>
         </div>

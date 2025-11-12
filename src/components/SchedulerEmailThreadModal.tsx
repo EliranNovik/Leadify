@@ -1,10 +1,12 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { buildApiUrl } from '../lib/api';
 import { useMsal } from '@azure/msal-react';
+import { loginRequest } from '../msalConfig';
+import { syncEmailsForClient } from '../lib/graphEmailSync';
 
 interface SchedulerEmailThreadModalProps {
   isOpen: boolean;
@@ -20,6 +22,132 @@ interface SchedulerEmailThreadModalProps {
   onClientUpdate?: () => Promise<void>;
 }
 
+interface EmailTemplate {
+  id: number;
+  name: string;
+  subject: string | null;
+  content: string;
+  rawContent: string;
+  languageId: string | null;
+}
+
+const parseTemplateContent = (rawContent: string | null | undefined): string => {
+  if (!rawContent) return '';
+
+  const sanitizeTemplateText = (text: string) => {
+    if (!text) return '';
+
+    return text
+      .split('\n')
+      .map(line => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+  };
+
+  const tryParseDelta = (input: string) => {
+    try {
+      const parsed = JSON.parse(input);
+      const ops = parsed?.delta?.ops || parsed?.ops;
+      if (Array.isArray(ops)) {
+        const text = ops
+          .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
+          .join('');
+        return sanitizeTemplateText(text);
+      }
+    } catch (error) {
+      // ignore
+    }
+    return null;
+  };
+
+  const cleanHtml = (input: string) => {
+    let text = input;
+
+    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+    if (htmlMatch) {
+      text = htmlMatch[1];
+    }
+
+    text = text
+      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
+      .replace(/^{|}$/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\r/g, '')
+      .replace(/\\/g, '\\');
+
+    return sanitizeTemplateText(text);
+  };
+
+  let text = tryParseDelta(rawContent);
+  if (text !== null) {
+    return text;
+  }
+
+  text = tryParseDelta(
+    rawContent
+      .replace(/^"|"$/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+  );
+  if (text !== null) {
+    return text;
+  }
+
+  const normalised = rawContent
+    .replace(/\\"/g, '"')
+    .replace(/\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
+  const inserts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = insertRegex.exec(normalised))) {
+    inserts.push(match[1]);
+  }
+  if (inserts.length > 0) {
+    const combined = inserts.join('');
+    const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    return sanitizeTemplateText(decoded);
+  }
+
+  return sanitizeTemplateText(cleanHtml(rawContent));
+};
+
+const normaliseAddressList = (value: string | null | undefined) => {
+  if (!value) return [] as string[];
+  return value
+    .split(/[;,]+/)
+    .map(item => item.trim())
+    .filter(item => item.length > 0);
+};
+
+const convertBodyToHtml = (text: string) => {
+  if (!text) return '';
+  const urlRegex = /(https?:\/\/[^\s]+)/gi;
+  const escaped = text.replace(urlRegex, url => {
+    const safeUrl = url.replace(/"/g, '&quot;');
+    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+  });
+  return escaped.replace(/\n/g, '<br>');
+};
+
+const replaceTemplateTokens = (content: string, client: SchedulerEmailThreadModalProps['client']) => {
+  if (!content) return '';
+  return content
+    .replace(/\{client_name\}/gi, client?.name || 'Client')
+    .replace(/\{lead_number\}/gi, client?.lead_number || '')
+    .replace(/\{topic\}/gi, client?.topic || '')
+    .replace(/\{lead_type\}/gi, client?.lead_type || '');
+};
+
 const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ isOpen, onClose, client, onClientUpdate }) => {
   const { instance, accounts } = useMsal();
   const [emails, setEmails] = useState<any[]>([]);
@@ -33,6 +161,31 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [toRecipients, setToRecipients] = useState<string[]>([]);
+  const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  const [toInput, setToInput] = useState('');
+  const [ccInput, setCcInput] = useState('');
+  const [recipientError, setRecipientError] = useState<string | null>(null);
+  const [showLinkForm, setShowLinkForm] = useState(false);
+  const [linkLabel, setLinkLabel] = useState('');
+  const [linkUrl, setLinkUrl] = useState('');
+  const [templates, setTemplates] = useState<EmailTemplate[]>([]);
+  const [templateSearch, setTemplateSearch] = useState('');
+  const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
+  const templateDropdownRef = useRef<HTMLDivElement | null>(null);
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const filteredTemplates = useMemo(() => {
+    const query = templateSearch.trim().toLowerCase();
+    if (!query) return templates;
+    return templates.filter(template => template.name.toLowerCase().includes(query));
+  }, [templates, templateSearch]);
+
+  const extractHtmlBody = (html: string) => {
+    if (!html) return html;
+    const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    return bodyMatch ? bodyMatch[1] : html;
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -41,6 +194,84 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   useEffect(() => {
     scrollToBottom();
   }, [emails]);
+
+  const pushRecipient = (list: string[], address: string) => {
+    const normalized = address.trim();
+    if (!normalized) return;
+    if (!emailRegex.test(normalized)) {
+      throw new Error('Please enter a valid email address.');
+    }
+    if (!list.some(item => item.toLowerCase() === normalized.toLowerCase())) {
+      list.push(normalized);
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen || !client) return;
+    const initialRecipients = normaliseAddressList(client.email);
+    setToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
+    setCcRecipients([]);
+    setToInput('');
+    setCcInput('');
+    setRecipientError(null);
+    setSelectedTemplateId(null);
+    setTemplateSearch('');
+    setShowLinkForm(false);
+    setLinkLabel('');
+    setLinkUrl('');
+  }, [isOpen, client?.email]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let isMounted = true;
+    const loadTemplates = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_emailtemplate')
+          .select('*')
+          .eq('active', 't')
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+        if (!isMounted) return;
+
+        const parsed = (data || []).map((template: any) => ({
+          id: typeof template.id === 'number' ? template.id : Number(template.id),
+          name: template.name || `Template ${template.id}`,
+          subject: typeof template.subject === 'string' ? template.subject : null,
+          content: parseTemplateContent(template.content),
+          rawContent: template.content || '',
+          languageId: template.language_id ?? null,
+        }));
+
+        setTemplates(parsed);
+      } catch (error) {
+        console.error('Failed to load email templates:', error);
+        if (isMounted) {
+          setTemplates([]);
+        }
+      }
+    };
+
+    loadTemplates();
+    return () => {
+      isMounted = false;
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!templateDropdownOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (templateDropdownRef.current && !templateDropdownRef.current.contains(event.target as Node)) {
+        setTemplateDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [templateDropdownOpen]);
 
   // Fetch current user's full name
   useEffect(() => {
@@ -78,13 +309,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         const legacyId = parseInt(client.id.replace('legacy_', ''));
         emailQuery = supabase
           .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, sent_at, direction, attachments')
+          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
           .eq('legacy_id', legacyId)
           .order('sent_at', { ascending: true });
       } else {
         emailQuery = supabase
           .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, sent_at, direction, attachments')
+          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
           .eq('client_id', client.id)
           .order('sent_at', { ascending: true });
       }
@@ -102,7 +333,8 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         id: email.id,
         message_id: email.message_id,
         subject: email.subject || 'No Subject',
-        bodyPreview: email.body_html || '',
+        body_html: email.body_html ? extractHtmlBody(email.body_html) : null,
+        body_preview: email.body_preview ? extractHtmlBody(email.body_preview) : (email.body_html ? extractHtmlBody(email.body_html) : null),
         from: email.sender_email || '',
         to: email.recipient_list || '',
         date: email.sent_at,
@@ -121,23 +353,86 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
   // Fetch emails when modal opens
   useEffect(() => {
-    if (isOpen && client) {
-      const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
-      setComposeSubject(prev => prev && prev.trim() ? prev : defaultSubject);
-      
-      // Fetch emails when modal opens
-      console.log('📧 Email modal opened, fetching emails...');
-      fetchEmailsForModal();
-    }
-  }, [isOpen, client, fetchEmailsForModal]);
+    if (!isOpen || !client) return;
+
+    const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+    setComposeSubject((prev) => (prev && prev.trim() ? prev : defaultSubject));
+
+    let cancelled = false;
+
+    const syncAndFetch = async () => {
+      try {
+        if (instance && accounts[0]) {
+          let tokenResponse;
+          try {
+            tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+          } catch (error) {
+            tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
+          }
+
+          if (tokenResponse?.accessToken) {
+            await syncEmailsForClient(tokenResponse.accessToken, client);
+            if (onClientUpdate) {
+              await onClientUpdate();
+            }
+          }
+        }
+      } catch (error) {
+        console.warn('SchedulerEmailThreadModal: Graph sync failed, continuing with cached emails', error);
+      } finally {
+        if (!cancelled) {
+          await fetchEmailsForModal();
+        }
+      }
+    };
+
+    syncAndFetch();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, client, instance, accounts, fetchEmailsForModal, onClientUpdate]);
 
   const handleAttachmentUpload = (files: FileList) => {
+    if (!files || files.length === 0) return;
+    
     const newFiles = Array.from(files);
     setComposeAttachments(prev => [...prev, ...newFiles]);
   };
 
   const handleSendEmail = async () => {
-    if (!client?.email || !instance || !accounts[0]) return;
+    if (!instance || !accounts[0]) return;
+
+    const finalToRecipients = [...toRecipients];
+    const finalCcRecipients = [...ccRecipients];
+
+    try {
+      if (toInput.trim()) {
+        pushRecipient(finalToRecipients, toInput.trim());
+      }
+      if (ccInput.trim()) {
+        pushRecipient(finalCcRecipients, ccInput.trim());
+      }
+    } catch (error) {
+      setRecipientError((error as Error).message || 'Please enter a valid email address.');
+      return;
+    }
+
+    if (finalToRecipients.length === 0) {
+      setRecipientError('Please add at least one recipient.');
+      return;
+    }
+
+    setRecipientError(null);
+    if (toInput.trim()) {
+      setToRecipients(finalToRecipients);
+      setToInput('');
+    }
+    if (ccInput.trim()) {
+      setCcRecipients(finalCcRecipients);
+      setCcInput('');
+    }
+
     setSending(true);
 
     try {
@@ -146,20 +441,26 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         account: accounts[0]
       });
 
+      const bodyHtml = convertBodyToHtml(composeBody);
       const emailData = {
         message: {
           subject: composeSubject,
           body: {
             contentType: 'HTML',
-            content: composeBody.replace(/\n/g, '<br>')
+            content: bodyHtml
           },
-          toRecipients: [
-            {
-              emailAddress: {
-                address: client.email
-              }
+          toRecipients: finalToRecipients.map(address => ({
+            emailAddress: {
+              address
             }
-          ],
+          })),
+          ...(finalCcRecipients.length > 0
+            ? {
+                ccRecipients: finalCcRecipients.map(address => ({
+                  emailAddress: { address }
+                }))
+              }
+            : {}),
           attachments: await Promise.all(composeAttachments.map(async file => ({
             '@odata.type': '#microsoft.graph.fileAttachment',
             name: file.name,
@@ -182,8 +483,39 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         toast.success('Email sent successfully!');
         setComposeBody('');
         setComposeAttachments([]);
-        setShowCompose(false);
+        if (client) {
+          const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+          setComposeSubject(defaultSubject);
+        } else {
+          setComposeSubject('');
+        }
+        setShowLinkForm(false);
+        setLinkLabel('');
+        setLinkUrl('');
         
+        // Save to database
+        const isLegacyLead = client?.lead_type === 'legacy' || client?.id.toString().startsWith('legacy_');
+        const emailToSave: any = {
+          message_id: `scheduler_email_${Date.now()}`,
+          client_id: isLegacyLead ? null : client?.id,
+          legacy_id: isLegacyLead ? parseInt(client!.id.replace('legacy_', '')) : null,
+          sender_name: currentUserFullName || 'Team',
+          sender_email: accounts[0].username || '',
+          recipient_list: [...finalToRecipients, ...finalCcRecipients].join(', '),
+          subject: composeSubject,
+          body_html: bodyHtml,
+          body_preview: bodyHtml,
+          sent_at: new Date().toISOString(),
+          direction: 'outgoing',
+         };
+
+        const { error: saveError } = await supabase.from('emails').insert(emailToSave);
+        if (saveError) {
+          console.error('Failed to save scheduler email to database:', saveError);
+        }
+
+        setShowCompose(false);
+ 
         // Refresh emails
         await fetchEmailsForModal();
         if (onClientUpdate) {
@@ -214,229 +546,407 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
   if (!isOpen) return null;
 
-  return createPortal(
-    <div className="fixed inset-0 bg-white z-[9999]">
-      {/* CSS to ensure email content displays fully */}
-      <style>{`
-        .email-content .email-body {
-          max-width: none !important;
-          overflow: visible !important;
-          word-wrap: break-word !important;
-          white-space: pre-wrap !important;
-        }
-        .email-content .email-body * {
-          max-width: none !important;
-          overflow: visible !important;
-        }
-        .email-content .email-body img {
-          max-width: 100% !important;
-          height: auto !important;
-        }
-        .email-content .email-body table {
-          width: 100% !important;
-          border-collapse: collapse !important;
-        }
-        .email-content .email-body p, 
-        .email-content .email-body div, 
-        .email-content .email-body span {
-          white-space: pre-wrap !important;
-          word-wrap: break-word !important;
-        }
-      `}</style>
-      <div className="h-full flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
-          <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-            <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
-            <div className="flex items-center gap-2 min-w-0">
-              <div className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></div>
-              <span className="text-gray-600 text-sm md:text-base truncate">
-                {client?.name} ({client?.lead_number})
-              </span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={onClose}
-              className="btn btn-ghost btn-circle"
-            >
-              <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-            </button>
-          </div>
-        </div>
+  const renderRecipients = (type: 'to' | 'cc') => {
+    const recipients = type === 'to' ? toRecipients : ccRecipients;
+    const inputValue = type === 'to' ? toInput : ccInput;
+    const setInputValue = type === 'to' ? setToInput : setCcInput;
+    const setRecipients = type === 'to' ? setToRecipients : setCcRecipients;
 
-        {/* Search Bar */}
-        <div className="px-4 md:px-6 py-3 border-b border-gray-200 bg-gray-50">
-          <div className="relative">
-            <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-              <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
-            </div>
-            <input
-              type="text"
-              className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 sm:text-sm"
-              placeholder="Search emails by keywords, sender name, or recipient..."
-              value={emailSearchQuery}
-              onChange={(e) => setEmailSearchQuery(e.target.value)}
-            />
-            {emailSearchQuery && (
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          className="input input-bordered w-full"
+          placeholder={`Add ${type} recipient (e.g., name@example.com)`}
+          value={inputValue}
+          onChange={event => setInputValue(event.target.value)}
+          onKeyPress={event => {
+            if (event.key === 'Enter') {
+              const newRecipient = inputValue.trim();
+              if (newRecipient && emailRegex.test(newRecipient)) {
+                setRecipients(prev => [...prev, newRecipient]);
+                setInputValue('');
+              }
+            }
+          }}
+        />
+        <div className="flex flex-wrap gap-1">
+          {recipients.map((recipient, index) => (
+            <span key={index} className="flex items-center bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
+              {recipient}
               <button
-                onClick={() => setEmailSearchQuery('')}
-                className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                type="button"
+                onClick={() => setRecipients(prev => prev.filter((_, i) => i !== index))}
+                className="ml-1 text-blue-800 hover:text-blue-900"
               >
-                <XMarkIcon className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                ×
               </button>
-            )}
-          </div>
+            </span>
+          ))}
         </div>
+      </div>
+    );
+  };
 
-        {/* Email Thread */}
-        <div className="flex-1 overflow-y-auto p-3 md:p-6 bg-white">
-          {emailsLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="loading loading-spinner loading-lg text-purple-500"></div>
-            </div>
-          ) : emails.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-gray-500">
-              <div className="text-center">
-                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                  </svg>
+  const handleTemplateSelect = (template: EmailTemplate) => {
+    setSelectedTemplateId(template.id);
+    setComposeBody(template.content);
+    setComposeSubject(template.subject || `[${client?.lead_number}] - ${client?.name} - ${client?.topic || ''}]`);
+    setShowLinkForm(false);
+    setLinkLabel('');
+    setLinkUrl('');
+  };
+
+  const handleInsertLink = () => {
+    if (!linkUrl.trim()) return;
+    const linkMarkdown = `[${linkLabel || linkUrl}](${linkUrl})`;
+    setComposeBody(prev => prev + '\n\n' + linkMarkdown);
+    setShowLinkForm(false);
+    setLinkLabel('');
+    setLinkUrl('');
+  };
+
+  const handleCancelLink = () => {
+    setShowLinkForm(false);
+    setLinkLabel('');
+    setLinkUrl('');
+  };
+
+  return (
+    <>
+      {createPortal(
+        <div className="fixed inset-0 bg-white z-[9999]">
+          {/* CSS to ensure email content displays fully */}
+          <style>{`
+            .email-content .email-body {
+              max-width: none !important;
+              overflow: visible !important;
+              word-wrap: break-word !important;
+              white-space: pre-wrap !important;
+            }
+            .email-content .email-body * {
+              max-width: none !important;
+              overflow: visible !important;
+            }
+            .email-content .email-body img {
+              max-width: 100% !important;
+              height: auto !important;
+            }
+            .email-content .email-body table {
+              width: 100% !important;
+              border-collapse: collapse !important;
+            }
+            .email-content .email-body p, 
+            .email-content .email-body div, 
+            .email-content .email-body span {
+              white-space: pre-wrap !important;
+              word-wrap: break-word !important;
+            }
+          `}</style>
+          <div className="h-full flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+              <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
+                <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></div>
+                  <span className="text-gray-600 text-sm md:text-base truncate">
+                    {client?.name} ({client?.lead_number})
+                  </span>
                 </div>
-                <p className="text-lg font-medium">No emails available</p>
-                <p className="text-sm">No emails found for {client?.name}. Try syncing or send a new email.</p>
               </div>
-            </div>
-          ) : emails.filter((message) => {
-            if (!emailSearchQuery.trim()) return true;
-            
-            const searchTerm = emailSearchQuery.toLowerCase();
-            
-            // Search in subject
-            if (message.subject && message.subject.toLowerCase().includes(searchTerm)) return true;
-            
-            // Search in email body content
-            if (message.bodyPreview && message.bodyPreview.toLowerCase().includes(searchTerm)) return true;
-            
-            // Search in sender name (from field)
-            if (message.from && message.from.toLowerCase().includes(searchTerm)) return true;
-            
-            // Search in recipient (to field)
-            if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
-            
-            // Search in sender name (display name)
-            const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name;
-            if (senderName && senderName.toLowerCase().includes(searchTerm)) return true;
-            
-            return false;
-          }).length === 0 ? (
-            <div className="flex items-center justify-center h-full text-gray-500">
-              <div className="text-center">
-                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <MagnifyingGlassIcon className="w-8 h-8 text-gray-400" />
-                </div>
-                <p className="text-lg font-medium">No emails found</p>
-                <p className="text-sm">No emails match your search for "{emailSearchQuery}". Try a different search term.</p>
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setEmailSearchQuery('')}
-                  className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
+                  onClick={onClose}
+                  className="btn btn-ghost btn-circle"
                 >
-                  Clear search
+                  <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
                 </button>
               </div>
             </div>
-          ) : (
-            <div className="space-y-6">
-              {[...emails]
-                .filter((message) => {
-                  if (!emailSearchQuery.trim()) return true;
-                  
-                  const searchTerm = emailSearchQuery.toLowerCase();
-                  
-                  // Search in subject
-                  if (message.subject && message.subject.toLowerCase().includes(searchTerm)) return true;
-                  
-                  // Search in email body content
-                  if (message.bodyPreview && message.bodyPreview.toLowerCase().includes(searchTerm)) return true;
-                  
-                  // Search in sender name (from field)
-                  if (message.from && message.from.toLowerCase().includes(searchTerm)) return true;
-                  
-                  // Search in recipient (to field)
-                  if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
-                  
-                  // Search in sender name (display name)
-                  const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name;
-                  if (senderName && senderName.toLowerCase().includes(searchTerm)) return true;
-                  
-                  return false;
-                })
-                .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                .map((message, index) => (
-                  <div key={message.id} className="space-y-2">
-                    {/* Email Header */}
-                    <div className="flex items-center gap-3">
-                      <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                        message.direction === 'outgoing'
-                          ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                          : 'bg-pink-100 text-pink-700 border border-pink-200'
-                      }`}>
-                        {message.direction === 'outgoing' ? 'Team' : 'Client'}
-                      </div>
-                      <div>
-                        <div className="font-semibold text-gray-900 text-sm">
-                          {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name}
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          {new Date(message.date).toLocaleString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    {/* Complete Email Content */}
-                    <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-lg hover:shadow-xl transition-shadow duration-300" style={{
-                      boxShadow: '0 10px 25px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05)'
-                    }}>
-                      {/* Email Header */}
-                      <div className="mb-4 pb-4 border-b border-gray-200">
-                        <div className="text-sm text-gray-600 space-y-1">
-                          <div><strong>From:</strong> {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name} &lt;{message.from}&gt;</div>
-                          <div><strong>To:</strong> {message.to || (message.direction === 'outgoing' ? `${client?.name} <${client?.email}>` : `eliran@lawoffice.org.il`)}</div>
-                          <div><strong>Date:</strong> {new Date(message.date).toLocaleString('en-US', {
-                            month: 'short',
-                            day: 'numeric',
-                            year: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}</div>
-                          <div><strong>Subject:</strong> {message.subject}</div>
-                        </div>
-                      </div>
-                      
-                      {/* Email Body */}
-                      <div className="email-content">
-                        <div 
-                          className="email-body prose max-w-none text-gray-800 leading-relaxed"
-                          dangerouslySetInnerHTML={{ __html: message.bodyPreview }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          )}
-        </div>
 
-        {/* Compose Email Section */}
-        <div className="border-t border-gray-200 p-4 md:p-6 bg-gray-50">
-          {showCompose ? (
-            <div className="space-y-4">
+            {/* Search Bar */}
+            <div className="px-4 md:px-6 py-3 border-b border-gray-200 bg-gray-50">
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                  <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
+                </div>
+                <input
+                  type="text"
+                  className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 sm:text-sm"
+                  placeholder="Search emails by keywords, sender name, or recipient..."
+                  value={emailSearchQuery}
+                  onChange={(e) => setEmailSearchQuery(e.target.value)}
+                />
+                {emailSearchQuery && (
+                  <button
+                    onClick={() => setEmailSearchQuery('')}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                  >
+                    <XMarkIcon className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Email Thread */}
+            <div className="flex-1 overflow-y-auto p-3 md:p-6 bg-white">
+              {emailsLoading ? (
+                <div className="flex items-center justify-center h-full">
+                  <div className="loading loading-spinner loading-lg text-purple-500"></div>
+                </div>
+              ) : emails.length === 0 ? (
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                    </div>
+                    <p className="text-lg font-medium">No emails available</p>
+                    <p className="text-sm">No emails found for {client?.name}. Try syncing or send a new email.</p>
+                  </div>
+                </div>
+              ) : emails.filter((message) => {
+                if (!emailSearchQuery.trim()) return true;
+                
+                const searchTerm = emailSearchQuery.toLowerCase();
+                
+                // Search in subject
+                if (message.subject && message.subject.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in email body content
+                if (message.body_preview && message.body_preview.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in sender name (from field)
+                if (message.from && message.from.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in recipient (to field)
+                if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
+                
+                // Search in sender name (display name)
+                const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name;
+                if (senderName && senderName.toLowerCase().includes(searchTerm)) return true;
+                
+                return false;
+              }).length === 0 ? (
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <MagnifyingGlassIcon className="w-8 h-8 text-gray-400" />
+                    </div>
+                    <p className="text-lg font-medium">No emails found</p>
+                    <p className="text-sm">No emails match your search for "{emailSearchQuery}". Try a different search term.</p>
+                    <button
+                      onClick={() => setEmailSearchQuery('')}
+                      className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
+                    >
+                      Clear search
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {[...emails]
+                    .filter((message) => {
+                      if (!emailSearchQuery.trim()) return true;
+                      
+                      const searchTerm = emailSearchQuery.toLowerCase();
+                      
+                      // Search in subject
+                      if (message.subject && message.subject.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in email body content
+                      if (message.body_preview && message.body_preview.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in sender name (from field)
+                      if (message.from && message.from.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in recipient (to field)
+                      if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
+                      
+                      // Search in sender name (display name)
+                      const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name;
+                      if (senderName && senderName.toLowerCase().includes(searchTerm)) return true;
+                      
+                      return false;
+                    })
+                    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                    .map((message, index) => (
+                      <div key={message.id} className="space-y-2">
+                        {/* Email Header */}
+                        <div className="flex items-center gap-3">
+                          <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                            message.direction === 'outgoing'
+                              ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                              : 'bg-pink-100 text-pink-700 border border-pink-200'
+                          }`}>
+                            {message.direction === 'outgoing' ? 'Team' : 'Client'}
+                          </div>
+                          <div>
+                            <div className="font-semibold text-gray-900 text-sm">
+                              {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {new Date(message.date).toLocaleString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {/* Complete Email Content */}
+                        <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-lg hover:shadow-xl transition-shadow duration-300" style={{
+                          boxShadow: '0 10px 25px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05)'
+                        }}>
+                          {/* Email Header */}
+                          <div className="mb-4 pb-4 border-b border-gray-200">
+                            <div className="text-sm text-gray-600 space-y-1">
+                              <div><strong>From:</strong> {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name} &lt;{message.from}&gt;</div>
+                              <div><strong>To:</strong> {message.to || (message.direction === 'outgoing' ? `${client?.name} <${client?.email}>` : `eliran@lawoffice.org.il`)}</div>
+                              <div><strong>Date:</strong> {new Date(message.date).toLocaleString('en-US', {
+                                month: 'short',
+                                day: 'numeric',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}</div>
+                              <div><strong>Subject:</strong> {message.subject}</div>
+                            </div>
+                          </div>
+                          
+                          {/* Email Body */}
+                          <div className="email-content">
+                            {(message.body_html || message.body_preview) ? (
+                              <div 
+                                className="email-body prose max-w-none text-gray-800 leading-relaxed"
+                                dangerouslySetInnerHTML={{ __html: message.body_html ?? message.body_preview ?? '' }}
+                              />
+                            ) : (
+                              <div className="text-gray-500 italic p-4 bg-gray-50 rounded">
+                                No email content available
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+
+            {/* Compose Email Section */}
+            <div className="border-t border-gray-200 px-4 md:px-6 py-4 bg-white">
+              <button
+                onClick={() => {
+                  setShowCompose(true);
+                  const initialRecipients = normaliseAddressList(client?.email);
+                  setToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
+                  setCcRecipients([]);
+                  setToInput('');
+                  setCcInput('');
+                  setRecipientError(null);
+                  setSelectedTemplateId(null);
+                  setTemplateSearch('');
+                  setShowLinkForm(false);
+                  setLinkLabel('');
+                  setLinkUrl('');
+                }}
+                className="w-full btn btn-primary h-12 min-h-0"
+              >
+                <PaperAirplaneIcon className="w-4 h-4 mr-2" />
+                Compose Message
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      {showCompose && createPortal(
+        <div className="fixed inset-0 z-[10001] flex">
+          <div className="fixed inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
+          <div className="relative w-full h-full bg-white shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <h2 className="text-xl font-semibold">Compose Email</h2>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+              <div className="space-y-2">
+                <label className="font-semibold text-sm">To</label>
+                {renderRecipients('to')}
+              </div>
+              <div className="space-y-2">
+                <label className="font-semibold text-sm">CC</label>
+                {renderRecipients('cc')}
+              </div>
+              {recipientError && <p className="text-sm text-error">{recipientError}</p>}
+
+              <div className="flex flex-wrap items-center gap-3" ref={templateDropdownRef}>
+                <label className="text-sm font-semibold">Template</label>
+                <div className="relative w-full sm:w-64">
+                  <input
+                    type="text"
+                    className="input input-bordered w-full pr-8"
+                    placeholder="Search templates..."
+                    value={templateSearch}
+                    onChange={event => {
+                      setTemplateSearch(event.target.value);
+                      if (!templateDropdownOpen) {
+                        setTemplateDropdownOpen(true);
+                      }
+                    }}
+                    onFocus={() => {
+                      if (!templateDropdownOpen) {
+                        setTemplateDropdownOpen(true);
+                      }
+                    }}
+                    onBlur={() => setTimeout(() => setTemplateDropdownOpen(false), 150)}
+                  />
+                  <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  {templateDropdownOpen && (
+                    <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
+                      {filteredTemplates.length === 0 ? (
+                        <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
+                      ) : (
+                        filteredTemplates.map(template => (
+                          <div
+                            key={template.id}
+                            className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                            onMouseDown={e => e.preventDefault()}
+                            onClick={() => handleTemplateSelect(template)}
+                          >
+                            {template.name}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+                {selectedTemplateId !== null && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setSelectedTemplateId(null);
+                      setTemplateSearch('');
+                      setComposeBody('');
+                      if (client) {
+                        const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+                        setComposeSubject(defaultSubject);
+                      }
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
               <input
                 type="text"
                 placeholder="Subject"
@@ -444,15 +954,63 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 onChange={(e) => setComposeSubject(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
               />
+
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="font-semibold text-sm">Body</label>
+                <button
+                  type="button"
+                  className="btn btn-xs btn-outline"
+                  onClick={() => setShowLinkForm(prev => !prev)}
+                >
+                  {showLinkForm ? 'Hide Link Form' : 'Add Link'}
+                </button>
+              </div>
+
+              {showLinkForm && (
+                <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
+                  <div className="flex-1 flex flex-col gap-2 md:flex-row md:items-center">
+                    <input
+                      type="text"
+                      className="input input-bordered w-full md:flex-1"
+                      placeholder="Link label (optional)"
+                      value={linkLabel}
+                      onChange={event => setLinkLabel(event.target.value)}
+                    />
+                    <input
+                      type="url"
+                      className="input input-bordered w-full md:flex-1"
+                      placeholder="https://example.com"
+                      value={linkUrl}
+                      onChange={event => setLinkUrl(event.target.value)}
+                    />
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={handleInsertLink}
+                      disabled={!linkUrl.trim()}
+                    >
+                      Insert Link
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={handleCancelLink}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <textarea
                 placeholder="Type your message..."
                 value={composeBody}
                 onChange={(e) => setComposeBody(e.target.value)}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-none"
-                rows={4}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
               />
-              
-              {/* Attachments */}
+
               {composeAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-2">
                   {composeAttachments.map((file, index) => (
@@ -469,61 +1027,52 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                   ))}
                 </div>
               )}
-              
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="btn btn-ghost btn-sm"
-                  >
-                    <PaperClipIcon className="w-4 h-4" />
-                    <span className="hidden sm:inline">Attach</span>
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
-                    className="hidden"
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setShowCompose(false)}
-                    className="btn btn-outline btn-sm flex-1 sm:flex-none"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleSendEmail}
-                    disabled={sending || !composeBody.trim()}
-                    className="btn btn-primary btn-sm flex-1 sm:flex-none"
-                  >
-                    {sending ? (
-                      <div className="loading loading-spinner loading-xs"></div>
-                    ) : (
-                      <>
-                        <PaperAirplaneIcon className="w-4 h-4" />
-                        Send
-                      </>
-                    )}
-                  </button>
-                </div>
+            </div>
+            <div className="px-6 py-4 border-t border-gray-200 flex flex-col sm:flex-row gap-3 justify-between">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="btn btn-ghost btn-sm"
+                >
+                  <PaperClipIcon className="w-4 h-4" />
+                  <span className="hidden sm:inline">Attach</span>
+                </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
+                  className="hidden"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowCompose(false)}
+                  className="btn btn-outline btn-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSendEmail}
+                  disabled={sending || !composeBody.trim()}
+                  className="btn btn-primary btn-sm"
+                >
+                  {sending ? (
+                    <div className="loading loading-spinner loading-xs"></div>
+                  ) : (
+                    <>
+                      <PaperAirplaneIcon className="w-4 h-4" />
+                      Send
+                    </>
+                  )}
+                </button>
               </div>
             </div>
-          ) : (
-            <button
-              onClick={() => setShowCompose(true)}
-              className="w-full btn btn-primary"
-            >
-              <PaperAirplaneIcon className="w-4 h-4 mr-2" />
-              Compose Message
-            </button>
-          )}
-        </div>
-      </div>
-    </div>,
-    document.body
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 };
 

@@ -577,6 +577,33 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
     try {
       let result;
+      const { data: authUser } = await supabase.auth.getUser();
+      const authUserId = authUser?.user?.id ?? null;
+      const authUserEmail = authUser?.user?.email ?? null;
+      let updatedByUserId: string | null = null;
+
+      if (authUserId) {
+        const { data: userRowByAuth } = await supabase
+          .from('users')
+          .select('id')
+          .eq('auth_id', authUserId)
+          .maybeSingle();
+        if (userRowByAuth?.id) {
+          updatedByUserId = String(userRowByAuth.id);
+        }
+      }
+
+      if (!updatedByUserId && authUserEmail) {
+        const { data: userRowByEmail } = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', authUserEmail)
+          .maybeSingle();
+        if (userRowByEmail?.id) {
+          updatedByUserId = String(userRowByEmail.id);
+        }
+      }
+
       if (editingRecord?.id) {
         // Update existing record
         if (tableName === 'users' && record.new_password && record.new_password.trim() !== '') {
@@ -617,6 +644,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             updated_by,
             ...updateDataWithoutId 
           } = updateData;
+          if (updatedByUserId) {
+            updateDataWithoutId.updated_by = updatedByUserId;
+          } else {
+            delete updateDataWithoutId.updated_by;
+          }
           console.log(`Updating ${tableName} record with ID: ${editingRecord.id}`, updateDataWithoutId);
           
           // First, check if the record exists
@@ -715,7 +747,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         } else {
           // Regular update - remove fields that shouldn't be updated
           const { 
-            new_password, 
+            new_password,
             password,
             id, 
             created_at, 
@@ -728,14 +760,18 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             password_hash,
             updated_by,
             preferred_category, // Remove preferred_category as it's stored in separate table
-            ...updateData 
+            ...updateData
           } = record;
-          console.log(`Updating ${tableName} record with ID: ${editingRecord.id}`, updateData);
-          
+          if (updatedByUserId) {
+            updateData.updated_by = updatedByUserId;
+          } else {
+            delete updateData.updated_by;
+          }
+
           // First, check if the record exists
           const { data: existingRecord, error: checkError } = await supabase
             .from(tableName)
-            .select('id')
+            .select('*')
             .eq('id', String(editingRecord.id))
             .single();
           

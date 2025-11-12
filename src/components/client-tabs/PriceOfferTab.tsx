@@ -1,7 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 import { CurrencyDollarIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
+import { supabase } from '../../lib/supabase';
+
+interface PriceOfferHistoryEntry {
+  id: string;
+  messageId: string | null;
+  senderName: string;
+  senderEmail: string | null;
+  sentAt: string | null;
+  body: string;
+  isFallback: boolean;
+}
 
 const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
   // Use values from client, fallback to defaults if missing
@@ -13,6 +24,158 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [editTotal, setEditTotal] = useState(total);
   const [editExtra, setEditExtra] = useState(3060.0);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [history, setHistory] = useState<PriceOfferHistoryEntry[]>([]);
+  const [activeOfferId, setActiveOfferId] = useState<string | null>(null);
+
+  const isLegacyLead = useMemo(
+    () => typeof client?.id === 'string' && client.id.startsWith('legacy_'),
+    [client?.id]
+  );
+
+  const convertHtmlToPlainText = (html: string | null | undefined): string => {
+    if (!html) return '';
+    return html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\r/g, '')
+      .trim();
+  };
+
+  useEffect(() => {
+    const fetchHistory = async () => {
+      if (!client?.id) {
+        setHistory([]);
+        setActiveOfferId(null);
+        return;
+      }
+
+      setHistoryLoading(true);
+      setHistoryError(null);
+
+      try {
+        let query = supabase
+          .from('emails')
+          .select('id, message_id, sender_name, sender_email, body_html, body_preview, sent_at')
+          .like('message_id', 'offer_%')
+          .order('sent_at', { ascending: false });
+
+        if (isLegacyLead) {
+          const legacyId = Number.parseInt(String(client.id).replace('legacy_', ''), 10);
+          if (!Number.isNaN(legacyId)) {
+            query = query.eq('legacy_id', legacyId);
+          } else {
+            query = query.eq('legacy_id', -1);
+          }
+        } else {
+          query = query.eq('client_id', client.id);
+        }
+
+        const { data, error } = await query;
+
+        if (error) {
+          throw error;
+        }
+
+        const entries: PriceOfferHistoryEntry[] = (data || []).map((email) => {
+          const bodyHtml: string | null = email.body_html;
+          const bodyPreview: string | null = email.body_preview;
+          const fallbackBody = bodyPreview && bodyPreview.trim() !== '' ? bodyPreview : bodyHtml;
+          return {
+            id: `email_${email.id}`,
+            messageId: email.message_id,
+            senderName: email.sender_name || closer || '---',
+            senderEmail: email.sender_email || null,
+            sentAt: email.sent_at || null,
+            body: convertHtmlToPlainText(fallbackBody) || proposal,
+            isFallback: false,
+          };
+        });
+
+        setHistory(entries);
+        if (entries.length > 0) {
+          setActiveOfferId(entries[0].id);
+        } else {
+          setActiveOfferId(null);
+        }
+      } catch (error: any) {
+        console.error('Failed to fetch price offer history:', error);
+        setHistoryError('Failed to load previous offers.');
+        setHistory([]);
+        setActiveOfferId(null);
+      } finally {
+        setHistoryLoading(false);
+      }
+    };
+
+    fetchHistory();
+  }, [client?.id, isLegacyLead, closer, proposal]);
+
+  const linkifyLine = (line: string, lineIndex: number): React.ReactNode => {
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const nodes: React.ReactNode[] = [];
+    let match: RegExpExecArray | null;
+    let lastIndex = 0;
+    let segmentIndex = 0;
+
+    while ((match = urlRegex.exec(line)) !== null) {
+      if (match.index > lastIndex) {
+        nodes.push(
+          <span key={`text-${lineIndex}-${segmentIndex++}`}>{line.slice(lastIndex, match.index)}</span>
+        );
+      }
+
+      const url = match[0];
+      nodes.push(
+        <a
+          key={`link-${lineIndex}-${segmentIndex++}`}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary hover:underline break-words"
+        >
+          {url}
+        </a>
+      );
+
+      lastIndex = match.index + url.length;
+    }
+
+    if (lastIndex < line.length) {
+      nodes.push(
+        <span key={`text-${lineIndex}-${segmentIndex++}`}>{line.slice(lastIndex)}</span>
+      );
+    }
+
+    if (nodes.length === 0) {
+      return line;
+    }
+
+    return nodes;
+  };
+
+  const renderProposalContent = (text: string) => {
+    if (!text || !text.trim()) {
+      return (
+        <p className="text-base-content/50 italic">No proposal text recorded.</p>
+      );
+    }
+
+    return text.split(/\r?\n/).map((line, index) => {
+      if (!line.trim()) {
+        return <div key={`gap-${index}`} className="h-3" />;
+      }
+
+      return (
+        <p key={`line-${index}`} className="mb-2 text-base whitespace-pre-wrap break-words">
+          {linkifyLine(line, index)}
+        </p>
+      );
+    });
+  };
 
   const handleEdit = () => {
     setEditTotal(total);
@@ -29,6 +192,61 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
     setIsEditing(false);
   };
 
+  const fallbackEntry: PriceOfferHistoryEntry | null = useMemo(() => {
+    if (!proposal || !proposal.trim()) {
+      return null;
+    }
+
+    return {
+      id: 'current_offer',
+      messageId: null,
+      senderName: closer,
+      senderEmail: null,
+      sentAt: client?.last_stage_changed_at ?? null,
+      body: proposal,
+      isFallback: true,
+    };
+  }, [proposal, closer, client?.last_stage_changed_at]);
+
+  const combinedOffers = useMemo(() => {
+    if (history.length === 0) {
+      return fallbackEntry ? [fallbackEntry] : [];
+    }
+
+    const offers = [...history];
+
+    if (
+      fallbackEntry &&
+      !offers.some(entry => entry.body === fallbackEntry.body && entry.sentAt === fallbackEntry.sentAt)
+    ) {
+      offers.unshift(fallbackEntry);
+    }
+
+    return offers;
+  }, [history, fallbackEntry]);
+
+  useEffect(() => {
+    if (!combinedOffers || combinedOffers.length === 0) {
+      setActiveOfferId(null);
+      return;
+    }
+
+    if (!activeOfferId || !combinedOffers.some(entry => entry.id === activeOfferId)) {
+      setActiveOfferId(combinedOffers[0].id);
+    }
+  }, [combinedOffers, activeOfferId]);
+
+  const activeOffer = useMemo(
+    () => combinedOffers.find(entry => entry.id === activeOfferId) || combinedOffers[0] || null,
+    [combinedOffers, activeOfferId]
+  );
+
+  const displayCloser = activeOffer?.senderName || closer;
+  const displayProposal = activeOffer?.body || proposal;
+  const displaySentAt = activeOffer?.sentAt
+    ? new Date(activeOffer.sentAt).toLocaleString()
+    : null;
+
   return (
     <div className="p-2 sm:p-4 md:p-8">
       <div className="flex items-center gap-3 mb-8">
@@ -40,8 +258,15 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
           <p className="text-sm text-gray-500">Manage pricing and proposals</p>
         </div>
       </div>
-      <div className="text-lg mb-4 text-base-content/80">
-        <span className="font-semibold">Closer:</span> {closer}
+      <div className="text-lg mb-4 text-base-content/80 flex flex-col gap-1">
+        <span>
+          <span className="font-semibold">Closer:</span> {displayCloser}
+        </span>
+        {displaySentAt && (
+          <span className="text-sm text-base-content/60">
+            Sent on {displaySentAt}
+          </span>
+        )}
       </div>
       <div className="flex items-center gap-3 mb-6">
         <span className="text-xl font-semibold">Total:</span>
@@ -54,13 +279,40 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
         </span>
       </div>
       <div className="mb-2 text-lg font-semibold">Proposal:</div>
+      {historyLoading && (
+        <div className="mb-4 text-sm text-base-content/60">Loading previous offers...</div>
+      )}
+      {historyError && (
+        <div className="mb-4 text-sm text-error">{historyError}</div>
+      )}
+      {combinedOffers.length > 1 && (
+        <div className="mb-6">
+          <div className="text-sm font-semibold text-base-content/70 mb-2">
+            Offer Versions
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {combinedOffers.map(entry => (
+              <button
+                key={entry.id}
+                className={`btn btn-sm ${
+                  entry.id === activeOfferId
+                    ? 'btn-primary'
+                    : 'btn-outline border-base-300 text-base-content/80'
+                }`}
+                onClick={() => setActiveOfferId(entry.id)}
+              >
+                {entry.isFallback
+                  ? 'Current Offer'
+                  : `${entry.senderName || 'Offer'}${entry.sentAt ? ` • ${new Date(entry.sentAt).toLocaleString()}` : ''}`}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="mb-8">
-        <textarea
-          className="w-full min-h-[350px] max-h-[600px] border border-base-300 rounded-xl p-4 text-base font-medium bg-base-100 focus:outline-primary resize-none shadow"
-          value={proposal}
-          placeholder="Enter your price offer proposal here..."
-          readOnly
-        />
+        <div className="w-full min-h-[200px] max-h-[600px] border border-base-300 rounded-xl p-4 text-base font-medium bg-base-100 shadow-inner overflow-y-auto">
+          {renderProposalContent(displayProposal)}
+        </div>
       </div>
       {isEditing ? (
         <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center mb-2">

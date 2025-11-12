@@ -6,6 +6,7 @@ import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
 import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon, ClockIcon, ChatBubbleLeftRightIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
+import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 
 export interface SchedulerLead {
   id: string;
@@ -36,6 +37,16 @@ export interface SchedulerLead {
   country?: string;
 }
 
+const SCHEDULER_STAGE_TARGETS = [
+  'Precommunication',
+  'Created',
+  'Scheduler assigned',
+  'Handler assigned',
+  'Handler started',
+  'Success',
+];
+const FALLBACK_SCHEDULER_STAGE_IDS = [0, 10, 11, 15];
+
 const SchedulerToolPage: React.FC = () => {
   const navigate = useNavigate();
   const [leads, setLeads] = useState<SchedulerLead[]>([]);
@@ -50,6 +61,7 @@ const SchedulerToolPage: React.FC = () => {
   const [selectedLead, setSelectedLead] = useState<SchedulerLead | null>(null);
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [schedulerStageIds, setSchedulerStageIds] = useState<number[]>(FALLBACK_SCHEDULER_STAGE_IDS);
   
   // Filter states
   const [filters, setFilters] = useState({
@@ -170,10 +182,34 @@ const SchedulerToolPage: React.FC = () => {
       const stagesData = await fetchStages();
       const tagsData = await fetchTags();
       const countriesData = await fetchCountries();
-      
-      
+
+      let resolvedStageIds = FALLBACK_SCHEDULER_STAGE_IDS;
+      try {
+        const stageMap = await fetchStageNames();
+        const matchedIds = Object.entries(stageMap)
+          .filter(([, stageName]) =>
+            SCHEDULER_STAGE_TARGETS.some(target => areStagesEquivalent(stageName, target))
+          )
+          .map(([id]) => Number(id))
+          .filter(id => !Number.isNaN(id));
+
+        if (matchedIds.length > 0) {
+          resolvedStageIds = Array.from(new Set(matchedIds));
+        }
+      } catch (error) {
+        console.error('Error resolving scheduler stage IDs from lead_stages:', error);
+      }
+      setSchedulerStageIds(resolvedStageIds);
+
       // Then load leads after reference data is ready, passing user data
-      await fetchSchedulerLeads(categoriesData, sourcesData, stagesData, userData, countriesData);
+      await fetchSchedulerLeads(
+        categoriesData,
+        sourcesData,
+        stagesData,
+        userData,
+        countriesData,
+        resolvedStageIds
+      );
     };
     loadData();
   }, []);
@@ -615,7 +651,14 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
-  const fetchSchedulerLeads = async (categoriesData?: any[], sourcesData?: any[], stagesData?: any[], userData?: any, countriesData?: any[]) => {
+  const fetchSchedulerLeads = async (
+    categoriesData?: any[],
+    sourcesData?: any[],
+    stagesData?: any[],
+    userData?: any,
+    countriesData?: any[],
+    stageIdsOverride?: number[]
+  ) => {
     try {
       setLoading(true);
       setError(null);
@@ -644,8 +687,19 @@ const SchedulerToolPage: React.FC = () => {
         }
       }
 
+      let stageIdsToUse =
+        (stageIdsOverride && stageIdsOverride.length
+          ? stageIdsOverride
+          : schedulerStageIds && schedulerStageIds.length
+            ? schedulerStageIds
+            : FALLBACK_SCHEDULER_STAGE_IDS).map(id => Number(id)).filter(id => !Number.isNaN(id));
+
+      if (!stageIdsToUse.length) {
+        stageIdsToUse = [...FALLBACK_SCHEDULER_STAGE_IDS];
+      }
+
       // Fetch new leads with scheduler assigned to current user (by name) and specific stages
-      const { data: newLeads, error: newError } = await supabase
+      let newLeadsQueryBuilder = supabase
         .from('leads')
         .select(`
           id,
@@ -680,8 +734,15 @@ const SchedulerToolPage: React.FC = () => {
             name
           )
         `)
-        .eq('scheduler', employeeDisplayName) // Filter by current user's display name
-        .or('stage.in.(0,10,11,15),stage.in.(created,scheduler_assigned,handler_started,success)'); // Handle both numeric IDs and text values
+        .eq('scheduler', employeeDisplayName);
+
+      if (stageIdsToUse.length === 1) {
+        newLeadsQueryBuilder = newLeadsQueryBuilder.eq('stage', stageIdsToUse[0]);
+      } else {
+        newLeadsQueryBuilder = newLeadsQueryBuilder.in('stage', stageIdsToUse);
+      }
+
+      const { data: newLeads, error: newError } = await newLeadsQueryBuilder;
 
       if (newError) {
         console.error('Error fetching new leads:', newError);
@@ -1035,7 +1096,7 @@ const SchedulerToolPage: React.FC = () => {
 
   const handleClientUpdate = async () => {
     // Refresh the leads data when a client is updated
-    await fetchSchedulerLeads(allCategories, allSources, allStages, currentUser);
+    await fetchSchedulerLeads(allCategories, allSources, allStages, currentUser, allCountries, schedulerStageIds);
   };
 
   // Toggle eligible status

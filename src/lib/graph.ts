@@ -369,10 +369,11 @@ export async function muteCall(accessToken: string, callId: string, isMuted: boo
 }
 
 export const sendEmail = async (accessToken: string, email: {
-  to: string;
+  to: string | string[];
   subject: string;
   body: string;
   skipSignature?: boolean;
+  cc?: string[];
 }) => {
   // Get the user's email signature from the database
   const { getCurrentUserEmailSignature } = await import('./emailSignature');
@@ -393,6 +394,23 @@ export const sendEmail = async (accessToken: string, email: {
   }
   // If no database signature and not skipped, let Outlook add its automatic signature
 
+  const normaliseRecipients = (value: string | string[] | undefined) => {
+    if (!value) return [] as string[];
+    if (Array.isArray(value)) {
+      return value
+        .map(recipient => recipient.trim())
+        .filter(recipient => recipient.length > 0);
+    }
+    return value.trim().length > 0 ? [value.trim()] : [];
+  };
+
+  const toRecipients = normaliseRecipients(email.to);
+  if (toRecipients.length === 0) {
+    throw new Error('No recipient specified for the email.');
+  }
+
+  const ccRecipients = normaliseRecipients(email.cc);
+
   const emailToSend = {
     message: {
       subject: email.subject,
@@ -400,13 +418,16 @@ export const sendEmail = async (accessToken: string, email: {
         contentType: 'HTML',
         content: fullBody,
       },
-      toRecipients: [
-        {
-          emailAddress: {
-            address: email.to,
-          },
-        },
-      ],
+      toRecipients: toRecipients.map(address => ({
+        emailAddress: { address },
+      })),
+      ...(ccRecipients.length > 0
+        ? {
+            ccRecipients: ccRecipients.map(address => ({
+              emailAddress: { address },
+            })),
+          }
+        : {}),
     },
     saveToSentItems: 'true',
   };

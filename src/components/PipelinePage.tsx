@@ -494,17 +494,18 @@ const PipelinePage: React.FC = () => {
 
   // Helper function to check if a lead is a signed agreement or past that stage
   const isSignedAgreementLead = (lead: LeadForPipeline) => {
-    const stage = lead.stage || '';
-    const stageLower = stage.toLowerCase();
-    
+    const stageRaw = lead.stage != null ? String(lead.stage) : '';
+    const stageName = stageRaw ? getStageName(stageRaw) : '';
+    const stageLower = stageName.toLowerCase();
+
     // Check for signed agreement stages
     const isSignedAgreement = 
       stageLower.includes('client signed agreement') ||
       stageLower.includes('client signed') ||
-      stage === 'Client signed agreement' ||
-      stage === 'Client Signed Agreement' ||
-      stage === 'client signed agreement' ||
-      stage === 'client signed' ||
+      stageName === 'Client signed agreement' ||
+      stageName === 'Client Signed Agreement' ||
+      stageName === 'client signed agreement' ||
+      stageName === 'client signed' ||
       stageLower.includes('signed agreement');
     
     // Check for stages that come after signed agreement (like success, completed, etc.)
@@ -515,12 +516,12 @@ const PipelinePage: React.FC = () => {
       stageLower.includes('done') ||
       stageLower.includes('closed') ||
       stageLower.includes('finalized') ||
-      stage === 'Success' ||
-      stage === 'Completed' ||
-      stage === 'Finished' ||
-      stage === 'Done' ||
-      stage === 'Closed' ||
-      stage === 'Finalized';
+      stageName === 'Success' ||
+      stageName === 'Completed' ||
+      stageName === 'Finished' ||
+      stageName === 'Done' ||
+      stageName === 'Closed' ||
+      stageName === 'Finalized';
     
     return isSignedAgreement || isPastSignedAgreement;
   };

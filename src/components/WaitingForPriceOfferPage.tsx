@@ -5,6 +5,7 @@ import {
   DocumentTextIcon,
   MagnifyingGlassIcon
 } from '@heroicons/react/24/outline';
+import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 
 interface LeadRow {
   id: string;
@@ -35,6 +36,8 @@ const WaitingForPriceOfferPage: React.FC = () => {
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [filteredCategoryOptions, setFilteredCategoryOptions] = useState<string[]>([]);
+  const [waitingStageIds, setWaitingStageIds] = useState<number[]>([]);
+  const WAITING_STAGE_TARGET = 'Waiting for Mtng sum';
 
   // Helper function to get category display name with main category (like Calendar)
   const getCategoryDisplayName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
@@ -101,6 +104,31 @@ const WaitingForPriceOfferPage: React.FC = () => {
     };
 
     fetchUserData();
+  }, []);
+
+  // Resolve stage IDs for "Waiting for Mtng sum"
+  useEffect(() => {
+    const resolveWaitingStageIds = async () => {
+      try {
+        const stageMap = await fetchStageNames();
+        const matchedIds = Object.entries(stageMap)
+          .filter(([, name]) => areStagesEquivalent(name, WAITING_STAGE_TARGET))
+          .map(([id]) => Number(id))
+          .filter(id => !Number.isNaN(id));
+
+        if (matchedIds.length > 0) {
+          setWaitingStageIds(Array.from(new Set(matchedIds)));
+        } else {
+          // Fallback to legacy numeric ID if mapping not found
+          setWaitingStageIds([40]);
+        }
+      } catch (error) {
+        console.error('Error resolving Waiting for Mtng sum stage IDs:', error);
+        setWaitingStageIds([40]);
+      }
+    };
+
+    resolveWaitingStageIds();
   }, []);
 
   // Fetch categories with main category relationship (like Calendar)
@@ -240,9 +268,9 @@ const WaitingForPriceOfferPage: React.FC = () => {
         const assigned: LeadRow[] = [];
         const unassigned: LeadRow[] = [];
 
-        // Fetch new leads with stage 40 or "Waiting for Mtng sum"
-        // First try with numeric stage 40
-        let newLeadsQuery1 = supabase
+        // Fetch new leads with the resolved stage IDs
+        const stageIdsToUse = waitingStageIds.length > 0 ? waitingStageIds : [40];
+        let newLeadsQuery = supabase
           .from('leads')
           .select(`
             id,
@@ -269,49 +297,15 @@ const WaitingForPriceOfferPage: React.FC = () => {
               )
             )
           `)
-          .eq('stage', 40);
+          .limit(1000); // safety cap
 
-        const { data: newLeadsData1, error: newLeadsError1 } = await newLeadsQuery1;
+        if (stageIdsToUse.length === 1) {
+          newLeadsQuery = newLeadsQuery.eq('stage', stageIdsToUse[0]);
+        } else {
+          newLeadsQuery = newLeadsQuery.in('stage', stageIdsToUse);
+        }
 
-        // Then try with string stage "Waiting for Mtng sum"
-        let newLeadsQuery2 = supabase
-          .from('leads')
-          .select(`
-            id,
-            lead_number,
-            name,
-            category_id,
-            category,
-            topic,
-            manager,
-            helper,
-            stage,
-            balance,
-            balance_currency,
-            meetings!client_id(
-              meeting_date
-            ),
-            misc_category!category_id(
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id(
-                id,
-                name
-              )
-            )
-          `)
-          .ilike('stage', '%waiting for mtng sum%');
-
-        const { data: newLeadsData2, error: newLeadsError2 } = await newLeadsQuery2;
-
-        // Combine results and remove duplicates
-        const allNewLeads = [...(newLeadsData1 || []), ...(newLeadsData2 || [])];
-        const uniqueNewLeads = Array.from(
-          new Map(allNewLeads.map((lead: any) => [lead.id, lead])).values()
-        );
-        const newLeadsData = uniqueNewLeads;
-        const newLeadsError = newLeadsError1 || newLeadsError2;
+        const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery;
 
         if (newLeadsError) {
           console.error('Error fetching new leads:', newLeadsError);
@@ -480,10 +474,22 @@ const WaitingForPriceOfferPage: React.FC = () => {
       }
     };
 
-    if (allCategories.length > 0 && employeeNameMap.size > 0 && currencyMap.size > 0) {
+    if (
+      allCategories.length > 0 &&
+      employeeNameMap.size > 0 &&
+      currencyMap.size > 0 &&
+      waitingStageIds.length > 0
+    ) {
       fetchLeads();
     }
-  }, [userEmployeeId, userDisplayName, allCategories, employeeNameMap, currencyMap]);
+  }, [
+    userEmployeeId,
+    userDisplayName,
+    allCategories,
+    employeeNameMap,
+    currencyMap,
+    waitingStageIds,
+  ]);
 
   const formatDate = (date: string | null) => {
     if (!date) return 'Not set';

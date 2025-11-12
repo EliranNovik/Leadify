@@ -137,6 +137,8 @@ type RecentChange = {
   user_name?: string;
   updated_by_name?: string;
   action?: string;
+  info?: string;
+  bodyRequest?: string;
 };
 
 const AdminPage: React.FC = () => {
@@ -417,61 +419,145 @@ const AdminPage: React.FC = () => {
         .order('created_at', { ascending: false })
         .limit(20);
 
-      // Fetch recent user changes with updated_by information
-      const { data: userChanges, error: userError } = await supabase
-        .from('users')
-        .select(`
-          id,
-          email,
-          first_name,
-          full_name,
-          updated_at,
-          updated_by,
-          users!updated_by(
-            first_name,
-            email
-          )
-        `)
-        .not('updated_at', 'is', null)
-        .order('updated_at', { ascending: false })
-        .limit(20);
+      // Fetch user change history entries
+      const { data: userHistory, error: historyError } = await supabase
+        .from('user_changes_history')
+        .select('id, user_id, changed_by, field_name, old_value, new_value, changed_at')
+        .order('changed_at', { ascending: false })
+        .limit(40);
 
       if (accessError) console.error('Error fetching access logs:', accessError);
-      if (userError) console.error('Error fetching user changes:', userError);
+      if (historyError) console.error('Error fetching user history:', historyError);
 
       console.log('📊 Access logs:', accessLogs);
-      console.log('👥 User changes:', userChanges);
-      
-      // Log first user change to inspect structure
-      if (userChanges && userChanges.length > 0) {
-        console.log('🔍 First user change structure:', userChanges[0]);
+      console.log('🗂️ User change history:', userHistory);
+      if (userHistory && userHistory.length > 0) {
+        console.log('🔍 First history entry:', userHistory[0]);
       }
 
-      // Transform access logs
-      const transformedAccessLogs: RecentChange[] = (accessLogs || []).map(log => ({
-        id: log.id,
-        type: 'access_log' as const,
-        created_at: log.created_at,
-        request_method: log.request_method,
-        endpoint: log.endpoint,
-        response_code: log.response_code
-      }));
+      const userIdSet = new Set<string>();
+      (userHistory || []).forEach(entry => {
+        if (entry.user_id) userIdSet.add(String(entry.user_id));
+        if (entry.changed_by) userIdSet.add(String(entry.changed_by));
+      });
 
-      // Transform user changes
-      const transformedUserChanges: RecentChange[] = (userChanges || []).map(user => {
-        // Handle the joined user data (which can be an array or single object)
-        const updatedByUser = Array.isArray(user.users) ? user.users[0] : user.users;
-        const change = {
-          id: user.id,
-          type: 'user_change' as const,
-          created_at: user.updated_at || new Date().toISOString(),
-          updated_at: user.updated_at,
-          user_name: user.full_name || user.first_name || user.email,
-          updated_by_name: updatedByUser?.first_name || updatedByUser?.email || 'System',
-          action: 'User updated'
+      const userLookup = new Map<string, { full_name?: string; first_name?: string; last_name?: string; email?: string }>();
+      if (userIdSet.size > 0) {
+        const { data: userRecords, error: lookupError } = await supabase
+          .from('users')
+          .select('id, full_name, first_name, last_name, email')
+          .in('id', Array.from(userIdSet));
+        if (lookupError) {
+          console.error('Error fetching user lookup data:', lookupError);
+        } else {
+          (userRecords || []).forEach(record => {
+            userLookup.set(String(record.id), {
+              full_name: record.full_name,
+              first_name: record.first_name,
+              last_name: (record as any).last_name,
+              email: record.email,
+            });
+          });
+        }
+      }
+
+      const getUserDisplayName = (userId?: string | number | null) => {
+        if (!userId) return 'System';
+        const entry = userLookup.get(String(userId));
+        if (!entry) return 'System';
+        return (
+          entry.full_name ||
+          [entry.first_name, entry.last_name].filter(Boolean).join(' ').trim() ||
+          entry.email ||
+          'System'
+        );
+      };
+
+      const filteredAccessLogs = (accessLogs || []).filter(log => log.endpoint && log.endpoint.includes('/api/hook/catch'));
+      console.log('📊 Access logs (filtered):', filteredAccessLogs);
+
+      const transformedAccessLogs: RecentChange[] = filteredAccessLogs.map(log => {
+        let info = '';
+        let bodyRequest = '';
+        if (log.request_body) {
+          try {
+            const parsed = JSON.parse(log.request_body);
+            if (parsed && typeof parsed === 'object') {
+              const entries = Object.entries(parsed).map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+              info = entries.join(' | ');
+              const bodyEntries: string[] = [];
+              if ('topic' in parsed) bodyEntries.push(`topic: ${parsed.topic}`);
+              if ('source' in parsed) bodyEntries.push(`source: ${parsed.source}`);
+              if ('email' in parsed) bodyEntries.push(`email: ${parsed.email}`);
+              if (bodyEntries.length === 0 && Array.isArray(parsed)) {
+                parsed.forEach((item: any, idx: number) => {
+                  if (item && typeof item === 'object') {
+                    ['topic', 'source', 'email'].forEach(field => {
+                      if (field in item) bodyEntries.push(`${field}[${idx}]: ${item[field]}`);
+                    });
+                  }
+                });
+              }
+              bodyRequest = bodyEntries.join(' | ');
+            } else {
+              info = String(log.request_body);
+              bodyRequest = info;
+            }
+          } catch (error) {
+            console.error('Failed to parse access log body:', error);
+            info = String(log.request_body);
+            bodyRequest = info;
+          }
+        }
+
+        return {
+          id: log.id,
+          type: 'access_log' as const,
+          created_at: log.created_at,
+          request_method: log.request_method,
+          endpoint: log.endpoint,
+          response_code: log.response_code,
+          info,
+          bodyRequest,
         };
-        console.log('🔄 Transformed user change:', change);
-        return change;
+      });
+
+      const historyByChange = new Map<string, { user_id: string | null; changed_by: string | null; changed_at: string | null; fields: Array<{ field: string; oldValue: any; newValue: any }> }>();
+      (userHistory || []).forEach(entry => {
+        const key = `${entry.user_id || 'unknown'}-${entry.changed_at || entry.id}`;
+        if (!historyByChange.has(key)) {
+          historyByChange.set(key, {
+            user_id: entry.user_id ? String(entry.user_id) : null,
+            changed_by: entry.changed_by ? String(entry.changed_by) : null,
+            changed_at: entry.changed_at || null,
+            fields: [],
+          });
+        }
+        historyByChange.get(key)?.fields.push({
+          field: entry.field_name,
+          oldValue: entry.field_name === 'password' ? '•••••' : entry.old_value,
+          newValue: entry.field_name === 'password' ? '•••••' : entry.new_value,
+        });
+      });
+
+      const transformedUserChanges: RecentChange[] = Array.from(historyByChange.values()).map(entry => {
+        const infoParts = entry.fields.map(({ field, oldValue, newValue }) => {
+          const titleField = toTitleCase(field);
+          const displayOld = oldValue === null || oldValue === undefined || oldValue === '' ? 'Empty' : oldValue;
+          const displayNew = newValue === null || newValue === undefined || newValue === '' ? 'Empty' : newValue;
+          return `${titleField}: ${displayOld} → ${displayNew}`;
+        });
+        if (infoParts.length === 0) infoParts.push('No field changes recorded');
+
+        return {
+          id: `history-${entry.user_id || 'unknown'}-${entry.changed_at || Date.now()}`,
+          type: 'user_change' as const,
+          created_at: entry.changed_at || new Date().toISOString(),
+          user_name: getUserDisplayName(entry.user_id),
+          updated_by_name: getUserDisplayName(entry.changed_by),
+          action: 'User updated',
+          info: infoParts.join(' | '),
+        };
       });
       
       console.log('📋 Transformed user changes array:', transformedUserChanges);
@@ -498,7 +584,11 @@ const AdminPage: React.FC = () => {
     fetchRecentChanges();
   }, []);
 
-
+  const toTitleCase = (value: string) =>
+    value
+      .split('_')
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
 
   // Show loading state
   if (isLoading || userLoading) {
@@ -556,7 +646,7 @@ const AdminPage: React.FC = () => {
     <div className="flex h-screen bg-base-100 w-full overflow-hidden">
       {/* Left Sidebar - Desktop Tabs as Sidebar */}
       <aside 
-        className="hidden md:flex flex-col bg-white border-r border-gray-200 shadow-lg fixed left-0 top-0 bottom-0 overflow-hidden transition-all duration-300 group"
+        className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 overflow-hidden transition-all duration-500 ease-in-out"
         style={{ width: isSidebarCollapsed ? '64px' : '256px' }}
         onMouseEnter={() => setIsSidebarCollapsed(false)}
         onMouseLeave={() => setIsSidebarCollapsed(true)}
@@ -715,7 +805,7 @@ const AdminPage: React.FC = () => {
 
       {/* Main Content Area */}
       <div 
-        className="flex-1 overflow-y-auto p-4 md:p-6 transition-all duration-300"
+        className="flex-1 overflow-y-auto px-2 sm:px-3 md:px-6 py-4 md:py-6 transition-all duration-300"
         style={{ marginLeft: window.innerWidth >= 768 ? (isSidebarCollapsed ? '64px' : '256px') : '0' }}
       >
       {/* Welcome Section */}
@@ -862,10 +952,10 @@ const AdminPage: React.FC = () => {
 
       {/* Recent Changes Section - Only show when no specific content is selected */}
       {selected.tab === null && selected.sub === null && (
-        <div className="w-full mt-8 px-4">
+        <div className="w-full mt-8 px-2 sm:px-3 md:px-4">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* User Changes */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
+            <div className="rounded-xl p-6">
               <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
                 <svg className="w-6 h-6 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
@@ -882,7 +972,7 @@ const AdminPage: React.FC = () => {
                 return userChangeCount > 0;
               })() ? (
                 <div className="overflow-x-auto">
-                  <table className="table table-sm w-full">
+                  <table className="table w-full">
                     <thead>
                       <tr>
                         <th className="text-gray-900 font-semibold">User</th>
@@ -919,7 +1009,7 @@ const AdminPage: React.FC = () => {
             </div>
 
             {/* Access Logs */}
-            <div className="bg-white rounded-xl shadow-lg p-6">
+            <div className="rounded-xl p-6">
               <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
                 <svg className="w-6 h-6 text-info" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -932,11 +1022,12 @@ const AdminPage: React.FC = () => {
                 </div>
               ) : recentChanges.filter(c => c.type === 'access_log').length > 0 ? (
                 <div className="overflow-x-auto">
-                  <table className="table table-sm w-full">
+                  <table className="table w-full">
                     <thead>
                       <tr>
                         <th className="text-gray-900 font-semibold">Method</th>
                         <th className="text-gray-900 font-semibold">Endpoint</th>
+                        <th className="text-gray-900 font-semibold">Body</th>
                         <th className="text-gray-900 font-semibold">Status</th>
                         <th className="text-gray-900 font-semibold">Time</th>
                       </tr>
@@ -945,13 +1036,7 @@ const AdminPage: React.FC = () => {
                       {recentChanges.filter(c => c.type === 'access_log').map((change) => (
                         <tr key={`${change.type}-${change.id}`}>
                           <td>
-                            <span className={`badge badge-sm ${
-                              change.request_method === 'GET' ? 'badge-success' :
-                              change.request_method === 'POST' ? 'badge-primary' :
-                              change.request_method === 'PUT' ? 'badge-warning' :
-                              change.request_method === 'DELETE' ? 'badge-error' :
-                              'badge-neutral'
-                            }`}>
+                            <span className="text-xs sm:text-sm font-medium text-gray-700">
                               {change.request_method}
                             </span>
                           </td>
@@ -961,12 +1046,12 @@ const AdminPage: React.FC = () => {
                             </div>
                           </td>
                           <td>
-                            <span className={`badge badge-sm ${
-                              change.response_code && change.response_code >= 200 && change.response_code < 300 ? 'badge-success' :
-                              change.response_code && change.response_code >= 400 && change.response_code < 500 ? 'badge-warning' :
-                              change.response_code && change.response_code >= 500 ? 'badge-error' :
-                              'badge-neutral'
-                            }`}>
+                            <div className="text-xs text-gray-600 break-words max-w-xs">
+                              {change.bodyRequest && change.bodyRequest.trim() !== '' ? change.bodyRequest : '—'}
+                            </div>
+                          </td>
+                          <td>
+                            <span className="text-xs sm:text-sm font-medium text-gray-700">
                               {change.response_code}
                             </span>
                           </td>

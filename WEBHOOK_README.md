@@ -18,6 +18,85 @@ Receives form data and creates a new lead.
 
 ### GET `/api/hook/health`
 
+### POST `/api/hook/graph/emails/sync`
+
+Triggers a background sync that fetches incoming and outgoing emails from Microsoft Graph and stores them in the Supabase `emails` table. The sync reuses the matching logic from the CRM UI (lead number recognition, domain filtering, signature stripping, etc.).
+
+**URL:** `http://localhost:3001/api/hook/graph/emails/sync`
+
+**Method:** `POST`
+
+**Body (optional):**
+
+```json
+{
+  "lookbackDays": 7,
+  "top": 100,
+  "mailbox": "shared-mailbox@lawoffice.org.il",
+  "mailboxes": [
+    "shared-potentialclients@lawoffice.org.il",
+    "shared-newclients@lawoffice.org.il"
+  ]
+}
+```
+
+- `lookbackDays` (number) – defaults to `GRAPH_EMAIL_LOOKBACK_DAYS` env var or 7 days.
+- `top` (number) – maximum messages per folder (Inbox & Sent Items), defaults to `GRAPH_EMAIL_MAX_RESULTS` or 100.
+- `mailbox` (string) – overrides the mailbox configured via environment variables for a single sync call.
+- `mailboxes` (array) – optional list of additional mailboxes to sync during the same run.
+- If no explicit mailbox list is provided, the service automatically pulls distinct email addresses from the Supabase `users` table (filtered by `GRAPH_MAILBOX_DOMAIN`, if set) and syncs each mailbox sequentially.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Email sync executed successfully",
+  "data": {
+    "processed": 320,
+    "matched": 96,
+    "inserted": 90,
+    "skipped": 6,
+    "mailboxes": [
+      {
+        "mailbox": "shared-potentialclients@lawoffice.org.il",
+        "processed": 120,
+        "matched": 48,
+        "inserted": 45,
+        "skipped": 3
+      },
+      {
+        "mailbox": "eliah@lawoffice.org.il",
+        "processed": 200,
+        "matched": 48,
+        "inserted": 45,
+        "skipped": 3
+      }
+    ],
+    "failures": []
+  }
+}
+```
+
+### GET `/api/hook/graph/emails/health`
+
+Returns metadata about the Graph email webhook configuration.
+
+**URL:** `http://localhost:3001/api/hook/graph/emails/health`
+
+**Method:** `GET`
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "message": "Graph email sync webhook is available",
+  "mailbox": "shared-mailbox@lawoffice.org.il",
+  "configured": true
+}
+```
+
 Health check endpoint for the webhook.
 
 **URL:** `http://localhost:3001/api/hook/health`
@@ -183,6 +262,19 @@ Examples:
 - Use HTTPS in production
 
 ## Database Schema
+
+## Microsoft Graph Email Sync Configuration
+
+Set the following environment variables in the backend to enable the email sync webhook:
+
+- `GRAPH_MAILBOX_USER` (recommended) or `GRAPH_SHARED_MAILBOX` – user principal name (UPN) or shared mailbox address to fetch.
+- `GRAPH_MAILBOX_DOMAIN` – domain used to classify outgoing vs. incoming messages (defaults to `lawoffice.org.il`).
+- `GRAPH_EMAIL_LOOKBACK_DAYS` – default lookback window (days) when no override is supplied (defaults to `7`).
+- `GRAPH_EMAIL_MAX_RESULTS` – cap on messages fetched per folder (defaults to `100`, hard-capped at 500).
+- `VITE_MSAL_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `VITE_MSAL_TENANT_ID` – Azure AD application credentials with `Mail.Read` / `Mail.ReadWrite` application permissions for the target mailbox.
+- `GRAPH_MAILBOX_LIST` (optional) – comma-separated list of mailbox addresses to sync alongside any values supplied in the request body.
+
+Ensure the Azure application has the necessary Microsoft Graph permissions and admin consent to access the chosen mailbox.
 
 The webhook creates leads in the `leads` table with the following structure:
 

@@ -2,6 +2,7 @@ import { supabase } from './supabase';
 
 // Cache for stage names to avoid repeated database calls
 let stageNamesCache: { [key: string]: string } = {};
+let stageColoursCache: { [key: string]: string } = {};
 let isCacheInitialized = false;
 
 /**
@@ -17,7 +18,7 @@ export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
     console.log('🔍 StageUtils - Fetching stage names from database...');
     const { data, error } = await supabase
       .from('lead_stages')
-      .select('id, name')
+      .select('id, name, colour')
       .order('name', { ascending: true });
     
     if (error) {
@@ -30,6 +31,9 @@ export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
       const stageMapping: { [key: string]: string } = {};
       data.forEach(stage => {
         stageMapping[stage.id] = stage.name || stage.id;
+        if (stage.colour) {
+          stageColoursCache[stage.id] = stage.colour;
+        }
       });
       
       console.log('🔍 StageUtils - Stage names fetched and cached:', stageMapping);
@@ -60,12 +64,12 @@ export const getStageName = (stageId: string): string => {
   
   // Special mapping for known stage IDs that might not be in the database
   const specialStageMappings: { [key: string]: string } = {
-    '0': 'Precommunication',
-    '1': 'Created',
+    '0': 'Created',
+    '1': 'Precommunication',
     '10': 'Scheduler assigned',
     '20': 'Meeting scheduled',
     '35': 'Meeting Irrelevant',
-    '50': 'Meeting Scheduled',
+    '50': 'Mtng sum+Agreement sent',
     '51': 'Client declined price offer',
     '91': 'Dropped (Spam/Irrelevant)',
     '105': 'Success',
@@ -159,6 +163,7 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
 export const clearStageNamesCache = () => {
   console.log('🔍 StageUtils - Clearing stage names cache');
   stageNamesCache = {};
+  stageColoursCache = {};
   isCacheInitialized = false;
 };
 
@@ -169,6 +174,16 @@ export const refreshStageNames = async (): Promise<{ [key: string]: string }> =>
   console.log('🔍 StageUtils - Force refreshing stage names cache');
   clearStageNamesCache();
   return await fetchStageNames();
+};
+
+/**
+ * Gets the colour configured for a stage
+ * @param stageId - The stage ID to get the colour for
+ * @returns Hex colour string starting with # or empty string
+ */
+export const getStageColour = (stageId: string): string => {
+  const stageIdStr = String(stageId);
+  return stageColoursCache[stageIdStr] || '';
 };
 
 /**

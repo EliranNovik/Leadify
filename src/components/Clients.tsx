@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
-import { getStageName, fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import BalanceEditModal from './BalanceEditModal';
@@ -46,7 +46,6 @@ import {
   SparklesIcon,
   XMarkIcon,
   HandThumbUpIcon,
-  PlusIcon,
   TagIcon,
   ChartBarIcon,
   CheckIcon,
@@ -63,11 +62,10 @@ import FinancesTab from './client-tabs/FinancesTab';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { createTeamsMeeting, sendEmail } from '../lib/graph';
-import { ClientTabProps } from '../types/client';
+import { ClientInteractionsCache, ClientTabProps } from '../types/client';
 import { useAdminRole } from '../hooks/useAdminRole';
 import {
   InteractionRequiredAuthError,
-  type IPublicClientApplication,
   type AccountInfo,
 } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
@@ -75,6 +73,25 @@ import LeadSummaryDrawer from './LeadSummaryDrawer';
 import { generateProformaName } from '../lib/proforma';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
+import SendPriceOfferModal from './SendPriceOfferModal';
+
+const getContrastingTextColor = (hexColor?: string | null) => {
+  if (!hexColor) return '#111827';
+  let sanitized = hexColor.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map(char => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return '#111827';
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+  const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+  const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.55 ? '#111827' : '#ffffff';
+};
 
 interface TabItem {
   id: string;
@@ -82,6 +99,16 @@ interface TabItem {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   badge?: number;
   component: React.ComponentType<ClientTabProps>;
+}
+
+interface ClientSignedForm {
+  fileId: string;
+  handlerId: string;
+  handler: string;
+  currency: string;
+  numApplicants: string;
+  proposal: string;
+  potentialValue: string;
 }
 
 // Note: This tabs array is now replaced by the dynamic one below
@@ -128,13 +155,6 @@ const getCurrencySymbol = (currencyCode?: string) => {
       return '$';
   }
 };
-
-// Add currency options at the top of the component
-const currencyOptions = [
-  { value: '₪', label: '₪' },
-  { value: '$', label: '$' },
-  { value: '€', label: '€' },
-];
 
 // Add getValidTeamsLink helper (copied from MeetingTab)
 function getValidTeamsLink(link: string | undefined): string {
@@ -389,13 +409,7 @@ const Clients: React.FC<ClientsProps> = ({
     meetingPaymentForm: '',
     specialNotes: '',
   });
-  const [showSendOfferDrawer, setShowSendOfferDrawer] = useState(false);
-  const [offerSubject, setOfferSubject] = useState('');
-  const [offerBody, setOfferBody] = useState('');
-  const [offerSending, setOfferSending] = useState(false);
-  const [offerTemplateLang, setOfferTemplateLang] = useState<'en'|'he'|null>(null);
-  const [offerTotal, setOfferTotal] = useState(selectedClient?.proposal_total || '');
-  const [offerCurrency, setOfferCurrency] = useState(selectedClient?.proposal_currency || '₪');
+  const [showSendOfferModal, setShowSendOfferModal] = useState(false);
   const [showSignedDrawer, setShowSignedDrawer] = useState(false);
   const [signedDate, setSignedDate] = useState(() => {
     const today = new Date();
@@ -441,60 +455,121 @@ const Clients: React.FC<ClientsProps> = ({
   useEffect(() => {
     const fetchEmployees = async () => {
       try {
-        const { data, error } = await supabase
+        const { data: activeUsers, error: activeUsersError } = await supabase
           .from('users')
-          .select(`
-            id,
-            full_name,
-            email,
-            active,
-            employee_id,
-            tenants_employee!employee_id (
-              id,
-              display_name,
-              active,
-              is_active
-            )
-          `)
-          .eq('active', true)
-          .order('full_name', { ascending: true });
+          .select('employee_id, full_name, email')
+          .eq('is_active', true);
 
-        if (!error && data) {
-          const mapped = data
+        if (!activeUsersError && activeUsers && activeUsers.length > 0) {
+          const activeEmployeeIds = activeUsers
+            .map(user => user.employee_id)
+            .filter((id): id is number => id !== null && id !== undefined);
+
+          if (activeEmployeeIds.length > 0) {
+          const { data: employeesData, error: employeesError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name, full_name, is_active, active')
+            .in('id', activeEmployeeIds)
+            .order('display_name', { ascending: true });
+
+            if (!employeesError && employeesData) {
+              const mapped = employeesData
+                .filter(emp => emp?.id !== null && emp?.id !== undefined)
+                .map(emp => {
+                  const primaryName = typeof emp.full_name === 'string' ? emp.full_name.trim() : '';
+                  const fallbackName =
+                    typeof emp.display_name === 'string' ? emp.display_name.trim() : '';
+                  const displayName = primaryName || fallbackName;
+                  if (
+                    !displayName ||
+                    /^\d+$/.test(displayName) ||
+                    displayName.includes('@')
+                  ) {
+                    return null;
+                  }
+                  return {
+                    id: emp.id,
+                    display_name: displayName,
+                    active: true,
+                    source: 'tenants_employee',
+                  };
+                })
+                .filter(Boolean) as Array<{
+                  id: number | string;
+                  display_name: string;
+                  active: boolean;
+                  source: string;
+                }>;
+
+              if (mapped.length > 0) {
+                setAllEmployees(mapped);
+                return;
+              }
+            }
+          }
+
+          const fallbackMapped = activeUsers
+            .filter(user => user.employee_id !== null && user.employee_id !== undefined)
             .map(user => {
-              const employee = Array.isArray(user.tenants_employee)
-                ? user.tenants_employee[0]
-                : user.tenants_employee;
-              const id = employee?.id ?? user.employee_id;
-              if (!id) return null;
-              const label = employee?.display_name || user.full_name || user.email || '';
-              if (!label) return null;
+              const fullName = typeof user.full_name === 'string' ? user.full_name.trim() : '';
+              if (!fullName || /^\d+$/.test(fullName) || fullName.includes('@')) {
+                return null;
+              }
               return {
-                id,
-                display_name: label,
+                id: user.employee_id as number,
+                display_name: fullName,
                 active: true,
                 source: 'users',
               };
             })
-            .filter(Boolean);
+            .filter(Boolean) as Array<{
+              id: number;
+              display_name: string;
+              active: boolean;
+              source: string;
+            }>;
 
-          if (mapped.length > 0) {
-            setAllEmployees(mapped);
+          if (fallbackMapped.length > 0) {
+            setAllEmployees(fallbackMapped);
             return;
           }
         }
       } catch (error) {
-        console.error('Clients: Error fetching employees from users table:', error);
+        console.error('Clients: Error fetching active users for handlers:', error);
       }
 
       try {
         const { data, error } = await supabase
           .from('tenants_employee')
           .select('id, display_name, active, is_active, bonuses_role')
+          .eq('is_active', true)
           .order('display_name', { ascending: true });
 
         if (!error && data) {
-          setAllEmployees(data);
+          const mapped = data
+            .filter(emp => emp?.id !== null && emp?.id !== undefined)
+            .map(emp => {
+              const displayName =
+                (typeof (emp as any).full_name === 'string' && (emp as any).full_name.trim()) ||
+                (typeof emp.display_name === 'string' && emp.display_name.trim()) ||
+                '';
+              if (!displayName || /^\d+$/.test(displayName) || displayName.includes('@')) {
+                return null;
+              }
+              return {
+                id: emp.id,
+                display_name: displayName,
+                active: true,
+                source: 'tenants_employee',
+              };
+            })
+            .filter(Boolean) as Array<{
+              id: number | string;
+              display_name: string;
+              active: boolean;
+              source: string;
+            }>;
+          setAllEmployees(mapped);
         }
       } catch (fallbackError) {
         console.error('Clients: Error fetching employees from tenants_employee table:', fallbackError);
@@ -541,13 +616,20 @@ const Clients: React.FC<ClientsProps> = ({
       try {
         const { data, error } = await supabase
           .from('lead_stages')
-          .select('id, name')
-          .order('name', { ascending: true });
+          .select('id, name, colour')
+          .order('id', { ascending: true });
         
         if (error) {
           console.error('Clients: Error fetching stages:', error);
         } else if (data) {
-          setAvailableStages(data);
+          const normalizedStages = data
+            .map(stage => ({
+              id: Number(stage.id),
+              name: stage.name ?? '',
+              colour: stage.colour ?? null,
+            }))
+            .filter(stage => !Number.isNaN(stage.id));
+          setAvailableStages(normalizedStages);
         }
       } catch (err) {
         console.error('Clients: Exception while fetching stages:', err);
@@ -565,47 +647,7 @@ const Clients: React.FC<ClientsProps> = ({
     });
   }, []);
   
-  // State for unactivated lead view
-  const [isUnactivatedView, setIsUnactivatedView] = useState(false);
-  const [userManuallyExpanded, setUserManuallyExpanded] = useState(false);
-
-  // Debug isUnactivatedView changes
-  useEffect(() => {
-    // isUnactivatedView changed
-  }, [isUnactivatedView]);
-
-  // Check selectedClient prop and set isUnactivatedView accordingly
-  useEffect(() => {
-    if (selectedClient) {
-      
-      // Reset userManuallyExpanded when a new client is selected
-      setUserManuallyExpanded(false);
-      
-      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const unactivationReason = selectedClient.unactivation_reason;
-      const isUnactivated = isLegacy ? 
-        (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
-        (String(selectedClient.stage) === '91' || String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== ''));
-      
-      
-      setIsUnactivatedView(isUnactivated);
-    }
-  }, [selectedClient]);
-  
-  // Manual check for unactivation (in case useEffect doesn't trigger)
-  if (selectedClient) {
-    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-    const unactivationReason = selectedClient.unactivation_reason;
-    const isUnactivated = isLegacy ? 
-      (String(selectedClient.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
-      ((unactivationReason && unactivationReason.trim() !== '') || false);
-    
-    // Only set to true if it's currently false and should be true
-    // Don't override if user has manually set it to false
-    if (isUnactivated && isUnactivatedView === false) {
-      setIsUnactivatedView(true);
-    }
-  }
+  const lastCategoryRefreshIds = useRef<Set<string>>(new Set());
   
   // State for unactivation modal
   const [showUnactivationModal, setShowUnactivationModal] = useState(false);
@@ -615,8 +657,7 @@ const Clients: React.FC<ClientsProps> = ({
   // State for activation modal
   const [showActivationModal, setShowActivationModal] = useState(false);
 
-  // State for available stages
-  const [availableStages, setAvailableStages] = useState<Array<{id: string, name: string}>>([]);
+
 
   // 1. Add state for the rescheduling drawer and meetings list
   const [showRescheduleDrawer, setShowRescheduleDrawer] = useState(false);
@@ -662,7 +703,9 @@ const Clients: React.FC<ClientsProps> = ({
 
   // 1. Add state for the Success drawer and its form fields
   const [showSuccessDrawer, setShowSuccessDrawer] = useState(false);
-  const [successForm, setSuccessForm] = useState({
+  const [successForm, setSuccessForm] = useState<ClientSignedForm>({
+    fileId: '',
+    handlerId: '',
     handler: '',
     currency: '₪',
     numApplicants: '',
@@ -670,6 +713,266 @@ const Clients: React.FC<ClientsProps> = ({
     potentialValue: '',
   });
   const [schedulerOptions, setSchedulerOptions] = useState<string[]>([]);
+  const [schedulerSearchTerm, setSchedulerSearchTerm] = useState('');
+  const [filteredSchedulerOptions, setFilteredSchedulerOptions] = useState<string[]>([]);
+  const [showSchedulerDropdown, setShowSchedulerDropdown] = useState(false);
+const [handlerSearchTerm, setHandlerSearchTerm] = useState('');
+const [filteredHandlerSearchOptions, setFilteredHandlerSearchOptions] = useState<
+  Array<{ id: string; label: string }>
+>([]);
+const [showHandlerSearchDropdown, setShowHandlerSearchDropdown] = useState(false);
+const handlerSearchContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // State and helpers for lead stages
+  const [availableStages, setAvailableStages] = useState<Array<{ id: number; name: string; colour?: string | null }>>([]);
+  type StageDropdownAnchor = 'badge' | 'desktop' | 'mobile';
+  const [stageDropdownAnchor, setStageDropdownAnchor] = useState<StageDropdownAnchor | null>(null);
+  const badgeStageDropdownRef = useRef<HTMLDivElement | null>(null);
+  const desktopStageDropdownRef = useRef<HTMLDivElement | null>(null);
+  const mobileStageDropdownRef = useRef<HTMLDivElement | null>(null);
+  const badgeStageListRef = useRef<HTMLDivElement | null>(null);
+  const desktopStageListRef = useRef<HTMLDivElement | null>(null);
+  const mobileStageListRef = useRef<HTMLDivElement | null>(null);
+
+  const getDropdownRef = (anchor: StageDropdownAnchor) => {
+    switch (anchor) {
+      case 'badge':
+        return badgeStageDropdownRef;
+      case 'desktop':
+        return desktopStageDropdownRef;
+      case 'mobile':
+        return mobileStageDropdownRef;
+      default:
+        return badgeStageDropdownRef;
+    }
+  };
+
+  const getListRef = (anchor: StageDropdownAnchor) => {
+    switch (anchor) {
+      case 'badge':
+        return badgeStageListRef;
+      case 'desktop':
+        return desktopStageListRef;
+      case 'mobile':
+        return mobileStageListRef;
+      default:
+        return badgeStageListRef;
+    }
+  };
+
+  const stageIdMap = useMemo(() => {
+    const map = new Map<string, number>();
+    availableStages.forEach(stage => {
+      if (!stage) return;
+      const { id, name } = stage;
+      if (id !== undefined && id !== null && !Number.isNaN(Number(id))) {
+        const numericId = Number(id);
+        map.set(normalizeStageName(String(id)), numericId);
+      }
+      if (name) {
+        const numericId = Number(id);
+        if (!Number.isNaN(numericId)) {
+          map.set(normalizeStageName(name), numericId);
+        }
+      }
+    });
+    return map;
+  }, [availableStages]);
+
+  const stageAliasMap = useMemo<Record<string, string>>(
+    () => ({
+      financesandpaymentsplan: 'financespaymentsplan',
+      meetingpaid: 'meetingcomplete',
+      paidmeeting: 'meetingcomplete',
+      clientdeclined: 'clientdeclinedpriceoffer',
+    }),
+    []
+  );
+
+  const manualStageIdFallbacks = useMemo<Record<string, number>>(
+    () => ({
+      created: 0,
+      schedulerassigned: 10,
+      precommunication: 11,
+      communicationstarted: 15,
+      meetingscheduled: 20,
+      meetingcomplete: 30,
+      meetingirrelevant: 35,
+      waitingformtngsum: 40,
+      mtngsumagreementsent: 50,
+      clientdeclinedpriceoffer: 51,
+      clientdeclined: 51,
+      anothermeeting: 55,
+      clientsignedagreement: 60,
+      paymentrequestsent: 70,
+      droppedspamirrelevant: 91,
+      success: 100,
+      handlerset: 105,
+      handlerstarted: 110,
+      applicationsubmitted: 150,
+      caseclosed: 200,
+    }),
+    []
+  );
+
+  const sortedStages = useMemo(
+    () =>
+      (availableStages || [])
+        .slice()
+        .sort((a, b) => (Number(a?.id) || 0) - (Number(b?.id) || 0)),
+    [availableStages]
+  );
+
+  const resolveStageId = useCallback(
+    (value: string | number | null | undefined): number | null => {
+      if (value === null || value === undefined) {
+        return null;
+      }
+
+      if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : null;
+      }
+
+      const strValue = String(value).trim();
+      if (!strValue) {
+        return null;
+      }
+
+      const directNumeric = Number(strValue);
+      if (!Number.isNaN(directNumeric) && Number.isFinite(directNumeric)) {
+        return directNumeric;
+      }
+
+      const normalized = normalizeStageName(strValue);
+
+      if (stageIdMap.has(normalized)) {
+        return stageIdMap.get(normalized) ?? null;
+      }
+
+      const aliasTarget = stageAliasMap[normalized];
+      if (aliasTarget && stageIdMap.has(aliasTarget)) {
+        return stageIdMap.get(aliasTarget) ?? null;
+      }
+
+      if (manualStageIdFallbacks[normalized] !== undefined) {
+        return manualStageIdFallbacks[normalized];
+      }
+
+      console.warn('Unable to resolve stage identifier to numeric ID', { value, normalized });
+      return null;
+    },
+    [stageAliasMap, stageIdMap, manualStageIdFallbacks]
+  );
+
+  useEffect(() => {
+    if (!stageDropdownAnchor) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      const dropdownRefs = [badgeStageDropdownRef, desktopStageDropdownRef, mobileStageDropdownRef];
+      const clickedInside = dropdownRefs.some(ref => ref.current?.contains(target));
+      if (!clickedInside) {
+        setStageDropdownAnchor(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [stageDropdownAnchor]);
+
+  useEffect(() => {
+    if (!stageDropdownAnchor) return;
+    const listRef = getListRef(stageDropdownAnchor).current;
+    if (!listRef) return;
+
+    const currentStageId = resolveStageId(selectedClient?.stage);
+    const currentStageIndex = sortedStages.findIndex(
+      stageOption => resolveStageId(stageOption.id) === currentStageId
+    );
+
+    if (currentStageIndex < 0) return;
+
+    listRef.scrollTop = 0;
+  }, [stageDropdownAnchor, selectedClient?.stage, sortedStages, resolveStageId]);
+
+  const getStageIdOrWarn = useCallback(
+    (alias: string | number): number | null => {
+      const resolved = resolveStageId(alias);
+      if (resolved === null) {
+        console.warn('Unable to resolve stage alias to numeric ID', { alias, availableStages });
+      }
+      return resolved;
+    },
+    [availableStages, resolveStageId]
+  );
+
+  const normalizeClientStage = useCallback(
+    (client: any) => {
+      if (!client) return client;
+      const resolved = resolveStageId(client.stage);
+      if (resolved !== null) {
+        return { ...client, stage: resolved };
+      }
+      return client;
+    },
+    [resolveStageId]
+  );
+
+  const droppedStageId = useMemo(
+    () => getStageIdOrWarn('Dropped (Spam/Irrelevant)') ?? 91,
+    [getStageIdOrWarn]
+  );
+
+  // State for unactivated lead view
+  const [isUnactivatedView, setIsUnactivatedView] = useState(false);
+  const [userManuallyExpanded, setUserManuallyExpanded] = useState(false);
+
+  // Debug isUnactivatedView changes
+  useEffect(() => {
+    // isUnactivatedView changed
+  }, [isUnactivatedView]);
+
+  // Check selectedClient prop and set isUnactivatedView accordingly
+  useEffect(() => {
+    if (selectedClient) {
+      // Reset userManuallyExpanded when a new client is selected
+      setUserManuallyExpanded(false);
+
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const unactivationReason = selectedClient.unactivation_reason;
+      const stageNumeric =
+        selectedClient.stage !== null && selectedClient.stage !== undefined
+          ? Number(selectedClient.stage)
+          : null;
+      const isDropped = stageNumeric !== null && !Number.isNaN(stageNumeric) && stageNumeric === droppedStageId;
+      const isUnactivated = isLegacy
+        ? (isDropped || (unactivationReason && unactivationReason.trim() !== ''))
+        : (isDropped || (unactivationReason && unactivationReason.trim() !== ''));
+
+      setIsUnactivatedView(isUnactivated);
+    }
+  }, [selectedClient, droppedStageId]);
+
+  useEffect(() => {
+    if (!selectedClient || userManuallyExpanded) {
+      return;
+    }
+
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    const unactivationReason = selectedClient.unactivation_reason;
+    const stageNumeric =
+      selectedClient.stage !== null && selectedClient.stage !== undefined
+        ? Number(selectedClient.stage)
+        : null;
+    const isDropped = stageNumeric !== null && !Number.isNaN(stageNumeric) && stageNumeric === droppedStageId;
+    const isUnactivated = isLegacy
+      ? (isDropped || Boolean(unactivationReason && unactivationReason.trim() !== ''))
+      : Boolean(unactivationReason && unactivationReason.trim() !== '');
+
+    if (isUnactivated && !isUnactivatedView) {
+      setIsUnactivatedView(true);
+    }
+  }, [selectedClient, userManuallyExpanded, isUnactivatedView, droppedStageId]);
 
   // Update newPayment currency when selected client changes
   useEffect(() => {
@@ -689,20 +992,63 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [selectedClient]);
 
-  // Fetch scheduler options from database - employees with bonuses_role 's' or 'c'
+  // Populate scheduler options with all active employees
   useEffect(() => {
-    const fetchSchedulers = async () => {
-      const { data, error } = await supabase
-        .from('tenants_employee')
-        .select('display_name, bonuses_role')
-        .in('bonuses_role', ['s', 'c'])
-        .order('display_name', { ascending: true });
-      if (!error && data) {
-        setSchedulerOptions(data.map((emp: any) => emp.display_name));
-      }
-    };
-    fetchSchedulers();
-  }, []);
+    if (allEmployees && allEmployees.length > 0) {
+      const uniqueNames = Array.from(
+        new Set(
+          allEmployees
+            .map(emp => (typeof emp.display_name === 'string' ? emp.display_name.trim() : ''))
+            .filter(name => name && !/^\d+$/.test(name))
+        )
+      ).sort((a, b) => a.localeCompare(b));
+      setSchedulerOptions(uniqueNames);
+      setFilteredSchedulerOptions(uniqueNames);
+    } else {
+      setSchedulerOptions([]);
+      setFilteredSchedulerOptions([]);
+    }
+  }, [allEmployees]);
+  useEffect(() => {
+    const search = schedulerSearchTerm.trim().toLowerCase();
+    if (!search) {
+      setFilteredSchedulerOptions(schedulerOptions);
+    } else {
+      setFilteredSchedulerOptions(
+        schedulerOptions.filter(option => option.toLowerCase().includes(search))
+      );
+    }
+  }, [schedulerSearchTerm, schedulerOptions]);
+
+useEffect(() => {
+  if (!showSchedulerDropdown) return;
+  const handleClickOutside = (event: MouseEvent) => {
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest('[data-assign-dropdown="true"]')) {
+      setShowSchedulerDropdown(false);
+    }
+  };
+  document.addEventListener('mousedown', handleClickOutside);
+  return () => {
+    document.removeEventListener('mousedown', handleClickOutside);
+  };
+}, [showSchedulerDropdown]);
+
+useEffect(() => {
+  if (!selectedClient) {
+    setSchedulerSearchTerm('');
+    setFilteredSchedulerOptions(schedulerOptions);
+    return;
+  }
+  const schedulerName =
+    selectedClient.scheduler && typeof selectedClient.scheduler === 'string'
+      ? selectedClient.scheduler
+      : '';
+
+  setSchedulerSearchTerm(schedulerName);
+  setFilteredSchedulerOptions(schedulerOptions);
+}, [selectedClient, schedulerOptions]);
+
 
   // Helper to convert lead number to case number
   const convertLeadToCaseNumber = (leadNumber: string): string => {
@@ -713,75 +1059,220 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Handler for Payment Received - new Client !!!
   const handlePaymentReceivedNewClient = () => {
-    setShowSuccessDrawer(true);
+    if (!selectedClient) return;
+    const defaultCurrency =
+      selectedClient.proposal_currency ||
+      selectedClient.balance_currency ||
+      '₪';
+
+    const existingHandlerId =
+      selectedClient.case_handler_id != null
+        ? String(selectedClient.case_handler_id)
+        : '';
+
+    const existingHandlerName =
+      (existingHandlerId && handlerOptionsMap.get(existingHandlerId)) ||
+      selectedClient.handler ||
+      '';
+
     setSuccessForm({
-      handler: '', // No default name
-      currency: selectedClient?.proposal_currency || '₪',
-      numApplicants: selectedClient?.number_of_applicants_meeting || '',
-      proposal: selectedClient?.proposal_total || '',
-      potentialValue: selectedClient?.potential_value || '',
+      fileId: selectedClient.file_id || '',
+      handlerId: existingHandlerId,
+      handler: existingHandlerName,
+      currency: defaultCurrency || '₪',
+      numApplicants: selectedClient.number_of_applicants_meeting
+        ? String(selectedClient.number_of_applicants_meeting)
+        : '',
+      proposal: selectedClient.proposal_total
+        ? String(selectedClient.proposal_total)
+        : '',
+      potentialValue: selectedClient.potential_value
+        ? String(selectedClient.potential_value)
+        : '',
     });
+
+    setShowSuccessDrawer(true);
   };
 
   // Handler to save Success drawer
   const handleSaveSuccessDrawer = async () => {
     if (!selectedClient) return;
     try {
-      // Convert empty strings to appropriate values for numeric fields
-      const numApplicants = successForm.numApplicants === '' ? null : Number(successForm.numApplicants);
-      const proposal = successForm.proposal === '' ? null : Number(successForm.proposal);
-      const potentialValue = successForm.potentialValue === '' ? null : Number(successForm.potentialValue);
-      
-      // Convert lead number to case number
-      const caseNumber = convertLeadToCaseNumber(selectedClient.lead_number);
-      
-      const updateData: any = {
-        stage: 'Success',
-        lead_number: caseNumber, // Update the lead number to case number
-        proposal_currency: successForm.currency,
-        number_of_applicants_meeting: numApplicants,
-        proposal_total: proposal,
-        potential_value: potentialValue,
-      };
-      if (successForm.handler) {
-        updateData.closer = successForm.handler;
+      const numApplicants =
+        successForm.numApplicants.trim() === ''
+          ? null
+          : Number(successForm.numApplicants);
+      const proposal =
+        successForm.proposal.trim() === ''
+          ? null
+          : Number(successForm.proposal);
+      const potentialValue =
+        successForm.potentialValue.trim() === ''
+          ? null
+          : Number(successForm.potentialValue);
+      const fileId = successForm.fileId.trim() === '' ? null : successForm.fileId.trim();
+
+      if (
+        (successForm.numApplicants && Number.isNaN(Number(successForm.numApplicants))) ||
+        (successForm.proposal && Number.isNaN(Number(successForm.proposal))) ||
+        (successForm.potentialValue && Number.isNaN(Number(successForm.potentialValue)))
+      ) {
+        toast.error('Please enter valid numeric values.');
+        return;
       }
-      
+
+      const caseNumber = convertLeadToCaseNumber(selectedClient.lead_number);
+
+      const successStageId = resolveStageId('Success');
+      if (successStageId === null) {
+        toast.error('Unable to resolve "Success" stage. Please contact an administrator.');
+        return;
+      }
+
       const actor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
-      updateData.stage_changed_by = actor.fullName;
-      updateData.stage_changed_at = stageTimestamp;
 
-      const { error } = await supabase
-        .from('leads')
-        .update(updateData)
-        .eq('id', selectedClient.id);
-      
-      if (error) throw error;
+      const isLegacyLead =
+        selectedClient.lead_type === 'legacy' ||
+        selectedClient.id?.toString().startsWith('legacy_');
 
-      await recordLeadStageChange({
-        lead: selectedClient,
-        stage: 'Success',
-        actor,
-        timestamp: stageTimestamp,
-      });
-      
-      // Update local state immediately
-      setSelectedClient((prev: any) => ({
-        ...prev,
-        stage: 'Success',
-        lead_number: caseNumber, // Update the lead number in local state
-        proposal_currency: successForm.currency,
-        number_of_applicants_meeting: numApplicants,
-        proposal_total: proposal,
-        potential_value: potentialValue,
-      }));
-      
+      const handlerIdNumeric =
+        successForm.handlerId && successForm.handlerId.trim() !== ''
+          ? Number.parseInt(successForm.handlerId, 10)
+          : null;
+
+      const handlerName =
+        successForm.handler ||
+        (handlerIdNumeric != null
+          ? handlerOptionsMap.get(String(handlerIdNumeric)) || ''
+          : '');
+
+      if (isLegacyLead) {
+        const legacyId = selectedClient.id
+          .toString()
+          .replace('legacy_', '');
+
+        const mapCurrencyToLegacyId = (value: string | null | undefined) => {
+          switch ((value || '').trim()) {
+            case '₪':
+            case 'ILS':
+            case 'NIS':
+              return 1;
+            case '$':
+            case 'USD':
+              return 3;
+            case '€':
+            case 'EUR':
+              return 2;
+            case '£':
+            case 'GBP':
+              return 4;
+            default:
+              return 1;
+          }
+        };
+
+      const updateData: any = {
+        file_id: fileId,
+        case_handler_id: handlerIdNumeric,
+        stage: successStageId,
+        stage_changed_by: actor.fullName,
+        stage_changed_at: stageTimestamp,
+        no_of_applicants: numApplicants,
+        total: proposal,
+        potential_total: potentialValue,
+        currency_id: mapCurrencyToLegacyId(successForm.currency),
+      };
+
+        const { error } = await supabase
+          .from('leads_lead')
+          .update(updateData)
+          .eq('id', legacyId);
+
+        if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: successStageId,
+          actor,
+          timestamp: stageTimestamp,
+        });
+
+        setSelectedClient((prev: any) => ({
+          ...prev,
+          stage: successStageId,
+          lead_number: caseNumber,
+          proposal_currency: successForm.currency,
+          number_of_applicants_meeting: numApplicants ?? prev?.number_of_applicants_meeting,
+          proposal_total: proposal ?? prev?.proposal_total,
+          potential_value: potentialValue ?? prev?.potential_value,
+          file_id: fileId ?? prev?.file_id,
+          case_handler_id: handlerIdNumeric ?? prev?.case_handler_id,
+          handler: handlerName || prev?.handler,
+          closer: handlerName || prev?.closer,
+          balance: proposal ?? prev?.balance,
+          balance_currency: successForm.currency || prev?.balance_currency,
+        }));
+
+        await refreshClientData(selectedClient.id);
+      } else {
+        const updateData: any = {
+          stage: successStageId,
+          lead_number: caseNumber,
+          file_id: fileId,
+          proposal_currency: successForm.currency,
+        balance_currency: successForm.currency,
+          number_of_applicants_meeting: numApplicants,
+          proposal_total: proposal,
+          potential_value: potentialValue,
+        balance: proposal,
+          stage_changed_by: actor.fullName,
+          stage_changed_at: stageTimestamp,
+        };
+
+        if (handlerName) {
+          updateData.handler = handlerName;
+          updateData.closer = handlerName;
+        }
+        if (handlerIdNumeric != null && !Number.isNaN(handlerIdNumeric)) {
+          updateData.case_handler_id = handlerIdNumeric;
+        }
+
+        const { error } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', selectedClient.id);
+
+        if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: successStageId,
+          actor,
+          timestamp: stageTimestamp,
+        });
+
+        setSelectedClient((prev: any) => ({
+          ...prev,
+          stage: successStageId,
+          lead_number: caseNumber,
+          proposal_currency: successForm.currency,
+          number_of_applicants_meeting: numApplicants,
+          proposal_total: proposal,
+          potential_value: potentialValue,
+          file_id: fileId ?? prev?.file_id,
+          handler: handlerName || prev?.handler,
+          case_handler_id:
+            handlerIdNumeric != null ? handlerIdNumeric : prev?.case_handler_id,
+          closer: handlerName || prev?.closer,
+          balance: proposal ?? prev?.balance,
+          balance_currency: successForm.currency || prev?.balance_currency,
+        }));
+
+        await refreshClientData(selectedClient.id);
+      }
+
       setShowSuccessDrawer(false);
-      
-      // Force a complete refresh from the database
-      await refreshClientData(selectedClient.id);
-      
       toast.success('Lead updated to Success!');
     } catch (error) {
       console.error('Error updating lead:', error);
@@ -819,13 +1310,39 @@ const Clients: React.FC<ClientsProps> = ({
         const { data: legacyData, error: legacyError } = await supabase
           .from('leads_lead')
           .select(`
-            *,
+            id,
+            lead_number,
+            manual_id,
+            name,
+            email,
+            phone,
+            mobile,
+            topic,
+            stage,
+            cdate,
+            udate,
+            notes,
+            special_notes,
+            next_followup,
+            probability,
+              source_id,
+            category,
+            category_id,
+            language_id,
+            total,
+            currency_id,
+            closer_id,
+            case_handler_id,
+            meeting_scheduler_id,
+            unactivation_reason,
+            no_of_applicants,
+            potential_total,
+            misc_language!leads_lead_language_id_fkey (
+              name
+            ),
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
-            ),
-            misc_language!leads_lead_language_id_fkey (
-              name
             )
           `)
           .eq('id', legacyId)
@@ -835,25 +1352,20 @@ const Clients: React.FC<ClientsProps> = ({
         error = legacyError;
 
         if (data) {
-          // Fetch emails for legacy lead
-          const { data: legacyEmails, error: emailsError } = await supabase
-            .from('emails')
-            .select('*')
-            .eq('legacy_id', data.id)
-            .order('sent_at', { ascending: false });
-            
-          if (emailsError) {
-            console.error('Error fetching legacy emails:', emailsError);
-          }
-          
-          console.log('📧 Legacy emails fetched in onClientUpdate:', legacyEmails?.length || 0, 'emails');
-          
+          const legacyLanguageRecord = Array.isArray(data.misc_language)
+            ? data.misc_language[0]
+            : data.misc_language;
+          const legacyCurrencyRecord = Array.isArray(data.accounting_currencies)
+            ? data.accounting_currencies[0]
+            : data.accounting_currencies;
+
           // Transform legacy lead to match new lead structure
+          const legacyStageId = resolveStageId(data.stage);
           const transformedData = {
             ...data,
             id: `legacy_${data.id}`,
             lead_number: String(data.id), // Always use id as lead_number for legacy leads
-            stage: data.stage !== null && data.stage !== undefined ? String(data.stage) : '',
+            stage: legacyStageId ?? (typeof data.stage === 'number' ? data.stage : null),
             source: String(data.source_id || ''),
             created_at: data.cdate,
             updated_at: data.udate,
@@ -872,12 +1384,12 @@ const Clients: React.FC<ClientsProps> = ({
               console.log('🔍 Processing new lead category result:', { category_id: data.category_id, category_name: categoryName });
               return categoryName;
             })(),
-            language: data.misc_language?.name || String(data.language_id || ''), // Get language name from joined table
+            language: legacyLanguageRecord?.name || String(data.language_id || ''), // Get language name from joined table
             balance: String(data.total || ''), // Map total to balance
             balance_currency: (() => {
               // Use accounting_currencies name if available, otherwise fallback
-              if (data.accounting_currencies?.name) {
-                return data.accounting_currencies.name;
+              if (legacyCurrencyRecord?.name) {
+                return legacyCurrencyRecord.name;
               } else {
                 // Fallback currency mapping based on currency_id
                 switch (data.currency_id) {
@@ -892,7 +1404,7 @@ const Clients: React.FC<ClientsProps> = ({
             lead_type: 'legacy',
             // Add missing fields with defaults
             client_country: null,
-            emails: legacyEmails || [],
+            emails: [],
             closer: data.closer_id, // Use closer_id from legacy table
             handler: data.case_handler_id, // Use case_handler_id from legacy table
             unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
@@ -900,13 +1412,13 @@ const Clients: React.FC<ClientsProps> = ({
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
           console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
-          setSelectedClient(transformedData);
+          setSelectedClient(normalizeClientStage(transformedData));
         }
       } else {
         // For new leads, fetch from leads table
         const { data: newData, error: newError } = await supabase
           .from('leads')
-          .select('*, emails (*), closer')
+          .select('*')
           .eq('id', selectedClient.id)
           .single();
 
@@ -922,12 +1434,15 @@ const Clients: React.FC<ClientsProps> = ({
           });
           const categoryName = getCategoryName(data.category_id, data.category);
           console.log('🔍 Processing onClientUpdate category result:', { category_id: data.category_id, category_name: categoryName });
+          const newLeadStageId = resolveStageId(data.stage);
           const transformedData = {
             ...data,
             category: categoryName,
+            stage: newLeadStageId ?? (typeof data.stage === 'number' ? data.stage : null),
+            emails: [],
           };
           console.log('onClientUpdate: Setting new lead data:', transformedData);
-          setSelectedClient(transformedData);
+          setSelectedClient(normalizeClientStage(transformedData));
         }
       }
 
@@ -937,21 +1452,29 @@ const Clients: React.FC<ClientsProps> = ({
     } catch (error) {
       console.error('Error refreshing client data:', error);
     }
-  }, [selectedClient?.id, setSelectedClient, allCategories]);
+  }, [selectedClient?.id, setSelectedClient, allCategories, normalizeClientStage, resolveStageId]);
 
   // Refresh client data when categories are loaded to update category names
   useEffect(() => {
+    if (allCategories.length === 0 || !selectedClient?.id) {
+      return;
+    }
+
+    const clientIdKey = selectedClient.id.toString();
+    if (lastCategoryRefreshIds.current.has(clientIdKey)) {
+      return;
+    }
+
     const refreshClientData = async () => {
-      if (allCategories.length > 0 && selectedClient?.id) {
-        console.log('🔄 Categories loaded, refreshing client data to update category names');
-        try {
-          await onClientUpdate();
-        } catch (error) {
-          console.error('🔄 onClientUpdate failed:', error);
-        }
+      console.log('🔄 Categories loaded, refreshing client data to update category names');
+      try {
+        await onClientUpdate();
+        lastCategoryRefreshIds.current.add(clientIdKey);
+      } catch (error) {
+        console.error('🔄 onClientUpdate failed:', error);
       }
     };
-    
+
     refreshClientData();
   }, [allCategories, selectedClient?.id, onClientUpdate]);
   // Essential data loading for initial page display
@@ -961,7 +1484,8 @@ const Clients: React.FC<ClientsProps> = ({
       console.log('🚀 fetchEssentialData STARTED');
       setLocalLoading(true);
       console.log('🔍 fetchEssentialData called with lead_number:', lead_number);
-      console.log('🔍 fullLeadNumber:', fullLeadNumber);
+        console.log('🔍 fullLeadNumber:', fullLeadNumber);
+        const numericLeadCandidate = fullLeadNumber.replace(/^[LC]/i, '');
       if (lead_number) {
         console.log('Fetching essential client data with lead_number:', fullLeadNumber);
         
@@ -975,7 +1499,7 @@ const Clients: React.FC<ClientsProps> = ({
           console.log('🔍 Querying new leads by manual_id:', fullLeadNumber);
           const { data: manualResults, error: manualError } = await supabase
             .from('leads')
-            .select('*, client_country, emails (*), closer, handler')
+            .select('*')
             .eq('manual_id', fullLeadNumber);
 
           if (manualError) {
@@ -1006,9 +1530,12 @@ const Clients: React.FC<ClientsProps> = ({
 
             if (chosenLead) {
               const categoryName = getCategoryName(chosenLead.category_id, chosenLead.category);
+              const chosenStageId = resolveStageId(chosenLead.stage);
               clientData = {
                 ...chosenLead,
                 category: categoryName,
+                stage: chosenStageId ?? (typeof chosenLead.stage === 'number' ? chosenLead.stage : null),
+                emails: [],
               };
               console.log('✅ Selected client from manual_id lookup:', {
                 id: clientData.id,
@@ -1050,30 +1577,6 @@ const Clients: React.FC<ClientsProps> = ({
               console.log('🔍 Legacy lead found:', legacyLead);
               console.log('🔍 Legacy lead stage:', legacyLead.stage);
               console.log('🔍 Legacy lead unactivation_reason:', legacyLead.unactivation_reason);
-              // Fetch emails for legacy lead
-              console.log('🔍 Fetching emails for legacy lead ID:', legacyLead.id);
-            const { data: legacyEmails, error: emailsError } = await supabase
-              .from('emails')
-              .select('*')
-              .eq('legacy_id', legacyLead.id)
-              .order('sent_at', { ascending: false });
-            
-            console.log('🔍 Email query result:', { 
-              legacyId: legacyLead.id, 
-              emailsFound: legacyEmails?.length || 0,
-              error: emailsError,
-              sampleEmails: legacyEmails?.slice(0, 2)
-            });
-            
-            if (emailsError) {
-              console.error('❌ Error fetching legacy emails:', emailsError);
-            } else {
-              console.log('✅ Legacy emails fetched:', legacyEmails?.length || 0, 'emails');
-              if (legacyEmails && legacyEmails.length > 0) {
-                console.log('📧 Sample legacy email:', legacyEmails[0]);
-              }
-            }
-            
             // Transform legacy lead to match new lead structure
             
             // Get scheduler name if meeting_scheduler_id exists
@@ -1094,11 +1597,19 @@ const Clients: React.FC<ClientsProps> = ({
               }
             }
             
+            const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
+              ? legacyLead.misc_language[0]
+              : legacyLead.misc_language;
+            const legacyCurrencyRecord = Array.isArray(legacyLead.accounting_currencies)
+              ? legacyLead.accounting_currencies[0]
+              : legacyLead.accounting_currencies;
+
+            const legacyFallbackStageId = resolveStageId(legacyLead.stage);
             clientData = {
               ...legacyLead,
               id: `legacy_${legacyLead.id}`,
               lead_number: legacyLead.manual_id || String(legacyLead.id), // Use manual_id if exists, otherwise use id
-              stage: legacyLead.stage !== null && legacyLead.stage !== undefined ? String(legacyLead.stage) : '',
+              stage: legacyFallbackStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
               source: String(legacyLead.source_id || ''),
               created_at: legacyLead.cdate,
               updated_at: legacyLead.udate,
@@ -1116,12 +1627,12 @@ const Clients: React.FC<ClientsProps> = ({
                       console.log('🔍 Processing legacy lead category result:', { category_id: legacyLead.category_id, category_name: categoryName });
                       return categoryName;
                     })(),
-              language: legacyLead.misc_language?.name || String(legacyLead.language_id || ''), // Get language name from joined table
+              language: legacyLanguageRecord?.name || String(legacyLead.language_id || ''), // Get language name from joined table
               balance: String(legacyLead.total || ''), // Map total to balance
               balance_currency: (() => {
                 // Use accounting_currencies name if available, otherwise fallback
-                if (legacyLead.accounting_currencies?.name) {
-                  return legacyLead.accounting_currencies.name;
+                if (legacyCurrencyRecord?.name) {
+                  return legacyCurrencyRecord.name;
                 } else {
                   // Fallback currency mapping based on currency_id
                   switch (legacyLead.currency_id) {
@@ -1136,7 +1647,7 @@ const Clients: React.FC<ClientsProps> = ({
               lead_type: 'legacy',
               // Add missing fields with defaults
               client_country: null,
-              emails: legacyEmails || [],
+              emails: [],
               closer: legacyLead.closer_id, // Use closer_id from legacy table
               handler: legacyLead.case_handler_id, // Use case_handler_id from legacy table
               scheduler: schedulerName, // Use resolved scheduler name
@@ -1152,7 +1663,7 @@ const Clients: React.FC<ClientsProps> = ({
           // For non-numeric IDs, try new leads table first
           const { data: newLead, error: newError } = await supabase
             .from('leads')
-            .select('*, client_country, emails (*), closer, handler')
+            .select('*')
             .eq('lead_number', fullLeadNumber)
             .single();
 
@@ -1168,17 +1679,59 @@ const Clients: React.FC<ClientsProps> = ({
             console.log('🔍 Processing new lead lookup category result:', { category_id: newLead.category_id, category_name: categoryName });
             clientData = {
               ...newLead,
-                    category: categoryName,
+              category: categoryName,
+              stage: resolveStageId(newLead.stage) ?? (typeof newLead.stage === 'number' ? newLead.stage : null),
+              emails: [],
             };
+          } else {
+            if (newError) {
+              console.error('❌ Error fetching lead by lead_number:', { fullLeadNumber, error: newError });
+            }
+
+            if (!newError && !newLead && numericLeadCandidate && /^\d+$/.test(numericLeadCandidate)) {
+              console.log('🔍 No lead found by lead_number, falling back to manual_id lookup:', numericLeadCandidate);
+              const { data: leadsByManualId, error: manualLookupError } = await supabase
+                .from('leads')
+                .select('*')
+                .eq('manual_id', numericLeadCandidate)
+                .order('created_at', { ascending: false })
+                .limit(1);
+
+              if (manualLookupError) {
+                console.error('❌ Error during manual_id fallback lookup:', {
+                  manualId: numericLeadCandidate,
+                  error: manualLookupError,
+                });
+              }
+
+              const leadByManualId = leadsByManualId?.[0];
+
+              if (leadByManualId) {
+                const categoryName = getCategoryName(leadByManualId.category_id, leadByManualId.category);
+              const manualStageId = resolveStageId(leadByManualId.stage);
+                console.log('✅ Fallback manual_id lookup succeeded:', {
+                  manualId: numericLeadCandidate,
+                  leadId: leadByManualId.id,
+                });
+                clientData = {
+                  ...leadByManualId,
+                  category: categoryName,
+                stage: manualStageId ?? (typeof leadByManualId.stage === 'number' ? leadByManualId.stage : null),
+                  emails: [],
+                };
+              }
+            }
           }
         }
 
         console.log('Database query result:', { clientData });
         if (!clientData) {
-          console.error('Client not found in either table');
-          navigate('/clients');
+          console.error('Client not found in either table', {
+            leadNumberParam: lead_number,
+            fullLeadNumber,
+          });
         } else if (isMounted) {
-          setSelectedClient(clientData);
+          setSelectedClient(normalizeClientStage(clientData));
           // Set unactivated view immediately if lead is unactivated
           const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
           const unactivationReason = clientData.unactivation_reason;
@@ -1186,7 +1739,7 @@ const Clients: React.FC<ClientsProps> = ({
           const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
           // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
           const isUnactivated = isLegacy ? 
-            (String(clientData.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
+            ((Number(clientData.stage) === droppedStageId) || (unactivationReason && unactivationReason.trim() !== '')) :
             ((unactivationReason && unactivationReason.trim() !== '') || stageUnactivated);
           setIsUnactivatedView(!!(clientData && isUnactivated && !userManuallyExpanded));
         }
@@ -1198,14 +1751,14 @@ const Clients: React.FC<ClientsProps> = ({
           const latestManualId = (latestLead as any)?.manual_id;
           const latestLeadNumber = (latestLead as any)?.lead_number;
           navigate(buildClientRoute(latestManualId, latestLeadNumber));
-          setSelectedClient(latestLead);
+          setSelectedClient(normalizeClientStage(latestLead));
           const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
           const unactivationReason = latestLead.unactivation_reason;
           const stageName = getStageName(latestLead.stage);
           const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
           // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
           const isUnactivated = isLegacy ? 
-            (String(latestLead.stage) === '91' || (unactivationReason && unactivationReason.trim() !== '')) :
+            ((Number(latestLead.stage) === droppedStageId) || (unactivationReason && unactivationReason.trim() !== '')) :
             ((unactivationReason && unactivationReason.trim() !== '') || stageUnactivated);
           setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
         }
@@ -1217,7 +1770,6 @@ const Clients: React.FC<ClientsProps> = ({
     
     return () => { isMounted = false; };
   }, [lead_number, navigate, setSelectedClient, fullLeadNumber, requestedLeadNumber]); // Removed selectedClient dependencies to prevent infinite loops
-
   // Background loading for non-essential data (runs after essential data is loaded)
   useEffect(() => {
     const loadBackgroundData = async () => {
@@ -1380,7 +1932,7 @@ const Clients: React.FC<ClientsProps> = ({
       setSelectedStage(null); // Close the dropdown immediately
       (document.activeElement as HTMLElement)?.blur();
     } else if (newStage === 'Paid Meeting') {
-      await updateLeadStage('meeting_paid');
+      await updateLeadStage('Paid Meeting');
     } else if (newStage === 'Communication Started') {
       const currentStageName = getStageName(selectedClient.stage);
       if (areStagesEquivalent(currentStageName, 'scheduler_assigned')) {
@@ -1526,7 +2078,7 @@ const Clients: React.FC<ClientsProps> = ({
       }
 
       if (stageForHistory !== null) {
-        updateData.stage = isLegacy ? stageForHistory : stageForHistory.toString();
+        updateData.stage = stageForHistory;
         updateData.stage_changed_by = currentUserFullName;
         updateData.stage_changed_at = stageTimestamp;
       }
@@ -1590,19 +2142,30 @@ const Clients: React.FC<ClientsProps> = ({
       const actor = await fetchStageActorInfo();
       const timestamp = new Date().toISOString();
       const isLegacyLead = selectedClient.id.startsWith('legacy_');
+      const resolvedStageValue = resolveStageId(stage);
+      if (resolvedStageValue === null) {
+        toast.error('Unable to resolve the selected stage. Please contact an administrator.');
+        return;
+      }
+      const normalizedStageName = normalizeStageName(getStageName(String(resolvedStageValue)));
       
       const additionalFields: Record<string, any> = {};
-      if (!isLegacyLead && stage === 'communication_started') {
+      if (!isLegacyLead && normalizedStageName === 'communicationstarted') {
         additionalFields.communication_started_by = actor.fullName;
         additionalFields.communication_started_at = timestamp;
       }
 
       await updateLeadStageWithHistory({
         lead: selectedClient,
-        stage,
+        stage: resolvedStageValue,
         additionalFields,
         actor,
         timestamp,
+      });
+
+      setSelectedClient((prev: any) => {
+        if (!prev) return prev;
+        return { ...prev, stage: resolvedStageValue };
       });
       
       await onClientUpdate();
@@ -1626,7 +2189,7 @@ const Clients: React.FC<ClientsProps> = ({
   };
 
   // Function to handle stage change from dropdown
-  const handleStageChange = async (newStageId: string) => {
+  const handleStageChange = async (newStageId: string | number) => {
     await updateLeadStage(newStageId);
   };
   const updateScheduler = async (scheduler: string) => {
@@ -1637,6 +2200,12 @@ const Clients: React.FC<ClientsProps> = ({
       const timestamp = new Date().toISOString();
       const isLegacyLead = selectedClient.id.startsWith('legacy_');
       
+      const schedulerStageId = getStageIdOrWarn('scheduler_assigned');
+      if (schedulerStageId === null) {
+        toast.error('Unable to resolve the "Scheduler assigned" stage. Please contact an administrator.');
+        return;
+      }
+
       if (isLegacyLead) {
         const legacyId = selectedClient.id.replace('legacy_', '');
 
@@ -1681,7 +2250,7 @@ const Clients: React.FC<ClientsProps> = ({
           .from('leads')
           .update({ 
             scheduler,
-            stage: 'scheduler_assigned',
+            stage: schedulerStageId,
             stage_changed_by: actor.fullName,
             stage_changed_at: timestamp,
           })
@@ -1691,7 +2260,7 @@ const Clients: React.FC<ClientsProps> = ({
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: 'scheduler_assigned',
+          stage: schedulerStageId,
           actor,
           timestamp,
         });
@@ -1716,45 +2285,151 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  const getStageBadge = (stage: string) => {
-    console.log('🔍 getStageBadge called with stage:', stage);
-    console.log('🔍 Stage type:', typeof stage);
-    const stageName = getStageName(stage);
-    console.log('🔍 Stage name resolved:', stageName);
+  const getStageBadge = (stage: string | number, anchor: StageDropdownAnchor = 'badge') => {
+    const stageName = getStageName(String(stage));
+    const currentStageId = resolveStageId(stage);
+    const currentStageIndex = sortedStages.findIndex(
+      stageOption => resolveStageId(stageOption.id) === currentStageId
+    );
+    const dropdownRef = getDropdownRef(anchor);
+    const stageColourFromList =
+      sortedStages.find(stageOption => resolveStageId(stageOption.id) === currentStageId)?.colour ?? null;
+    const fallbackStageColour = stageColourFromList || getStageColour(String(stage)) || '#ffffff';
+    const badgeTextColour = getContrastingTextColor(fallbackStageColour);
+
+    const previousStages =
+      currentStageIndex > 0 ? sortedStages.slice(0, currentStageIndex) : [];
+    const nextStages =
+      currentStageIndex >= 0
+        ? sortedStages.slice(currentStageIndex + 1)
+        : sortedStages;
+
+    const renderStageOption = (
+      stageOption: { id: number; name: string },
+      variant: 'previous' | 'next'
+    ) => {
+      const optionStageId = resolveStageId(stageOption.id);
+
+      const stageColour =
+        (sortedStages.find(option => resolveStageId(option.id) === optionStageId)?.colour ??
+          getStageColour(String(stageOption.id))) || '#6b7280';
+      const textColour = stageColour;
+
+      return (
+        <button
+          key={`${variant}-${stageOption.id}`}
+          type="button"
+          className="w-full text-left px-3 py-2.5 rounded-xl border border-transparent flex items-center justify-between transition-all group hover:bg-gray-50/80 dark:hover:bg-gray-800/50"
+          onClick={() => {
+            setStageDropdownAnchor(null);
+            handleStageChange(stageOption.id);
+          }}
+        >
+          <div className="flex items-center gap-3">
+            <span
+              className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+              style={{ backgroundColor: stageColour }}
+            />
+            <span
+              className={`text-sm font-medium`}
+              style={{ color: textColour }}
+            >
+              {stageOption.name}
+            </span>
+          </div>
+          {variant === 'next' && (
+            <ChevronDownIcon className="w-4 h-4 text-purple-400 opacity-0 group-hover:opacity-100 transition-opacity rotate-[-90deg]" />
+          )}
+        </button>
+      );
+    };
+
+    const renderCurrentStage = () => (
+      <div className="px-1">
+        <span
+          className="text-[11px] uppercase tracking-[0.32em] block mb-2 text-center"
+          style={{ color: fallbackStageColour }}
+        >
+          Current
+        </span>
+        <button
+          type="button"
+          disabled
+          className="w-full text-left px-4 py-3 rounded-xl border shadow-lg flex items-center justify-between cursor-default"
+          style={{
+            backgroundColor: fallbackStageColour,
+            borderColor: fallbackStageColour,
+            color: badgeTextColour,
+            boxShadow: '0 10px 24px rgba(17,24,39,0.12)'
+          }}
+        >
+          <div className="flex flex-col">
+            <span className="text-sm font-semibold leading-tight">{stageName}</span>
+            <span className="text-xs font-medium uppercase tracking-[0.22em]" style={{ color: badgeTextColour, opacity: 0.9 }}>
+              Active stage
+            </span>
+          </div>
+        </button>
+      </div>
+    );
+
+    const renderTimelineOverlay = (overlayAnchor: StageDropdownAnchor) => (
+      <div
+        className={`absolute ${
+          overlayAnchor === 'badge' ? 'right-0' : 'right-0'
+        } mt-2 w-72 rounded-2xl border border-purple-200/70 bg-white/95 dark:bg-gray-900/95 shadow-2xl z-[60] overflow-hidden backdrop-blur`}
+      >
+        <div
+          ref={getListRef(overlayAnchor)}
+          className="max-h-80 overflow-y-auto px-3 py-5 space-y-4"
+        >
+          {renderCurrentStage()}
+          {nextStages.length > 0 && (
+            <div className="space-y-2">
+              <span className="text-[11px] uppercase tracking-[0.32em] text-purple-400/80 dark:text-purple-300/70 block">
+                Upcoming
+              </span>
+              {nextStages.map(stageOption => renderStageOption(stageOption, 'next'))}
+            </div>
+          )}
+          {previousStages.length > 0 && (
+            <div className="space-y-2">
+              <span className="text-[11px] uppercase tracking-[0.32em] text-gray-400 dark:text-gray-500 block">
+                Previous
+              </span>
+              {previousStages
+                .slice()
+                .reverse()
+                .map(stageOption => renderStageOption(stageOption, 'previous'))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+
     return (
-      <div className="dropdown dropdown-end">
-        <label 
-          tabIndex={0} 
-          className="badge badge-sm ml-2 px-3 py-1 min-w-max whitespace-nowrap cursor-pointer hover:bg-purple-50 transition-colors"
-          style={{ background: '#ffffff', color: '#7c3aed', fontSize: '0.875rem', borderRadius: '0.5rem', minHeight: '1.5rem', border: '2px solid #7c3aed' }}
+      <div className="relative" ref={dropdownRef}>
+        <button
+          type="button"
+          className="badge badge-sm ml-2 px-4 py-2 min-w-max whitespace-nowrap cursor-pointer transition-transform duration-200 flex items-center hover:scale-[1.02]"
+          style={{
+            background: fallbackStageColour,
+            color: badgeTextColour,
+            fontSize: '0.95rem',
+            fontWeight: 600,
+            borderRadius: '0.65rem',
+            minHeight: '2rem',
+            border: `2px solid ${fallbackStageColour}`,
+            boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
+          }}
+          onClick={() =>
+            setStageDropdownAnchor(prev => (prev === anchor ? null : anchor))
+          }
         >
           {stageName}
           <ChevronDownIcon className="w-3 h-3 ml-1" />
-        </label>
-        <ul 
-          tabIndex={0} 
-          className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
-        >
-          {availableStages.map((stageOption) => (
-            <li key={stageOption.id}>
-              <a 
-                className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
-                  stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
-                }`}
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  handleStageChange(stageOption.id);
-                }}
-              >
-                <span className="font-medium">{stageOption.name}</span>
-                {stage === stageOption.id && (
-                  <CheckIcon className="w-4 h-4 text-purple-600" />
-                )}
-              </a>
-            </li>
-          ))}
-        </ul>
+        </button>
+        {stageDropdownAnchor === anchor && renderTimelineOverlay(anchor)}
       </div>
     );
   };
@@ -2125,12 +2800,19 @@ const Clients: React.FC<ClientsProps> = ({
       const stageActor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
 
+      const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled');
+      if (meetingScheduledStageId === null) {
+        toast.error('Unable to resolve the "Meeting scheduled" stage. Please contact an administrator.');
+        setIsCreatingMeeting(false);
+        return;
+      }
+
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         const { error } = await supabase
           .from('leads_lead')
           .update({ 
-            stage: 'meeting_scheduled',
+            stage: meetingScheduledStageId,
             meeting_scheduler_id: currentUserFullName,
             stage_changed_by: stageActor.fullName,
             stage_changed_at: stageTimestamp,
@@ -2141,7 +2823,7 @@ const Clients: React.FC<ClientsProps> = ({
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: 'meeting_scheduled',
+          stage: meetingScheduledStageId,
           actor: stageActor,
           timestamp: stageTimestamp,
         });
@@ -2149,7 +2831,7 @@ const Clients: React.FC<ClientsProps> = ({
         const { error } = await supabase
           .from('leads')
           .update({ 
-            stage: 'meeting_scheduled',
+            stage: meetingScheduledStageId,
             scheduler: currentUserFullName,
             stage_changed_by: stageActor.fullName,
             stage_changed_at: stageTimestamp,
@@ -2160,7 +2842,7 @@ const Clients: React.FC<ClientsProps> = ({
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: 'meeting_scheduled',
+          stage: meetingScheduledStageId,
           actor: stageActor,
           timestamp: stageTimestamp,
         });
@@ -2251,7 +2933,12 @@ const Clients: React.FC<ClientsProps> = ({
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       const tableName = isLegacyLead ? 'leads_lead' : 'leads';
       const clientId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
-      const stageValue = isLegacyLead ? 91 : '91';
+      const stageValue = droppedStageId ?? manualStageIdFallbacks.droppedspamirrelevant ?? 91;
+      if (stageValue === null || Number.isNaN(stageValue)) {
+        toast.error('Unable to resolve the "Dropped (Spam/Irrelevant)" stage. Please contact an administrator.');
+        setIsProcessingMeetingIrrelevant(false);
+        return;
+      }
 
       const updateData: Record<string, any> = {
         unactivated_by: currentUserFullName,
@@ -2294,6 +2981,13 @@ const Clients: React.FC<ClientsProps> = ({
 
     // If proposalTotal is changed, update balance as well
     const proposalTotal = parseFloat(meetingEndedData.proposalTotal);
+    const waitingStageId = getStageIdOrWarn('waiting_for_mtng_sum');
+    if (waitingStageId === null) {
+      toast.error('Unable to resolve the "Waiting for Mtng sum" stage. Please contact an administrator.');
+      setIsSavingMeetingEnded(false);
+      return;
+    }
+
     const updateData: Record<string, any> = {
       probability: meetingEndedData.probability,
       meeting_brief: meetingEndedData.meetingBrief,
@@ -2303,7 +2997,7 @@ const Clients: React.FC<ClientsProps> = ({
       proposal_currency: meetingEndedData.proposalCurrency,
       balance: proposalTotal, // Sync balance to proposal_total
       balance_currency: meetingEndedData.proposalCurrency,
-      stage: 'waiting_for_mtng_sum',
+      stage: waitingStageId,
     };
 
     try {
@@ -2311,7 +3005,7 @@ const Clients: React.FC<ClientsProps> = ({
       const stageTimestamp = new Date().toISOString();
       updateData.stage_changed_by = actor.fullName;
       updateData.stage_changed_at = stageTimestamp;
-      updateData.stage = 'waiting_for_mtng_sum';
+      updateData.stage = waitingStageId;
 
       // First, find the most recent meeting to update it
       const { data: meetings, error: meetingsError } = await supabase
@@ -2347,7 +3041,7 @@ const Clients: React.FC<ClientsProps> = ({
 
       await recordLeadStageChange({
         lead: selectedClient,
-        stage: 'waiting_for_mtng_sum',
+        stage: waitingStageId,
         actor,
         timestamp: stageTimestamp,
       });
@@ -2398,15 +3092,22 @@ const Clients: React.FC<ClientsProps> = ({
       const actor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
       let updateData;
+      const communicationStageId = getStageIdOrWarn('communication_started');
+      if (!isLegacyLead && communicationStageId === null) {
+        toast.error('Unable to resolve the "Communication started" stage. Please contact an administrator.');
+        setIsSavingUpdate(false);
+        return;
+      }
       
       if (isLegacyLead) {
         // For legacy leads, map fields to leads_lead table columns
+        const legacyCommunicationStageId = communicationStageId ?? 15;
         updateData = {
           meeting_scheduling_notes: meetingNotes,
           next_followup: nextFollowup,
           followup_log: followup, // Map to followup_log column
           potential_applicants: potentialApplicants,
-          stage: 15, // 'communication_started' stage ID for legacy leads
+          stage: legacyCommunicationStageId, // 'communication_started' stage ID for legacy leads
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
@@ -2424,7 +3125,7 @@ const Clients: React.FC<ClientsProps> = ({
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: 15,
+          stage: legacyCommunicationStageId,
           actor,
           timestamp: stageTimestamp,
         });
@@ -2435,7 +3136,7 @@ const Clients: React.FC<ClientsProps> = ({
           next_followup: nextFollowup,
           followup: followup,
           potential_applicants: potentialApplicants,
-          stage: 'communication_started',
+          stage: communicationStageId,
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
@@ -2451,7 +3152,7 @@ const Clients: React.FC<ClientsProps> = ({
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: 'communication_started',
+          stage: communicationStageId!,
           actor,
           timestamp: stageTimestamp,
         });
@@ -2484,150 +3185,10 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  // English and Hebrew offer templates
-  const offerTemplates = {
-    en: {
-      name: 'Offer (English)',
-      subject: 'Price Offer for Your Case',
-      body: `Dear {client_name},\n\nWe are pleased to present you with the following price offer for our professional services regarding your case:\n\n- Comprehensive case review and documentation\n- Legal representation throughout the process\n- Ongoing support and communication\n\nOur team is committed to providing you with the highest level of service and expertise. Should you have any questions or require further clarification, please do not hesitate to contact us.\n\nWe look forward to working with you and achieving the best possible outcome for your case.\n\nBest regards,\nThe Law Firm Team`
-    },
-    he: {
-      name: 'הצעת מחיר (עברית)',
-      subject: 'הצעת מחיר עבור התיק שלך',
-      body: `לקוח/ה יקר/ה,\n\nאנו שמחים להגיש בפניך הצעת מחיר עבור השירותים המשפטיים שאנו מציעים בטיפול בתיקך:\n\n- בדיקת מסמכים מקיפה והכנת התיק\n- ייצוג משפטי מלא לאורך כל התהליך\n- ליווי אישי וזמינות לשאלות\n\nצוות המשרד שלנו מחויב למתן שירות מקצועי, אמין ואישי. לכל שאלה או הבהרה, נשמח לעמוד לרשותך.\n\nנשמח ללוות אותך עד להצלחה.\n\nבברכה,\nצוות המשרד`
-    }
+  const openSendOfferModal = () => {
+    if (!selectedClient) return;
+    setShowSendOfferModal(true);
   };
-
-  // Open drawer and prefill subject/body
-  const openSendOfferDrawer = () => {
-    setOfferSubject(`[${selectedClient.lead_number}] - ${selectedClient.name} - ${selectedClient.topic}`);
-    setOfferBody('');
-    setOfferTemplateLang(null);
-    setOfferTotal(selectedClient?.proposal_total || '');
-    setOfferCurrency(selectedClient?.proposal_currency || '₪');
-    setShowSendOfferDrawer(true);
-  };
-  // Send offer email logic (reuse InteractionsTab logic)
-  const handleSendOfferEmail = async () => {
-    if (!selectedClient.email) return;
-    setOfferSending(true);
-    try {
-      // Get accessToken using MSAL instance (same as Teams logic)
-      let accessToken;
-      const account = instance.getAllAccounts()[0];
-      if (!account) {
-        toast.error('You must be signed in to send an email.');
-        setOfferSending(false);
-        return;
-      }
-      // Use Supabase user's full_name as closer
-      const closerName = (await fetchCurrentUserFullName()) || 'Current User';
-      try {
-        const response = await instance.acquireTokenSilent({ ...loginRequest, account });
-        accessToken = response.accessToken;
-      } catch (error) {
-        if (error instanceof InteractionRequiredAuthError) {
-          const response = await instance.loginPopup(loginRequest);
-          accessToken = response.accessToken;
-        } else {
-          throw error;
-        }
-      }
-      await sendEmail(accessToken, {
-        to: selectedClient.email,
-        subject: offerSubject,
-        body: offerBody.replace(/\n/g, '<br>'),
-      });
-      // Save the offer body, total, currency, closer, and update stage
-      const stageActor = await fetchStageActorInfo();
-      const stageTimestamp = new Date().toISOString();
-
-      await supabase
-        .from('leads')
-        .update({
-          proposal_text: offerBody,
-          proposal_total: offerTotal,
-          proposal_currency: offerCurrency,
-          closer: closerName,
-          stage: 'Mtng sum+Agreement sent',
-          stage_changed_by: stageActor.fullName,
-          stage_changed_at: stageTimestamp,
-          balance: offerTotal ? parseFloat(offerTotal) : null, // Sync balance to proposal_total
-          balance_currency: offerCurrency
-        })
-        .eq('id', selectedClient.id);
-
-      await recordLeadStageChange({
-        lead: selectedClient,
-        stage: 'Mtng sum+Agreement sent',
-        actor: stageActor,
-        timestamp: stageTimestamp,
-      });
-      // --- Upsert sent offer email to emails table for Interactions tab ---
-      const now = new Date();
-      await supabase.from('emails').upsert([
-        {
-          message_id: `offer_${now.getTime()}`,
-          client_id: selectedClient.id,
-          thread_id: null,
-          sender_name: closerName,
-          sender_email: selectedClient.email, // or use the user's email if available
-          recipient_list: selectedClient.email,
-          subject: offerSubject,
-          body_preview: offerBody.replace(/\n/g, '<br>'),
-          sent_at: now.toISOString(),
-          direction: 'outgoing',
-          attachments: null,
-        }
-      ], { onConflict: 'message_id' });
-      toast.success('Offer email sent!');
-      setShowSendOfferDrawer(false);
-      await onClientUpdate();
-    } catch (e: any) {
-      console.error('Error sending offer email:', e);
-      
-      // Check if this is a category validation error from RLS policy
-      if (e?.message && e.message.includes('category')) {
-        toast.error('Please set a category for this client before performing this action.', {
-          duration: 4000,
-          style: {
-            background: '#fee2e2',
-            color: '#dc2626',
-            border: '1px solid #fecaca',
-          },
-        });
-      } else {
-        toast.error('Failed to send offer email.');
-      }
-    }
-    setOfferSending(false);
-  };
-
-  // Helper to generate the total line
-  const getTotalLine = () => {
-    if (!offerTotal) return '';
-    return `Total cost of the offer: ${offerTotal} ${offerCurrency}`;
-  };
-
-  // Helper to inject or update the total line in the offer body
-  const updateOfferBodyWithTotal = (body: string, total: string, currency: string) => {
-    // Find the greeting (first line)
-    const lines = body.split('\n');
-    let insertIdx = 1;
-    // Remove any previous total line
-    const filtered = lines.filter(line => !line.trim().startsWith('Total cost of the offer:'));
-    // Insert the new total line after greeting
-    filtered.splice(insertIdx, 0, getTotalLine());
-    return filtered.join('\n');
-  };
-
-  // Update offer body when total or currency changes, but only if a template is selected
-  useEffect(() => {
-    if (offerTemplateLang) {
-      setOfferBody(prev => updateOfferBodyWithTotal(prev, offerTotal, offerCurrency));
-    }
-    // eslint-disable-next-line
-  }, [offerTotal, offerCurrency]);
 
   const handleOpenSignedDrawer = () => {
     const today = new Date();
@@ -2642,11 +3203,16 @@ const Clients: React.FC<ClientsProps> = ({
       const actor = await fetchStageActorInfo();
       const currentUserFullName = actor.fullName;
       const stageTimestamp = new Date().toISOString();
+      const signedStageId = getStageIdOrWarn('Client signed agreement');
+      if (signedStageId === null) {
+        alert('Unable to resolve the "Client signed agreement" stage. Please contact an administrator.');
+        return;
+      }
 
       await supabase
         .from('leads')
         .update({ 
-          stage: 'Client signed agreement', 
+          stage: signedStageId, 
           date_signed: signedDate,
           stage_changed_by: currentUserFullName,
           stage_changed_at: stageTimestamp
@@ -2655,7 +3221,7 @@ const Clients: React.FC<ClientsProps> = ({
 
       await recordLeadStageChange({
         lead: selectedClient,
-        stage: 'Client signed agreement',
+        stage: signedStageId,
         actor,
         timestamp: stageTimestamp,
       });
@@ -2936,8 +3502,8 @@ const Clients: React.FC<ClientsProps> = ({
       const id = emp.id != null ? String(emp.id) : emp.employee_id != null ? String(emp.employee_id) : '';
       if (!id) return;
 
-      const candidateName = emp.display_name || emp.full_name || emp.name || emp.email || '';
-      if (!candidateName) return;
+      const candidateName = emp.display_name || '';
+      if (!candidateName || candidateName.includes('@')) return;
 
       const activeFlags = [
         emp.active,
@@ -2974,10 +3540,89 @@ const Clients: React.FC<ClientsProps> = ({
   const handlerOptionsMap = useMemo(() => {
     const map = new Map<string, string>();
     handlerOptions.forEach(opt => {
-      map.set(opt.id, opt.label);
+      map.set(String(opt.id), opt.label);
     });
     return map;
   }, [handlerOptions]);
+
+useEffect(() => {
+  if (!showSuccessDrawer) return;
+  const currentLabel =
+    successForm.handler ||
+    (successForm.handlerId ? handlerOptionsMap.get(successForm.handlerId) || '' : '');
+  setHandlerSearchTerm(currentLabel);
+  setFilteredHandlerSearchOptions(handlerOptions);
+}, [
+  showSuccessDrawer,
+  successForm.handler,
+  successForm.handlerId,
+  handlerOptions,
+  handlerOptionsMap,
+]);
+
+useEffect(() => {
+  const searchValue = handlerSearchTerm.trim().toLowerCase();
+  if (!searchValue) {
+    setFilteredHandlerSearchOptions(handlerOptions);
+  } else {
+    setFilteredHandlerSearchOptions(
+      handlerOptions.filter(option => option.label.toLowerCase().includes(searchValue))
+    );
+  }
+}, [handlerSearchTerm, handlerOptions]);
+
+useEffect(() => {
+  if (!showHandlerSearchDropdown) return;
+
+  const handleClickOutside = (event: MouseEvent) => {
+    if (
+      handlerSearchContainerRef.current &&
+      !handlerSearchContainerRef.current.contains(event.target as Node)
+    ) {
+      setShowHandlerSearchDropdown(false);
+    }
+  };
+
+  document.addEventListener('mousedown', handleClickOutside);
+  return () => {
+    document.removeEventListener('mousedown', handleClickOutside);
+  };
+}, [showHandlerSearchDropdown]);
+
+  const currencyOptions = useMemo(() => {
+    if (currencies && currencies.length > 0) {
+      return currencies
+        .map(currency => {
+          const display =
+            currency.name ||
+            currency.front_name ||
+            currency.iso_code ||
+            '';
+          if (!display) return null;
+          return {
+            value: display,
+            label: display,
+          };
+        })
+        .filter(Boolean) as Array<{ value: string; label: string }>;
+    }
+    return [
+      { value: '₪', label: '₪' },
+      { value: '$', label: '$' },
+      { value: '€', label: '€' },
+      { value: '£', label: '£' },
+    ];
+  }, [currencies]);
+
+  const handleSuccessFieldChange = useCallback(
+    (field: keyof ClientSignedForm, value: string) => {
+      setSuccessForm(prev => ({
+        ...prev,
+        [field]: value,
+      }));
+    },
+    []
+  );
 
   const handleSaveEditLead = async () => {
     if (!selectedClient) return;
@@ -3468,7 +4113,6 @@ const Clients: React.FC<ClientsProps> = ({
     
     return count;
   };
-
   // Handle save payments plan
   const handleSavePaymentsPlan = async () => {
     if (!selectedClient?.id) return;
@@ -3649,6 +4293,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [isSavingPaymentPlan, setIsSavingPaymentPlan] = useState(false);
   const [generatedProformaName, setGeneratedProformaName] = useState<string>('');
   const [interactionCount, setInteractionCount] = useState<number>(0);
+  const [interactionsCache, setInteractionsCache] = useState<ClientInteractionsCache | null>(null);
   
   // Note: Interaction count is now calculated upfront when entering the client page
 
@@ -3672,17 +4317,50 @@ const Clients: React.FC<ClientsProps> = ({
   // Force re-render when interaction count changes
   const tabsKey = `tabs-${interactionCount}-${selectedClient?.id}`;
 
-  // Calculate full interaction count when client changes
+  // Reset cached interactions when switching to a different client
   useEffect(() => {
+    if (!selectedClient?.id) {
+      setInteractionsCache(null);
+      return;
+    }
+
+    if (interactionsCache && interactionsCache.leadId !== selectedClient.id) {
+      setInteractionsCache(null);
+    }
+  }, [selectedClient?.id, interactionsCache?.leadId]);
+
+  // Calculate interaction count when client changes (fallback when cache is missing)
+  useEffect(() => {
+    if (!selectedClient) return;
+
+    if (interactionsCache && interactionsCache.leadId === selectedClient.id) {
+      const cachedCount =
+        interactionsCache.count ??
+        (interactionsCache.interactions ? interactionsCache.interactions.length : 0);
+      setInteractionCount(cachedCount);
+      return;
+    }
+
     const updateInteractionCount = async () => {
-      if (selectedClient) {
-        const count = await calculateFullInteractionCount();
-        setInteractionCount(count);
-      }
+      const count = await calculateFullInteractionCount();
+      setInteractionCount(count);
     };
-    
+
     updateInteractionCount();
-  }, [selectedClient?.id]);
+  }, [selectedClient?.id, interactionsCache?.leadId]);
+
+  const handleInteractionsCacheUpdate = useCallback(
+    (cache: ClientInteractionsCache) => {
+      setInteractionsCache(cache);
+      const count = cache.count ?? (cache.interactions ? cache.interactions.length : 0);
+      setInteractionCount(count);
+    },
+    []
+  );
+
+  const handleInteractionCountUpdate = useCallback((count: number) => {
+    setInteractionCount(count);
+  }, []);
 
   // Handler to open proforma drawer
   const handleOpenProforma = async (payment: any) => {
@@ -4078,9 +4756,6 @@ const Clients: React.FC<ClientsProps> = ({
       </div>
     );
   }
-
-
-
   // Lead is cold logic (must be after null check)
   let isLeadCold = false;
   let coldLeadText = '';
@@ -4095,30 +4770,67 @@ const Clients: React.FC<ClientsProps> = ({
       coldLeadText = 'Follow up with client!';
     }
   }
+  const interactionsCacheForLead =
+    selectedClient?.id && interactionsCache?.leadId === selectedClient.id
+      ? interactionsCache
+      : null;
+
   const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component;
+  const financeProps =
+    activeTab === 'finances'
+      ? { onCreateFinancePlan: () => setShowPaymentsPlanDrawer(true) }
+      : {};
   // Before the return statement, add:
   let dropdownItems = null;
   // Get the stage name for comparison
   const currentStageName = selectedClient ? getStageName(selectedClient.stage) : '';
+  const stageNumeric =
+    selectedClient?.stage !== null && selectedClient?.stage !== undefined
+      ? Number(selectedClient.stage)
+      : null;
+  const isStageNumeric = stageNumeric !== null && Number.isFinite(stageNumeric);
+  const scheduleMenuLabel =
+    isStageNumeric && stageNumeric >= 40 ? 'Another meeting' : 'Schedule Meeting';
+
+  const handleScheduleMenuClick = useCallback(
+    (event?: React.MouseEvent<HTMLAnchorElement>) => {
+      if (event) {
+        event.preventDefault();
+      }
+
+      if (isStageNumeric) {
+        if (stageNumeric >= 55) {
+          setShowScheduleMeetingPanel(true);
+          (document.activeElement as HTMLElement | null)?.blur();
+          return;
+        }
+
+        if (stageNumeric >= 40) {
+          void updateLeadStage('another_meeting');
+          (document.activeElement as HTMLElement | null)?.blur();
+          return;
+        }
+      }
+
+      setShowScheduleMeetingPanel(true);
+      (document.activeElement as HTMLElement | null)?.blur();
+    },
+    [isStageNumeric, stageNumeric, updateLeadStage]
+  );
+
   if (selectedClient && areStagesEquivalent(currentStageName, 'Client signed agreement'))
     dropdownItems = (
       <>
-        <li>
+        {/* <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowPaymentsPlanDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
             <BanknotesIcon className="w-5 h-5 text-black" />
             Payments plan
           </a>
-        </li>
+        </li> */}
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
-            Schedule Meeting
-          </a>
-        </li>
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
-            <DocumentTextIcon className="w-5 h-5 text-black" />
-            Lead summary
+            {scheduleMenuLabel}
           </a>
         </li>
         <li>
@@ -4141,15 +4853,9 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
-            Schedule Meeting
-          </a>
-        </li>
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
-            <DocumentTextIcon className="w-5 h-5 text-black" />
-            Lead summary
+            {scheduleMenuLabel}
           </a>
         </li>
         <li>
@@ -4158,12 +4864,12 @@ const Clients: React.FC<ClientsProps> = ({
             Payment Received - new Client !!!
           </a>
         </li>
-        <li>
+        {/* <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('finances_and_payments_plan'); (document.activeElement as HTMLElement)?.blur(); }}>
             <BanknotesIcon className="w-5 h-5 text-black" />
             Finances & Payments plan
           </a>
-        </li>
+        </li> */}
       </>
     );
   } else if (selectedClient && (() => {
@@ -4173,12 +4879,14 @@ const Clients: React.FC<ClientsProps> = ({
   })()) {
     dropdownItems = (
       <>
-        {areStagesEquivalent(currentStageName, 'meeting_scheduled') ? (
+        {areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
+        areStagesEquivalent(currentStageName, 'another_meeting') ||
+        (isStageNumeric && stageNumeric === 55) ? (
           <>
             <li>
-              <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
                 <CalendarDaysIcon className="w-5 h-5 text-black" />
-                Schedule Meeting
+                {scheduleMenuLabel}
               </a>
             </li>
             <li>
@@ -4197,16 +4905,23 @@ const Clients: React.FC<ClientsProps> = ({
         ) : (
           !['Success', 'handler_assigned'].some(stage => areStagesEquivalent(currentStageName, stage)) && (
             <li>
-              <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); }}>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
                 <CalendarDaysIcon className="w-5 h-5 text-black" />
-                Schedule Meeting
+                {scheduleMenuLabel}
               </a>
             </li>
           )
         )}
         {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && (
           <li>
-            <a className="flex items-center gap-3 py-3 saira-regular" onClick={openSendOfferDrawer}>
+            <a
+              className="flex items-center gap-3 py-3 saira-regular"
+              onClick={(e) => {
+                e.preventDefault();
+                openSendOfferModal();
+                (document.activeElement as HTMLElement | null)?.blur();
+              }}
+            >
               <DocumentCheckIcon className="w-5 h-5 text-black" />
               Send Price Offer
             </a>
@@ -4230,9 +4945,9 @@ const Clients: React.FC<ClientsProps> = ({
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={e => { e.preventDefault(); setShowScheduleMeetingPanel(true); (document.activeElement as HTMLElement)?.blur(); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
             <CalendarDaysIcon className="w-5 h-5 text-black" />
-            Schedule Meeting
+            {scheduleMenuLabel}
           </a>
         </li>
         <li>
@@ -4248,15 +4963,13 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowLeadSummaryDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
-            <DocumentTextIcon className="w-5 h-5 text-black" />
-            Lead summary
-          </a>
-        </li>
-        <li>
-                <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-black" />Edit lead</a></li>
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('revised_offer'); (document.activeElement as HTMLElement)?.blur(); }}>
+          <a
+            className="flex items-center gap-3 py-3 saira-regular"
+            onClick={() => {
+              openSendOfferModal();
+              (document.activeElement as HTMLElement)?.blur();
+            }}
+          >
             <PencilSquareIcon className="w-5 h-5 text-black" />
             Revised price offer
           </a>
@@ -4665,6 +5378,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       const applicantCount = parseNumericInput(subLeadForm.numApplicants);
       const currencyValue = convertCurrencyForInsert(subLeadForm.currency);
 
+      const createdStageId = getStageIdOrWarn('Created');
+      if (createdStageId === null) {
+        toast.error('Unable to resolve the "Created" stage. Please contact an administrator.');
+        setIsSavingSubLead(false);
+        return;
+      }
+
       const newLeadData: Record<string, any> = {
         manual_id: manualIdString,
         master_id: masterIdValue,
@@ -4679,7 +5399,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         source: subLeadForm.source,
         language: subLeadForm.language,
         tags: subLeadForm.tags,
-        stage: 'Created',
+        stage: createdStageId,
         probability: 0,
         balance: proposalAmount ?? 0,
         balance_currency: currencyValue,
@@ -4734,8 +5454,14 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
   // Check if lead is unactivated and show compact view
   const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
   const unactivationReasonForView = selectedClient?.unactivation_reason;
+  const stageNumericForView =
+    selectedClient?.stage !== null && selectedClient?.stage !== undefined
+      ? Number(selectedClient.stage)
+      : null;
+  const isDroppedForView =
+    stageNumericForView !== null && !Number.isNaN(stageNumericForView) && stageNumericForView === droppedStageId;
   const isUnactivated = isLegacyForView ? 
-    (String(selectedClient?.stage) === '91' || (unactivationReasonForView && unactivationReasonForView.trim() !== '')) :
+    (isDroppedForView || (unactivationReasonForView && unactivationReasonForView.trim() !== '')) :
     ((unactivationReasonForView && unactivationReasonForView.trim() !== '') || false);
   
   
@@ -4856,7 +5582,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         const stageName = getStageName(selectedClient.stage);
                         
                         // For legacy leads with stage 91 but no unactivation_reason, show default reason
-                        if (isLegacy && String(selectedClient.stage) === '91' && !unactivationReason) {
+                        const stageNumeric =
+                          selectedClient?.stage !== null && selectedClient?.stage !== undefined
+                            ? Number(selectedClient.stage)
+                            : null;
+                        if (isLegacy && stageNumeric !== null && !Number.isNaN(stageNumeric) && stageNumeric === droppedStageId && !unactivationReason) {
                           return 'Reason: Dropped (Spam/Irrelevant)';
                         }
                         
@@ -5059,41 +5789,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </div>
             </div>
 
-            {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
-              <div className="dropdown dropdown-end mb-2">
-                <label 
-                  tabIndex={0} 
-                  className="btn btn-sm text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm cursor-pointer hover:from-pink-600 hover:via-purple-600 hover:to-purple-700 transition-all duration-200 flex items-center gap-2 whitespace-nowrap px-4"
-                >
-                  {getStageName(selectedClient.stage)}
-                  <ChevronDownIcon className="w-4 h-4" />
-                </label>
-                <ul 
-                  tabIndex={0} 
-                  className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
-                >
-                  {availableStages.map((stageOption) => (
-                    <li key={stageOption.id}>
-                      <a 
-                        className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
-                          selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
-                        }`}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleStageChange(stageOption.id);
-                        }}
-                      >
-                        <span className="font-medium">{stageOption.name}</span>
-                        {selectedClient.stage === stageOption.id && (
-                          <CheckIcon className="w-4 h-4 text-purple-600" />
-                        )}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
+            {selectedClient?.stage !== null &&
+              selectedClient?.stage !== undefined &&
+              selectedClient?.stage !== '' &&
+              getStageBadge(selectedClient.stage, 'mobile')}
 
             {/* Applicants (same logic as desktop) */}
             {(() => {
@@ -5285,41 +5984,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
                 
                 {/* Stage Badge - Under balance badge */}
-                {selectedClient?.stage !== null && selectedClient?.stage !== undefined && selectedClient?.stage !== '' && (
-                  <div className="dropdown dropdown-end mb-3">
-                    <label 
-                      tabIndex={0} 
-                      className="btn btn-md text-white border-none bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 normal-case text-sm cursor-pointer hover:from-pink-600 hover:via-purple-600 hover:to-purple-700 transition-all duration-200 flex items-center gap-2 whitespace-nowrap px-4"
-                    >
-                      {getStageName(selectedClient.stage)}
-                      <ChevronDownIcon className="w-4 h-4" />
-                    </label>
-                    <ul 
-                      tabIndex={0} 
-                      className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200"
-                    >
-                      {availableStages.map((stageOption) => (
-                        <li key={stageOption.id}>
-                          <a 
-                            className={`flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg ${
-                              selectedClient.stage === stageOption.id ? 'bg-purple-50 text-purple-700 font-semibold' : ''
-                            }`}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleStageChange(stageOption.id);
-                            }}
-                          >
-                            <span className="font-medium">{stageOption.name}</span>
-                            {selectedClient.stage === stageOption.id && (
-                              <CheckIcon className="w-4 h-4 text-purple-600" />
-                            )}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                {selectedClient?.stage !== null &&
+                  selectedClient?.stage !== undefined &&
+                  selectedClient?.stage !== '' && (
+                    <div className="mb-3 flex justify-center">
+                      {getStageBadge(selectedClient.stage, 'desktop')}
+                    </div>
+                  )}
                 
                 {/* Category Prompt Message - Under stage badge */}
                 {(!selectedClient?.category_id && !selectedClient?.category) && (
@@ -5366,8 +6037,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
           </div>
         </div>
-        
-
         </div>
         
         {/* Tabs Navigation */}
@@ -5419,28 +6088,54 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
                 
                 {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                  <div className="dropdown">
-                    <label tabIndex={0} className="btn bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
-                      <span>Assign to</span>
-                      <ChevronDownIcon className="w-4 h-4" />
-                    </label>
-                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                      {schedulerOptions.map((scheduler) => (
-                        <li key={scheduler}>
-                          <a 
-                            className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              updateScheduler(scheduler);
-                            }}
-                          >
-                            <UserIcon className="w-5 h-5 text-primary" />
-                            <span className="font-medium">{scheduler}</span>
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
+                  <div className="relative" data-assign-dropdown="true">
+                    <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-56"
+                      placeholder="Type employee name..."
+                      value={schedulerSearchTerm}
+                      onChange={e => {
+                        setSchedulerSearchTerm(e.target.value);
+                        setShowSchedulerDropdown(true);
+                      }}
+                      onFocus={() => setShowSchedulerDropdown(true)}
+                    />
+                    {showSchedulerDropdown && (
+                      <div className="absolute z-[60] mt-1 max-h-60 w-56 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                        <button
+                          type="button"
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                          onClick={() => {
+                            setSchedulerSearchTerm('');
+                            setShowSchedulerDropdown(false);
+                            updateScheduler('');
+                          }}
+                        >
+                          ---------
+                        </button>
+                        {filteredSchedulerOptions.length > 0 ? (
+                          filteredSchedulerOptions.map(option => (
+                            <button
+                              type="button"
+                              key={option}
+                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                              onClick={() => {
+                                setSchedulerSearchTerm(option);
+                                setShowSchedulerDropdown(false);
+                                updateScheduler(option);
+                              }}
+                            >
+                              {option}
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-4 py-3 text-sm text-base-content/60">
+                            No matches found
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="dropdown dropdown-end">
@@ -5455,7 +6150,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                     )}
                     <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                    <li>
+                      <a
+                        className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                        onClick={() => {
+                          openEditLeadDrawer();
+                          (document.activeElement as HTMLElement | null)?.blur();
+                        }}
+                      >
+                        <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                        <span className="font-medium">Edit lead</span>
+                      </a>
+                    </li>
                     <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                   </ul>
                 </div>
@@ -5477,26 +6183,55 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </div>
                 </div>
                 {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                  <div className="flex-1">
-                    <div className="dropdown w-full">
-                      <label tabIndex={0} className="btn btn-sm bg-white text-primary border-primary border-2 hover:bg-purple-50 gap-2">
-                        <span>Assign to</span>
-                        <ChevronDownIcon className="w-4 h-4" />
-                      </label>
-                      <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                        {schedulerOptions.map((scheduler) => (
-                          <li key={scheduler}>
-                            <a 
-                              className="flex items-center gap-3 py-3 hover:bg-gray-50 transition-colors rounded-lg" 
-                              onClick={() => { updateScheduler(scheduler); (document.activeElement as HTMLElement)?.blur(); }}
+                  <div className="flex-1 relative" data-assign-dropdown="true">
+                    <label className="block text-sm font-semibold text-primary mb-1">Assign to</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Type employee name..."
+                      value={schedulerSearchTerm}
+                      onChange={e => {
+                        setSchedulerSearchTerm(e.target.value);
+                        setShowSchedulerDropdown(true);
+                      }}
+                      onFocus={() => setShowSchedulerDropdown(true)}
+                    />
+                    {showSchedulerDropdown && (
+                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                        <button
+                          type="button"
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                          onClick={() => {
+                            setSchedulerSearchTerm('');
+                            setShowSchedulerDropdown(false);
+                            updateScheduler('');
+                          }}
+                        >
+                          ---------
+                        </button>
+                        {filteredSchedulerOptions.length > 0 ? (
+                          filteredSchedulerOptions.map(option => (
+                            <button
+                              type="button"
+                              key={option}
+                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                              onClick={() => {
+                                setSchedulerSearchTerm(option);
+                                setShowSchedulerDropdown(false);
+                                updateScheduler(option);
+                                (document.activeElement as HTMLElement | null)?.blur();
+                              }}
                             >
-                              <UserIcon className="w-5 h-5 text-primary" />
-                              <span className="font-medium">{scheduler}</span>
-                            </a>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                              {option}
+                            </button>
+                          ))
+                        ) : (
+                          <div className="px-4 py-3 text-sm text-base-content/60">
+                            No matches found
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
                 <div className="flex-1">
@@ -5512,7 +6247,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                       )}
                       <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-5 h-5 text-blue-500" /><span className="font-medium">Edit lead</span></a></li>
+                      <li>
+                        <a
+                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                          onClick={() => {
+                            openEditLeadDrawer();
+                            (document.activeElement as HTMLElement | null)?.blur();
+                          }}
+                        >
+                          <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                          <span className="font-medium">Edit lead</span>
+                        </a>
+                      </li>
                       <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                     </ul>
                   </div>
@@ -5570,9 +6316,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
           <div
             key={`${activeTab}-${interactionCount}`}
-            className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0 slide-fade-in"
+            className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
           >
-                          {ActiveComponent && <ActiveComponent client={selectedClient} onClientUpdate={onClientUpdate} onCreateFinancePlan={activeTab === 'finances' ? () => setShowPaymentsPlanDrawer(true) : undefined} />}
+                          {ActiveComponent && (
+                            <ActiveComponent
+                              client={selectedClient}
+                              onClientUpdate={onClientUpdate}
+                              interactionsCache={interactionsCacheForLead}
+                              onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
+                              onInteractionCountUpdate={handleInteractionCountUpdate}
+                              {...financeProps}
+                            />
+                          )}
           </div>
         </div>
       {/* Schedule Meeting Right Panel */}
@@ -5612,7 +6367,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </select>
               </div>
 
-              {/* Calendar Selection */}
+              {/* Calendar */}
               <div>
                 <label className="block font-semibold mb-1">Calendar</label>
                 <select
@@ -5995,7 +6750,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           </div>
         </div>
       )}
-
       {showMeetingIrrelevantModal && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center">
           <div
@@ -6065,71 +6819,178 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         </div>
       )}
 
-      {/* Send Offer Drawer */}
-      {showSendOfferDrawer && (
+      {/* Client Signed Drawer (New) */}
+      {showSuccessDrawer && (
         <div className="fixed inset-0 z-[60] flex">
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowSendOfferDrawer(false)} />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Send Price Offer</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowSendOfferDrawer(false)}>
+          <div
+            className="fixed inset-0 bg-black/30"
+            onClick={() => setShowSuccessDrawer(false)}
+          />
+          <div className="ml-auto w-full max-w-lg bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+            <div className="flex items-start justify-between mb-6">
+              <div>
+                <h3 className="text-3xl font-black tracking-tight text-primary">Client signed !!!!</h3>
+                <p className="mt-2 text-lg font-semibold text-base-content">
+                  Name: <span className="font-bold">{selectedClient?.name || '—'}</span>
+                </p>
+                <p className="text-lg font-semibold text-base-content">
+                  Topic: <span className="font-bold">{selectedClient?.topic || '—'}</span>
+                </p>
+              </div>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowSuccessDrawer(false)}
+              >
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            <div className="flex flex-col gap-4 flex-1">
+
+            <div className="flex flex-col gap-5 flex-1 overflow-y-auto">
               <div>
-                <label className="block font-semibold mb-1">To</label>
-                <input type="text" className="input input-bordered w-full" value={selectedClient.email} disabled />
+                <label className="block font-semibold mb-1">File ID</label>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  value={successForm.fileId}
+                  onChange={e => handleSuccessFieldChange('fileId', e.target.value)}
+                />
               </div>
+
               <div>
-                <label className="block font-semibold mb-1">Subject</label>
-                <input type="text" className="input input-bordered w-full" value={offerSubject} onChange={e => setOfferSubject(e.target.value)} />
+                <label className="block font-semibold mb-1">Case handler</label>
+                <div ref={handlerSearchContainerRef} className="relative">
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Type case handler name or choose from suggestions..."
+                    value={handlerSearchTerm}
+                    onChange={e => {
+                      const value = e.target.value;
+                      setHandlerSearchTerm(value);
+                      setShowHandlerSearchDropdown(true);
+                      setSuccessForm(prev => ({
+                        ...prev,
+                        handler: value,
+                        handlerId: '',
+                      }));
+                    }}
+                    onFocus={() => {
+                      setShowHandlerSearchDropdown(true);
+                      setFilteredHandlerSearchOptions(handlerOptions);
+                    }}
+                    autoComplete="off"
+                  />
+                  {showHandlerSearchDropdown && (
+                    <div className="absolute z-30 mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                      <button
+                        type="button"
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                        onClick={() => {
+                          setSuccessForm(prev => ({
+                            ...prev,
+                            handlerId: '',
+                            handler: '',
+                          }));
+                          setHandlerSearchTerm('');
+                          setShowHandlerSearchDropdown(false);
+                        }}
+                      >
+                        ---------
+                      </button>
+                      {filteredHandlerSearchOptions.length > 0 ? (
+                        filteredHandlerSearchOptions.map(option => (
+                          <button
+                            type="button"
+                            key={option.id}
+                            className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                            onClick={() => {
+                              setSuccessForm(prev => ({
+                                ...prev,
+                                handlerId: option.id,
+                                handler: option.label,
+                              }));
+                              setHandlerSearchTerm(option.label);
+                              setShowHandlerSearchDropdown(false);
+                            }}
+                          >
+                            {option.label}
+                          </button>
+                        ))
+                      ) : (
+                        <div className="px-4 py-3 text-sm text-base-content/60">
+                          No handlers found
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
+
               <div>
-                <label className="block font-semibold mb-2">Templates</label>
-                <div className="flex flex-wrap gap-2">
-                  {Object.entries(offerTemplates).map(([lang, template]) => (
-                    <button
-                      key={lang}
-                      className="btn btn-outline btn-xs"
-                      onClick={() => {
-                        setOfferBody(updateOfferBodyWithTotal(template.body.replace('{client_name}', selectedClient.name), offerTotal, offerCurrency));
-                        setOfferSubject(`[${selectedClient.lead_number}] - ${template.subject}`);
-                        setOfferTemplateLang(lang as 'en'|'he');
-                      }}
-                    >
-                      {template.name}
-                    </button>
+                <label className="block font-semibold mb-1">Currency</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={successForm.currency}
+                  onChange={e => handleSuccessFieldChange('currency', e.target.value)}
+                >
+                  {currencyOptions.map(currency => (
+                    <option key={currency.value} value={currency.value}>
+                      {currency.label}
+                    </option>
                   ))}
-                </div>
+                </select>
               </div>
-              <div className="flex gap-2 items-end">
-                <div className="flex-1">
-                  <label className="block font-semibold mb-1">Total</label>
-                  <input type="number" className="input input-bordered w-full" value={offerTotal} onChange={e => setOfferTotal(e.target.value)} min={0} />
-                </div>
-                <div>
-                  <label className="block font-semibold mb-1">Currency</label>
-                  <select className="select select-bordered w-full" value={offerCurrency} onChange={e => setOfferCurrency(e.target.value)}>
-                    <option value="NIS">NIS</option>
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                  </select>
-                </div>
-              </div>
+
               <div>
-                <label className="block font-semibold mb-1">Body</label>
-                <textarea className="textarea textarea-bordered w-full min-h-[120px]" value={offerBody} onChange={e => setOfferBody(e.target.value)} />
+                <label className="block font-semibold mb-1">Number of applicants</label>
+                <input
+                  type="number"
+                  min="0"
+                  className="input input-bordered w-full"
+                  value={successForm.numApplicants}
+                  onChange={e => handleSuccessFieldChange('numApplicants', e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Proposal Total</label>
+                <input
+                  type="number"
+                  className="input input-bordered w-full"
+                  value={successForm.proposal}
+                  onChange={e => handleSuccessFieldChange('proposal', e.target.value)}
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold mb-1">Potential Value</label>
+                <input
+                  type="number"
+                  className="input input-bordered w-full"
+                  value={successForm.potentialValue}
+                  onChange={e => handleSuccessFieldChange('potentialValue', e.target.value)}
+                />
               </div>
             </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={handleSendOfferEmail} disabled={offerSending}>
-                {offerSending ? 'Sending...' : 'Send'}
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setShowSuccessDrawer(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary px-8"
+                onClick={handleSaveSuccessDrawer}
+              >
+                Save
               </button>
             </div>
           </div>
         </div>
       )}
+
       {/* Client Signed Drawer */}
       {showSignedDrawer && (
         <div className="fixed inset-0 z-[60] flex">
@@ -6365,773 +7226,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       )}
 
       <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
-
+      <SendPriceOfferModal
+        isOpen={Boolean(showSendOfferModal && selectedClient)}
+        onClose={() => setShowSendOfferModal(false)}
+        client={selectedClient}
+        msalInstance={instance}
+        loginRequest={loginRequest}
+        onOfferSent={onClientUpdate}
+      />
       {/* Loading overlay spinner */}
       {localLoading && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/60">
           <span className="loading loading-spinner loading-lg text-primary"></span>
-        </div>
-      )}
-      {/* 3. Add the rescheduling drawer skeleton after the Schedule Meeting drawer */}
-      {showRescheduleDrawer && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowRescheduleDrawer(false)} />
-          {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowRescheduleDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
-              <div>
-                <label className="block font-semibold mb-2">Select a meeting to cancel:</label>
-                {rescheduleMeetings.length === 0 ? (
-                  <div className="text-base-content/60">No meetings scheduled for this client.</div>
-                ) : (
-                  <ul className="space-y-2">
-                    {rescheduleMeetings.map((meeting) => (
-                      <li key={meeting.id} className="flex items-center gap-3 p-2 rounded-lg border border-base-200">
-                        <input
-                          type="radio"
-                          name="meetingToDelete"
-                          checked={meetingToDelete === meeting.id}
-                          onChange={() => setMeetingToDelete(meeting.id)}
-                        />
-                        <span className="font-medium">{meeting.meeting_date} {meeting.meeting_time} ({meeting.meeting_location})</span>
-                        <span className="text-xs text-base-content/60 ml-2">Manager: {meeting.meeting_manager}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-              <div className="divider">New Meeting Details</div>
-              <div className="flex flex-col gap-3">
-                <label className="block font-semibold mb-1">Location</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={rescheduleFormData.location}
-                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
-                >
-                  <option value="Teams">Teams</option>
-                  <option value="Jerusalem Office">Jerusalem Office</option>
-                  <option value="Tel Aviv Office">Tel Aviv Office</option>
-                  <option value="Phone Call">Phone Call</option>
-                  <option value="WhatsApp">WhatsApp</option>
-                </select>
-                <label className="block font-semibold mb-1">Date</label>
-                <input
-                  type="date"
-                  className="input input-bordered w-full"
-                  value={rescheduleFormData.date}
-                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }))}
-                  min={new Date().toISOString().split('T')[0]}
-                />
-                <label className="block font-semibold mb-1">Time</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={rescheduleFormData.time}
-                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, time: e.target.value }))}
-                >
-                  {Array.from({ length: 32 }, (_, i) => {
-                    const hour = Math.floor(i / 2) + 8;
-                    const minute = i % 2 === 0 ? '00' : '30';
-                    const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
-                    return (
-                      <option key={timeOption} value={timeOption}>{timeOption}</option>
-                    );
-                  })}
-                </select>
-                <label className="block font-semibold mb-1">Manager (Optional)</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={rescheduleFormData.manager}
-                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))}
-                >
-                  <option value="">Select a manager...</option>
-                  {['Anna Zh', 'Mindi', 'Sarah L', 'David K'].map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-                <label className="block font-semibold mb-1">Helper (Optional)</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={rescheduleFormData.helper}
-                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))}
-                >
-                  <option value="">Select a helper...</option>
-                  {['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'].map((h) => (
-                    <option key={h} value={h}>{h}</option>
-                  ))}
-                </select>
-                <label className="block font-semibold mb-1">Amount (Optional)</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={rescheduleFormData.amount}
-                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, amount: e.target.value }))}
-                  min={0}
-                  placeholder="Enter amount..."
-                />
-                <label className="block font-semibold mb-1">Currency</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={rescheduleFormData.currency}
-                  onChange={e => setRescheduleFormData((prev: any) => ({ ...prev, currency: e.target.value }))}
-                >
-                  {currencyOptions.map((opt: any) => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="mt-6 flex justify-end">
-                <button
-                  className="btn btn-primary px-8"
-                  onClick={handleRescheduleMeeting}
-                  disabled={
-                    !meetingToDelete ||
-                    !rescheduleFormData.date ||
-                    !rescheduleFormData.time
-                  }
-                >
-                  Save
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {/* Payments Plan Drawer */}
-      {showPaymentsPlanDrawer && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div className="fixed inset-0 bg-black/30" onClick={() => { setShowPaymentsPlanDrawer(false); setPayments([]); }} />
-          {/* Drawer */}
-          <div className="ml-auto w-full max-w-xl bg-white h-full shadow-2xl p-0 flex flex-col animate-slideInRight z-50 overflow-y-auto border-l border-gray-200 dark:border-gray-700">
-            {/* Header */}
-            <div className="flex items-center justify-between px-8 pt-8 pb-4 border-b border-gray-100">
-              <div>
-                <h3 className="text-2xl font-bold text-gray-900">{selectedClient?.lead_number} - {selectedClient?.name}</h3>
-                <div className="text-base font-medium text-gray-500 mt-1">Payments plan</div>
-              </div>
-              <button className="btn btn-ghost btn-sm" onClick={() => { setShowPaymentsPlanDrawer(false); setPayments([]); }}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            {/* Summary Section */}
-            <div className="px-8 pt-6 pb-4 border-b border-gray-100 bg-gray-50 dark:bg-gray-700">
-              <div className="space-y-2">
-                {/* Edit button above total balance */}
-                <div className="flex justify-end mb-1">
-                  {!editingBalance && (
-                    <button className="btn btn-xs btn-link text-gray-500 hover:text-primary px-0" onClick={() => setEditingBalance(true)}>
-                      Edit
-                    </button>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-base text-gray-600">Total balance</span>
-                  {editingBalance ? (
-                    <input
-                      type="number"
-                      className="input input-bordered w-32 text-right"
-                      value={editedBalance}
-                      onChange={e => setEditedBalance(Number(e.target.value))}
-                      onBlur={() => { setEditingBalance(false); /* Optionally save */ }}
-                      autoFocus
-                    />
-                  ) : (
-                    <span className="text-xl font-bold text-gray-900">
-                      {(() => {
-                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const currency = isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
-                        return `${currency}${(selectedClient?.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}`;
-                      })()}
-                    </span>
-                  )}
-                </div>
-                {(() => {
-                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                  const currency = isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
-                  const balance = selectedClient?.balance || 0;
-                  const vatAmount = currency === '₪' ? balance * 0.18 : 0;
-                  const totalWithVat = currency === '₪' ? balance * 1.18 : balance;
-                  
-                  return (
-                    <>
-                      {currency === '₪' && (
-                        <div className="flex items-center justify-between">
-                          <span className="text-base text-gray-600">VAT (18%)</span>
-                          <span className="text-base font-semibold text-gray-900">
-                            {`${currency}${vatAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-                          </span>
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between">
-                        <span className="text-base text-gray-600">
-                          {currency === '₪' ? 'Total incl. VAT' : 'Total'}
-                        </span>
-                        <span className="text-lg font-bold text-primary">
-                          {`${currency}${totalWithVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}`}
-                        </span>
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
-            {/* Auto plan dropdown */}
-            <div className="px-8 pt-6 pb-2">
-              <label className="block font-semibold mb-1 text-gray-700 dark:text-gray-300">Auto plan</label>
-              <select
-                className="select select-bordered w-full max-w-xs"
-                value={autoPlan}
-                onChange={e => {
-                  const selectedPlan = e.target.value;
-                  if (selectedPlan) {
-                    if (payments.length > 0) {
-                      if (!window.confirm('This will overwrite your current payments. Continue?')) {
-                        return;
-                      }
-                    }
-                    // Generate payment rows for the selected plan
-                    const planParts = selectedPlan.split('/').map(Number);
-                    const balance = selectedClient?.balance || 0;
-                    
-                    // Determine currency for legacy leads
-                    const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                    let currency = '₪'; // Default
-                    if (isLegacyLead) {
-                      currency = selectedClient?.balance_currency || '₪';
-                    } else {
-                      currency = selectedClient?.proposal_currency || '₪';
-                    }
-                    
-                    const newPayments = [];
-                    for (let i = 0; i < planParts.length; i++) {
-                      const percentage = planParts[i];
-                      const value = Math.round(balance * (percentage / 100) * 100) / 100;
-                      // Only apply VAT if currency is NIS (₪)
-                      const valueVat = currency === '₪' ? Math.round(value * 0.18 * 100) / 100 : 0;
-                      const dateObj = new Date(Date.now() + (i + 1) * 30 * 24 * 60 * 60 * 1000);
-                      const dueDate = dateObj.toISOString().split('T')[0];
-                      newPayments.push({
-                        duePercent: `${percentage}%`,
-                        dueDate: dueDate,
-                        value: value,
-                        valueVat: valueVat,
-                        currency: currency,
-                        client: selectedClient?.name || '',
-                        order: i === 0 ? 'First Payment' : i === planParts.length - 1 ? 'Final Payment' : 'Intermediate Payment',
-                        notes: '',
-                      });
-                    }
-                    setPayments(newPayments);
-                  }
-                  setAutoPlan(selectedPlan);
-                }}
-              >
-                <option value="">Choose auto plan...</option>
-                {autoPlanOptions.filter(opt => opt).map(opt => (
-                  <option key={opt} value={opt}>{opt}</option>
-                ))}
-              </select>
-            </div>
-            {/* Add new payment button */}
-            <div className="px-8 pb-2">
-              <button className="btn btn-outline w-full" onClick={() => {
-                setShowAddPayment(true);
-                // Initialize form with correct defaults
-                setNewPayment({
-                  client: selectedClient?.name || '',
-                  order: 'Intermediate Payment',
-                  date: '',
-                  currency: (() => {
-                    const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                    return isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
-                  })(),
-                  value: 0.0,
-                  duePercent: '',
-                  applicants: '',
-                  notes: '',
-                });
-              }}>
-                Add new payment
-              </button>
-            </div>
-            {/* Add Payment Form */}
-            {showAddPayment && (
-              <div className="bg-white rounded-xl shadow p-6 border border-gray-200 dark:border-gray-700 mb-6 mx-8">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-4">
-                  <div>
-                    <label className="block font-semibold mb-1">Client:</label>
-                    <select className="select select-bordered w-full" value={newPayment.client} onChange={e => setNewPayment({ ...newPayment, client: e.target.value })}>
-                      <option>----------</option>
-                      <option>{selectedClient?.name}</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Order:</label>
-                    <select className="select select-bordered w-full" value={newPayment.order} onChange={e => setNewPayment({ ...newPayment, order: e.target.value })}>
-                      <option>First Payment</option>
-                      <option>Intermediate Payment</option>
-                      <option>Final Payment</option>
-                      <option>Single Payment</option>
-                      <option>Expense (no VAT)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Date:</label>
-                    <input type="date" className="input input-bordered w-full" value={newPayment.date} onChange={e => setNewPayment({ ...newPayment, date: e.target.value })} />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Currency:</label>
-                    <select className="select select-bordered w-full" value={newPayment.currency} onChange={e => setNewPayment({ ...newPayment, currency: e.target.value })}>
-                      {(() => {
-                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const defaultCurrency = isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
-                        
-                        // Show the default currency first, then other options
-                        const currencies = [defaultCurrency, '₪', '$', '€', '£'].filter((currency, index, arr) => arr.indexOf(currency) === index);
-                        
-                        return currencies.map(currency => (
-                          <option key={currency} value={currency}>{currency}</option>
-                        ));
-                      })()}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Value:</label>
-                    <input type="number" className="input input-bordered w-full text-right" value={newPayment.value} onChange={e => setNewPayment({ ...newPayment, value: parseFloat(e.target.value) })} />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Due Percentage:</label>
-                    <input 
-                      type="number" 
-                      className="input input-bordered w-full text-right" 
-                      value={newPayment.duePercent} 
-                      onChange={e => setNewPayment({ ...newPayment, duePercent: e.target.value })} 
-                      placeholder="e.g., 25"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Applicants:</label>
-                    <input type="text" className="input input-bordered w-full" value={newPayment.applicants} onChange={e => setNewPayment({ ...newPayment, applicants: e.target.value })} />
-                  </div>
-                  <div className="md:col-span-2">
-                    <label className="block font-semibold mb-1">Notes:</label>
-                    <textarea className="textarea textarea-bordered w-full min-h-[100px]" value={newPayment.notes} onChange={e => setNewPayment({ ...newPayment, notes: e.target.value })} />
-                  </div>
-                </div>
-                <div className="flex justify-end gap-3">
-                  <button className="btn btn-ghost px-6" onClick={() => {
-                    setShowAddPayment(false);
-                    // Reset form to defaults
-                    setNewPayment({
-                      client: selectedClient?.name || '',
-                      order: 'Intermediate Payment',
-                      date: '',
-                      currency: (() => {
-                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        return isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
-                      })(),
-                      value: 0.0,
-                      duePercent: '',
-                      applicants: '',
-                      notes: '',
-                    });
-                  }}>
-                    Cancel
-                  </button>
-                  <button className="btn btn-primary px-8" onClick={() => {
-                    let valueNum = typeof newPayment.value === 'number' ? newPayment.value : parseFloat(newPayment.value);
-                    if (isNaN(valueNum)) valueNum = 0;
-                    // Only apply VAT if currency is NIS (₪)
-                    const valueVatNum = newPayment.currency === '₪' ? Math.round(valueNum * 0.18 * 100) / 100 : 0;
-                    setPayments([
-                      ...payments,
-                      { 
-                        ...newPayment, 
-                        value: valueNum, 
-                        valueVat: valueVatNum, 
-                        duePercent: newPayment.duePercent ? `${newPayment.duePercent}%` : '', 
-                        dueDate: newPayment.date, 
-                        currency: newPayment.currency 
-                      }
-                    ]);
-                    setShowAddPayment(false);
-                    // Reset form to defaults
-                    setNewPayment({
-                      client: selectedClient?.name || '',
-                      order: 'Intermediate Payment',
-                      date: '',
-                      currency: (() => {
-                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        return isLegacyLead ? (selectedClient?.balance_currency || '₪') : (selectedClient?.proposal_currency || '₪');
-                      })(),
-                      value: 0.0,
-                      duePercent: '',
-                      applicants: '',
-                      notes: '',
-                    });
-                  }}>
-                    Save
-                  </button>
-                </div>
-              </div>
-            )}
-            {/* Save Plan Button */}
-            <div className="mt-8 flex justify-end px-8 pb-8">
-              <button 
-                className="btn btn-primary btn-lg px-8 shadow-lg hover:scale-105 transition-transform"
-                onClick={handleSavePaymentsPlan}
-                disabled={isSavingPaymentPlan}
-              >
-                {isSavingPaymentPlan ? (
-                  <>
-                    <span className="loading loading-spinner loading-sm"></span>
-                    Saving...
-                  </>
-                ) : (
-                  'Save Plan'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-      {showProformaDrawer && proformaData && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowProformaDrawer(false)} />
-          {/* Drawer */}
-          <div className="ml-auto w-full max-w-4xl h-full bg-gradient-to-br from-blue-50 to-indigo-50 shadow-2xl p-0 flex flex-col animate-slideInRight z-50 overflow-hidden">
-            {/* Header */}
-            <div className="bg-gradient-to-r from-blue-600 to-indigo-600 text-white p-6 border-b border-blue-200">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-2xl font-bold mb-1">Create Proforma</h2>
-                  <p className="text-blue-100 text-sm">Client: {proformaData.client}</p>
-                </div>
-                <button className="btn btn-ghost btn-sm text-white hover:bg-white/20" onClick={() => setShowProformaDrawer(false)}>
-                  <XMarkIcon className="w-6 h-6" />
-                </button>
-              </div>
-            </div>
-
-            {/* Main Content - Two Column Layout */}
-            <div className="flex-1 flex overflow-hidden">
-              {/* Left Column - Invoice Items */}
-              <div className="flex-1 p-6 overflow-y-auto">
-                <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <DocumentTextIcon className="w-5 h-5 text-blue-600" />
-                    Invoice Items
-                  </h3>
-                  
-                  {/* Editable table */}
-                  <div className="overflow-x-auto">
-                    <table className="table w-full">
-                      <thead>
-                        <tr className="bg-gray-50 dark:bg-gray-700">
-                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Description</th>
-                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Qty</th>
-                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Rate</th>
-                          <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Total</th>
-                          {!proformaData?.isViewMode && <th className="text-sm font-semibold text-gray-700 dark:text-gray-300">Actions</th>}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {proformaData.rows.map((row: any, idx: number) => (
-                          <tr key={idx} className="hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors">
-                            <td>
-                              <input 
-                                className="input input-bordered w-full text-sm" 
-                                value={row.description} 
-                                onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
-                                readOnly={proformaData?.isViewMode}
-                                placeholder="Item description"
-                              />
-                            </td>
-                            <td>
-                              <input 
-                                className="input input-bordered w-20 text-sm text-center" 
-                                type="number" 
-                                value={row.qty} 
-                                onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
-                                readOnly={proformaData?.isViewMode}
-                              />
-                            </td>
-                            <td>
-                              <input 
-                                className="input input-bordered w-24 text-sm text-right" 
-                                type="number" 
-                                value={row.rate} 
-                                onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
-                                readOnly={proformaData?.isViewMode}
-                              />
-                            </td>
-                            <td>
-                              <input className="input input-bordered w-24 text-sm text-right font-semibold" type="number" value={row.total} readOnly />
-                            </td>
-                            {!proformaData?.isViewMode && (
-                              <td>
-                                <button 
-                                  className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50" 
-                                  onClick={() => handleDeleteProformaRow(idx)}
-                                >
-                                  <TrashIcon className="w-4 h-4" />
-                                </button>
-                              </td>
-                            )}
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  
-                  {!proformaData?.isViewMode && (
-                    <button 
-                      className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50" 
-                      onClick={handleAddProformaRow}
-                    >
-                      <PlusIcon className="w-4 h-4 mr-1" />
-                      Add Row
-                    </button>
-                  )}
-                </div>
-
-                {/* Settings Section */}
-                <div className="bg-white rounded-xl shadow-lg p-6">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <Cog6ToothIcon className="w-5 h-5 text-green-600" />
-                    Settings
-                  </h3>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="form-control">
-                      <label className="label cursor-pointer justify-start gap-3">
-                        <input 
-                          type="checkbox" 
-                          className="checkbox checkbox-primary" 
-                          checked={proformaData.addVat} 
-                          onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
-                          disabled={proformaData?.isViewMode}
-                        />
-                        <span className="label-text font-medium">Add VAT (18%)</span>
-                      </label>
-                    </div>
-                    
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Currency</span>
-                      </label>
-                      <select 
-                        className="select select-bordered w-full" 
-                        value={proformaData.currency} 
-                        onChange={e => setProformaData((prev: any) => ({ ...prev, currency: e.target.value }))}
-                        disabled={proformaData?.isViewMode}
-                      >
-                        <option value="₪">₪ (NIS)</option>
-                        <option value="$">$ (USD)</option>
-                        <option value="€">€ (EUR)</option>
-                      </select>
-                    </div>
-                    
-                    <div className="form-control">
-                      <label className="label">
-                        <span className="label-text font-medium">Bank Account</span>
-                      </label>
-                      <select 
-                        className="select select-bordered w-full" 
-                        value={proformaData.bankAccount} 
-                        onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
-                        disabled={proformaData?.isViewMode}
-                      >
-                        <option value="">Select account...</option>
-                        <option value="1">Account 1</option>
-                        <option value="2">Account 2</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Notes Section */}
-                <div className="bg-white rounded-xl shadow-lg p-6">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
-                    Notes
-                  </h3>
-                  <textarea 
-                    className="textarea textarea-bordered w-full min-h-[120px] text-sm" 
-                    value={proformaData.notes} 
-                    onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
-                    readOnly={proformaData?.isViewMode}
-                    placeholder="Add any additional notes or terms..."
-                  />
-                </div>
-              </div>
-
-              {/* Right Column - Summary & Actions */}
-              <div className="w-80 bg-white border-l border-gray-200 dark:border-gray-700 p-6 flex flex-col">
-                {/* Summary Card */}
-                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 mb-6 border border-blue-200">
-                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
-                    <ChartPieIcon className="w-5 h-5 text-blue-600" />
-                    Summary
-                  </h3>
-                  
-                  <div className="space-y-3">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm font-medium text-gray-600">Subtotal:</span>
-                      <span className="font-semibold text-gray-800">
-                        {proformaData.currency} {proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0).toLocaleString()}
-                      </span>
-                    </div>
-                    
-                    {proformaData.addVat && (
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm font-medium text-gray-600">VAT (18%):</span>
-                        <span className="font-semibold text-gray-800">
-                          {proformaData.currency} {Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 0.18 * 100) / 100}
-                        </span>
-                      </div>
-                    )}
-                    
-                    <div className="border-t border-gray-300 pt-3">
-                      <div className="flex justify-between items-center">
-                        <span className="text-lg font-bold text-gray-800">Total:</span>
-                        <span className="text-xl font-bold text-blue-600">
-                          {proformaData.currency} {proformaData.addVat ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Proforma Info */}
-                <div className="bg-gray-50 dark:bg-gray-700 rounded-xl p-4 mb-6">
-                  <h4 className="font-semibold text-gray-800 mb-2">Proforma Details</h4>
-                  <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Name:</span>
-                      <span className="font-medium">{generatedProformaName}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Language:</span>
-                      <span className="font-medium">{proformaData.language}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Payment:</span>
-                      <span className="font-medium">{proformaData.currency} {proformaData.payment.toLocaleString()}</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Action Buttons */}
-                <div className="mt-auto space-y-3">
-                  {proformaData?.isViewMode ? (
-                    <>
-                      <button className="btn btn-primary w-full" onClick={() => setShowProformaDrawer(false)}>
-                        Close
-                      </button>
-                      <button className="btn btn-outline w-full" onClick={() => {
-                        setProformaData((prev: any) => ({ ...prev, isViewMode: false }));
-                      }}>
-                        Edit Proforma
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button className="btn btn-primary w-full shadow-lg hover:shadow-xl transition-shadow" onClick={handleCreateProforma}>
-                        <DocumentCheckIcon className="w-5 h-5 mr-2" />
-                        Create Proforma
-                      </button>
-                      <div className="text-xs text-gray-500 text-center bg-yellow-50 p-3 rounded-lg border border-yellow-200">
-                        ⚠️ Once created, changes cannot be made!
-                      </div>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Success Drawer */}
-      {showSuccessDrawer && (
-        <div className="fixed inset-0 z-50 flex">
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowSuccessDrawer(false)} />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Mark as Success</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowSuccessDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1">
-              <div>
-                <label className="block font-semibold mb-1">Handler</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={successForm.handler}
-                  onChange={e => setSuccessForm(f => ({ ...f, handler: e.target.value }))}
-                >
-                  <option value="">--</option>
-                  {schedulerOptions.map((scheduler) => (
-                    <option key={scheduler} value={scheduler}>{scheduler}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Currency</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={successForm.currency}
-                  onChange={e => setSuccessForm(f => ({ ...f, currency: e.target.value }))}
-                >
-                  <option value="NIS">NIS</option>
-                  <option value="USD">USD</option>
-                  <option value="EUR">EUR</option>
-                </select>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Number of Applicants</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={successForm.numApplicants}
-                  onChange={e => setSuccessForm(f => ({ ...f, numApplicants: e.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Proposal (Amount Total)</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={successForm.proposal}
-                  onChange={e => setSuccessForm(f => ({ ...f, proposal: e.target.value }))}
-                />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Potential Value</label>
-                <input
-                  type="number"
-                  className="input input-bordered w-full"
-                  value={successForm.potentialValue}
-                  onChange={e => setSuccessForm(f => ({ ...f, potentialValue: e.target.value }))}
-                />
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={handleSaveSuccessDrawer}>
-                Save
-              </button>
-            </div>
-          </div>
         </div>
       )}
       {showSubLeadDrawer && (
