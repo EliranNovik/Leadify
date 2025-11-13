@@ -977,6 +977,7 @@ const AdminPage: React.FC = () => {
                       <tr>
                         <th className="text-gray-900 font-semibold">User</th>
                         <th className="text-gray-900 font-semibold">Updated By</th>
+                        <th className="text-gray-900 font-semibold">Info</th>
                         <th className="text-gray-900 font-semibold">Time</th>
                       </tr>
                     </thead>
@@ -989,6 +990,11 @@ const AdminPage: React.FC = () => {
                           <td>
                             <div className="text-sm text-gray-600">
                               {change.updated_by_name || 'System'}
+                            </div>
+                          </td>
+                          <td>
+                            <div className="text-xs text-gray-600 break-words max-w-md">
+                              {change.info || '—'}
                             </div>
                           </td>
                           <td>

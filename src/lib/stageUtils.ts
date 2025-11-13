@@ -65,15 +65,26 @@ export const getStageName = (stageId: string): string => {
   // Special mapping for known stage IDs that might not be in the database
   const specialStageMappings: { [key: string]: string } = {
     '0': 'Created',
-    '1': 'Precommunication',
     '10': 'Scheduler assigned',
+    '11': 'Precommunication',
+    '15': 'Communication started',
     '20': 'Meeting scheduled',
+    '21': 'Meeting rescheduling',
+    '30': 'Meeting complete',
     '35': 'Meeting Irrelevant',
+    '40': 'Waiting for Mtng sum',
     '50': 'Mtng sum+Agreement sent',
     '51': 'Client declined price offer',
+    '55': 'Another meeting',
+    '60': 'Client signed agreement',
+    '70': 'Payment request sent',
     '91': 'Dropped (Spam/Irrelevant)',
-    '105': 'Success',
-    'meeting_scheduled': 'Meeting Scheduled',
+    '100': 'Success',
+    '105': 'Handler Set',
+    '110': 'Handler Started',
+    '150': 'Application submitted',
+    '200': 'Case Closed',
+    'meeting_scheduled': 'Meeting scheduled',
     'scheduler_assigned': 'Scheduler assigned'
   };
   

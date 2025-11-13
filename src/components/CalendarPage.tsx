@@ -283,6 +283,7 @@ const CalendarPage: React.FC = () => {
   }>({});
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<any>(null);
+  const [leadsWithPastStages, setLeadsWithPastStages] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
 
   // WhatsApp functionality
@@ -1241,6 +1242,52 @@ const CalendarPage: React.FC = () => {
           const allStaffNames = allStaffData?.map(employee => employee.display_name).filter(Boolean) || [];
           setStaff(allStaffNames);
         }
+
+        // Fetch leads that have passed stage 40 (Waiting for Mtng sum) or 35 (Meeting Irrelevant)
+        const fetchLeadsWithPastStages = async () => {
+          try {
+            // Query for legacy leads (using lead_id)
+            const { data: legacyStageData, error: legacyError } = await supabase
+              .from('leads_leadstage')
+              .select('lead_id')
+              .in('stage', [35, 40])
+              .not('lead_id', 'is', null);
+
+            // Query for new leads (using newlead_id)
+            const { data: newStageData, error: newError } = await supabase
+              .from('leads_leadstage')
+              .select('newlead_id')
+              .in('stage', [35, 40])
+              .not('newlead_id', 'is', null);
+
+            const leadIds = new Set<string>();
+
+            // Add legacy lead IDs
+            if (!legacyError && legacyStageData) {
+              legacyStageData.forEach((entry: any) => {
+                if (entry.lead_id) {
+                  leadIds.add(`legacy_${entry.lead_id}`);
+                }
+              });
+            }
+
+            // Add new lead IDs
+            if (!newError && newStageData) {
+              newStageData.forEach((entry: any) => {
+                if (entry.newlead_id) {
+                  leadIds.add(entry.newlead_id);
+                }
+              });
+            }
+
+            setLeadsWithPastStages(leadIds);
+            console.log('✅ Calendar: Loaded leads with past stages (40 or 35):', leadIds.size);
+          } catch (error) {
+            console.error('Error fetching leads with past stages:', error);
+          }
+        };
+
+        await fetchLeadsWithPastStages();
       } catch (error) {
         console.error('Error in fetchMeetingsAndStaff:', error);
         setMeetings([]);
@@ -2774,8 +2821,14 @@ const CalendarPage: React.FC = () => {
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
     else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
 
+    // Check if lead has passed stage 40 or 35
+    const leadIdentifier = lead.lead_type === 'legacy' 
+      ? (lead.id ? `legacy_${lead.id}` : meeting.legacy_lead_id ? `legacy_${meeting.legacy_lead_id}` : null)
+      : (lead.id || meeting.client_id);
+    const hasPassedStage = leadIdentifier && leadsWithPastStages ? leadsWithPastStages.has(String(leadIdentifier)) : false;
+
     return (
-      <div key={meeting.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed">
+      <div key={meeting.id} className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed ${hasPassedStage ? 'bg-green-50' : 'bg-white'}`}>
         <div onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)} className="flex-1 cursor-pointer flex flex-col">
           {/* Lead Number and Name */}
           <div className="mb-3 flex items-center gap-2">
@@ -3121,10 +3174,15 @@ const CalendarPage: React.FC = () => {
     else if (probabilityNumber >= 60) probabilityColor = 'text-yellow-600';
     else if (probabilityNumber >= 40) probabilityColor = 'text-orange-600';
     
+    // Check if lead has passed stage 40 or 35
+    const leadIdentifier = lead.lead_type === 'legacy' 
+      ? (lead.id ? `legacy_${lead.id}` : meeting.legacy_lead_id ? `legacy_${meeting.legacy_lead_id}` : null)
+      : (lead.id || meeting.client_id);
+    const hasPassedStage = leadIdentifier && leadsWithPastStages ? leadsWithPastStages.has(String(leadIdentifier)) : false;
     
     return (
       <React.Fragment key={meeting.id}>
-        <tr className="hover:bg-base-200/50">
+        <tr className={`hover:bg-base-200/50 ${hasPassedStage ? 'bg-green-50' : ''}`}>
           <td className="font-bold">
             <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (

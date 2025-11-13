@@ -377,9 +377,16 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
   // Update timer for 24-hour window
   useEffect(() => {
-    if (!client || messages.length === 0 || !isOpen) {
+    if (!client || !isOpen) {
       setTimeLeft('');
       setIsLocked(false);
+      return;
+    }
+
+    // Lock input if there are no messages
+    if (messages.length === 0) {
+      setTimeLeft('');
+      setIsLocked(true);
       return;
     }
 
@@ -395,6 +402,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       }, 60000);
       
       return () => clearInterval(interval);
+    } else {
+      // No incoming messages, but there are outgoing messages - still lock
+      setTimeLeft('');
+      setIsLocked(true);
     }
   }, [client, messages, isOpen]);
 
@@ -1126,7 +1137,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               }}
               placeholder={
                 isLocked 
-                  ? "Window expired - use templates"
+                  ? (messages.length === 0 
+                      ? "No messages yet - use templates to start conversation"
+                      : "Window expired - use templates")
                   : selectedFile 
                     ? "Add a caption..." 
                     : selectedTemplate 

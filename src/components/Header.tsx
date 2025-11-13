@@ -30,7 +30,7 @@ import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
 import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
-import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -1306,6 +1306,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
+  // Helper function to get contrasting text color based on background
+  const getContrastingTextColor = (hexColor?: string | null) => {
+    if (!hexColor) return '#111827'; // Default to black if no color
+    const r = parseInt(hexColor.slice(1, 3), 16);
+    const g = parseInt(hexColor.slice(3, 5), 16);
+    const b = parseInt(hexColor.slice(5, 7), 16);
+    // Calculate luminance (perceived brightness)
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance > 0.55 ? '#111827' : '#ffffff';
+  };
+
   // Stage badge function for search results
   const getStageBadge = (stage: string | number | null | undefined) => {
     if (!stage || (typeof stage === 'string' && !stage.trim())) {
@@ -1317,39 +1328,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
     
     const stageStr = String(stage);
+    const stageName = getStageName(stageStr);
+    const stageColor = getStageColour(stageStr);
+    const textColor = getContrastingTextColor(stageColor);
     
-    // If it's already text (not a numeric ID), return as-is
-    if (typeof stage === 'string' && !stage.match(/^\d+$/)) {
-      return (
-        <span className="badge badge-sm bg-[#3b28c7] text-white">
-          {stageStr.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())}
-        </span>
-      );
-    }
-    
-    // For numeric IDs, use comprehensive mapping
-    const stageMapping: { [key: string]: string } = {
-      '0': 'Created',
-      '10': 'Scheduler Assigned',
-      '11': 'Handler Started',
-      '15': 'Success',
-      '20': 'Meeting Scheduled',
-      '35': 'Meeting Irrelevant',
-      '50': 'Meeting Scheduled',
-      '51': 'Client Declined Price Offer',
-      '91': 'Dropped (Spam/Irrelevant)',
-      '105': 'Success',
-      'meeting_scheduled': 'Meeting Scheduled',
-      'scheduler_assigned': 'Scheduler Assigned',
-      'handler_started': 'Handler Started',
-      'success': 'Success',
-      'created': 'Created'
-    };
-    
-    const stageName = stageMapping[stageStr] || stageStr;
+    // Use the stage color if available, otherwise use default purple
+    const backgroundColor = stageColor || '#3b28c7';
     
     return (
-      <span className="badge badge-sm bg-[#3b28c7] text-white">
+      <span 
+        className="badge badge-sm text-xs px-2 py-1"
+        style={{
+          backgroundColor: backgroundColor,
+          color: textColor,
+          borderColor: backgroundColor,
+        }}
+      >
         {stageName}
       </span>
     );

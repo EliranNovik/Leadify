@@ -106,6 +106,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     followup?: string;
   }>({});
 
+  // Scheduling information history
+  const [schedulingHistory, setSchedulingHistory] = useState<Array<{
+    id: string;
+    meeting_scheduling_notes?: string;
+    next_followup?: string;
+    followup?: string;
+    followup_log?: string;
+    created_by: string;
+    created_at: string;
+    note_id?: string;
+    from_notes?: boolean; // Flag to indicate if this came from lead_notes
+  }>>([]);
+
   const [creatingTeamsMeetingId, setCreatingTeamsMeetingId] = useState<number | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [allMeetingLocations, setAllMeetingLocations] = useState<any[]>([]);
@@ -413,11 +426,78 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
     };
 
+    const fetchSchedulingHistory = async () => {
+      if (!client.id) {
+        setSchedulingHistory([]);
+        return;
+      }
+      
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      
+      try {
+        // Fetch from scheduling_info_history table
+        let historyQuery = supabase
+          .from('scheduling_info_history')
+          .select('*')
+          .order('created_at', { ascending: false });
+        
+        if (isLegacyLead) {
+          const legacyId = client.id.toString().replace('legacy_', '');
+          historyQuery = historyQuery.eq('legacy_lead_id', legacyId);
+        } else {
+          historyQuery = historyQuery.eq('lead_id', client.id);
+        }
+        
+        const { data: historyData, error: historyError } = await historyQuery;
+        
+        if (historyError) throw historyError;
+        
+        // Fetch from lead_notes table for scheduling-related notes
+        // Only fetch for new leads (legacy leads don't have lead_notes)
+        let notesData: any[] = [];
+        if (!isLegacyLead) {
+          const { data: notes, error: notesError } = await supabase
+            .from('lead_notes')
+            .select('*')
+            .eq('lead_id', client.id)
+            .in('note_type', ['scheduling', 'followup', 'general'])
+            .order('created_at', { ascending: false });
+          
+          if (!notesError && notes) {
+            // Transform lead_notes to match scheduling_history format
+            notesData = notes.map(note => ({
+              id: note.id,
+              meeting_scheduling_notes: note.content,
+              next_followup: null,
+              followup: note.note_type === 'followup' ? note.content : null,
+              followup_log: null,
+              created_by: note.created_by_name || 'Unknown',
+              created_at: note.created_at,
+              note_id: note.id,
+              from_notes: true,
+            }));
+          }
+        }
+        
+        // Merge and sort by created_at (newest first)
+        const allHistory = [
+          ...(historyData || []).map((entry: any) => ({ ...entry, from_notes: false })),
+          ...notesData,
+        ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        
+        setSchedulingHistory(allHistory);
+      } catch (error) {
+        console.error('Error fetching scheduling history:', error);
+        setSchedulingHistory([]);
+      }
+    };
+
     // Add useEffect after both functions are defined
     useEffect(() => {
       console.log('MeetingTab useEffect triggered - client changed:', client?.id, client?.lead_type);
       fetchMeetings();
       fetchLeadSchedulingInfo();
+      fetchSchedulingHistory();
     }, [client, onClientUpdate]);
 
   // Fetch latest notes from leads table when a meeting is expanded
@@ -1517,47 +1597,51 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
 
-      {/* Lead Scheduling Info Box */}
-      {(leadSchedulingInfo.scheduler || leadSchedulingInfo.meeting_scheduling_notes || leadSchedulingInfo.next_followup || leadSchedulingInfo.followup) && (
+      {/* Scheduling History Table */}
+      {schedulingHistory.length > 0 && (
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="px-6 py-4 bg-white">
-            <h4 className="text-lg font-semibold text-gray-900">Scheduling Information</h4>
+            <h4 className="text-lg font-semibold text-gray-900">Scheduling History</h4>
             <div className="border-b border-gray-200 mt-3"></div>
           </div>
           <div className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Scheduler</label>
-                <div className="p-3">
-                  <span className="text-base font-semibold text-gray-900">
-                    {getEmployeeDisplayName(leadSchedulingInfo.scheduler) || <span className="text-gray-400 font-normal">Not assigned</span>}
-                  </span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Scheduling Notes</label>
-                <div className="p-3 min-h-[60px]">
-                  <span className="text-sm text-gray-900 whitespace-pre-line">
-                    {leadSchedulingInfo.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
-                  </span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Next Follow-up</label>
-                <div className="p-3">
-                  <span className="text-base font-semibold text-gray-900">
-                    {leadSchedulingInfo.next_followup ? new Date(leadSchedulingInfo.next_followup).toLocaleDateString() : <span className="text-gray-400 font-normal">Not set</span>}
-                  </span>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Follow-up Notes</label>
-                <div className="p-3 min-h-[60px]">
-                  <span className="text-sm text-gray-900 whitespace-pre-line">
-                    {leadSchedulingInfo.followup || <span className="text-gray-400 italic">No notes</span>}
-                  </span>
-                </div>
-              </div>
+            <div className="overflow-x-auto">
+              <table className="table w-full">
+                  <thead>
+                    <tr>
+                      <th className="text-xs font-semibold text-gray-600 uppercase">Date</th>
+                      <th className="text-xs font-semibold text-gray-600 uppercase">Created By</th>
+                      <th className="text-xs font-semibold text-gray-600 uppercase">Scheduling Notes</th>
+                      <th className="text-xs font-semibold text-gray-600 uppercase">Next Follow-up</th>
+                      <th className="text-xs font-semibold text-gray-600 uppercase">Follow-up Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {schedulingHistory.map((entry) => (
+                      <tr key={entry.id}>
+                        <td className="text-sm text-gray-900">
+                          {new Date(entry.created_at).toLocaleDateString('en-US', {
+                            year: 'numeric',
+                            month: 'short',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </td>
+                        <td className="text-sm text-gray-900">{entry.created_by || 'Unknown'}</td>
+                        <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
+                          {entry.meeting_scheduling_notes || <span className="text-gray-400 italic">No notes</span>}
+                        </td>
+                        <td className="text-sm text-gray-900">
+                          {entry.next_followup ? new Date(entry.next_followup).toLocaleDateString() : <span className="text-gray-400 italic">Not set</span>}
+                        </td>
+                        <td className="text-sm text-gray-900 whitespace-pre-line max-w-xs">
+                          {entry.followup || entry.followup_log || <span className="text-gray-400 italic">No notes</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+              </table>
             </div>
           </div>
         </div>

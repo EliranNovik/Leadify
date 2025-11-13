@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -527,6 +528,25 @@ const MainCategoryInput = ({
   );
 };
 
+// Helper function to calculate contrasting text color based on background
+const getContrastingTextColor = (hexColor?: string | null) => {
+  if (!hexColor) return '#111827';
+  let sanitized = hexColor.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map(char => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return '#111827';
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+  const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+  const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.6 ? '#111827' : '#ffffff';
+};
+
 // Table View Component
 const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (leadNumber: string) => void }) => {
   // Helper function to get currency symbol
@@ -560,7 +580,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
     return '₪'; // Default fallback
   };
 
-  const getColumnValue = (lead: Lead, columnKey: string) => {
+  const getColumnValue = (lead: Lead, columnKey: string): string | React.ReactElement => {
     const leadWithData = lead as any;
     
     // Handle roles - both individual role fields and the roles object
@@ -584,6 +604,39 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
     // Special handling for category to show main and sub category together
     if (columnKey === 'category') {
       return leadWithData.category || 'No Category';
+    }
+    
+    // Special handling for stage to show colored badge
+    if (columnKey === 'stage') {
+      const stage = leadWithData.stage;
+      if (!stage && stage !== 0) return 'No Stage';
+      
+      // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
+      const stageStr = String(stage);
+      
+      const stageName = getStageName(stageStr);
+      const stageColour = getStageColour(stageStr);
+      const badgeTextColour = getContrastingTextColor(stageColour);
+      const backgroundColor = stageColour || '#3f28cd';
+      const textColor = stageColour ? badgeTextColour : '#ffffff';
+      
+      return (
+        <span 
+          className="badge text-xs px-2 py-1"
+          style={{
+            backgroundColor: backgroundColor,
+            borderColor: backgroundColor,
+            color: textColor,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            display: 'inline-block'
+          }}
+          title={stageName}
+        >
+          {stageName}
+        </span>
+      );
     }
     
     // Special handling for currency columns to show symbols instead of IDs
@@ -725,13 +778,17 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
               }}
               title={`Click to view lead ${(lead as any).lead_number || lead.id}`}
             >
-              {selectedColumns.map((columnKey) => (
-                <td key={columnKey} className="max-w-xs">
-                  <div className="truncate" title={getColumnValue(lead, columnKey)}>
-                    {getColumnValue(lead, columnKey)}
-                  </div>
-                </td>
-              ))}
+              {selectedColumns.map((columnKey) => {
+                const columnValue = getColumnValue(lead, columnKey);
+                const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
+                return (
+                  <td key={columnKey} className="max-w-xs">
+                    <div className="truncate" title={titleText}>
+                      {columnValue}
+                    </div>
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -806,6 +863,13 @@ const LeadSearchPage: React.FC = () => {
   const handleLeadClick = (leadNumber: string) => {
     navigate(`/clients/${leadNumber}`);
   };
+
+  // Initialize stage names cache on mount
+  useEffect(() => {
+    fetchStageNames().catch(error => {
+      console.error('Error initializing stage names:', error);
+    });
+  }, []);
 
   // Fetch stage options from lead_stages table
   useEffect(() => {
@@ -1465,7 +1529,61 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.stage && filters.stage.length > 0) {
         console.log('🎯 Adding stage filter for new leads:', filters.stage);
-        newLeadsQuery = newLeadsQuery.in('stage', filters.stage);
+        try {
+          // Look up all selected stages to get their stage_ids
+          const stageIds: number[] = [];
+          for (const stage of filters.stage) {
+            const trimmedStage = stage.trim();
+            console.log('🔍 Looking up stage:', trimmedStage);
+            
+            // Special case: "Created" should map to stage ID 0
+            if (trimmedStage.toLowerCase() === 'created') {
+              stageIds.push(0);
+              console.log('✅ Using stage_id 0 for "Created"');
+              continue;
+            }
+            
+            // Try exact match first (case-insensitive)
+            let stageLookup = await supabase
+              .from('lead_stages')
+              .select('id')
+              .ilike('name', trimmedStage)
+              .limit(1);
+            
+            // If no exact match, try with wildcards
+            if (!stageLookup.data || stageLookup.data.length === 0) {
+              stageLookup = await supabase
+                .from('lead_stages')
+                .select('id')
+                .ilike('name', `%${trimmedStage}%`)
+                .limit(1);
+            }
+            
+            if (stageLookup.data && stageLookup.data.length > 0) {
+              const stageId = stageLookup.data[0].id;
+              // Ensure stageId is a number
+              const numericStageId = typeof stageId === 'number' ? stageId : parseInt(String(stageId), 10);
+              if (!isNaN(numericStageId)) {
+                stageIds.push(numericStageId);
+                console.log('✅ Found stage_id:', numericStageId, 'for stage:', trimmedStage);
+              } else {
+                console.log('⚠️ Stage ID is not numeric:', stageId, 'for stage:', trimmedStage);
+              }
+            } else {
+              console.log('❌ No stage found for:', trimmedStage);
+            }
+          }
+          
+          if (stageIds.length > 0) {
+            console.log('✅ Applying stage filter with IDs:', stageIds);
+            // Use IN operator for multiple stage_ids
+            newLeadsQuery = newLeadsQuery.in('stage', stageIds);
+          } else {
+            console.log('❌ No stage_ids found for any stages in new leads filter');
+          }
+        } catch (error) {
+          console.error('⚠️ Stage lookup failed for new leads, skipping stage filter:', error);
+        }
       }
       if (filters.source && filters.source.length > 0) {
         console.log('📡 Adding source filter for new leads:', filters.source);
@@ -1499,7 +1617,7 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.fileId) {
         console.log('📁 Adding fileId filter for new leads:', filters.fileId);
-        newLeadsQuery = newLeadsQuery.ilike('lead_number', `%${filters.fileId}%`);
+        newLeadsQuery = newLeadsQuery.ilike('file_id', `%${filters.fileId}%`);
       }
       if (filters.content) {
         console.log('📝 Adding content filter for new leads:', filters.content);
@@ -1532,7 +1650,7 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.eligibilityDeterminedOnly) {
         console.log('✅ Adding eligibility filter for new leads');
-        newLeadsQuery = newLeadsQuery.not('eligibility_status', 'is', null);
+        newLeadsQuery = newLeadsQuery.eq('eligible', true);
       }
 
       // Search legacy leads table with joins for language only (source and stage lookup done manually)
@@ -1754,15 +1872,16 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.eligibilityDeterminedOnly) {
         console.log('✅ Adding eligibility filter for legacy leads');
-        legacyLeadsQuery = legacyLeadsQuery.not('eligibility_status', 'is', null);
+        legacyLeadsQuery = legacyLeadsQuery.eq('eligibile', 'true');
       }
 
       console.log('🚀 Executing queries...');
       
-      // Execute both queries
+      // Execute both queries with explicit limit to ensure we get all results
+      // Supabase default limit is 1000, but we'll set it explicitly to be safe
       const [newLeadsResult, legacyLeadsResult] = await Promise.all([
-        newLeadsQuery.order('created_at', { ascending: false }),
-        legacyLeadsQuery.order('cdate', { ascending: false })
+        newLeadsQuery.order('created_at', { ascending: false }).limit(10000),
+        legacyLeadsQuery.order('cdate', { ascending: false }).limit(10000)
       ]);
 
       console.log('📊 New leads result:', {
@@ -1880,10 +1999,6 @@ const LeadSearchPage: React.FC = () => {
           sourceMapping.get(legacyLead.source_id) || legacyLead.source_external_id || 'Unknown' :
           legacyLead.source_external_id || 'Unknown';
           
-        const stageName = legacyLead.stage ? 
-          stageMapping.get(legacyLead.stage) || legacyLead.stage.toString() :
-          null;
-          
         const categoryName = legacyLead.category_id ? 
           categoryMapping.get(legacyLead.category_id) || legacyLead.category || 'No Category' :
           legacyLead.category || 'No Category';
@@ -1903,16 +2018,6 @@ const LeadSearchPage: React.FC = () => {
           case_handler: getEmployeeName(legacyLead.case_handler_id),
         };
           
-        // Debug stage mapping for first lead
-        if (legacyLead.id === legacyLeadsResult.data[0].id) {
-          console.log('🔍 Stage mapping debug for lead:', legacyLead.id, {
-            originalStage: legacyLead.stage,
-            stageMappingHasKey: stageMapping.has(legacyLead.stage),
-            mappedStageName: stageMapping.get(legacyLead.stage),
-            finalStageName: stageName
-          });
-        }
-          
         return {
           // Basic Info
           id: legacyLead.id,
@@ -1927,7 +2032,8 @@ const LeadSearchPage: React.FC = () => {
           additional_contacts: legacyLead.additional_emails || legacyLead.additional_phones,
           
           // Status & Classification
-          stage: stageName,
+          // Preserve original numeric stage ID so getStageName/getStageColour can look it up
+          stage: legacyLead.stage,
           source: sourceName,
           category: categoryName,
           language: (legacyLead.misc_language as any)?.name || null,
@@ -2080,24 +2186,35 @@ const LeadSearchPage: React.FC = () => {
     }
   };
 
-  const getStageBadge = (stage: string | null | undefined) => {
-    if (!stage) return <span className="badge badge-outline">No Stage</span>;
-    const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+  const getStageBadge = (stage: string | number | null | undefined) => {
+    if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
     
-    // Use custom purple color #3f28cd for all stage badges with proper text wrapping
+    // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
+    const stageStr = String(stage);
+    
+    // Get stage name and color from stageUtils
+    const stageName = getStageName(stageStr);
+    const stageColour = getStageColour(stageStr);
+    const badgeTextColour = getContrastingTextColor(stageColour);
+    
+    // Use dynamic color if available, otherwise fallback to default purple
+    const backgroundColor = stageColour || '#3f28cd';
+    const textColor = stageColour ? badgeTextColour : '#ffffff';
+    
     return <span 
-      className="badge text-white hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+      className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
       style={{
-        backgroundColor: '#3f28cd',
-        borderColor: '#3f28cd',
+        backgroundColor: backgroundColor,
+        borderColor: backgroundColor,
+        color: textColor,
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         display: 'inline-block'
       }}
-      title={stageText}
+      title={stageName}
     >
-      {stageText}
+      {stageName}
     </span>;
   };
 
@@ -2437,7 +2554,7 @@ const LeadSearchPage: React.FC = () => {
       </div>
 
       {/* Results */}
-      {searchPerformed && (
+      {searchPerformed && results.length > 0 && (
         <div>
           <h2 className="text-2xl font-bold mb-4">
             Found {results.length} lead{results.length !== 1 && 's'}

@@ -224,6 +224,159 @@ export const recordLeadStageChange = async ({
 };
 
 /**
+ * Fetches employee display name by employee ID
+ */
+const getEmployeeDisplayNameById = async (employeeId: number | null): Promise<string | null> => {
+  if (!employeeId) return null;
+  
+  try {
+    const { data, error } = await supabase
+      .from('tenants_employee')
+      .select('display_name')
+      .eq('id', employeeId)
+      .single();
+    
+    if (error) {
+      console.error('Error fetching employee name:', error);
+      return null;
+    }
+    
+    return data?.display_name || null;
+  } catch (error) {
+    console.error('Error in getEmployeeDisplayNameById:', error);
+    return null;
+  }
+};
+
+/**
+ * Triggers celebration for client signed agreement (stage 60)
+ */
+const triggerCelebrationIfNeeded = async (lead: CombinedLead, resolvedStageId: number | null) => {
+  // Check if stage is 60 (Client signed agreement)
+  if (resolvedStageId !== 60) return;
+  
+  try {
+    // Get closer information
+    let closerEmployeeId: number | null = null;
+    let closerName: string | null = null;
+    
+    const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+    
+    // First, try to get creator_id from the most recent stage change for this lead
+    let creatorId: number | null = null;
+    const isLegacyForQuery = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+    let stageHistoryQuery = supabase
+      .from('leads_leadstage')
+      .select('creator_id')
+      .order('date', { ascending: false })
+      .limit(1);
+    
+    if (isLegacyForQuery) {
+      const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
+        ? parseInt(lead.id.replace('legacy_', ''), 10)
+        : typeof lead.id === 'number' ? lead.id : null;
+      if (legacyId) {
+        stageHistoryQuery = stageHistoryQuery.eq('lead_id', legacyId);
+      }
+    } else {
+      stageHistoryQuery = stageHistoryQuery.eq('newlead_id', lead.id);
+    }
+    
+    const { data: stageHistory } = await stageHistoryQuery.single();
+    if (stageHistory?.creator_id) {
+      creatorId = stageHistory.creator_id;
+    }
+    
+    // If creator_id exists, use it
+    if (creatorId) {
+      closerEmployeeId = creatorId;
+      closerName = await getEmployeeDisplayNameById(closerEmployeeId);
+    }
+    
+    // If creator_id is empty, use the closer from the lead
+    if (!closerName) {
+      if (isLegacy) {
+        // For legacy leads, get closer_id from lead data or query
+        const closerId = (lead as any).closer_id;
+        if (closerId) {
+          closerEmployeeId = typeof closerId === 'number' ? closerId : parseInt(String(closerId), 10);
+          closerName = await getEmployeeDisplayNameById(closerEmployeeId);
+        } else {
+          // Query if not in lead data
+          const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
+            ? parseInt(lead.id.replace('legacy_', ''), 10)
+            : typeof lead.id === 'number' ? lead.id : null;
+          
+          if (legacyId) {
+            const { data: legacyLead } = await supabase
+              .from('leads_lead')
+              .select('closer_id')
+              .eq('id', legacyId)
+              .single();
+            
+            if (legacyLead?.closer_id) {
+              closerEmployeeId = legacyLead.closer_id;
+              closerName = await getEmployeeDisplayNameById(closerEmployeeId);
+            }
+          }
+        }
+      } else {
+        // For new leads, get closer (string) from lead data
+        const closerString = (lead as any).closer;
+        if (closerString && closerString.trim() && closerString !== '---') {
+          closerName = closerString;
+          // Try to find employee ID by name
+          const { data: employee } = await supabase
+            .from('tenants_employee')
+            .select('id')
+            .eq('display_name', closerString)
+            .single();
+          if (employee) {
+            closerEmployeeId = employee.id;
+          }
+        } else {
+          // If closer is not in lead data, query it
+          const { data: newLead } = await supabase
+            .from('leads')
+            .select('closer')
+            .eq('id', lead.id)
+            .single();
+          
+          if (newLead?.closer && newLead.closer.trim() && newLead.closer !== '---') {
+            closerName = newLead.closer;
+            // Try to find employee ID by name
+            const { data: employee } = await supabase
+              .from('tenants_employee')
+              .select('id')
+              .eq('display_name', newLead.closer)
+              .single();
+            if (employee) {
+              closerEmployeeId = employee.id;
+            }
+          }
+        }
+      }
+    }
+    
+    // Trigger celebration via custom event (since we can't directly access context here)
+    if (closerName) {
+      // Use setTimeout to ensure the event is dispatched after the DOM is ready
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('celebrate-contract-signed', {
+          detail: {
+            employeeName: closerName,
+            employeeId: closerEmployeeId,
+          }
+        }));
+      }, 100);
+    }
+  } catch (error) {
+    console.error('Error triggering celebration:', error);
+    // Don't throw - celebration is non-critical
+  }
+};
+
+/**
  * Applies a stage update to the correct lead table and logs history.
  * Accepts optional additional update fields to merge into the update payload.
  */
@@ -243,9 +396,11 @@ export const updateLeadStageWithHistory = async ({
   const stageActor = actor ?? (await fetchStageActorInfo());
   const effectiveTimestamp = timestamp ?? new Date().toISOString();
   const { tableName, recordId } = getLeadIdentity(lead);
+  
+  const resolvedStageId = await resolveStageId(stage);
 
   const updatePayload: Record<string, any> = {
-    stage,
+    stage: resolvedStageId ?? stage,
     stage_changed_by: stageActor.fullName,
     stage_changed_at: effectiveTimestamp,
     ...additionalFields,
@@ -262,6 +417,9 @@ export const updateLeadStageWithHistory = async ({
   }
 
   await recordLeadStageChange({ lead, stage, actor: stageActor, timestamp: effectiveTimestamp });
+  
+  // Trigger celebration if stage is 60 (Client signed agreement)
+  await triggerCelebrationIfNeeded(lead, resolvedStageId);
 };
 
 /**

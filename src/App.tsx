@@ -10,6 +10,8 @@ import Header from './components/Header';
 import AIChatWindow from './components/AIChatWindow';
 import EmailThreadModal from './components/EmailThreadModal';
 import { supabase, sessionManager } from './lib/supabase';
+import { CelebrationProvider } from './contexts/CelebrationContext';
+import MoneyRainCelebration from './components/MoneyRainCelebration';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
@@ -459,13 +461,16 @@ const AppContentInner: React.FC = () => {
 const AppContent: React.FC = () => {
   return (
     <AuthProvider>
-      <Router>
-        <AppContentInner />
-        <Toaster 
-          position="top-center"
-          reverseOrder={false}
-        />
-      </Router>
+      <CelebrationProvider>
+        <Router>
+          <AppContentInner />
+          <MoneyRainCelebration />
+          <Toaster 
+            position="top-center"
+            reverseOrder={false}
+          />
+        </Router>
+      </CelebrationProvider>
     </AuthProvider>
   );
 };

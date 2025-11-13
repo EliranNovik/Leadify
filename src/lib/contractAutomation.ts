@@ -215,34 +215,85 @@ export async function handleContractSigned(contract: Contract) {
     }
     
     // 7. Update lead with contract information (only for regular leads)
+    // Use updateLeadStageWithHistory to ensure celebration triggers
     if (contract.client_id) {
-      const { error: leadUpdateError } = await supabase
+      // Fetch the lead first to pass to updateLeadStageWithHistory
+      const { data: leadData, error: leadFetchError } = await supabase
         .from('leads')
-        .update({
-          balance: totalValue,
-          balance_currency: currency,
-          number_of_applicants_meeting: contract.applicant_count,
-          stage: 'Client signed agreement',
-        })
-        .eq('id', contract.client_id);
+        .select('*')
+        .eq('id', contract.client_id)
+        .single();
       
-      if (leadUpdateError) {
-        console.error('Error updating lead:', leadUpdateError);
-        // Don't throw here as the main process succeeded
+      if (leadFetchError) {
+        console.error('Error fetching lead for stage update:', leadFetchError);
+      } else if (leadData) {
+        const { updateLeadStageWithHistory } = await import('./leadStageManager');
+        try {
+          await updateLeadStageWithHistory({
+            lead: { ...leadData, lead_type: 'new' } as any,
+            stage: 'Client signed agreement',
+            additionalFields: {
+              balance: totalValue,
+              balance_currency: currency,
+              number_of_applicants_meeting: contract.applicant_count,
+            },
+          });
+        } catch (stageUpdateError) {
+          console.error('Error updating lead stage:', stageUpdateError);
+          // Fallback to direct update if stage manager fails
+          const { error: leadUpdateError } = await supabase
+            .from('leads')
+            .update({
+              balance: totalValue,
+              balance_currency: currency,
+              number_of_applicants_meeting: contract.applicant_count,
+              stage: 'Client signed agreement',
+            })
+            .eq('id', contract.client_id);
+          
+          if (leadUpdateError) {
+            console.error('Error updating lead (fallback):', leadUpdateError);
+          }
+        }
       }
     } else {
-      // For legacy leads, update the leads_lead table
-      const { error: legacyLeadUpdateError } = await supabase
-        .from('leads_lead')
-        .update({
-          total: totalValue,
-          stage: 'Client signed agreement',
-        })
-        .eq('id', (contract as any).legacy_id);
-      
-      if (legacyLeadUpdateError) {
-        console.error('Error updating legacy lead:', legacyLeadUpdateError);
-        // Don't throw here as the main process succeeded
+      // For legacy leads, fetch the lead first
+      const legacyId = (contract as any).legacy_id;
+      if (legacyId) {
+        const { data: legacyLeadData, error: legacyLeadFetchError } = await supabase
+          .from('leads_lead')
+          .select('*')
+          .eq('id', legacyId)
+          .single();
+        
+        if (legacyLeadFetchError) {
+          console.error('Error fetching legacy lead for stage update:', legacyLeadFetchError);
+        } else if (legacyLeadData) {
+          const { updateLeadStageWithHistory } = await import('./leadStageManager');
+          try {
+            await updateLeadStageWithHistory({
+              lead: { ...legacyLeadData, id: `legacy_${legacyId}`, lead_type: 'legacy' } as any,
+              stage: 'Client signed agreement',
+              additionalFields: {
+                total: totalValue,
+              },
+            });
+          } catch (stageUpdateError) {
+            console.error('Error updating legacy lead stage:', stageUpdateError);
+            // Fallback to direct update if stage manager fails
+            const { error: legacyLeadUpdateError } = await supabase
+              .from('leads_lead')
+              .update({
+                total: totalValue,
+                stage: 'Client signed agreement',
+              })
+              .eq('id', legacyId);
+            
+            if (legacyLeadUpdateError) {
+              console.error('Error updating legacy lead (fallback):', legacyLeadUpdateError);
+            }
+          }
+        }
       }
     }
     

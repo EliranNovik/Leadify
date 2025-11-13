@@ -18,6 +18,8 @@ interface ExpandedRow {
   [key: number]: boolean;
 }
 
+const escapeIlikePattern = (value: string) => value.replace(/[%_]/g, '\\$&');
+
 const AccessLogsManager: React.FC = () => {
   const [logs, setLogs] = useState<AccessLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,12 +28,13 @@ const AccessLogsManager: React.FC = () => {
   const [totalPages, setTotalPages] = useState(1);
   const [expandedRows, setExpandedRows] = useState<ExpandedRow>({});
   const [filters, setFilters] = useState({
-    method: '',
     endpoint: '',
     responseCode: '',
+    searchTerm: '',
     dateFrom: '',
     dateTo: ''
   });
+  const [availableResponseCodes, setAvailableResponseCodes] = useState<number[]>([]);
 
   const fetchLogs = async () => {
     try {
@@ -52,11 +55,15 @@ const AccessLogsManager: React.FC = () => {
         .order('created_at', { ascending: false });
 
       // Apply additional filters (excluding endpoint filter since we're already filtering for /api/hook/catch)
-      if (filters.method) {
-        query = query.eq('request_method', filters.method);
+      if (filters.responseCode && filters.responseCode.trim() !== '') {
+        const responseCodeNum = parseInt(filters.responseCode, 10);
+        if (!isNaN(responseCodeNum)) {
+          query = query.eq('response_code', responseCodeNum);
+        }
       }
-      if (filters.responseCode) {
-        query = query.eq('response_code', parseInt(filters.responseCode));
+      if (filters.searchTerm && filters.searchTerm.trim() !== '') {
+        const escapedSearch = escapeIlikePattern(filters.searchTerm.trim());
+        query = query.ilike('request_body', `%${escapedSearch}%`);
       }
       if (filters.dateFrom) {
         query = query.gte('created_at', filters.dateFrom);
@@ -81,7 +88,16 @@ const AccessLogsManager: React.FC = () => {
         throw error;
       }
 
-      setLogs(data || []);
+      const fetchedLogs = data || [];
+      setLogs(fetchedLogs);
+      const uniqueCodes = Array.from(
+        new Set(
+          fetchedLogs
+            .map((log) => log.response_code)
+            .filter((code) => typeof code === 'number')
+        )
+      ).sort((a, b) => a - b);
+      setAvailableResponseCodes(uniqueCodes);
       setTotalPages(Math.ceil((count || 0) / pageSize));
     } catch (err) {
       console.error('Error fetching access logs:', err);
@@ -121,15 +137,15 @@ const AccessLogsManager: React.FC = () => {
     return 'text-gray-600';
   };
 
-  const getMethodColor = (method: string) => {
-    switch (method.toUpperCase()) {
-      case 'GET': return 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white';
-      case 'POST': return 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white';
-      case 'PUT': return 'bg-yellow-100 text-yellow-800';
-      case 'DELETE': return 'bg-red-100 text-red-800';
-      default: return 'bg-gray-100 text-gray-800';
-    }
-  };
+const getMethodColor = (method: string) => {
+  switch (method.toUpperCase()) {
+    case 'GET': return 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white';
+    case 'POST': return 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white';
+    case 'PUT': return 'bg-yellow-100 text-yellow-800';
+    case 'DELETE': return 'bg-red-100 text-red-800';
+    default: return 'bg-gray-100 text-gray-800';
+  }
+};
 
   const toggleRowExpansion = (logId: number) => {
     setExpandedRows(prev => ({
@@ -165,31 +181,30 @@ const AccessLogsManager: React.FC = () => {
         <h3 className="text-lg font-semibold mb-4">Filters</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Method</label>
-            <select
-              value={filters.method}
-              onChange={(e) => setFilters(prev => ({ ...prev, method: e.target.value }))}
+            <label className="block text-sm font-medium text-gray-700 mb-1">Search Request Body</label>
+            <input
+              type="text"
+              value={filters.searchTerm}
+              onChange={(e) => setFilters(prev => ({ ...prev, searchTerm: e.target.value }))}
+              placeholder="Search request body..."
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="">All Methods</option>
-              <option value="GET">GET</option>
-              <option value="POST">POST</option>
-              <option value="PUT">PUT</option>
-              <option value="DELETE">DELETE</option>
-            </select>
+            />
           </div>
-          
-
           
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Response Code</label>
-            <input
-              type="number"
+            <select
               value={filters.responseCode}
               onChange={(e) => setFilters(prev => ({ ...prev, responseCode: e.target.value }))}
-              placeholder="e.g., 200, 404"
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+            >
+              <option value="">All Codes</option>
+              {availableResponseCodes.map((code) => (
+                <option key={code} value={code}>
+                  {code}
+                </option>
+              ))}
+            </select>
           </div>
           
           <div>
@@ -215,8 +230,9 @@ const AccessLogsManager: React.FC = () => {
           <div className="flex items-end">
             <button
               onClick={() => setFilters({
-                method: '',
+                endpoint: '',
                 responseCode: '',
+                searchTerm: '',
                 dateFrom: '',
                 dateTo: ''
               })}
@@ -295,12 +311,10 @@ const AccessLogsManager: React.FC = () => {
                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-mono">
                            {log.endpoint}
                          </td>
-                         <td className="px-6 py-4 text-sm text-gray-900">
-                           <div className="max-w-md">
-                             <pre className="text-xs bg-gray-100 p-2 rounded overflow-x-auto whitespace-pre-wrap">
-                               {log.request_body ? formatJson(log.request_body) : 'No request body'}
-                             </pre>
-                           </div>
+                        <td className="px-6 py-4 text-sm text-gray-900 max-w-3xl">
+                          <pre className="text-xs overflow-x-auto whitespace-pre-wrap">
+                            {log.request_body ? formatJson(log.request_body) : 'No request body'}
+                          </pre>
                          </td>
                          <td className="px-6 py-4 whitespace-nowrap">
                            <span className={`inline-flex px-2 py-1 text-xs font-semibold rounded-full ${getResponseCodeColor(log.response_code)}`}>
@@ -308,8 +322,8 @@ const AccessLogsManager: React.FC = () => {
                            </span>
                          </td>
                        </tr>
-                       {expandedRows[log.id] && (
-                         <tr className="bg-gray-50">
+                      {expandedRows[log.id] && (
+                        <tr className="bg-white">
                            <td colSpan={5} className="px-6 py-4">
                              <div className="space-y-2">
                                <h4 className="font-semibold text-sm text-gray-700">Response Body:</h4>

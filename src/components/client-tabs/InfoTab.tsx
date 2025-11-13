@@ -737,8 +737,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Row 2: Special Notes */}
-        <div className="grid grid-cols-1 gap-6 gap-y-12">
+        {/* Row 2: Special Notes and General Notes */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Special Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -816,10 +816,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               )}
             </div>
           </div>
-        </div>
 
-        {/* Row 3: General Notes */}
-        <div className="grid grid-cols-1 gap-6 gap-y-12">
           {/* General Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -897,8 +894,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Row 4: Facts of Case */}
-        <div className="grid grid-cols-1 gap-6 gap-y-12">
+        {/* Row 4: Facts of Case and Tags */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
           {/* Facts of Case */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -982,85 +979,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               )}
             </div>
           </div>
-        </div>
-
-        {/* Row 5: Anchor and Tags */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
-          {/* Anchor */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">Anchor</h4>
-                <EditButtons
-                  isEditing={isEditingAnchor}
-                  onEdit={() => {
-                    setIsEditingAnchor(true);
-                    setEditedAnchor(anchor);
-                  }}
-                  onSave={async () => {
-                    try {
-                      const userName = currentUserName;
-                      const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      const idField = isLegacy ? 'id' : 'id';
-                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-                      
-                      const { error } = await supabase
-                        .from(tableName)
-                        .update({
-                          [isLegacy ? 'anchor_full_name' : 'anchor']: editedAnchor,
-                          [isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by']: userName,
-                          [isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at']: new Date().toISOString(),
-                        })
-                        .eq(idField, clientId);
-                      
-                      if (error) throw error;
-                      
-                      setAnchor(editedAnchor);
-                      setIsEditingAnchor(false);
-                      
-                      // Refresh client data in parent component
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
-                    } catch (error) {
-                      console.error('Error updating anchor:', error);
-                      alert('Failed to update anchor');
-                    }
-                  }}
-                  onCancel={() => setIsEditingAnchor(false)}
-                  editButtonClassName="btn btn-ghost btn-sm"
-                  editIconClassName="w-5 h-5 text-black"
-                />
-              </div>
-              <div className="border-b border-gray-200 mt-2"></div>
-            </div>
-            <div className="p-6">
-              {isEditingAnchor ? (
-                <textarea
-                  className="textarea textarea-bordered w-full h-32"
-                  value={editedAnchor}
-                  onChange={(e) => setEditedAnchor(e.target.value)}
-                  placeholder="Add anchor information..."
-                />
-              ) : (
-                <div className="space-y-3">
-                  <div className="min-h-[80px]">
-                    {anchor ? (
-                      <p className={`text-gray-900 ${getTextAlignment(anchor)}`}>{anchor}</p>
-                    ) : (
-                      <span className="text-gray-500">No anchor information</span>
-                    )}
-                  </div>
-                  {(getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by') || getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at')) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by') || 'Unknown'}</span>
-                      <span>{getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at')).toLocaleString() : ''}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
 
           {/* Tags */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
@@ -1137,6 +1055,83 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
           </div>
         </div>
+
+        {/* Row 5: Anchor - COMMENTED OUT */}
+        {/* <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+            <div className="pl-6 pt-2 pb-2 w-2/5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-lg font-semibold text-black">Anchor</h4>
+                <EditButtons
+                  isEditing={isEditingAnchor}
+                  onEdit={() => {
+                    setIsEditingAnchor(true);
+                    setEditedAnchor(anchor);
+                  }}
+                  onSave={async () => {
+                    try {
+                      const userName = currentUserName;
+                      const tableName = isLegacy ? 'leads_lead' : 'leads';
+                      const idField = isLegacy ? 'id' : 'id';
+                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+                      
+                      const { error } = await supabase
+                        .from(tableName)
+                        .update({
+                          [isLegacy ? 'anchor_full_name' : 'anchor']: editedAnchor,
+                          [isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by']: userName,
+                          [isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at']: new Date().toISOString(),
+                        })
+                        .eq(idField, clientId);
+                      
+                      if (error) throw error;
+                      
+                      setAnchor(editedAnchor);
+                      setIsEditingAnchor(false);
+                      
+                      if (onClientUpdate) {
+                        await onClientUpdate();
+                      }
+                    } catch (error) {
+                      console.error('Error updating anchor:', error);
+                      alert('Failed to update anchor');
+                    }
+                  }}
+                  onCancel={() => setIsEditingAnchor(false)}
+                  editButtonClassName="btn btn-ghost btn-sm"
+                  editIconClassName="w-5 h-5 text-black"
+                />
+              </div>
+              <div className="border-b border-gray-200 mt-2"></div>
+            </div>
+            <div className="p-6">
+              {isEditingAnchor ? (
+                <textarea
+                  className="textarea textarea-bordered w-full h-32"
+                  value={editedAnchor}
+                  onChange={(e) => setEditedAnchor(e.target.value)}
+                  placeholder="Add anchor information..."
+                />
+              ) : (
+                <div className="space-y-3">
+                  <div className="min-h-[80px]">
+                    {anchor ? (
+                      <p className={`text-gray-900 ${getTextAlignment(anchor)}`}>{anchor}</p>
+                    ) : (
+                      <span className="text-gray-500">No anchor information</span>
+                    )}
+                  </div>
+                  {(getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by') || getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at')) && (
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>Last edited by {getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_by' : 'anchor_last_edited_by') || 'Unknown'}</span>
+                      <span>{getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'anchor_full_name_last_edited_at' : 'anchor_last_edited_at')).toLocaleString() : ''}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div> */}
       </div>
       
       <TimelineHistoryButtons client={client} />
