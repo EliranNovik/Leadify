@@ -5,7 +5,7 @@ import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, Chev
 import { format, parseISO } from 'date-fns';
 import DocumentModal from './DocumentModal';
 import { BarChart3, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
-import { getStageName, initializeStageNames } from '../lib/stageUtils';
+import { getStageName, initializeStageNames, getStageColour } from '../lib/stageUtils';
 
 const LABEL_OPTIONS = [
   'High Value',
@@ -14,6 +14,25 @@ const LABEL_OPTIONS = [
   'High Risk',
   'Low Risk',
 ];
+
+// Helper function to get contrasting text color based on background
+const getContrastingTextColor = (hexColor?: string | null) => {
+  if (!hexColor) return '#111827'; // Default to black if no color
+  let sanitized = hexColor.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map(char => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return '#111827';
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+  const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+  const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.55 ? '#111827' : '#ffffff';
+};
 
 interface LeadForExpert {
   id: number | string;
@@ -144,7 +163,10 @@ const ExpertPage: React.FC = () => {
             expert_page_label,
             expert_page_highlighted_by
           `)
-          .or('eligibility_status.is.null,eligibility_status.eq.""');
+          .or('eligibility_status.is.null,eligibility_status.eq.""')
+          .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
+          .lt('stage', 60) // Exclude leads that have already passed stage 60 (Client signed agreement)
+          .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
 
         // Filter new leads by expert field if we have user's full name
         if (currentUserFullName) {
@@ -181,7 +203,10 @@ const ExpertPage: React.FC = () => {
             expert_page_highlighted_by
           `)
           .eq('expert_examination', 0) // Only fetch leads where expert_examination is 0
-          .gte('meeting_date', '2025-01-01'); // Only fetch leads with meeting dates from 2025 onwards
+          .gte('meeting_date', '2025-01-01') // Only fetch leads with meeting dates from 2025 onwards
+          .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
+          .lt('stage', 60) // Exclude leads that have already passed stage 60 (Client signed agreement)
+          .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
 
         // Filter legacy leads by expert_id if we have the employee ID
         if (currentUserEmployeeId) {
@@ -790,17 +815,28 @@ const ExpertPage: React.FC = () => {
                   )}
               </div>
               <div className="space-y-2 divide-y divide-gray-100">
-                {/* Expert */}
-                <div className="flex justify-between items-center py-1">
-                    <span className="text-sm font-semibold text-gray-500">Expert</span>
-                    <span className="text-base font-bold text-gray-800 ml-2">{lead.expert || 'N/A'}</span>
-                </div>
                 {/* Stage */}
                 <div className="flex justify-between items-center py-1">
                     <span className="text-sm font-semibold text-gray-500">Stage</span>
-                    <span className={'text-sm font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white'}>
-                    {lead.stage ? getStageName(lead.stage) : 'N/A'}
-                  </span>
+                    {lead.stage ? (() => {
+                      const stageColour = getStageColour(String(lead.stage)) || '#6b7280';
+                      const badgeTextColour = getContrastingTextColor(stageColour);
+                      return (
+                        <span 
+                          className="text-sm font-bold ml-2 px-2 py-1 rounded"
+                          style={{
+                            backgroundColor: stageColour,
+                            color: badgeTextColour,
+                          }}
+                        >
+                          {getStageName(lead.stage)}
+                        </span>
+                      );
+                    })() : (
+                      <span className="text-sm font-bold ml-2 px-2 py-1 rounded bg-gray-100 text-gray-800">
+                        N/A
+                      </span>
+                    )}
                 </div>
                 {/* Category */}
                 <div className="flex justify-between items-center py-1">
@@ -909,7 +945,6 @@ const ExpertPage: React.FC = () => {
               <tr>
                 <th>Lead #</th>
                 <th>Name</th>
-                <th>Expert</th>
                 <th>Stage</th>
                 <th>Category</th>
                 <th 
@@ -956,7 +991,6 @@ const ExpertPage: React.FC = () => {
                 <tr key={lead.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleRowClick(lead)}>
                   <td>{lead.lead_number}</td>
                   <td className="font-bold">{lead.name}</td>
-                  <td>{lead.expert || 'N/A'}</td>
                   <td>{lead.stage ? getStageName(lead.stage) : 'N/A'}</td>
                   <td>{lead.topic || 'N/A'}</td>
                   <td>{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</td>
@@ -1044,11 +1078,6 @@ const ExpertPage: React.FC = () => {
                   <div className="flex items-center gap-3">
                     <UserIcon className="w-6 h-6 text-base-content/70" />
                     <span className="font-semibold text-lg">{selectedLead.name} <span className="text-base-content/50">({selectedLead.lead_number})</span></span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <AcademicCapIcon className="w-6 h-6 text-base-content/70" />
-                    <span className="font-medium">Expert:</span>
-                    <span>{selectedLead.expert || <span className='text-base-content/40'>Not assigned</span>}</span>
                   </div>
                   <div className="flex items-center gap-3">
                     <ChatBubbleLeftRightIcon className="w-6 h-6 text-base-content/70" />
@@ -1198,10 +1227,6 @@ const ExpertPage: React.FC = () => {
                       <div className="flex items-center gap-1">
                         <span className="font-semibold">Stage:</span>
                         <span>{lead.stage ? getStageName(lead.stage) : 'N/A'}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className="font-semibold">Expert:</span>
-                        <span>{lead.expert || 'N/A'}</span>
                       </div>
                     </div>
                     <div className="flex flex-row gap-4 text-xs">

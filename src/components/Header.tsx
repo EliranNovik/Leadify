@@ -137,6 +137,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [rmqUnreadCount, setRmqUnreadCount] = useState(0);
   const [whatsappLeadsMessages, setWhatsappLeadsMessages] = useState<any[]>([]);
   const [whatsappLeadsUnreadCount, setWhatsappLeadsUnreadCount] = useState(0);
+  const [whatsappClientsUnreadCount, setWhatsappClientsUnreadCount] = useState(0);
   const [isRmqModalOpen, setIsRmqModalOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -870,6 +871,29 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
+  // Fetch WhatsApp clients unread count (messages from existing clients, lead_id is not null)
+  const fetchWhatsappClientsUnreadCount = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('whatsapp_messages')
+        .select('id')
+        .not('lead_id', 'is', null)
+        .eq('direction', 'in')
+        .or('is_read.is.null,is_read.eq.false');
+
+      if (error) {
+        console.error('Error fetching WhatsApp clients unread count:', error);
+        setWhatsappClientsUnreadCount(0);
+        return;
+      }
+
+      setWhatsappClientsUnreadCount(data?.length || 0);
+    } catch (error) {
+      console.error('Error in fetchWhatsappClientsUnreadCount:', error);
+      setWhatsappClientsUnreadCount(0);
+    }
+  };
+
   const ensureStageIds = async () => {
     if (stageIdsReadyRef.current) {
       return;
@@ -955,10 +979,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (currentUser) {
       fetchRmqMessages();
       fetchWhatsappLeadsMessages();
+      fetchWhatsappClientsUnreadCount();
       // Refresh messages every 60 seconds
       const interval = setInterval(() => {
         fetchRmqMessages();
         fetchWhatsappLeadsMessages();
+        fetchWhatsappClientsUnreadCount();
       }, 60000);
       return () => clearInterval(interval);
     }
@@ -1416,9 +1442,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 >
                   <FaWhatsapp className="w-5 h-5 text-green-500" />
                   <span className="text-sm font-medium">WhatsApp</span>
-                  {whatsappLeadsUnreadCount > 0 && (
+                  {whatsappClientsUnreadCount > 0 && (
                     <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {whatsappLeadsUnreadCount > 9 ? '9+' : whatsappLeadsUnreadCount}
+                      {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
                     </span>
                   )}
                 </button>
@@ -1588,9 +1614,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       >
                         <Icon className="w-5 h-5 text-gray-500" />
                         <span className="text-sm font-medium">{tab.label}</span>
-                        {whatsappLeadsUnreadCount > 0 && (
+                        {whatsappClientsUnreadCount > 0 && (
                           <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                            {whatsappLeadsUnreadCount > 9 ? '9+' : whatsappLeadsUnreadCount}
+                            {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
                           </span>
                         )}
                       </button>
@@ -2220,9 +2246,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             >
               <FaWhatsapp className="w-7 h-7 text-green-600" />
             </button>
-            {whatsappLeadsUnreadCount > 0 && (
+            {whatsappClientsUnreadCount > 0 && (
               <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                {whatsappLeadsUnreadCount > 9 ? '9+' : whatsappLeadsUnreadCount}
+                {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
               </span>
             )}
           </div>

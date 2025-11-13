@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
+import { getStageColour } from '../lib/stageUtils';
 
 interface Case {
   id: string;
@@ -9,9 +10,29 @@ interface Case {
   client_name: string;
   category: string;
   stage: string;
+  stage_colour?: string | null;
   assigned_date: string;
   applicants_count: number | null;
 }
+
+// Helper function to get contrasting text color based on background
+const getContrastingTextColor = (hexColor?: string | null) => {
+  if (!hexColor) return '#111827'; // Default to black if no color
+  let sanitized = hexColor.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map(char => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return '#111827';
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+  const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+  const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.55 ? '#111827' : '#ffffff';
+};
 
 const MyCasesPage: React.FC = () => {
   const { user } = useAuth();
@@ -120,10 +141,10 @@ const MyCasesPage: React.FC = () => {
 
       console.log('🔍 MyCases - Leads fetched:', leadsData?.length || 0);
 
-      // Fetch stage names separately (since foreign key relationship doesn't exist yet)
+      // Fetch stage names and colors separately (since foreign key relationship doesn't exist yet)
       const { data: stages } = await supabase
         .from('lead_stages')
-        .select('id, name');
+        .select('id, name, colour');
 
       // Fetch categories with their parent main category names using JOINs
       const { data: allCategories } = await supabase
@@ -141,13 +162,19 @@ const MyCasesPage: React.FC = () => {
 
       // Create lookup maps
       const stageMap = new Map();
-      stages?.forEach(stage => stageMap.set(String(stage.id), stage.name));
+      const stageColourMap = new Map();
+      stages?.forEach(stage => {
+        stageMap.set(String(stage.id), stage.name);
+        if (stage.colour) {
+          stageColourMap.set(String(stage.id), stage.colour);
+        }
+      });
 
       // Helper function to get category name with main category (like PipelinePage)
       const getCategoryName = (categoryId: string | number | null | undefined) => {
         if (!categoryId || categoryId === '---') return 'Unknown';
         
-        const category = allCategories?.find((cat: any) => cat.id.toString() === categoryId.toString());
+        const category = allCategories?.find((cat: any) => cat.id.toString() === categoryId.toString()) as any;
         if (category) {
           // Return category name with main category in parentheses
           if (category.misc_maincategory?.name) {
@@ -163,7 +190,7 @@ const MyCasesPage: React.FC = () => {
       console.log('🔍 MyCases - Lookup maps created:', {
         stagesCount: stages?.length || 0,
         categoriesCount: allCategories?.length || 0,
-        sampleCategories: allCategories?.slice(0, 3).map(cat => ({ 
+        sampleCategories: allCategories?.slice(0, 3).map((cat: any) => ({ 
           id: cat.id, 
           name: cat.name, 
           mainCategory: cat.misc_maincategory?.name 
@@ -175,6 +202,7 @@ const MyCasesPage: React.FC = () => {
         const leadNumber = lead.manual_id || lead.id;
         const category = getCategoryName(lead.category_id);
         const stage = stageMap.get(String(lead.stage)) || String(lead.stage) || 'Unknown';
+        const stageColour = stageColourMap.get(String(lead.stage)) || getStageColour(String(lead.stage)) || null;
 
         return {
           id: lead.id,
@@ -182,6 +210,7 @@ const MyCasesPage: React.FC = () => {
           client_name: lead.name || 'Unknown',
           category,
           stage,
+          stage_colour: stageColour, // Add stage colour to the case object
           assigned_date: lead.cdate,
           applicants_count: lead.no_of_applicants
         };
@@ -314,7 +343,7 @@ const MyCasesPage: React.FC = () => {
                   onClick={() => handleCaseClick(caseItem)}
                 >
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
-                    <span className="text-blue-600 hover:text-blue-800 font-medium text-xs sm:text-sm">
+                    <span className="text-black font-medium text-xs sm:text-sm">
                       {caseItem.lead_number}
                     </span>
                   </td>
@@ -332,14 +361,27 @@ const MyCasesPage: React.FC = () => {
                     </div>
                   </td>
                   <td className="px-1 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-center text-gray-900 text-xs sm:text-sm">
-                    <span className="inline-flex items-center px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-full text-xs sm:text-sm font-medium bg-gray-100 text-gray-800">
-                      {caseItem.applicants_count || 0}
-                    </span>
+                    {caseItem.applicants_count || 0}
                   </td>
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right">
-                    <span className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1" style={{ backgroundColor: '#391bcb', color: 'white' }}>
-                      {caseItem.stage}
-                    </span>
+                    {caseItem.stage_colour ? (() => {
+                      const badgeTextColour = getContrastingTextColor(caseItem.stage_colour);
+                      return (
+                        <span 
+                          className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1" 
+                          style={{ 
+                            backgroundColor: caseItem.stage_colour, 
+                            color: badgeTextColour 
+                          }}
+                        >
+                          {caseItem.stage}
+                        </span>
+                      );
+                    })() : (
+                      <span className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1 bg-gray-100 text-gray-800">
+                        {caseItem.stage}
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

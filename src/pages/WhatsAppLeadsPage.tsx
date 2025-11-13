@@ -986,8 +986,8 @@ const WhatsAppLeadsPage: React.FC = () => {
         return;
       }
 
-      // Extract name from phone number or use a default
-      const leadName = lead.phone_number || 'WhatsApp Lead';
+      // Use sender name, fallback to phone number, then default
+      const leadName = lead.sender_name?.trim() || lead.phone_number || 'WhatsApp Lead';
       
       // Create the new lead using the database function
       const { data, error } = await supabase.rpc('create_new_lead_v3', {

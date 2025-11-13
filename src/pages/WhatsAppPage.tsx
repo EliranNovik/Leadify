@@ -589,9 +589,16 @@ const WhatsAppPage: React.FC = () => {
 
   // Update timer for 24-hour window
   useEffect(() => {
-    if (!selectedClient || messages.length === 0) {
+    if (!selectedClient) {
       setTimeLeft('');
       setIsLocked(false);
+      return;
+    }
+
+    // Lock input if there are no messages
+    if (messages.length === 0) {
+      setTimeLeft('');
+      setIsLocked(true);
       return;
     }
 
@@ -609,6 +616,10 @@ const WhatsAppPage: React.FC = () => {
       }, 60000); // Update every minute
       
       return () => clearInterval(interval);
+    } else {
+      // No incoming messages, but there are outgoing messages - still lock
+      setTimeLeft('');
+      setIsLocked(true);
     }
   }, [selectedClient, messages]);
 
@@ -1328,7 +1339,7 @@ const WhatsAppPage: React.FC = () => {
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="relative">
                     <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
-                    {selectedClient && messages.filter(m => m.direction === 'in').length > 0 && isClientLocked(messages.filter(m => m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '') && (
+                    {(isLocked || messages.length === 0) && (
                       <div className="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5">
                         <LockClosedIcon className="w-2 h-2 text-white" />
                       </div>
@@ -1478,11 +1489,23 @@ const WhatsAppPage: React.FC = () => {
                   const unreadCount = getUnreadCountForClient(client.id);
                   const isSelected = selectedClient?.id === client.id;
                   
-                  // Check if client is locked (24 hours passed since last message)
-                  const clientLastMessage = lastMessage && lastMessage.direction === 'in' 
-                    ? lastMessage.sent_at 
-                    : (allMessages.filter(m => m.lead_id === client.id && m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '');
-                  const locked = isClientLocked(clientLastMessage);
+                  // Check if client has any messages
+                  const clientMessages = allMessages.filter(m => m.lead_id === client.id);
+                  const hasNoMessages = clientMessages.length === 0;
+                  
+                  // Check if client has any incoming messages
+                  const incomingMessages = clientMessages.filter(m => m.direction === 'in');
+                  const hasNoIncomingMessages = incomingMessages.length === 0;
+                  
+                  // Get the last incoming message timestamp
+                  const lastIncomingMessage = incomingMessages.sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
+                  const clientLastMessage = lastIncomingMessage?.sent_at || '';
+                  
+                  // Client is locked if:
+                  // 1. No messages at all, OR
+                  // 2. No incoming messages (only outgoing), OR
+                  // 3. 24 hours have passed since last incoming message
+                  const locked = hasNoMessages || hasNoIncomingMessages || (clientLastMessage && isClientLocked(clientLastMessage));
 
                   return (
                     <div
@@ -1570,7 +1593,7 @@ const WhatsAppPage: React.FC = () => {
                         <span className="text-green-600 font-semibold text-sm">
                           {selectedClient.name.charAt(0).toUpperCase()}
                         </span>
-                        {isClientLocked(messages.filter(m => m.direction === 'in').sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0]?.sent_at || '') && (
+                        {(isLocked || messages.length === 0) && (
                           <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
                             <LockClosedIcon className="w-3 h-3 text-white" />
                           </div>
@@ -2057,7 +2080,7 @@ const WhatsAppPage: React.FC = () => {
                           className={`w-full text-left p-2 rounded-lg border transition-colors ${
                             selectedTemplate?.id === template.id 
                               ? 'bg-green-50 border-green-300' 
-                              : 'bg-white border-gray-200 hover:bg-gray-50'
+                              : 'bg-white border-gray-200 hover:bg-white'
                           }`}
                         >
                           <div className="font-medium text-gray-900 text-sm">{template.title}</div>
@@ -2117,7 +2140,7 @@ const WhatsAppPage: React.FC = () => {
               {/* Template Dropdown - Desktop */}
               {!isMobile && showTemplateSelector && (
                 <div className="px-4 pt-3 pb-2">
-                  <div className="p-3 bg-gray-50 rounded-lg border">
+                  <div className="p-3 bg-white rounded-lg border">
                     <div className="text-sm font-medium mb-2">Select Template:</div>
                     
                     <div className="mb-3">
@@ -2159,7 +2182,7 @@ const WhatsAppPage: React.FC = () => {
                               className={`block w-full text-left p-3 rounded border ${
                                 selectedTemplate?.id === template.id 
                                   ? 'bg-blue-50 border-blue-300' 
-                                  : 'bg-white border-gray-200 hover:bg-gray-50'
+                                  : 'bg-white border-gray-200 hover:bg-white'
                               }`}
                             >
                               <div className="flex items-center justify-between">
@@ -2190,7 +2213,7 @@ const WhatsAppPage: React.FC = () => {
                                   </span>
                                 )}
                                 {template.content && template.content !== 'EMPTY' && (
-                                  <div className="text-xs text-gray-600 mt-1 bg-gray-50 p-2 rounded">
+                                  <div className="text-xs text-gray-600 mt-1 bg-white p-2 rounded">
                                     <strong>Template Name:</strong> {template.name360}<br/>
                                     <strong>Content:</strong> {template.content}
                                   </div>
@@ -2421,7 +2444,9 @@ const WhatsAppPage: React.FC = () => {
                   }}
                   placeholder={
                     isLocked 
-                      ? "Window expired - use templates"
+                      ? (messages.length === 0 
+                          ? "No messages yet - use templates to start conversation"
+                          : "Window expired - use templates")
                       : selectedFile 
                         ? "Add a caption..." 
                         : selectedTemplate 
