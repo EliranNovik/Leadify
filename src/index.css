@@ -576,6 +576,24 @@ input[type=number].no-arrows {
   -moz-appearance: textfield;
 }
 
+/* Hide ClientInformationBox header on mobile when using side-by-side layout */
+@media (max-width: 768px) {
+  .hide-client-header-mobile > div.text-black > div:first-child {
+    display: none !important;
+  }
+  
+  /* Ensure content is visible after hiding header */
+  .hide-client-header-mobile > div.text-black > div:first-child + div {
+    margin-top: 0 !important;
+    display: block !important;
+  }
+  
+  /* Make sure the content div is visible */
+  .hide-client-header-mobile > div.text-black {
+    display: block !important;
+  }
+}
+
 /* --- Print styles for ProformaViewPage --- */
 @media print {
   * {

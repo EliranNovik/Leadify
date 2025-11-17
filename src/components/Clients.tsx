@@ -405,6 +405,8 @@ const Clients: React.FC<ClientsProps> = ({
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
+  const [isClientInfoCollapsed, setIsClientInfoCollapsed] = useState(false);
+  const [isProgressCollapsed, setIsProgressCollapsed] = useState(false);
   const { instance } = useMsal();
   const { isAdmin, isLoading: isAdminLoading } = useAdminRole();
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
@@ -500,6 +502,8 @@ const Clients: React.FC<ClientsProps> = ({
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
   // Remove tabScales and wave zoom effect
   // ---
 
@@ -616,6 +620,81 @@ const Clients: React.FC<ClientsProps> = ({
       console.error('❌ Error initializing stage names:', error);
     });
   }, []);
+
+  // Check if mobile tabs can scroll
+  useEffect(() => {
+    const checkScroll = () => {
+      const el = mobileTabsRef.current;
+      if (!el) {
+        setCanScrollRight(false);
+        setCanScrollLeft(false);
+        return;
+      }
+      
+      const hasScroll = el.scrollWidth > el.clientWidth;
+      const scrollLeft = el.scrollLeft;
+      const maxScroll = el.scrollWidth - el.clientWidth;
+      
+      const shouldShowRight = hasScroll && scrollLeft < maxScroll - 5;
+      const shouldShowLeft = hasScroll && scrollLeft > 5;
+      
+      setCanScrollRight(shouldShowRight);
+      setCanScrollLeft(shouldShowLeft);
+      
+      // Debug log (remove in production)
+      if (hasScroll) {
+        console.log('📜 Mobile tabs scroll check:', {
+          scrollWidth: el.scrollWidth,
+          clientWidth: el.clientWidth,
+          scrollLeft,
+          maxScroll,
+          canScrollRight: shouldShowRight,
+          canScrollLeft: shouldShowLeft
+        });
+      }
+    };
+
+    // Initial check with delay to ensure tabs are rendered
+    const timeoutId = setTimeout(checkScroll, 200);
+    
+    const el = mobileTabsRef.current;
+    if (el) {
+      el.addEventListener('scroll', checkScroll, { passive: true });
+      window.addEventListener('resize', checkScroll);
+    }
+
+    // Also check when tabs change - observe the inner flex container
+    const observer = new ResizeObserver(() => {
+      // Small delay to ensure DOM is updated
+      setTimeout(checkScroll, 100);
+    });
+    if (el) {
+      observer.observe(el);
+      // Also observe the inner flex container if it exists
+      const innerContainer = el.querySelector('.flex.gap-2');
+      if (innerContainer) {
+        observer.observe(innerContainer);
+      }
+    }
+
+    // Use MutationObserver to detect when tab buttons are added/removed
+    const mutationObserver = new MutationObserver(() => {
+      setTimeout(checkScroll, 100);
+    });
+    if (el) {
+      mutationObserver.observe(el, { childList: true, subtree: true });
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (el) {
+        el.removeEventListener('scroll', checkScroll);
+      }
+      window.removeEventListener('resize', checkScroll);
+      observer.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, []); // Empty deps - observers handle all updates
   
   const lastCategoryRefreshIds = useRef<Set<string>>(new Set());
   
@@ -6498,19 +6577,105 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             })()}
           </div>
 
-          {/* Client info card */}
-          <ClientInformationBox 
-            selectedClient={selectedClient} 
-            getEmployeeDisplayName={getEmployeeDisplayName}
-            onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
-          />
+          {/* Client Header - Lead number with language badge below, name aligned with lead number */}
+          <div className="flex items-center gap-3 mb-3 px-1">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ backgroundColor: '#391BC8' }}>
+              <UserIcon className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex flex-col gap-1 flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-lg font-bold text-gray-900 whitespace-nowrap">
+                  {selectedClient ? (() => {
+                    let displayNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
+                    const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
+                    const isSuccessStage = selectedClient.stage === '100' || selectedClient.stage === 100;
+                    if (isLegacyLead && isSuccessStage) {
+                      displayNumber = `C${displayNumber}`;
+                    }
+                    return displayNumber;
+                  })() : '---'}
+                </span>
+                <span className="text-lg font-bold text-gray-900">-</span>
+                <span className="text-xl font-bold text-gray-700 truncate">
+                  {selectedClient ? (selectedClient.name || '---') : '---'}
+                </span>
+              </div>
+              {selectedClient?.language && (
+                <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
+                  {selectedClient.language}
+                </span>
+              )}
+            </div>
+          </div>
 
-          {/* Progress & Follow-up card - Hidden on mobile (now inline in ClientInformationBox) */}
-          <div className="hidden md:block">
-            <ProgressFollowupBox 
-              selectedClient={selectedClient} 
-              getEmployeeDisplayName={getEmployeeDisplayName}
-            />
+          {/* Client info and Progress boxes - Horizontally scrollable on mobile */}
+          <div className="flex flex-row gap-3 w-full -mx-4 px-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory md:overflow-x-visible">
+            {/* Client Information Box */}
+            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-md border border-gray-200/60 overflow-hidden hover:shadow-lg transition-shadow duration-200">
+              <div className="h-full flex flex-col">
+                {/* Header with collapse button */}
+                <div className="flex items-center justify-between gap-3 mb-4 md:hidden p-3.5 pb-0">
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-base font-semibold text-gray-900">Client Information</span>
+                  </div>
+                  <button
+                    onClick={() => setIsClientInfoCollapsed(!isClientInfoCollapsed)}
+                    className="btn btn-ghost btn-sm btn-circle p-0 w-8 h-8 min-h-0"
+                    aria-label={isClientInfoCollapsed ? "Expand" : "Collapse"}
+                  >
+                    {isClientInfoCollapsed ? (
+                      <ChevronRightIcon className="w-5 h-5 text-gray-600" />
+                    ) : (
+                      <ChevronDownIcon className="w-5 h-5 text-gray-600" />
+                    )}
+                  </button>
+                </div>
+                {/* Collapsible content */}
+                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isClientInfoCollapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100'} md:max-h-none md:opacity-100`}>
+                  <div className="p-3.5 pt-0 md:pt-3.5">
+                    <div className="hide-client-header-mobile">
+                      <ClientInformationBox 
+                        selectedClient={selectedClient} 
+                        getEmployeeDisplayName={getEmployeeDisplayName}
+                        onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            {/* Progress & Follow-up Box */}
+            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-md border border-gray-200/60 overflow-hidden hover:shadow-lg transition-shadow duration-200">
+              <div className="h-full flex flex-col">
+                {/* Header with collapse button - no icon on mobile */}
+                <div className="flex items-center justify-between gap-3 mb-4 md:hidden p-3.5 pb-0">
+                  <div className="flex items-center gap-3 flex-1">
+                    <span className="text-base font-semibold text-gray-900">Progress & Follow-up</span>
+                  </div>
+                  <button
+                    onClick={() => setIsProgressCollapsed(!isProgressCollapsed)}
+                    className="btn btn-ghost btn-sm btn-circle p-0 w-8 h-8 min-h-0"
+                    aria-label={isProgressCollapsed ? "Expand" : "Collapse"}
+                  >
+                    {isProgressCollapsed ? (
+                      <ChevronRightIcon className="w-5 h-5 text-gray-600" />
+                    ) : (
+                      <ChevronDownIcon className="w-5 h-5 text-gray-600" />
+                    )}
+                  </button>
+                </div>
+                {/* Collapsible content */}
+                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isProgressCollapsed ? 'max-h-0' : 'max-h-[2000px]'} md:max-h-none`}>
+                  <div className="p-3.5 pt-0 md:pt-3.5">
+                    <ProgressFollowupBox 
+                      selectedClient={selectedClient} 
+                      getEmployeeDisplayName={getEmployeeDisplayName}
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -6771,11 +6936,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         
         {/* Tabs Navigation */}
         
-        {/* Tabs Navigation */}
-        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
+        {/* Tabs Navigation - Desktop */}
+        <div className="hidden md:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
           <div className="w-full">
             {/* Desktop version */}
-            <div className="hidden md:flex items-center px-4 py-4 gap-4">
+            <div className="flex items-center px-4 py-4 gap-4">
               <div className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide">
                                   {tabs.map((tab) => (
                     <button
@@ -6960,15 +7125,17 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
               </div>
             </div>
-            {/* Mobile version: modern card-based design */}
-            <div className="md:hidden px-6 py-4">
+          </div>
+        </div>
+        {/* Tabs Navigation - Mobile */}
+        <div className="md:hidden px-6 py-4">
               {/* Mobile Action Buttons - Above tabs */}
               <div className="flex gap-2 mb-4">
                 <div className="flex-1">
                   <div className="dropdown w-full">
-                    <label tabIndex={0} className="btn btn-sm w-full bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                    <label tabIndex={0} className="btn btn-sm w-full bg-white border border-gray-300 hover:bg-gray-50 gap-2 text-sm text-gray-700">
                       <span>Stages</span>
-                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
+                      <ChevronDownIcon className="w-4 h-4 text-gray-600" />
                     </label>
                     <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
                       {dropdownItems}
@@ -7029,9 +7196,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 )}
                 <div className="flex-1">
                   <div className="dropdown w-full">
-                    <label tabIndex={0} className="btn btn-sm w-full bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                    <label tabIndex={0} className="btn btn-sm w-full bg-white border border-gray-300 hover:bg-gray-50 gap-2 text-sm text-gray-700">
                       <span>Actions</span>
-                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
+                      <ChevronDownIcon className="w-4 h-4 text-gray-600" />
                     </label>
                     <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
                       {(selectedClient.unactivation_reason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant')) ? (
@@ -7060,9 +7227,27 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               
               <div
                 ref={mobileTabsRef}
-                className="overflow-x-auto scrollbar-hide bg-white dark:bg-gray-800 rounded-2xl shadow-lg border border-gray-200 dark:border-gray-700 dark:border-gray-700 p-3 w-full"
+                className="relative overflow-x-auto scrollbar-hide w-full -mx-6 px-6"
                 style={{ WebkitOverflowScrolling: 'touch' }}
               >
+                {/* Scroll indicator - fade gradient on left */}
+                {canScrollLeft && (
+                  <div 
+                    className="absolute left-0 top-0 bottom-0 w-16 pointer-events-none z-30"
+                    style={{
+                      background: 'linear-gradient(to right, rgba(255, 255, 255, 1) 0%, rgba(255, 255, 255, 0.9) 30%, rgba(255, 255, 255, 0.5) 60%, transparent 100%)'
+                    }}
+                  />
+                )}
+                {/* Scroll indicator - fade gradient on right */}
+                {canScrollRight && (
+                  <div 
+                    className="absolute right-0 top-0 bottom-0 w-16 pointer-events-none z-30"
+                    style={{
+                      background: 'linear-gradient(to left, rgba(255, 255, 255, 1) 0%, rgba(255, 255, 255, 0.9) 30%, rgba(255, 255, 255, 0.5) 60%, transparent 100%)'
+                    }}
+                  />
+                )}
                 <div className="flex gap-2 pb-1">
                   {tabs.map((tab) => {
                     const isActive = activeTab === tab.id;
@@ -7101,8 +7286,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   })}
                 </div>
               </div>
-            </div>
-          </div>
         </div>
 
         {/* Tab Content - full width, white background */}
