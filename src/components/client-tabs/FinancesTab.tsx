@@ -219,7 +219,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .from('finances_paymentplanrow')
           .update({ 
             ready_to_pay: true,
-            due_date: currentDate // Set due date to current date
+            date: currentDate,
+            due_date: currentDate
           })
           .eq('id', payment.id);
         error = legacyError;
@@ -433,7 +434,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             `)
             .eq('lead_id', legacyId)
             .is('cancel_date', null)
-            .order('due_date', { ascending: true });
+            .order('date', { ascending: true });
           
           // If no results with lead_id, try client_id (which is bigint)
           if (!legacyData || legacyData.length === 0) {
@@ -450,7 +451,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 `)
                 .eq('client_id', numericId)
                 .is('cancel_date', null)
-                .order('due_date', { ascending: true });
+                .order('date', { ascending: true });
               
               legacyData = clientData;
               legacyError = clientError;
@@ -467,7 +468,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .select('*')
             .eq('lead_id', client.id)
             .is('cancel_date', null)
-            .order('due_date', { ascending: true });
+            .order('date', { ascending: true });
           
           data = regularData;
           error = regularError;
@@ -571,7 +572,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               return {
                 id: plan.id,
                 duePercent: calculatedDuePercent,
-                dueDate: plan.due_date,
+                dueDate: plan.date || plan.due_date,
                 value,
                 valueVat,
                 client: client.name || 'Legacy Client', // Use client name from the main client object
@@ -835,7 +836,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             `)
             .eq('lead_id', legacyId)
             .is('cancel_date', null)
-            .order('due_date', { ascending: true });
+            .order('date', { ascending: true });
           
           data = legacyData;
           error = legacyError;
@@ -917,7 +918,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             return {
               id: plan.id,
               duePercent: duePercent.toString(), // Calculate percentage based on payment amount
-              dueDate: plan.due_date,
+              dueDate: plan.date || plan.due_date,
               value,
               valueVat,
               client: client.name || 'Legacy Client',
@@ -1398,25 +1399,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       const originalValueVat = Number(isLegacyPayment ? originalPayment.vat_value : originalPayment.value_vat);
       const editValueVat = Number(editPaymentData.valueVat);
       
-              if (originalDuePercent !== editDuePercent) {
-          changes.push({
+      if (originalDuePercent !== editDuePercent) {
+        changes.push({
           payment_plan_id: editPaymentData.id,
           field_name: 'due_percent',
           old_value: originalPayment.due_percent?.toString() || '',
           new_value: editPaymentData.duePercent?.toString() || '',
           changed_by: currentUserName,
-          changed_at: new Date().toISOString()
+          changed_at: new Date().toISOString(),
         });
       }
-      
-              if (originalPayment.due_date !== editPaymentData.dueDate) {
-          changes.push({
+
+      const originalDueDate = isLegacyPayment ? originalPayment?.date : originalPayment?.due_date;
+
+      if (originalDueDate !== editPaymentData.dueDate) {
+        changes.push({
           payment_plan_id: editPaymentData.id,
-          field_name: 'due_date',
-          old_value: originalPayment.due_date || '',
+          field_name: isLegacyPayment ? 'date' : 'due_date',
+          old_value: originalDueDate || '',
           new_value: editPaymentData.dueDate || '',
           changed_by: currentUserName,
-          changed_at: new Date().toISOString()
+          changed_at: new Date().toISOString(),
         });
       }
       
@@ -1481,11 +1484,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       let error;
       if (isLegacyPayment) {
         // For legacy payments, update finances_paymentplanrow table
+        const dueDateValue = editPaymentData.dueDate || null;
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .update({
             due_percent: editPaymentData.duePercent,
-            due_date: editPaymentData.dueDate || null, // Set to null if empty
+            date: dueDateValue,
+            due_date: dueDateValue,
             value: editPaymentData.value,
             vat_value: editPaymentData.valueVat,
             notes: editPaymentData.notes,
@@ -3917,7 +3922,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               {/* Due Date */}
                               <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                 <span className="text-sm font-bold text-gray-900">
-                                  {p.due_date ? (new Date(p.due_date).toString() !== 'Invalid Date' ? new Date(p.due_date).toLocaleDateString() : '') : ''}
+                                  {(() => {
+                                    const legacyDue = p.date || p.due_date;
+                                    return legacyDue && new Date(legacyDue).toString() !== 'Invalid Date'
+                                      ? new Date(legacyDue).toLocaleDateString()
+                                      : '';
+                                  })()}
                                 </span>
                               </td>
                               

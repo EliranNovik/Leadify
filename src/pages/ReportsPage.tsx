@@ -4013,7 +4013,7 @@ const reports: ReportSection[] = [
     category: 'Finances',
     items: [
       { label: 'Profitability', icon: CurrencyDollarIcon, component: ProfitabilityReport },
-      { label: 'Collection', icon: BanknotesIcon, component: CollectionReport },
+      { label: 'Collection', icon: BanknotesIcon, route: '/reports/collection-finances' },
       { label: 'Collection Due', icon: BanknotesIcon, component: CollectionDueReport },
     ],
   },

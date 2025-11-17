@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
@@ -298,6 +298,37 @@ const SignedSalesReportPage: React.FC = () => {
     return Array.from(new Set(labels)).sort((a, b) => a.localeCompare(b));
   }, [employees]);
 
+  const employeeIdMap = useMemo(() => {
+    const map = new Map<string, string>();
+    employees.forEach(emp => {
+      if (!emp?.id) return;
+      const display = emp.display_name || '';
+      if (!display) return;
+      map.set(emp.id.toString(), display);
+    });
+    return map;
+  }, [employees]);
+
+  const resolveEmployeeDisplayValue = useCallback(
+    (value: any) => {
+      if (value === null || value === undefined) return '';
+      const trimmed = value.toString().trim();
+      if (!trimmed) return '';
+      return employeeIdMap.get(trimmed) || trimmed;
+    },
+    [employeeIdMap],
+  );
+
+  const resolveEmployeeIdValue = useCallback(
+    (value: any) => {
+      if (value === null || value === undefined) return null;
+      const trimmed = value.toString().trim();
+      if (!trimmed) return null;
+      return employeeIdMap.has(trimmed) ? trimmed : null;
+    },
+    [employeeIdMap],
+  );
+
   const filteredEmployeeOptions = useMemo(() => {
     const term = normalizeString(filters.employee);
     if (!term) return employeeOptionLabels;
@@ -334,20 +365,19 @@ const SignedSalesReportPage: React.FC = () => {
   };
 
   const getRoleIdValue = (row: SignedLeadRow, role: RoleKey): string => {
-    const fallback = row.leadType === 'new' ? getRoleDisplay(row, role) : '';
     switch (role) {
       case 'scheduler':
-        return row.schedulerId ?? fallback ?? '';
+        return row.schedulerId ?? '';
       case 'manager':
-        return row.managerId ?? fallback ?? '';
+        return row.managerId ?? '';
       case 'closer':
-        return row.closerId ?? fallback ?? '';
+        return row.closerId ?? '';
       case 'expert':
-        return row.expertId ?? fallback ?? '';
+        return row.expertId ?? '';
       case 'handler':
-        return row.handlerId ?? fallback ?? '';
+        return row.handlerId ?? '';
       default:
-        return fallback ?? '';
+        return '';
     }
   };
 
@@ -383,7 +413,7 @@ const SignedSalesReportPage: React.FC = () => {
   const buildRoleOptions = (row: SignedLeadRow, role: RoleKey) => {
     const isLegacy = row.leadType === 'legacy';
     const baseOptions = employees.map(emp => ({
-      value: isLegacy ? emp.id : emp.display_name,
+      value: emp.id,
       label: emp.display_name,
     }));
     const currentValue = getRoleIdValue(row, role);
@@ -445,10 +475,15 @@ const SignedSalesReportPage: React.FC = () => {
           .eq('id', leadId);
         if (error) throw error;
 
+        const displayName =
+          roleEditor.value && employeeIdMap.get(roleEditor.value)
+            ? employeeIdMap.get(roleEditor.value)!
+            : roleEditor.value || '';
+
         updateRowWithRole(
           row.id,
           roleEditor.role,
-          roleEditor.value,
+          displayName,
           roleEditor.value ? roleEditor.value : null
         );
       } else {
@@ -738,7 +773,7 @@ const SignedSalesReportPage: React.FC = () => {
       lead.closer,
       lead.expert,
       lead.handler,
-    ].map(normalizeString);
+    ].map(value => normalizeString(resolveEmployeeDisplayValue(value)));
     return candidates.some(candidate => candidate && candidate === target);
   };
 
@@ -909,9 +944,56 @@ const resolveLegacyLanguage = (lead: any) => {
         }
       });
 
+      // Fetch stage changes for new leads (lead_leadstage table)
+      const newLeadStageDates = new Map<string, string>();
+      try {
+        const stageColumns = 'id, lead_id, stage, created_at, cdate, date';
+        let newLeadStageQuery = supabase.from('lead_leadstage').select(stageColumns);
+        if (startIso) newLeadStageQuery = newLeadStageQuery.gte('created_at', startIso);
+        if (endIso) newLeadStageQuery = newLeadStageQuery.lt('created_at', endIso);
+        let newLeadStageResponse = await newLeadStageQuery;
+        if (newLeadStageResponse.error && newLeadStageResponse.error.code === '42703') {
+          // Fallback to cdate if created_at column does not exist
+          newLeadStageQuery = supabase.from('lead_leadstage').select(stageColumns);
+          if (startIso) newLeadStageQuery = newLeadStageQuery.gte('cdate', startIso);
+          if (endIso) newLeadStageQuery = newLeadStageQuery.lt('cdate', endIso);
+          newLeadStageResponse = await newLeadStageQuery;
+        }
+
+        if (newLeadStageResponse.error) {
+          throw newLeadStageResponse.error;
+        }
+
+        (newLeadStageResponse.data || [])
+          .filter(record => record?.lead_id)
+          .filter(record => stageMatchesSigned(record.stage))
+          .forEach(record => {
+            const leadId = record.lead_id?.toString?.();
+            if (!leadId) return;
+            const timestamp = record.created_at || record.cdate || record.date || null;
+            if (!timestamp) return;
+            const existingTimestamp = newLeadStageDates.get(leadId);
+            const nextTime = new Date(timestamp).getTime();
+            if (!existingTimestamp) {
+              newLeadStageDates.set(leadId, timestamp);
+              return;
+            }
+            const existingTime = new Date(existingTimestamp).getTime();
+            if (Number.isNaN(existingTime) || (!Number.isNaN(nextTime) && nextTime > existingTime)) {
+              newLeadStageDates.set(leadId, timestamp);
+            }
+          });
+      } catch (stageError) {
+        console.error('Failed to load new lead stage history:', stageError);
+      }
+
+      const combinedNewLeadIdSet = new Set<string>();
+      newLeadContracts.forEach((_info, clientId) => combinedNewLeadIdSet.add(clientId));
+      newLeadStageDates.forEach((_timestamp, leadId) => combinedNewLeadIdSet.add(leadId));
+
       let newLeads: any[] = [];
-      if (newLeadContracts.size > 0) {
-        const newLeadIds = Array.from(newLeadContracts.keys());
+      const allNewLeadIds = Array.from(combinedNewLeadIdSet).filter(Boolean);
+      if (allNewLeadIds.length > 0) {
         const { data: newLeadsResponse, error: newLeadsError } = await supabase
           .from('leads')
           .select(
@@ -946,7 +1028,7 @@ const resolveLegacyLanguage = (lead: any) => {
               )
             `
           )
-          .in('id', newLeadIds);
+          .in('id', allNewLeadIds);
 
         if (newLeadsError) {
           console.error('Failed to load signed leads:', newLeadsError);
@@ -1110,28 +1192,39 @@ const resolveLegacyLanguage = (lead: any) => {
           lead.balance_currency
         );
         const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-        const signDate = contractInfo?.signedAt || lead.date_signed || null;
+        const stageDate = newLeadStageDates.get(String(lead.id));
+        const signDate = contractInfo?.signedAt || stageDate || lead.date_signed || null;
+
+        const schedulerDisplay = resolveEmployeeDisplayValue(lead.scheduler);
+        const managerDisplay = resolveEmployeeDisplayValue(lead.manager);
+        const closerDisplay = resolveEmployeeDisplayValue(lead.closer);
+        const expertDisplay = resolveEmployeeDisplayValue(lead.expert);
+        const handlerDisplay = resolveEmployeeDisplayValue(lead.handler);
 
         return {
           id: String(lead.id),
           leadType: 'new',
           leadNumber: lead.lead_number || lead.manual_id || lead.id,
-          leadIdentifier: String(lead.id),
+          leadIdentifier: lead.lead_number
+            ? String(lead.lead_number)
+            : lead.manual_id
+            ? String(lead.manual_id)
+            : String(lead.id),
           leadName: lead.name || 'Unnamed Lead',
           createdDate: lead.created_at || null,
           category: resolveCategoryName(lead.category, lead.category_id, lead.misc_category),
           stage: formatStageLabel(lead.stage),
           signDate,
-          scheduler: lead.scheduler || '',
-          manager: lead.manager || '',
-          closer: lead.closer || '',
-          expert: lead.expert || '',
-          handler: lead.handler || '',
-          schedulerId: lead.scheduler ? String(lead.scheduler) : null,
-          managerId: lead.manager ? String(lead.manager) : null,
-          closerId: lead.closer ? String(lead.closer) : null,
-          expertId: lead.expert ? String(lead.expert) : null,
-          handlerId: lead.handler ? String(lead.handler) : null,
+          scheduler: schedulerDisplay,
+          manager: managerDisplay,
+          closer: closerDisplay,
+          expert: expertDisplay,
+          handler: handlerDisplay,
+          schedulerId: resolveEmployeeIdValue(lead.scheduler),
+          managerId: resolveEmployeeIdValue(lead.manager),
+          closerId: resolveEmployeeIdValue(lead.closer),
+          expertId: resolveEmployeeIdValue(lead.expert),
+          handlerId: resolveEmployeeIdValue(lead.handler),
           totalOriginal: resolvedAmount,
           totalOriginalDisplay: formatCurrencyDisplay(resolvedAmount, currencyMeta.displaySymbol),
           totalNIS: amountNIS,
