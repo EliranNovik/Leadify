@@ -14,6 +14,30 @@ import { supabase, sessionManager } from './lib/supabase'
 // Force light theme
 document.documentElement.setAttribute('data-theme', 'light');
 
+// Register Service Worker for PWA
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js')
+      .then((registration) => {
+        console.log('✅ Service Worker registered successfully:', registration.scope);
+        
+        // Check for updates periodically
+        setInterval(() => {
+          registration.update();
+        }, 60000); // Check every minute
+      })
+      .catch((error) => {
+        console.warn('⚠️ Service Worker registration failed:', error);
+      });
+
+    // Listen for service worker updates
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      console.log('🔄 Service Worker controller changed - reloading page');
+      window.location.reload();
+    });
+  });
+}
+
 // Initialize MSAL
 const msalInstance = new PublicClientApplication(msalConfig);
 
