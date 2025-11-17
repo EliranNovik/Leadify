@@ -1,10 +1,11 @@
 // Service Worker for Leadify CRM PWA
 const CACHE_NAME = 'leadify-crm-v1';
+const OFFLINE_PAGE = '/offline.html';
+
 const urlsToCache = [
   '/',
   '/index.html',
-  '/src/main.tsx',
-  '/src/App.tsx'
+  '/offline.html'
 ];
 
 // Install event - cache resources
@@ -41,6 +42,13 @@ self.addEventListener('activate', (event) => {
   return self.clients.claim();
 });
 
+// Listen for messages from the client
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
 // Fetch event - serve from cache, fallback to network
 self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
@@ -75,8 +83,12 @@ self.addEventListener('fetch', (event) => {
             return response;
           })
           .catch(() => {
-            // If fetch fails, you could return a custom offline page
-            // For now, just let it fail
+            // If fetch fails and it's a navigation request, show offline page
+            if (event.request.mode === 'navigate') {
+              return caches.match(OFFLINE_PAGE);
+            }
+            // For other requests, return a basic error response
+            return new Response('Offline', { status: 503 });
           });
       })
   );
@@ -102,11 +114,26 @@ self.addEventListener('push', (event) => {
   }
 });
 
-// Handle notification clicks
+// Handle notification clicks with deep linking
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+  
+  const urlToOpen = event.notification.data?.url || '/';
+  
   event.waitUntil(
-    clients.openWindow('/')
+    clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then((clientList) => {
+        // Check if there's already a window open
+        for (const client of clientList) {
+          if (client.url === urlToOpen && 'focus' in client) {
+            return client.focus();
+          }
+        }
+        // Open new window if none exists
+        if (clients.openWindow) {
+          return clients.openWindow(urlToOpen);
+        }
+      })
   );
 });
 

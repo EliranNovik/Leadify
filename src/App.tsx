@@ -12,6 +12,8 @@ import EmailThreadModal from './components/EmailThreadModal';
 import { supabase, sessionManager } from './lib/supabase';
 import { CelebrationProvider } from './contexts/CelebrationContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
+import PWAInstallPrompt from './components/PWAInstallPrompt';
+import PWAUpdateNotification from './components/PWAUpdateNotification';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
@@ -467,6 +469,8 @@ const AppContent: React.FC = () => {
         <Router>
           <AppContentInner />
           <MoneyRainCelebration />
+          <PWAInstallPrompt />
+          <PWAUpdateNotification />
           <Toaster 
             position="top-center"
             reverseOrder={false}

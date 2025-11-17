@@ -60,7 +60,36 @@
   ],
   "categories": ["business", "productivity"],
   "screenshots": [],
-  "shortcuts": [],
+  "shortcuts": [
+    {
+      "name": "Dashboard",
+      "short_name": "Dashboard",
+      "description": "View your dashboard",
+      "url": "/dashboard",
+      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "New Lead",
+      "short_name": "New Lead",
+      "description": "Create a new lead",
+      "url": "/create",
+      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "Calendar",
+      "short_name": "Calendar",
+      "description": "View your calendar",
+      "url": "/calendar",
+      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+    },
+    {
+      "name": "Clients",
+      "short_name": "Clients",
+      "description": "View all clients",
+      "url": "/clients",
+      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+    }
+  ],
   "share_target": {
     "action": "/",
     "method": "GET",
