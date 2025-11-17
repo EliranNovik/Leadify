@@ -55,7 +55,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumb
     setError(null);
     try {
       console.log('Fetching documents for lead:', leadNumber);
-      const { data, error } = await supabase.functions.invoke('list-onedrive-files', {
+      const { data, error } = await supabase.functions.invoke('list-lead-documents', {
         body: { leadNumber }
       });
 
@@ -69,7 +69,18 @@ const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumb
 
       if (data && data.success) {
         console.log('Documents fetched successfully:', data.files);
-        setDocuments(data.files || []);
+
+        const mappedDocuments: Document[] = (data.files || []).map((item: any) => ({
+          id: item.id,
+          name: item.name,
+          size: item.size ?? 0,
+          lastModified: item.lastModifiedDateTime || item.lastModified || new Date().toISOString(),
+          downloadUrl: item.downloadUrl || item['@microsoft.graph.downloadUrl'] || item.webUrl,
+          webUrl: item.webUrl,
+          fileType: item.file?.mimeType || item.fileType || 'application/octet-stream',
+        }));
+
+        setDocuments(mappedDocuments);
       } else if (data && !data.success) {
         console.error('Function returned error:', data);
         // Handle specific 404 case (folder not found)

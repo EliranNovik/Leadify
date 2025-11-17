@@ -85,14 +85,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [isEditingSubtotal, setIsEditingSubtotal] = useState(false);
   const [editableSubtotal, setEditableSubtotal] = useState('');
   
+  // Helper: map lead currency codes/names to the symbols used in the auto‑plan selector
+  const mapLeadCurrencyToSymbol = (code?: string | null): string => {
+    if (!code) return '₪';
+    const normalized = String(code).trim().toUpperCase();
+    if (normalized === '₪' || normalized === 'NIS' || normalized === 'ILS') return '₪';
+    if (normalized === '$' || normalized === 'USD') return '$';
+    if (normalized === '€' || normalized === 'EUR') return '€';
+    if (normalized === '£' || normalized === 'GBP') return '£';
+    return '₪';
+  };
+
   // Add state for stages dropdown and drawer
   const [showStagesDrawer, setShowStagesDrawer] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
     totalAmount: '',
     currency: '₪',
     numberOfPayments: 3,
-    firstPaymentPercent: 50,
-    includeVat: true
+    // Per‑payment percentages, must always sum to 100
+    paymentPercents: [50, 25, 25],
+    includeVat: true,
   });
 
   // Add state for percentage calculation feature
@@ -112,16 +124,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (client) {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
       let currency = '₪'; // Default
-      
+      let suggestedTotal = 0;
+
       if (isLegacyLead) {
-        // For legacy leads, use balance_currency
-        currency = client?.balance_currency || '₪';
+        // For legacy leads, prefer balance if available
+        currency = mapLeadCurrencyToSymbol(client?.balance_currency || client?.proposal_currency);
+        suggestedTotal = Number(client?.balance || 0);
       } else {
-        // For new leads, use proposal_currency
-        currency = client?.proposal_currency || '₪';
+        // For new leads, use proposal_currency and balance
+        currency = mapLeadCurrencyToSymbol(client?.proposal_currency);
+        suggestedTotal = Number(client?.balance || 0);
       }
-      
-      setAutoPlanData(prev => ({ ...prev, currency }));
+
+      setAutoPlanData(prev => ({
+        ...prev,
+        currency,
+        // Only prefill if we don't already have a value and suggestedTotal is positive
+        totalAmount:
+          (!prev.totalAmount || Number(prev.totalAmount) <= 0) && suggestedTotal > 0
+            ? String(suggestedTotal)
+            : prev.totalAmount,
+      }));
     }
   }, [client]);
   
@@ -1736,12 +1759,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  // Add state for new payment row
-  const [addingPaymentContact, setAddingPaymentContact] = useState<string | null>(null);
+  // Add state for new payment rows
+  const [addingPaymentContact, setAddingPaymentContact] = useState<string | null>(null); // table context
+  const [showDrawerNewPayment, setShowDrawerNewPayment] = useState(false); // finance-plan drawer context
   const [newPaymentData, setNewPaymentData] = useState<any>({});
 
-  // Handler to start adding a new payment for a contact
-  const handleAddNewPayment = (contactName: string) => {
+  // Shared initializer for new payment data
+  const initNewPaymentData = (contactName: string) => {
     // Determine the correct currency for this client
     let currency = '₪'; // Default
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
@@ -1753,25 +1777,52 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // For new leads, use proposal_currency
       currency = client?.proposal_currency || '₪';
     }
-    
-    setAddingPaymentContact(contactName);
+
+    // Default amount: use balance/total where available
+    let defaultAmount = 0;
+    if (isLegacyLead && Array.isArray(contracts) && contracts.length > 0) {
+      const legacyContract = contracts.find(c => c.isLegacy);
+      if (legacyContract && legacyContract.total_amount > 0) {
+        defaultAmount = Number(legacyContract.total_amount) || 0;
+      }
+    } else if (!isLegacyLead && typeof client?.balance === 'number' && client.balance > 0) {
+      defaultAmount = Number(client.balance) || 0;
+    }
+
+    // Prefill duePercent as 100% when we have a default amount
+    const defaultDuePercent = defaultAmount > 0 ? '100' : '';
+
     setNewPaymentData({
       dueDate: '',
-      value: '',
-      duePercent: '',
+      value: defaultAmount ? String(defaultAmount) : '',
+      duePercent: defaultDuePercent,
       paymentOrder: 'Intermediate Payment',
       client: contactName,
       notes: '',
       paid: false,
       paid_at: null,
       paid_by: null,
-      currency: currency, // Set the correct currency
+      currency, // Set the correct currency
     });
+  };
+
+  // Handler to start adding a new payment in the main table for a contact
+  const handleAddNewPayment = (contactName: string) => {
+    setAddingPaymentContact(contactName);
+    initNewPaymentData(contactName);
+  };
+
+  // Handler to start adding a new payment from inside the finance-plan drawer
+  const handleOpenDrawerNewPayment = () => {
+    const contactName = client?.name || 'Main Contact';
+    initNewPaymentData(contactName);
+    setShowDrawerNewPayment(true);
   };
 
   // Handler to cancel adding new payment
   const handleCancelNewPayment = () => {
     setAddingPaymentContact(null);
+    setShowDrawerNewPayment(false);
     setNewPaymentData({});
   };
 
@@ -1909,14 +1960,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return;
     }
 
+    const percents = autoPlanData.paymentPercents || [];
+    const activePercents = percents.slice(0, autoPlanData.numberOfPayments);
+    const sumPercents = activePercents.reduce((sum, value) => sum + Number(value || 0), 0);
+
+    if (sumPercents !== 100) {
+      toast.error('The sum of all payment percentages must be exactly 100%. Please adjust the values.');
+      return;
+    }
+
     setIsSavingPaymentRow(true);
     try {
       const currentUserName = await getCurrentUserName();
       const totalAmount = Number(autoPlanData.totalAmount);
-      const firstPaymentAmount = (totalAmount * autoPlanData.firstPaymentPercent) / 100;
-      const remainingAmount = totalAmount - firstPaymentAmount;
-      const remainingPayments = autoPlanData.numberOfPayments - 1;
-      const remainingPaymentAmount = remainingPayments > 0 ? remainingAmount / remainingPayments : 0;
 
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
@@ -1939,44 +1995,31 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         const legacyPayments = [];
-        
-        // Create first payment
-        legacyPayments.push({
-          cdate: new Date().toISOString().split('T')[0], // Current date
-          udate: new Date().toISOString().split('T')[0], // Current date
-          date: new Date().toISOString().split('T')[0], // Today's date
-          value: firstPaymentAmount,
-          vat_value: autoPlanData.includeVat && autoPlanData.currency === '₪' ? Math.round(firstPaymentAmount * 0.18 * 100) / 100 : 0,
-          lead_id: legacyId,
-          notes: '',
-          due_date: new Date().toISOString().split('T')[0], // Today's date
-          due_percent: autoPlanData.firstPaymentPercent.toString() + '%', // Store the due percentage as text with % sign
-          order: 1, // First Payment
-          currency_id: currencyId,
-          client_id: null, // Will be null for legacy leads
-        });
 
-        // Create remaining payments
-        for (let i = 1; i < autoPlanData.numberOfPayments; i++) {
-          const paymentPercent = remainingPayments > 0 ? (100 - autoPlanData.firstPaymentPercent) / remainingPayments : 0;
+        for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
+          const paymentPercent = Number(activePercents[i] || 0);
+          const value = (totalAmount * paymentPercent) / 100;
           // Determine order based on position: first = 1, intermediate = 5, final = 9
           let orderValue = 5; // Default to intermediate
-          if (i === autoPlanData.numberOfPayments - 1) {
-            orderValue = 9; // Final payment
-          } else if (i === 0) {
+          if (i === 0) {
             orderValue = 1; // First payment
+          } else if (i === autoPlanData.numberOfPayments - 1) {
+            orderValue = 9; // Final payment
           }
-          
+
           legacyPayments.push({
             cdate: new Date().toISOString().split('T')[0], // Current date
             udate: new Date().toISOString().split('T')[0], // Current date
-            date: null, // No due date for subsequent payments
-            value: remainingPaymentAmount,
-            vat_value: autoPlanData.includeVat && autoPlanData.currency === '₪' ? Math.round(remainingPaymentAmount * 0.18 * 100) / 100 : 0,
+            date: i === 0 ? new Date().toISOString().split('T')[0] : null,
+            value,
+            vat_value:
+              autoPlanData.includeVat && autoPlanData.currency === '₪'
+                ? Math.round(value * 0.18 * 100) / 100
+                : 0,
             lead_id: legacyId,
             notes: '',
-            due_date: null, // No due date for subsequent payments
-            due_percent: paymentPercent.toString() + '%', // Store the calculated due percentage as text with % sign
+            due_date: i === 0 ? new Date().toISOString().split('T')[0] : null,
+            due_percent: `${paymentPercent}%`, // Store the due percentage as text with % sign
             order: orderValue, // Use proper numeric order values
             currency_id: currencyId,
             client_id: null, // Will be null for legacy leads
@@ -1992,32 +2035,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } else {
         // For new leads, save to payment_plans table
         const payments = [];
-        
-        // Create first payment
-        payments.push({
-          lead_id: client?.id,
-          due_percent: autoPlanData.firstPaymentPercent,
-          due_date: new Date().toISOString().split('T')[0], // Today's date
-          value: firstPaymentAmount,
-          value_vat: autoPlanData.includeVat && autoPlanData.currency === '₪' ? Math.round(firstPaymentAmount * 0.18 * 100) / 100 : 0,
-          client_name: client?.name || 'Main Contact',
-          payment_order: 'First Payment',
-          notes: '',
-          currency: autoPlanData.currency,
-          created_by: currentUserName,
-        });
 
-        // Create remaining payments
-        for (let i = 1; i < autoPlanData.numberOfPayments; i++) {
-          const paymentPercent = remainingPayments > 0 ? (100 - autoPlanData.firstPaymentPercent) / remainingPayments : 0;
+        for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
+          const paymentPercent = Number(activePercents[i] || 0);
+          const value = (totalAmount * paymentPercent) / 100;
+
           payments.push({
             lead_id: client?.id,
             due_percent: paymentPercent,
-            due_date: null, // No due date for subsequent payments
-            value: remainingPaymentAmount,
-            value_vat: autoPlanData.includeVat && autoPlanData.currency === '₪' ? Math.round(remainingPaymentAmount * 0.18 * 100) / 100 : 0,
+            due_date: i === 0 ? new Date().toISOString().split('T')[0] : null,
+            value,
+            value_vat:
+              autoPlanData.includeVat && autoPlanData.currency === '₪'
+                ? Math.round(value * 0.18 * 100) / 100
+                : 0,
             client_name: client?.name || 'Main Contact',
-            payment_order: i === 1 ? 'Intermediate Payment' : i === 2 ? 'Final Payment' : `${i + 1}th Payment`,
+            payment_order:
+              i === 0
+                ? 'First Payment'
+                : i === autoPlanData.numberOfPayments - 1
+                ? 'Final Payment'
+                : 'Intermediate Payment',
             notes: '',
             currency: autoPlanData.currency,
             created_by: currentUserName,
@@ -2071,8 +2109,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         totalAmount: '',
         currency: '₪',
         numberOfPayments: 3,
-        firstPaymentPercent: 50,
-        includeVat: true
+        paymentPercents: [50, 25, 25],
+        includeVat: true,
       });
       refreshPaymentPlans();
     } catch (error) {
@@ -2093,8 +2131,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       totalAmount: '',
       currency: '₪',
       numberOfPayments: 3,
-      firstPaymentPercent: 50,
-      includeVat: true
+      paymentPercents: [50, 25, 25],
+      includeVat: true,
     });
   };
 
@@ -2181,20 +2219,387 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   if (!financePlan) {
     return (
-      <div className="flex flex-col items-center justify-center h-64 text-center">
-        <BanknotesIcon className="w-16 h-16 text-primary mb-4" />
-        <div className="text-2xl font-bold text-gray-800 mb-2">No finance plan created yet.</div>
-        <div className="text-gray-500 mb-6">Create a payments plan to see finances here.</div>
-        {onCreateFinancePlan && (
+      <>
+        <div className="flex flex-col items-center justify-center h-64 text-center">
+          <BanknotesIcon className="w-16 h-16 text-primary mb-4" />
+          <div className="text-2xl font-bold text-gray-800 mb-2">No finance plan created yet.</div>
+          <div className="text-gray-500 mb-6">Create a payments plan to see finances here.</div>
           <button
+            type="button"
             className="btn btn-md bg-black text-white border-none gap-3 shadow-sm text-lg font-bold py-3 px-6"
-            onClick={onCreateFinancePlan}
+            onClick={() => {
+              handleOpenStagesDrawer();
+            }}
           >
             <BanknotesIcon className="w-5 h-5 text-white" />
             Create Finance Plan
           </button>
-        )}
-      </div>
+        </div>
+
+        {/* Stages Drawer for creating a new finance plan */}
+        {showStagesDrawer && ReactDOM.createPortal(
+          <div className="fixed inset-0 z-[100] flex">
+            {/* Overlay */}
+            <div className="fixed inset-0 bg-black/30" onClick={handleCloseStagesDrawer} />
+            {/* Drawer */}
+            <div className="ml-auto w-full max-w-2xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
+              {/* Header */}
+              <div className="bg-gradient-to-r from-purple-700 to-blue-600 text-white p-6 border-b border-purple-200">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold mb-1">Finance Plan Stages</h2>
+                    <p className="text-purple-100">Client: {client?.name}</p>
+                  </div>
+                  <button className="btn btn-ghost btn-lg text-white hover:bg-white/20" onClick={handleCloseStagesDrawer}>
+                    <XMarkIcon className="w-6 h-6" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Main Content */}
+              <div className="flex-1 p-6 overflow-y-auto">
+                {/* Auto Plan Section */}
+                <div className="bg-white rounded-xl shadow-lg p-6 mb-6 border border-purple-200">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <ChartPieIcon className="w-5 h-5 text-purple-600" />
+                    Create Auto Finance Plan
+                  </h3>
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="form-control">
+                        <label className="label">
+                          <span className="label-text font-medium">Total Amount</span>
+                        </label>
+                        <input
+                          type="number"
+                          className="input input-bordered w-full no-arrows"
+                          value={autoPlanData.totalAmount}
+                          onChange={(e) => setAutoPlanData(prev => ({ ...prev, totalAmount: e.target.value }))}
+                          placeholder="Enter total amount"
+                        />
+                      </div>
+                      <div className="form-control">
+                        <label className="label">
+                          <span className="label-text font-medium">Currency</span>
+                        </label>
+                        <select
+                          className="select select-bordered w-full"
+                          value={autoPlanData.currency}
+                          onChange={(e) => setAutoPlanData(prev => ({ ...prev, currency: e.target.value }))}
+                        >
+                          {(() => {
+                            const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+                            const clientCurrency = isLegacyLead ? client?.balance_currency : client?.proposal_currency;
+                            
+                            // Create options with client's currency first
+                            const currencies = [
+                              { value: '₪', label: '₪ (NIS)' },
+                              { value: '$', label: '$ (USD)' },
+                              { value: '€', label: '€ (EUR)' },
+                              { value: '£', label: '£ (GBP)' }
+                            ];
+                            
+                            // Move client's currency to the top if it exists
+                            if (clientCurrency && clientCurrency !== '₪') {
+                              const clientCurrencyOption = currencies.find(c => c.value === clientCurrency);
+                              if (clientCurrencyOption) {
+                                const filteredCurrencies = currencies.filter(c => c.value !== clientCurrency);
+                                return [
+                                  <option key={clientCurrency} value={clientCurrency}>{clientCurrencyOption.label}</option>,
+                                  ...filteredCurrencies.map(c => <option key={c.value} value={c.value}>{c.label}</option>)
+                                ];
+                              }
+                            }
+                            
+                            return currencies.map(c => <option key={c.value} value={c.value}>{c.label}</option>);
+                          })()}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Number of Payments</span>
+                      </label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={autoPlanData.numberOfPayments}
+                        onChange={(e) => {
+                          const count = Number(e.target.value);
+                          setAutoPlanData(prev => {
+                            let percents: number[];
+                            if (count === 3) {
+                              // Special default for 3 payments
+                              percents = [50, 25, 25];
+                            } else {
+                              // Even split that sums to 100
+                              const base = Math.floor(100 / count);
+                              percents = Array.from({ length: count }, () => base);
+                              const remainder = 100 - base * count;
+                              for (let i = 0; i < remainder; i++) {
+                                percents[i] += 1;
+                              }
+                            }
+                            return {
+                              ...prev,
+                              numberOfPayments: count,
+                              paymentPercents: percents,
+                            };
+                          });
+                        }}
+                      >
+                        <option value={2}>2 Payments</option>
+                        <option value={3}>3 Payments</option>
+                        <option value={4}>4 Payments</option>
+                        <option value={5}>5 Payments</option>
+                      </select>
+                    </div>
+                    <div className="form-control">
+                      <label className="label">
+                        <span className="label-text font-medium">Payment Percentages</span>
+                      </label>
+                      <div className="space-y-2">
+                        {Array.from({ length: autoPlanData.numberOfPayments }).map((_, index) => {
+                          const isFirst = index === 0;
+                          const isLast = index === autoPlanData.numberOfPayments - 1;
+                          const label =
+                            isFirst ? 'First Payment' : isLast ? 'Final Payment' : 'Intermediate Payment';
+                          return (
+                          <div key={index} className="flex items-center gap-2">
+                            <span className="w-40 text-sm text-gray-600">{label}</span>
+                            <input
+                              type="number"
+                              className="input input-bordered w-24 no-arrows"
+                              min={0}
+                              max={100}
+                              value={autoPlanData.paymentPercents[index] ?? 0}
+                              onChange={(e) => {
+                                const value = Number(e.target.value || 0);
+                                setAutoPlanData(prev => {
+                                  const next = [...(prev.paymentPercents || [])];
+                                  // Ensure array length
+                                  while (next.length < prev.numberOfPayments) next.push(0);
+                                  next[index] = value;
+                                  return {
+                                    ...prev,
+                                    paymentPercents: next,
+                                  };
+                                });
+                              }}
+                            />
+                            <span className="text-sm">%</span>
+                          </div>
+                        )})}
+                        <div className="text-xs text-gray-500">
+                          Sum must be exactly 100%. If not, you’ll see an error when creating the plan.
+                        </div>
+                      </div>
+                    </div>
+                    </div>
+                    <div className="form-control">
+                      <label className="label cursor-pointer justify-start gap-3">
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-primary"
+                          checked={autoPlanData.includeVat}
+                          onChange={(e) => setAutoPlanData(prev => ({ ...prev, includeVat: e.target.checked }))}
+                        />
+                        <span className="label-text font-medium">Include VAT (18% for NIS)</span>
+                      </label>
+                    </div>
+                    <button
+                      className="btn btn-primary w-full"
+                      onClick={handleCreateAutoPlan}
+                      disabled={isSavingPaymentRow || !autoPlanData.totalAmount}
+                    >
+                      {isSavingPaymentRow ? (
+                        <span className="loading loading-spinner loading-sm"></span>
+                      ) : (
+                        <PlusIcon className="w-4 h-4 mr-2" />
+                      )}
+                      Create Auto Finance Plan
+                    </button>
+                  </div>
+                </div>
+
+                {/* Add New Payment Section */}
+                <div className="bg-white rounded-xl shadow-lg p-6 border border-blue-200">
+                  <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+                    <PlusIcon className="w-5 h-5 text-blue-600" />
+                    Add New Payment
+                  </h3>
+                  <p className="text-gray-600 mb-4">Create a single payment plan for this client.</p>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-primary w-full"
+                    onClick={handleOpenDrawerNewPayment}
+                  >
+                    <PlusIcon className="w-4 h-4 mr-2" />
+                    Add New Payment
+                  </button>
+
+                  {/* Inline full-row editor for a single payment when opened from the drawer */}
+                  {showDrawerNewPayment && (
+                    <div className="mt-6 border-t pt-4 space-y-4">
+                      <div className="text-sm text-gray-600">
+                        Creating payment for{' '}
+                        <span className="font-semibold">{newPaymentData.client || client?.name || 'Main Contact'}</span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Payment Type</span>
+                          </label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={newPaymentData.paymentOrder || 'Intermediate Payment'}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))
+                            }
+                          >
+                            <option>First Payment</option>
+                            <option>Intermediate Payment</option>
+                            <option>Final Payment</option>
+                            <option>Single Payment</option>
+                            <option>Expense (no VAT)</option>
+                          </select>
+                        </div>
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Due Percentage</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              className="input input-bordered w-full no-arrows"
+                              placeholder="%"
+                              value={newPaymentData.duePercent || ''}
+                              onChange={e =>
+                                setNewPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))
+                              }
+                            />
+                            <span className="text-sm text-gray-500">%</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Due Date</span>
+                          </label>
+                          <input
+                            type="date"
+                            className="input input-bordered w-full"
+                            value={newPaymentData.dueDate || ''}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))
+                            }
+                          />
+                        </div>
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Amount</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              className="input input-bordered w-full no-arrows"
+                              value={newPaymentData.value || ''}
+                              onChange={e => {
+                                const value = e.target.value;
+                                let vat = 0;
+                                const currency = newPaymentData.currency || autoPlanData.currency || '₪';
+                                if (currency === '₪') {
+                                  vat = Math.round(Number(value) * 0.18 * 100) / 100;
+                                }
+                                setNewPaymentData((d: any) => ({
+                                  ...d,
+                                  value,
+                                  valueVat: vat,
+                                }));
+                              }}
+                            />
+                            <span className="text-sm text-gray-500">
+                              {mapLeadCurrencyToSymbol(newPaymentData.currency || autoPlanData.currency || '₪')}
+                            </span>
+                          </div>
+                          {newPaymentData.valueVat != null && newPaymentData.valueVat !== 0 && (
+                            <div className="mt-1 text-xs text-gray-500">
+                              VAT: {Number(newPaymentData.valueVat).toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Currency</span>
+                          </label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={newPaymentData.currency || autoPlanData.currency || '₪'}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, currency: e.target.value }))
+                            }
+                          >
+                            <option value="₪">₪ (NIS)</option>
+                            <option value="$">$ (USD)</option>
+                            <option value="€">€ (EUR)</option>
+                            <option value="£">£ (GBP)</option>
+                          </select>
+                        </div>
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Notes</span>
+                          </label>
+                          <textarea
+                            className="textarea textarea-bordered w-full"
+                            rows={2}
+                            placeholder="Optional notes..."
+                            value={newPaymentData.notes || ''}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end gap-3 pt-2">
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={handleCancelNewPayment}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={async () => {
+                            await handleSaveNewPayment();
+                            await refreshPaymentPlans();
+                            // Close the drawer after successfully saving a payment
+                            setShowDrawerNewPayment(false);
+                            setShowStagesDrawer(false);
+                          }}
+                          disabled={isSavingPaymentRow}
+                        >
+                          {isSavingPaymentRow ? (
+                            <span className="loading loading-spinner loading-sm" />
+                          ) : (
+                            'Save Payment'
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>, document.body)}
+      </>
     );
   }
 
@@ -3444,7 +3849,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               
               {/* Add new payment button */}
               <div className="mt-10 flex justify-start">
-                <button className="btn btn-outline btn-primary text-xs font-medium" onClick={() => handleAddNewPayment(client?.name || 'Main Contact')}>Add new payment</button>
+                <button
+                  type="button"
+                  className="btn btn-outline btn-primary text-xs font-medium"
+                  onClick={() => handleAddNewPayment(client?.name || 'Main Contact')}
+                >
+                  Add new payment
+                </button>
               </div>
 
               {/* Deleted Payments Section */}
@@ -3893,7 +4304,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           {/* Overlay */}
           <div className="fixed inset-0 bg-black/30" onClick={handleCloseStagesDrawer} />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-2xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
+          <div className="ml-auto w-full max-w-3xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
             {/* Header */}
             <div className="bg-gradient-to-r from-purple-700 to-blue-600 text-white p-6 border-b border-purple-200">
               <div className="flex items-center justify-between">
@@ -3975,7 +4386,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       <select
                         className="select select-bordered w-full"
                         value={autoPlanData.numberOfPayments}
-                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, numberOfPayments: Number(e.target.value) }))}
+                        onChange={(e) => {
+                          const count = Number(e.target.value);
+                          setAutoPlanData(prev => {
+                            // Generate a new paymentPercents array that sums to 100
+                            const base = Math.floor(100 / count);
+                            const percents = Array.from({ length: count }, () => base);
+                            const remainder = 100 - base * count;
+                            for (let i = 0; i < remainder; i++) {
+                              percents[i] += 1;
+                            }
+                            return {
+                              ...prev,
+                              numberOfPayments: count,
+                              paymentPercents: percents,
+                            };
+                          });
+                        }}
                       >
                         <option value={2}>2 Payments</option>
                         <option value={3}>3 Payments</option>
@@ -3985,19 +4412,39 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     </div>
                     <div className="form-control">
                       <label className="label">
-                        <span className="label-text font-medium">First Payment %</span>
+                        <span className="label-text font-medium">Payment Percentages</span>
                       </label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={autoPlanData.firstPaymentPercent}
-                        onChange={(e) => setAutoPlanData(prev => ({ ...prev, firstPaymentPercent: Number(e.target.value) }))}
-                      >
-                        <option value={25}>25%</option>
-                        <option value={30}>30%</option>
-                        <option value={40}>40%</option>
-                        <option value={50}>50%</option>
-                        <option value={60}>60%</option>
-                      </select>
+                      <div className="space-y-2">
+                        {Array.from({ length: autoPlanData.numberOfPayments }).map((_, index) => (
+                          <div key={index} className="flex items-center gap-2">
+                            <span className="w-16 text-sm text-gray-600">Payment {index + 1}</span>
+                            <input
+                              type="number"
+                              className="input input-bordered w-24"
+                              min={0}
+                              max={100}
+                              value={autoPlanData.paymentPercents[index] ?? 0}
+                              onChange={(e) => {
+                                const value = Number(e.target.value || 0);
+                                setAutoPlanData(prev => {
+                                  const next = [...(prev.paymentPercents || [])];
+                                  // Ensure array length
+                                  while (next.length < prev.numberOfPayments) next.push(0);
+                                  next[index] = value;
+                                  return {
+                                    ...prev,
+                                    paymentPercents: next,
+                                  };
+                                });
+                              }}
+                            />
+                            <span className="text-sm">%</span>
+                          </div>
+                        ))}
+                        <div className="text-xs text-gray-500">
+                          Sum must be exactly 100%. If not, you’ll see an error when creating the plan.
+                        </div>
+                      </div>
                     </div>
                   </div>
                   <div className="form-control">
@@ -4027,22 +4474,179 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               </div>
 
               {/* Add New Payment Section */}
-              <div className="bg-white rounded-xl shadow-lg p-6 border border-blue-200">
+                <div className="bg-white rounded-xl shadow-lg p-6 border border-blue-200">
                 <h3 className="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
                   <PlusIcon className="w-5 h-5 text-blue-600" />
                   Add New Payment
                 </h3>
                 <p className="text-gray-600 mb-4">Create a single payment plan for this client.</p>
                 <button
+                  type="button"
                   className="btn btn-outline btn-primary w-full"
-                  onClick={() => {
-                    handleCloseStagesDrawer();
-                    handleAddNewPayment(client?.name || 'Main Contact');
-                  }}
+                  onClick={() => handleAddNewPayment(client?.name || 'Main Contact')}
                 >
                   <PlusIcon className="w-4 h-4 mr-2" />
                   Add New Payment
                 </button>
+
+                  {/* Inline full-row editor for a single payment (drawer context) */}
+                  {showDrawerNewPayment && (
+                    <div className="mt-6 border-t pt-4 space-y-4">
+                      <div className="text-sm text-gray-600">
+                        Creating payment for <span className="font-semibold">{addingPaymentContact}</span>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Payment Type</span>
+                          </label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={newPaymentData.paymentOrder || 'Intermediate Payment'}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))
+                            }
+                          >
+                            <option>First Payment</option>
+                            <option>Intermediate Payment</option>
+                            <option>Final Payment</option>
+                            <option>Single Payment</option>
+                            <option>Expense (no VAT)</option>
+                          </select>
+                        </div>
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Due Percentage</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              className="input input-bordered w-full"
+                              placeholder="%"
+                              value={newPaymentData.duePercent || ''}
+                              onChange={e =>
+                                setNewPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))
+                              }
+                            />
+                            <span className="text-sm text-gray-500">%</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Due Date</span>
+                          </label>
+                          <input
+                            type="date"
+                            className="input input-bordered w-full"
+                            value={newPaymentData.dueDate || ''}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))
+                            }
+                          />
+                        </div>
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Amount</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              className="input input-bordered w-full"
+                              value={newPaymentData.value || ''}
+                              onChange={e => {
+                                const value = e.target.value;
+                                let vat = 0;
+                                const currency = newPaymentData.currency || autoPlanData.currency || '₪';
+                                if (currency === '₪') {
+                                  vat = Math.round(Number(value) * 0.18 * 100) / 100;
+                                }
+                                setNewPaymentData((d: any) => ({
+                                  ...d,
+                                  value,
+                                  valueVat: vat,
+                                }));
+                              }}
+                            />
+                            <span className="text-sm text-gray-500">
+                              {mapLeadCurrencyToSymbol(newPaymentData.currency || autoPlanData.currency || '₪')}
+                            </span>
+                          </div>
+                          {newPaymentData.valueVat != null && newPaymentData.valueVat !== 0 && (
+                            <div className="mt-1 text-xs text-gray-500">
+                              VAT: {newPaymentData.valueVat.toLocaleString()}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Currency</span>
+                          </label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={newPaymentData.currency || autoPlanData.currency || '₪'}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, currency: e.target.value }))
+                            }
+                          >
+                            <option value="₪">₪ (NIS)</option>
+                            <option value="$">$ (USD)</option>
+                            <option value="€">€ (EUR)</option>
+                            <option value="£">£ (GBP)</option>
+                          </select>
+                        </div>
+                        <div className="form-control">
+                          <label className="label">
+                            <span className="label-text font-medium">Notes</span>
+                          </label>
+                          <textarea
+                            className="textarea textarea-bordered w-full"
+                            rows={2}
+                            placeholder="Optional notes..."
+                            value={newPaymentData.notes || ''}
+                            onChange={e =>
+                              setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))
+                            }
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-end gap-3 pt-2">
+                        <button
+                          type="button"
+                          className="btn btn-ghost"
+                          onClick={() => {
+                            handleCancelNewPayment();
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={async () => {
+                            await handleSaveNewPayment();
+                            // Refresh plans but keep the drawer open so the user
+                            // stays in the finance-plan creation experience
+                            await refreshPaymentPlans();
+                            setAddingPaymentContact(null);
+                          }}
+                          disabled={isSavingPaymentRow}
+                        >
+                          {isSavingPaymentRow ? (
+                            <span className="loading loading-spinner loading-sm" />
+                          ) : (
+                            'Save Payment'
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
               </div>
             </div>
           </div>

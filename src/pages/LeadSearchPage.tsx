@@ -7,7 +7,13 @@ import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
 const TAG_OPTIONS = ["VIP", "Urgent", "Family", "Business", "Other"];
-const STATUS_OPTIONS = ["new", "in_progress", "qualified", "not_qualified"];
+const STATUS_OPTIONS = ["Active", "Not active"];
+const EXPERT_EXAMINATION_OPTIONS = [
+  "Not Feasible",
+  "Feasible (further check)",
+  "Feasible (no check)",
+  "Not checked",
+];
 
 // Column definitions for table view
 const AVAILABLE_COLUMNS = [
@@ -818,6 +824,7 @@ const LeadSearchPage: React.FC = () => {
     expert: [] as string[],
     closer: [] as string[],
     case_handler: [] as string[],
+    expert_examination: [] as string[],
   });
   const [results, setResults] = useState<Lead[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -828,6 +835,8 @@ const LeadSearchPage: React.FC = () => {
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [topicOptions, setTopicOptions] = useState<string[]>([]);
+  const [reasonOptions, setReasonOptions] = useState<string[]>([]);
+  const [tagOptions, setTagOptions] = useState<string[]>([]);
   const [roleOptions, setRoleOptions] = useState<string[]>([]);
   const [showTopicDropdown, setShowTopicDropdown] = useState(false);
   const [filteredTopicOptions, setFilteredTopicOptions] = useState<string[]>([]);
@@ -846,7 +855,9 @@ const LeadSearchPage: React.FC = () => {
   const [showTagDropdown, setShowTagDropdown] = useState(false);
   const [filteredTagOptions, setFilteredTagOptions] = useState<string[]>([]);
   const [showStatusDropdown, setShowStatusDropdown] = useState(false);
+  const [showExpertExaminationDropdown, setShowExpertExaminationDropdown] = useState(false);
   const [filteredStatusOptions, setFilteredStatusOptions] = useState<string[]>([]);
+  const [filteredExpertExaminationOptions, setFilteredExpertExaminationOptions] = useState<string[]>([]);
   const [showSchedulerDropdown, setShowSchedulerDropdown] = useState(false);
   const [showManagerDropdown, setShowManagerDropdown] = useState(false);
   const [showLawyerDropdown, setShowLawyerDropdown] = useState(false);
@@ -1017,6 +1028,76 @@ const LeadSearchPage: React.FC = () => {
     fetchLanguageOptions();
   }, []);
 
+  // Fetch tag options from misc_leadtag table
+  useEffect(() => {
+    const fetchTagOptions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_leadtag')
+          .select('name, "order", active')
+          .eq('active', true)
+          .order('order', { ascending: true })
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+
+        const tags =
+          data?.map(tag => tag.name).filter((name): name is string => !!name) || [];
+
+        if (tags.length > 0) {
+          setTagOptions(tags);
+          setFilteredTagOptions(tags);
+        } else {
+          // Fallback to static options if table is empty
+          setTagOptions(TAG_OPTIONS);
+          setFilteredTagOptions(TAG_OPTIONS);
+        }
+      } catch (error) {
+        console.error('Error fetching tag options:', error);
+        // Fallback to static options on error
+        setTagOptions(TAG_OPTIONS);
+        setFilteredTagOptions(TAG_OPTIONS);
+      }
+    };
+
+    fetchTagOptions();
+  }, []);
+
+  // Fetch reason options from lead_stage_reasons table
+  useEffect(() => {
+    const fetchReasonOptions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('lead_stage_reasons')
+          .select('name, order_value, is_active')
+          .eq('is_active', true)
+          .order('order_value', { ascending: true })
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+
+        const reasons =
+          data?.map(reason => reason.name).filter((name): name is string => !!name) || [];
+
+        if (reasons.length > 0) {
+          setReasonOptions(reasons);
+          setFilteredReasonOptions(reasons);
+        } else {
+          // Fallback to static options if table is empty
+          setReasonOptions(REASON_OPTIONS);
+          setFilteredReasonOptions(REASON_OPTIONS);
+        }
+      } catch (error) {
+        console.error('Error fetching reason options:', error);
+        // Fallback to static options on error
+        setReasonOptions(REASON_OPTIONS);
+        setFilteredReasonOptions(REASON_OPTIONS);
+      }
+    };
+
+    fetchReasonOptions();
+  }, []);
+
   // Fetch topic options from both leads and leads_lead tables
   useEffect(() => {
     const fetchTopicOptions = async () => {
@@ -1093,15 +1174,15 @@ const LeadSearchPage: React.FC = () => {
   }, [stageOptions]);
 
   useEffect(() => {
-    setFilteredReasonOptions(REASON_OPTIONS);
-  }, []);
-
-  useEffect(() => {
-    setFilteredTagOptions(TAG_OPTIONS);
-  }, []);
+    setFilteredTagOptions(tagOptions);
+  }, [tagOptions]);
 
   useEffect(() => {
     setFilteredStatusOptions(STATUS_OPTIONS);
+  }, []);
+
+  useEffect(() => {
+    setFilteredExpertExaminationOptions(EXPERT_EXAMINATION_OPTIONS);
   }, []);
 
   // Handle filtering for all dropdowns when user types
@@ -1135,11 +1216,6 @@ const LeadSearchPage: React.FC = () => {
     setFilteredStageOptions(stageOptions);
   }, [stageOptions]);
 
-  // Reason filtering is now handled by MultiSelectInput component
-  useEffect(() => {
-    setFilteredReasonOptions(REASON_OPTIONS);
-  }, []);
-
   // Tags filtering is now handled by MultiSelectInput component
   useEffect(() => {
     setFilteredTagOptions(TAG_OPTIONS);
@@ -1158,7 +1234,23 @@ const LeadSearchPage: React.FC = () => {
   const handleFilterChange = (field: string, value: any) => {
     // For multi-select fields, don't update the filter directly - 
     // the MultiSelectInput component handles its own input state
-    const multiSelectFields = ['category', 'language', 'reason', 'tags', 'status', 'source', 'stage', 'topic', 'scheduler', 'manager', 'lawyer', 'expert', 'closer', 'case_handler'];
+    const multiSelectFields = [
+      'category',
+      'language',
+      'reason',
+      'tags',
+      'status',
+      'source',
+      'stage',
+      'topic',
+      'scheduler',
+      'manager',
+      'lawyer',
+      'expert',
+      'closer',
+      'case_handler',
+      'expert_examination',
+    ];
     if (multiSelectFields.includes(field)) {
       // Do nothing - MultiSelectInput handles its own input state
       return;
@@ -1242,6 +1334,7 @@ const LeadSearchPage: React.FC = () => {
       case 'reason': setShowReasonDropdown(true); break;
       case 'tags': setShowTagDropdown(true); break;
       case 'status': setShowStatusDropdown(true); break;
+      case 'expert_examination': setShowExpertExaminationDropdown(true); break;
       case 'scheduler': setShowSchedulerDropdown(true); break;
       case 'manager': setShowManagerDropdown(true); break;
       case 'lawyer': setShowLawyerDropdown(true); break;
@@ -1263,6 +1356,7 @@ const LeadSearchPage: React.FC = () => {
       case 'reason': setShowReasonDropdown(false); break;
       case 'tags': setShowTagDropdown(false); break;
       case 'status': setShowStatusDropdown(false); break;
+      case 'expert_examination': setShowExpertExaminationDropdown(false); break;
       case 'scheduler': setShowSchedulerDropdown(false); break;
       case 'manager': setShowManagerDropdown(false); break;
       case 'lawyer': setShowLawyerDropdown(false); break;
@@ -1301,6 +1395,17 @@ const LeadSearchPage: React.FC = () => {
     const idToNameMapping = new Map<number, string>();
     
     try {
+      // Helper to build UTC range for a given local date string (YYYY-MM-DD)
+      const buildUtcStartOfDay = (dateStr: string) => {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const local = new Date(year, (month || 1) - 1, day || 1, 0, 0, 0, 0);
+        return local.toISOString();
+      };
+      const buildUtcEndOfDay = (dateStr: string) => {
+        const [year, month, day] = dateStr.split('-').map(Number);
+        const local = new Date(year, (month || 1) - 1, day || 1, 23, 59, 59, 999);
+        return local.toISOString();
+      };
       // Fetch employee data for role filtering
       const { data: employees, error: empError } = await supabase
         .from('tenants_employee')
@@ -1450,14 +1555,13 @@ const LeadSearchPage: React.FC = () => {
         try {
           let dateOnlyQuery = newLeadsQuery;
           if (filters.fromDate) {
-            console.log('📅 Testing fromDate filter only:', filters.fromDate);
-            dateOnlyQuery = dateOnlyQuery.gte('created_at', filters.fromDate);
+            console.log('📅 Testing fromDate filter only (UTC range):', filters.fromDate);
+            dateOnlyQuery = dateOnlyQuery.gte('created_at', buildUtcStartOfDay(filters.fromDate));
           }
           if (filters.toDate) {
-            console.log('📅 Testing toDate filter only:', filters.toDate);
-            // For toDate, we need to include the entire day, so add 23:59:59
-            const endOfDay = filters.toDate + 'T23:59:59.999Z';
-            console.log('📅 Using end of day for toDate:', endOfDay);
+            console.log('📅 Testing toDate filter only (UTC range):', filters.toDate);
+            const endOfDay = buildUtcEndOfDay(filters.toDate);
+            console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
             dateOnlyQuery = dateOnlyQuery.lte('created_at', endOfDay);
           }
           const dateOnlyTest = await dateOnlyQuery.limit(5);
@@ -1496,14 +1600,13 @@ const LeadSearchPage: React.FC = () => {
       
       // Apply filters for new leads
       if (filters.fromDate) {
-        console.log('📅 Adding fromDate filter for new leads:', filters.fromDate);
-        newLeadsQuery = newLeadsQuery.gte('created_at', filters.fromDate);
+        console.log('📅 Adding fromDate filter for new leads (UTC range):', filters.fromDate);
+        newLeadsQuery = newLeadsQuery.gte('created_at', buildUtcStartOfDay(filters.fromDate));
       }
       if (filters.toDate) {
-        console.log('📅 Adding toDate filter for new leads:', filters.toDate);
-        // For toDate, we need to include the entire day, so add 23:59:59
-        const endOfDay = filters.toDate + 'T23:59:59.999Z';
-        console.log('📅 Using end of day for toDate:', endOfDay);
+        console.log('📅 Adding toDate filter for new leads (UTC range):', filters.toDate);
+        const endOfDay = buildUtcEndOfDay(filters.toDate);
+        console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
         newLeadsQuery = newLeadsQuery.lte('created_at', endOfDay);
       }
       if (filters.category && filters.category.length > 0) {
@@ -1524,8 +1627,18 @@ const LeadSearchPage: React.FC = () => {
         newLeadsQuery = newLeadsQuery.in('language', filters.language);
       }
       if (filters.status && filters.status.length > 0) {
-        console.log('📊 Adding status filter for new leads:', filters.status);
-        newLeadsQuery = newLeadsQuery.in('status', filters.status);
+        console.log('📊 Adding status filter for new leads (Active/Not active):', filters.status);
+        const includeActive = filters.status.includes('Active');
+        const includeInactive = filters.status.includes('Not active');
+
+        // If both are selected, don't filter by status at all
+        if (includeActive && !includeInactive) {
+          // Active: unactivated_at IS NULL
+          newLeadsQuery = newLeadsQuery.is('unactivated_at', null);
+        } else if (!includeActive && includeInactive) {
+          // Not active: unactivated_at IS NOT NULL
+          newLeadsQuery = newLeadsQuery.not('unactivated_at', 'is', null);
+        }
       }
       if (filters.stage && filters.stage.length > 0) {
         console.log('🎯 Adding stage filter for new leads:', filters.stage);
@@ -1605,14 +1718,13 @@ const LeadSearchPage: React.FC = () => {
           newLeadsQuery = newLeadsQuery.in('topic', filters.topic);
         }
       }
-      if (filters.tags && filters.tags.length > 0) {
-        console.log('🏷️ Adding tags filter for new leads:', filters.tags);
-        if (filters.tags.length === 1) {
-          // Single tag - use exact match
-          newLeadsQuery = newLeadsQuery.eq('tags', filters.tags[0]);
+      if (filters.reason && filters.reason.length > 0) {
+        console.log('🎯 Adding reason filter for new leads:', filters.reason);
+        // For new leads, reasons are stored as text (unactivation_reason)
+        if (filters.reason.length === 1) {
+          newLeadsQuery = newLeadsQuery.eq('unactivation_reason', filters.reason[0]);
         } else {
-          // Multiple tags - use IN operator for exact matches
-          newLeadsQuery = newLeadsQuery.in('tags', filters.tags);
+          newLeadsQuery = newLeadsQuery.in('unactivation_reason', filters.reason);
         }
       }
       if (filters.fileId) {
@@ -1668,14 +1780,13 @@ const LeadSearchPage: React.FC = () => {
       
       // Apply filters for legacy leads (mapping fields)
       if (filters.fromDate) {
-        console.log('📅 Adding fromDate filter for legacy leads:', filters.fromDate);
-        legacyLeadsQuery = legacyLeadsQuery.gte('cdate', filters.fromDate);
+        console.log('📅 Adding fromDate filter for legacy leads (UTC range):', filters.fromDate);
+        legacyLeadsQuery = legacyLeadsQuery.gte('cdate', buildUtcStartOfDay(filters.fromDate));
       }
       if (filters.toDate) {
-        console.log('📅 Adding toDate filter for legacy leads:', filters.toDate);
-        // For toDate, we need to include the entire day, so add 23:59:59
-        const endOfDay = filters.toDate + 'T23:59:59.999Z';
-        console.log('📅 Using end of day for toDate:', endOfDay);
+        console.log('📅 Adding toDate filter for legacy leads (UTC range):', filters.toDate);
+        const endOfDay = buildUtcEndOfDay(filters.toDate);
+        console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
         legacyLeadsQuery = legacyLeadsQuery.lte('cdate', endOfDay);
       }
       if (filters.category && filters.category.length > 0) {
@@ -1733,10 +1844,18 @@ const LeadSearchPage: React.FC = () => {
           legacyLeadsQuery = legacyLeadsQuery.in('misc_language.name', filters.language);
         }
       }
-      if (filters.status) {
-        console.log('📊 Status filter for legacy leads - skipping for now');
-        // For legacy leads, status is numeric, so we'll need to map status names to IDs
-        // For now, skip status filtering for legacy leads
+      if (filters.status && filters.status.length > 0) {
+        console.log('📊 Adding status filter for legacy leads (Active/Not active):', filters.status);
+        const includeActive = filters.status.includes('Active');
+        const includeInactive = filters.status.includes('Not active');
+
+        // Legacy mapping (corrected): status 0 = Active, status 10 = Not active
+        if (includeActive && !includeInactive) {
+          legacyLeadsQuery = legacyLeadsQuery.eq('status', 0);
+        } else if (!includeActive && includeInactive) {
+          legacyLeadsQuery = legacyLeadsQuery.eq('status', 10);
+        }
+        // If both selected, don't filter (includes all)
       }
       if (filters.stage && filters.stage.length > 0) {
         console.log('🎯 Adding stage filter for legacy leads:', filters.stage);
@@ -1819,6 +1938,41 @@ const LeadSearchPage: React.FC = () => {
           legacyLeadsQuery = legacyLeadsQuery.in('topic', filters.topic);
         }
       }
+      if (filters.reason && filters.reason.length > 0) {
+        console.log('🎯 Adding reason filter for legacy leads:', filters.reason);
+        try {
+          const legacyReasonIds: string[] = [];
+
+          for (const reasonName of filters.reason) {
+            const { data: reasonRows, error: reasonError } = await supabase
+              .from('lead_stage_reasons')
+              .select('legacy_id')
+              .ilike('name', reasonName)
+              .limit(1);
+
+            if (reasonError) {
+              console.error('Error looking up legacy_id for reason', reasonName, reasonError);
+              continue;
+            }
+
+            if (reasonRows && reasonRows.length > 0) {
+              const legacyId = reasonRows[0].legacy_id;
+              if (legacyId !== null && legacyId !== undefined) {
+                legacyReasonIds.push(String(legacyId));
+              }
+            }
+          }
+
+          if (legacyReasonIds.length > 0) {
+            console.log('✅ Applying legacy reason_id filter with values:', legacyReasonIds);
+            legacyLeadsQuery = legacyLeadsQuery.in('reason_id', legacyReasonIds);
+          } else {
+            console.log('⚠️ No legacy_ids found for selected reasons, skipping legacy reason filter');
+          }
+        } catch (error) {
+          console.error('⚠️ Reason lookup failed for legacy leads, skipping reason filter:', error);
+        }
+      }
       if (filters.fileId) {
         console.log('📁 Adding fileId filter for legacy leads:', filters.fileId);
         legacyLeadsQuery = legacyLeadsQuery.ilike('file_id', `%${filters.fileId}%`);
@@ -1874,8 +2028,96 @@ const LeadSearchPage: React.FC = () => {
         console.log('✅ Adding eligibility filter for legacy leads');
         legacyLeadsQuery = legacyLeadsQuery.eq('eligibile', 'true');
       }
+      if (filters.expert_examination && filters.expert_examination.length > 0) {
+        console.log('🧪 Adding expert_examination filter for legacy leads:', filters.expert_examination);
+
+        const selected = filters.expert_examination as string[];
+        const numericValues: number[] = [];
+
+        for (const value of selected) {
+          switch (value) {
+            case 'Not Feasible':
+              numericValues.push(1);
+              break;
+            case 'Feasible (further check)':
+              numericValues.push(5);
+              break;
+            case 'Feasible (no check)':
+              numericValues.push(8);
+              break;
+            case 'Not checked':
+              numericValues.push(0);
+              break;
+          }
+        }
+
+        if (numericValues.length > 0) {
+          // Apply IN filter for all selected expert_examination codes
+          legacyLeadsQuery = legacyLeadsQuery.in('expert_examination', numericValues);
+        }
+      }
 
       console.log('🚀 Executing queries...');
+      
+      // If tags filter is applied, prefetch lead IDs from leads_lead_tags
+      // Use string-based sets to avoid bigint/Number precision issues
+      let taggedNewLeadIds = new Set<string>();
+      let taggedLegacyLeadIds = new Set<string>();
+
+      if (filters.tags && filters.tags.length > 0) {
+        try {
+          console.log('🏷️ Preparing tag-based lead filters using leads_lead_tags:', filters.tags);
+
+          // Look up tag IDs for selected tag names
+          const { data: tagRows, error: tagError } = await supabase
+            .from('misc_leadtag')
+            .select('id, name')
+            .in('name', filters.tags);
+
+          if (tagError) throw tagError;
+
+          const tagIds = (tagRows || [])
+            .map(row => row.id)
+            .filter((id): id is number => id !== null && id !== undefined);
+
+          if (tagIds.length > 0) {
+            console.log('🏷️ Found tag IDs for filter:', tagIds);
+
+            // Fetch mapping between tags and leads from bridge table
+            const { data: tagLinks, error: linkError } = await supabase
+              .from('leads_lead_tags')
+              .select('lead_id, newlead_id, leadtag_id')
+              .in('leadtag_id', tagIds)
+              .limit(10000);
+
+            if (linkError) throw linkError;
+
+            (tagLinks || []).forEach(link => {
+              if (link.newlead_id) {
+                taggedNewLeadIds.add(String(link.newlead_id));
+              }
+              if (link.lead_id !== null && link.lead_id !== undefined) {
+                // Store legacy lead IDs as strings to avoid bigint precision issues
+                taggedLegacyLeadIds.add(String(link.lead_id));
+              }
+            });
+
+            console.log('🏷️ Tag-based lead sets prepared:', {
+              newLeadCount: taggedNewLeadIds.size,
+              legacyLeadCount: taggedLegacyLeadIds.size,
+            });
+          } else {
+            console.log('⚠️ No tag IDs found for selected tag names, tag filter will exclude all leads.');
+            // Use a special marker to indicate that no leads should match
+            taggedNewLeadIds = new Set<string>(['__none__']);
+            taggedLegacyLeadIds = new Set<string>(['__none__']);
+          }
+        } catch (error) {
+          console.error('⚠️ Failed to build tag-based filters from leads_lead_tags, skipping tag filter:', error);
+          taggedNewLeadIds = new Set<string>();
+          taggedLegacyLeadIds = new Set<string>();
+        }
+      }
       
       // Execute both queries with explicit limit to ensure we get all results
       // Supabase default limit is 1000, but we'll set it explicitly to be safe
@@ -1910,8 +2152,17 @@ const LeadSearchPage: React.FC = () => {
         // Check if we have joined category data
         if (lead.misc_category) {
           const category = lead.misc_category;
-          const mainCategory = category.misc_maincategory?.[0]?.name;
-          const categoryName = mainCategory ? `${category.name} (${mainCategory})` : category.name;
+          const mainRel = category.misc_maincategory;
+
+          // Support both array and single-object shapes from PostgREST
+          const mainCategory = Array.isArray(mainRel)
+            ? mainRel[0]?.name
+            : mainRel?.name;
+
+          const categoryName = mainCategory
+            ? `${category.name} (${mainCategory})`
+            : category.name;
+
           return categoryName;
         }
         
@@ -1921,9 +2172,16 @@ const LeadSearchPage: React.FC = () => {
 
       console.log('🔄 Processing new leads...');
       // Map new leads with proper category formatting and role information
-      const mappedNewLeads = (newLeadsResult.data || []).map(lead => {
+      let mappedNewLeads = (newLeadsResult.data || []).map(lead => {
+        const anyLead = lead as any;
+        // Display logic similar to MyCasesPage: prefer manual_id, then lead_number, then id
+        const displayLeadNumber =
+          anyLead.manual_id || anyLead.lead_number || anyLead.id?.toString?.() || '';
+
         return {
           ...lead,
+          lead_type: 'new',
+          display_lead_number: String(displayLeadNumber),
           category: formatCategoryDisplay(lead),
           roles: {
             scheduler: lead.scheduler || null,
@@ -1978,8 +2236,13 @@ const LeadSearchPage: React.FC = () => {
         
         if (categoriesResult.data) {
           categoriesResult.data.forEach(category => {
-            const mainCategory = (category.misc_maincategory as any)?.[0]?.name;
-            const categoryName = mainCategory ? `${category.name} (${mainCategory})` : category.name;
+            const mainRel = (category as any).misc_maincategory;
+            const mainCategory = Array.isArray(mainRel)
+              ? mainRel[0]?.name
+              : mainRel?.name;
+            const categoryName = mainCategory
+              ? `${category.name} (${mainCategory})`
+              : category.name;
             categoryMapping.set(category.id, categoryName);
           });
           console.log('✅ Loaded category mapping:', categoryMapping.size, 'categories');
@@ -1994,7 +2257,7 @@ const LeadSearchPage: React.FC = () => {
       }
       
       // Map legacy leads to match new leads format using joined data
-      const mappedLegacyLeads = (legacyLeadsResult.data || []).map(legacyLead => {
+      let mappedLegacyLeads = (legacyLeadsResult.data || []).map(legacyLead => {
         const sourceName = legacyLead.source_id ? 
           sourceMapping.get(legacyLead.source_id) || legacyLead.source_external_id || 'Unknown' :
           legacyLead.source_external_id || 'Unknown';
@@ -2018,10 +2281,18 @@ const LeadSearchPage: React.FC = () => {
           case_handler: getEmployeeName(legacyLead.case_handler_id),
         };
           
+        // Display logic similar to MyCasesPage: prefer manual_id, then lead_number, then id
+        const displayLeadNumber =
+          (legacyLead as any).manual_id ||
+          legacyLead.lead_number ||
+          legacyLead.id?.toString?.() ||
+          '';
+
         return {
           // Basic Info
           id: legacyLead.id,
           lead_number: legacyLead.lead_number || legacyLead.id.toString(),
+          display_lead_number: String(displayLeadNumber),
           name: legacyLead.name,
           topic: legacyLead.topic,
           
@@ -2138,8 +2409,30 @@ const LeadSearchPage: React.FC = () => {
           autocall: legacyLead.autocall,
           ball: legacyLead.ball,
           eligibile: legacyLead.eligibile,
+
+          // Type marker so we can distinguish legacy leads in the UI
+          lead_type: 'legacy',
         };
       });
+
+      // Apply tag-based filters using leads_lead_tags mapping (if present)
+      if (filters.tags && filters.tags.length > 0) {
+        console.log('🏷️ Applying tag-based filtering to mapped leads...');
+
+        if (taggedNewLeadIds.size > 0) {
+          mappedNewLeads = mappedNewLeads.filter(lead => taggedNewLeadIds.has(String(lead.id)));
+        } else {
+          console.log('🏷️ No tagged new leads found, filtering out all new leads for tag filter.');
+          mappedNewLeads = [];
+        }
+
+        if (taggedLegacyLeadIds.size > 0) {
+          mappedLegacyLeads = mappedLegacyLeads.filter(lead => taggedLegacyLeadIds.has(String(lead.id)));
+        } else {
+          console.log('🏷️ No tagged legacy leads found, filtering out all legacy leads for tag filter.');
+          mappedLegacyLeads = [];
+        }
+      }
 
       // Debug: Check what the mapped data looks like
       if (mappedLegacyLeads.length > 0) {
@@ -2218,13 +2511,60 @@ const LeadSearchPage: React.FC = () => {
     </span>;
   };
 
-  const renderResultCard = (lead: Lead) => (
-    <div 
+  const renderResultCard = (lead: Lead) => {
+    const anyLead = lead as any;
+
+    // Legacy lead highlighting: status 10 = Not active
+    const isLegacyInactive =
+      anyLead.lead_type === 'legacy' && anyLead.status && Number(anyLead.status) === 10;
+
+    const cardClasses = [
+      'card',
+      'shadow-lg',
+      'hover:shadow-2xl',
+      'transition-all',
+      'duration-300',
+      'ease-in-out',
+      'transform',
+      'hover:-translate-y-1',
+      'cursor-pointer',
+      'group',
+      'border',
+      // Bring back soft red highlight for inactive legacy leads
+      isLegacyInactive ? 'bg-red-50 border-red-200' : 'bg-base-100 border-base-200',
+    ].join(' ');
+
+    // Ensure category is always shown as "Subcategory (Main Category)" when possible
+    let displayCategory: string | null = null;
+
+    // If category already contains a main category in parentheses, just use it
+    if (typeof anyLead.category === 'string' && anyLead.category.includes('(')) {
+      displayCategory = anyLead.category;
+    } else if (anyLead.misc_category && anyLead.misc_category.name) {
+      // New leads with joined misc_category + misc_maincategory
+      const mainName = anyLead.misc_category.misc_maincategory?.[0]?.name;
+      displayCategory = mainName
+        ? `${anyLead.misc_category.name} (${mainName})`
+        : anyLead.misc_category.name;
+    } else if (anyLead.category && anyLead.main_category) {
+      // Fallback if we ever store main_category separately
+      displayCategory = `${anyLead.category} (${anyLead.main_category})`;
+    } else {
+      displayCategory = anyLead.category || null;
+    }
+
+    return (
+  <div 
       key={lead.id} 
-      className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group"
+      className={cardClasses}
       onClick={() => navigate(`/clients/${lead.lead_number || lead.id}`)}
     >
-      <div className="card-body p-5">
+      <div className="card-body p-5 relative">
+        {isLegacyInactive && (
+          <span className="badge badge-xs absolute top-1 left-3 bg-white border-red-400 text-red-500 shadow-sm">
+            Not active
+          </span>
+        )}
         <div className="flex justify-between items-start mb-2">
             <div className="flex items-center gap-2">
             <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
@@ -2234,7 +2574,9 @@ const LeadSearchPage: React.FC = () => {
             {getStageBadge(lead.stage)}
         </div>
         
-        <p className="text-sm text-base-content/60 font-mono mb-4">#{lead.lead_number}</p>
+        <p className="text-sm text-base-content/60 font-mono mb-4">
+          #{(lead as any).display_lead_number || lead.lead_number || lead.id}
+        </p>
 
         <div className="divider my-0"></div>
 
@@ -2245,7 +2587,7 @@ const LeadSearchPage: React.FC = () => {
           </div>
           <div className="flex items-center gap-2" title="Category">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-            <span>{lead.category || 'N/A'}</span>
+            <span>{displayCategory || 'N/A'}</span>
           </div>
           <div className="flex items-center gap-2" title="Source">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
@@ -2264,6 +2606,7 @@ const LeadSearchPage: React.FC = () => {
       </div>
     </div>
   );
+  };
 
   return (
     <div className="p-6 md:p-10">
@@ -2369,9 +2712,22 @@ const LeadSearchPage: React.FC = () => {
             label="Status"
             field="status"
             values={filters.status}
-            placeholder="Type status or choose from suggestions..."
+            placeholder="Select status..."
             options={filteredStatusOptions}
             showDropdown={showStatusDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+          />
+          <MultiSelectInput
+            label="Expert examination"
+            field="expert_examination"
+            values={filters.expert_examination}
+            placeholder="Select expert examination result..."
+            options={filteredExpertExaminationOptions}
+            showDropdown={showExpertExaminationDropdown}
             onSelect={handleMultiSelect}
             onRemove={handleMultiRemove}
             onFilterChange={handleFilterChange}
@@ -2392,10 +2748,20 @@ const LeadSearchPage: React.FC = () => {
             onHideDropdown={handleHideDropdown}
           />
           <div className="form-control flex flex-col col-span-2 sm:col-span-1">
-            <label className="label cursor-pointer justify-start gap-2 mb-2">
-              <span className="label-text">Eligibility Determined only</span> 
-              <input type="checkbox" className="checkbox checkbox-primary" onChange={e => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)} />
+            <label className="label mb-2">
+              <span className="label-text">Eligible</span>
             </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                className="toggle toggle-primary"
+                checked={filters.eligibilityDeterminedOnly}
+                onChange={e => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
+              />
+              <span className="text-xs text-gray-500">
+                Show only leads where eligibility is determined
+              </span>
+            </div>
           </div>
 
           {/* Column 4 */}

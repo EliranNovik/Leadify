@@ -21,10 +21,10 @@ npm install
 
 ### 2. Environment Configuration
 
-Copy the example environment file and configure your variables:
+Copy one of the sample files (for example `env.local`) and configure your variables:
 
 ```bash
-cp env.example .env
+cp env.local .env
 ```
 
 Update `.env` with your Supabase credentials:
@@ -43,11 +43,24 @@ SUPABASE_ANON_KEY=your_supabase_anon_key_here
 JWT_SECRET=your_jwt_secret_here
 JWT_EXPIRES_IN=24h
 
-# CORS Configuration
-CORS_ORIGIN=http://localhost:5173
+# Microsoft Graph OAuth (new)
+GRAPH_CLIENT_ID=your_aad_app_client_id
+GRAPH_CLIENT_SECRET=your_aad_app_client_secret
+GRAPH_TENANT_ID=your_tenant_id
+GRAPH_REDIRECT_URI=https://your-backend.com/auth/callback
+GRAPH_SCOPES="offline_access Mail.Read Mail.Send"
+GRAPH_WEBHOOK_NOTIFICATION_URL=https://your-backend.com/api/graph/webhook
+
+# Email storage tables (optional overrides)
+MAILBOX_TOKEN_TABLE=mailbox_tokens
+MAILBOX_STATE_TABLE=mailbox_state
+EMAIL_HEADERS_TABLE=emails
+EMAIL_BODIES_TABLE=email_bodies
+EMAIL_ATTACHMENTS_TABLE=email_attachments
 
 # Security
 BCRYPT_ROUNDS=12
+TOKEN_ENCRYPTION_KEY=long_random_secret_for_refresh_tokens
 ```
 
 ### 3. Get Supabase Credentials
@@ -82,6 +95,18 @@ npm start
 - `PUT /api/users/:userId/password` - Update user password
 - `PUT /api/users/:userId` - Update user details
 - `DELETE /api/users/:userId` - Delete user
+
+### Microsoft Graph (new)
+
+- `GET /api/auth/login?userId=...` – Create Microsoft sign-in URL
+- `GET /api/auth/status?userId=...` – Check if a mailbox is connected
+- `POST /api/auth/disconnect` – Remove mailbox + tokens
+- `POST /api/sync/now` – Trigger a delta sync for a user
+- `GET /api/emails` – List cached email headers
+- `GET /api/emails/:id/body` – Fetch a cached body (falls back to Graph)
+- `GET /api/emails/:id/attachments/:attachmentId` – Stream an attachment via Graph
+- `POST /api/emails/:conversationId/track` – Force tracking for a conversation
+- `GET /api/graph/webhook` / `POST /api/graph/webhook` – Graph push notifications (validation + payload)
 
 ### Health Check
 

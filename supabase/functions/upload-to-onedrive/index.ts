@@ -47,6 +47,104 @@ const customAuthProvider: AuthenticationProvider = {
 
 const graphClient = Client.initWithMiddleware({ authProvider: customAuthProvider });
 
+// Helper: ensure we have a `/Leads/Lead_<number>` folder (with L/C prefix fallback)
+const ensureLeadFolder = async (leadNumber: string) => {
+  const normalizedLeadNumber = leadNumber.replace(/ /g, '_');
+  const primaryFolderName = `Lead_${normalizedLeadNumber}`;
+
+  let alternateFolderName: string | null = null;
+  if (normalizedLeadNumber.startsWith('L') || normalizedLeadNumber.startsWith('C')) {
+    const altPrefix = normalizedLeadNumber[0] === 'L' ? 'C' : 'L';
+    alternateFolderName = `Lead_${altPrefix}${normalizedLeadNumber.slice(1)}`;
+  }
+
+  const tryLeadsRootFolder = async (folderName: string) => {
+    try {
+      const leadFolder = await graphClient
+        .api(`/users/${targetUserId}/drive/root:/Leads/${folderName}`)
+        .get();
+
+      if (leadFolder && leadFolder.id) {
+        return leadFolder;
+      }
+    } catch (error) {
+      // @ts-ignore - Graph error shape
+      if (error.statusCode !== 404) {
+        throw error;
+      }
+    }
+    return null;
+  };
+
+  let leadFolder = await tryLeadsRootFolder(primaryFolderName);
+  if (!leadFolder && alternateFolderName) {
+    leadFolder = await tryLeadsRootFolder(alternateFolderName);
+  }
+  if (leadFolder) return leadFolder;
+
+  const tryDocumentsLeadsFolder = async (folderName: string) => {
+    try {
+      const legacyLeadFolder = await graphClient
+        .api(`/users/${targetUserId}/drive/root:/Documents/Leads/${folderName}`)
+        .get();
+      if (legacyLeadFolder && legacyLeadFolder.id) {
+        return legacyLeadFolder;
+      }
+    } catch (error) {
+      // @ts-ignore
+      if (error.statusCode !== 404) {
+        throw error;
+      }
+    }
+    return null;
+  };
+
+  let legacyLeadFolder = await tryDocumentsLeadsFolder(primaryFolderName);
+  if (!legacyLeadFolder && alternateFolderName) {
+    legacyLeadFolder = await tryDocumentsLeadsFolder(alternateFolderName);
+  }
+  if (legacyLeadFolder) return legacyLeadFolder;
+
+  let leadsRoot: any;
+  try {
+    leadsRoot = await graphClient
+      .api(`/users/${targetUserId}/drive/root:/Leads`)
+      .get();
+  } catch (error) {
+    // @ts-ignore
+    if (error.statusCode === 404) {
+      leadsRoot = await graphClient
+        .api(`/users/${targetUserId}/drive/root:/children`)
+        .post({
+          name: 'Leads',
+          folder: {},
+          '@microsoft.graph.conflictBehavior': 'rename',
+        });
+    } else {
+      throw error;
+    }
+  }
+
+  let createdLeadFolder: any;
+  try {
+    createdLeadFolder = await graphClient
+      .api(`/users/${targetUserId}/drive/root:/Leads:/children`)
+      .post({
+        name: primaryFolderName,
+        folder: {},
+        '@microsoft.graph.conflictBehavior': 'rename',
+      });
+  } catch (error) {
+    throw error;
+  }
+
+  if (!createdLeadFolder || !createdLeadFolder.id) {
+    throw new Error('Could not create or find the lead-specific folder.');
+  }
+
+  return createdLeadFolder;
+};
+
 serve(async (req) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -298,72 +396,11 @@ serve(async (req) => {
       // Existing logic for lead document uploads
       if (!leadNumber) throw new Error('Missing leadNumber for document upload.');
 
-      const folderName = `Lead_${leadNumber.replace(/ /g, '_')}`;
-
-      // 1. First ensure the "Documents/Leads" folder structure exists
-      let leadsFolder;
-      try {
-        leadsFolder = await graphClient
-          .api(`/users/${targetUserId}/drive/root:/Documents/Leads`)
-          .get();
-      } catch (error) {
-        if (error.statusCode === 404) {
-          // Create the Documents/Leads folder structure if it doesn't exist
-          // First create Documents folder if needed
-          let documentsFolder;
-          try {
-            documentsFolder = await graphClient
-              .api(`/users/${targetUserId}/drive/root:/Documents`)
-              .get();
-          } catch (docError) {
-            if (docError.statusCode === 404) {
-              documentsFolder = await graphClient
-                .api(`/users/${targetUserId}/drive/root:/children`)
-                .post({
-                  name: 'Documents',
-                  folder: {},
-                  '@microsoft.graph.conflictBehavior': 'rename'
-                });
-            }
-          }
-          
-          // Then create Leads folder inside Documents
-          leadsFolder = await graphClient
-            .api(`/users/${targetUserId}/drive/root:/Documents/children`)
-            .post({
-              name: 'Leads',
-              folder: {},
-              '@microsoft.graph.conflictBehavior': 'rename',
-            });
-        } else {
-          throw error;
-        }
-      }
-
-      // 2. Find or create the folder for the lead in /Documents/Leads/ path
-      let driveItem;
-      try {
-        driveItem = await graphClient
-          .api(`/users/${targetUserId}/drive/root:/Documents/Leads/${folderName}`)
-          .get();
-      } catch (error) {
-        if (error.statusCode === 404) {
-          driveItem = await graphClient
-            .api(`/users/${targetUserId}/drive/root:/Documents/Leads:/children`)
-            .post({
-              name: folderName,
-              folder: {},
-              '@microsoft.graph.conflictBehavior': 'rename',
-            });
-        } else {
-          throw error;
-        }
-      }
-
-      if (!driveItem || !driveItem.id) {
+      const leadFolder = await ensureLeadFolder(leadNumber);
+      if (!leadFolder?.id) {
         throw new Error('Could not create or find the lead-specific folder.');
       }
-      uploadFolderId = driveItem.id;
+      uploadFolderId = leadFolder.id;
       
       // 2. Create a shareable link for the folder with organization scope
       const permission = await graphClient
@@ -389,6 +426,7 @@ serve(async (req) => {
         success: true,
         message: 'File uploaded successfully!',
         folderUrl: shareableLink, // Return the shareable link
+        folderId: uploadFolderId,
       };
     }
 

@@ -371,6 +371,8 @@ const CalendarPage: React.FC = () => {
   const [meetingCounts, setMeetingCounts] = useState<{[clientId: string]: number}>({});
   const [previousManagers, setPreviousManagers] = useState<{[meetingId: number]: string}>({});
   const [meetingLocations, setMeetingLocations] = useState<{[locationId: number]: string}>({});
+  // Map of meeting location name -> default_link (from tenants_meetinglocation)
+  const [meetingLocationLinks, setMeetingLocationLinks] = useState<{[locationName: string]: string}>({});
   const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number } | null>(null);
   const [activeDropdown, setActiveDropdown] = useState<{ meetingId: number; type: 'manager' | 'helper' } | null>(null);
   const [dropdownStates, setDropdownStates] = useState<{
@@ -394,7 +396,9 @@ const CalendarPage: React.FC = () => {
   const [legacyLoadingDisabled, setLegacyLoadingDisabled] = useState(false);
   
   // Meeting type filter state
-  const [selectedMeetingType, setSelectedMeetingType] = useState<'all' | 'potential' | 'active' | 'staff'>('all');
+  const [selectedMeetingType, setSelectedMeetingType] = useState<
+    'all' | 'potential' | 'active' | 'staff' | 'paid'
+  >('all');
   
   // Staff meetings state
   const [staffMeetings, setStaffMeetings] = useState<any[]>([]);
@@ -848,9 +852,12 @@ const CalendarPage: React.FC = () => {
           return allMeetings;
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error in loadLegacyForDateRange:', error);
-      if (error instanceof Error && error.message.includes('timeout')) {
+      const message = typeof error?.message === 'string' ? error.message : '';
+      const code = error?.code;
+      // If we hit a statement timeout, permanently disable legacy loading
+      if (message.includes('timeout') || code === '57014') {
         setLegacyLoadingDisabled(true);
       }
     } finally {
@@ -881,8 +888,7 @@ const CalendarPage: React.FC = () => {
             )
           `)
           .not('employee_id', 'is', null)
-          .eq('is_active', true)
-          .order('tenants_employee.display_name', { ascending: true });
+          .eq('is_active', true);
         
         if (!employeesError && employeesData) {
           // Process the data to match the expected format
@@ -895,7 +901,8 @@ const CalendarPage: React.FC = () => {
                 display_name: employee.display_name,
                 bonuses_role: employee.bonuses_role
               };
-            });
+            })
+            .sort((a, b) => a.display_name.localeCompare(b.display_name));
 
           // Deduplicate by employee ID to prevent duplicates
           const uniqueEmployeesMap = new Map();
@@ -1124,7 +1131,7 @@ const CalendarPage: React.FC = () => {
             lead:leads!client_id(
               id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
               balance, balance_currency, expert_notes, expert, probability, phone, email, 
-              manual_interactions, number_of_applicants_meeting,
+              manual_interactions, number_of_applicants_meeting, meeting_collection_id,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -1136,6 +1143,7 @@ const CalendarPage: React.FC = () => {
             legacy_lead:leads_lead!legacy_lead_id(
               id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
               total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
+              meeting_collection_id,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -1409,6 +1417,15 @@ const CalendarPage: React.FC = () => {
         if (selectedMeetingType === 'staff' && m.calendar_type !== 'staff') {
           return false;
         }
+        if (selectedMeetingType === 'paid') {
+          const lead = m.lead || {};
+          const hasPaidMarker =
+            (lead && lead.meeting_collection_id) ||
+            m.legacy_lead?.meeting_collection_id;
+          if (!hasPaidMarker) {
+            return false;
+          }
+        }
         return true;
       });
     }
@@ -1474,13 +1491,21 @@ const CalendarPage: React.FC = () => {
   useEffect(() => {
     const fetchEmails = async () => {
       setEmailsLoading(true);
-      const { data, error } = await supabase
+      const { data, error }: any = await supabase
         .from('emails')
         .select('*')
         .order('sent_at', { ascending: false });
       
       if (error) {
         console.error('Error fetching emails:', error);
+        // Gracefully handle statement timeout without breaking the calendar
+        const message = typeof error?.message === 'string' ? error.message : '';
+        const code = error?.code;
+        if (message.includes('timeout') || code === '57014') {
+          // Just stop loading; leave any existing emails list as-is
+          setEmailsLoading(false);
+          return;
+        }
         setEmailsLoading(false);
         return;
       }
@@ -1502,7 +1527,7 @@ const CalendarPage: React.FC = () => {
         await syncClientEmails(tokenResponse.accessToken, selectedLeadForEmail);
         
         // Fetch updated emails from database
-        const { data, error } = await supabase
+        const { data, error }: any = await supabase
           .from('emails')
           .select('*')
           .eq('client_id', selectedLeadForEmail.id)
@@ -1510,6 +1535,11 @@ const CalendarPage: React.FC = () => {
         
         if (error) {
           console.error('Error fetching emails after sync:', error);
+          const message = typeof error?.message === 'string' ? error.message : '';
+          const code = error?.code;
+          if (message.includes('timeout') || code === '57014') {
+            return;
+          }
         } else {
           setEmails(data || []);
         }
@@ -2160,16 +2190,21 @@ const CalendarPage: React.FC = () => {
     try {
       const { data: locationsData, error } = await supabase
         .from('tenants_meetinglocation')
-        .select('id, name');
+        .select('id, name, default_link');
 
       if (error) throw error;
 
       const locationsMap: {[locationId: number]: string} = {};
+      const linksMap: {[locationName: string]: string} = {};
       locationsData?.forEach(location => {
         locationsMap[location.id] = location.name;
+        if (location.name && location.default_link) {
+          linksMap[location.name] = location.default_link;
+        }
       });
 
       setMeetingLocations(locationsMap);
+      setMeetingLocationLinks(linksMap);
     } catch (error) {
       console.error('Error fetching meeting locations:', error);
     }
@@ -2560,6 +2595,13 @@ const CalendarPage: React.FC = () => {
     return fallbackMap[numericId] || `Location ${numericId}`;
   };
 
+  // Helper function to check if location is online/teams/zoom
+  const isOnlineLocation = (location: string | undefined): boolean => {
+    if (!location) return false;
+    const locationLower = location.toLowerCase().trim();
+    return locationLower === 'online' || locationLower === 'teams' || locationLower === 'zoom';
+  };
+
   const getLegacyCarNumber = (meeting: any) => {
     // For legacy meetings, use meeting_car_no from the lead data
     if (typeof meeting.id === 'string' && meeting.id.startsWith('legacy_')) {
@@ -2941,7 +2983,7 @@ const CalendarPage: React.FC = () => {
               </span>
             </div>
 
-            {/* Info Column - Probability, Complexity, Car, Flame */}
+            {/* Info Column - Probability, Complexity, Car, Flame, Paid marker */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Info</span>
               <div className="flex items-center gap-2 ml-2">
@@ -2984,6 +3026,19 @@ const CalendarPage: React.FC = () => {
                   />
                 )}
 
+                {/* Paid meeting indicator based on meeting_collection_id on lead */}
+                {((meeting.lead && meeting.lead.meeting_collection_id) ||
+                  meeting.legacy_lead?.meeting_collection_id) && (
+                  <CurrencyDollarIcon
+                    className="w-5 h-5 text-green-600"
+                    title={`Paid meeting / ${
+                      meeting.meeting_amount
+                        ? `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`
+                        : 'no amount set'
+                    }`}
+                  />
+                )}
+
                 {/* Flame Icon */}
                 {isNotFirstMeeting(meeting) && (
                   <FireIcon className="w-5 h-5 text-orange-500" title="Another meeting" />
@@ -3003,13 +3058,26 @@ const CalendarPage: React.FC = () => {
 
         {/* Action Buttons */}
         <div className="mt-4 flex flex-row gap-2 justify-end">
-            {/* Only show join button if location is Teams OR it's a staff meeting */}
-            {(meeting.meeting_location === 'Teams' || meeting.location === 'Teams' || meeting.calendar_type === 'staff') && (
+            {/* Only show join button if there is a valid link and either:
+                - the location is online/Teams, or
+                - the location has a default_link configured,
+                OR it's a staff meeting */}
+            {(() => {
+              const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+              const fallbackLink = meetingLocationLinks[locationName] || '';
+              const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
+              const hasLink = !!url;
+              const hasDefaultForLocation = !!meetingLocationLinks[locationName];
+              const isTeamsLike = isOnlineLocation(locationName || '');
+              return hasLink && (isTeamsLike || hasDefaultForLocation || meeting.calendar_type === 'staff');
+            })() && (
               <button
                 className="btn btn-outline btn-primary btn-sm"
                 onClick={(e) => {
                   e.stopPropagation();
-                  const url = getValidTeamsLink(meeting.teams_meeting_url);
+                  const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                  const fallbackLink = meetingLocationLinks[locationName] || '';
+                  const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
                   if (url) {
                     window.open(url, '_blank');
                   } else {
@@ -3281,6 +3349,20 @@ const CalendarPage: React.FC = () => {
                   title={getLegacyCarNumber(meeting) ? `Car Number: ${getLegacyCarNumber(meeting)}` : 'TLV with parking location'}
                 />
               )}
+
+              {/* Paid meeting indicator based on meeting_collection_id on lead */}
+              {((meeting.lead && meeting.lead.meeting_collection_id) ||
+                meeting.legacy_lead?.meeting_collection_id) && (
+                <CurrencyDollarIcon
+                  className="w-4 h-4 sm:w-5 sm:h-5 text-green-600"
+                  title={`Paid meeting / ${
+                    meeting.meeting_amount
+                      ? `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`
+                      : 'no amount set'
+                  }`}
+                />
+              )}
+
               {(meeting.complexity === 'Complex' || getLegacyMeetingComplexity(meeting.meeting_complexity) === 'Complex') && (
                 <BookOpenIcon 
                   className="w-4 h-4 sm:w-6 sm:h-6 text-purple-600" 
@@ -3292,12 +3374,25 @@ const CalendarPage: React.FC = () => {
           <td className="hidden sm:table-cell">{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
             <div className="flex flex-row items-center gap-1 sm:gap-2">
-              {/* Only show join button if location is Teams OR it's a staff meeting */}
-              {(meeting.meeting_location === 'Teams' || meeting.location === 'Teams' || meeting.calendar_type === 'staff') && (
+              {/* Only show join button if there is a valid link and either:
+                  - the location is online/Teams, or
+                  - the location has a default_link configured,
+                  OR it's a staff meeting */}
+              {(() => {
+                const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                const fallbackLink = meetingLocationLinks[locationName] || '';
+                const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
+                const hasLink = !!url;
+                const hasDefaultForLocation = !!meetingLocationLinks[locationName];
+                const isTeamsLike = isOnlineLocation(locationName || '');
+                return hasLink && (isTeamsLike || hasDefaultForLocation || meeting.calendar_type === 'staff');
+              })() && (
                 <button 
                   className="btn btn-primary btn-xs sm:btn-sm"
                   onClick={() => {
-                    const url = getValidTeamsLink(meeting.teams_meeting_url);
+                    const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                    const fallbackLink = meetingLocationLinks[locationName] || '';
+                    const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
                     if (url) {
                       window.open(url, '_blank');
                     } else {
@@ -3432,11 +3527,11 @@ const CalendarPage: React.FC = () => {
         <tr>
           <td colSpan={10} className="p-0">
             <button
-              className="bg-base-200 hover:bg-base-300 cursor-pointer transition-colors p-2 text-center w-full block text-primary font-medium flex items-center justify-center gap-2"
+              className="bg-white hover:bg-gray-50 cursor-pointer transition-colors p-2 text-center w-full block text-primary font-medium flex items-center justify-center gap-2 shadow-sm"
               style={{ border: 'none', outline: 'none' }}
               onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
             >
-              <span>{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
+              <span className="text-sm">{expandedMeetingId === meeting.id ? 'Show Less' : 'Show More'}</span>
               <ChevronDownIcon className={`w-5 h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
             </button>
           </td>
@@ -3556,12 +3651,13 @@ const CalendarPage: React.FC = () => {
           <select 
             className="select select-bordered w-full md:w-auto"
             value={selectedMeetingType}
-            onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff')}
+            onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid')}
           >
             <option value="all">All Meetings</option>
             <option value="potential">Potential Clients</option>
             <option value="active">Active Clients</option>
             <option value="staff">Staff Meetings</option>
+            <option value="paid">Paid Meetings</option>
           </select>
         </div>
       </div>
@@ -3619,18 +3715,18 @@ const CalendarPage: React.FC = () => {
         {viewMode === 'list' && (
           <table className="table w-full text-xs sm:text-sm md:text-base">
             <thead>
-              <tr className="bg-base-200 text-sm sm:text-base md:text-lg">
-                <th>Lead</th>
-                <th>Time</th>
-                <th className="hidden sm:table-cell">Manager</th>
-                <th className="hidden md:table-cell">Helper</th>
-                <th className="hidden lg:table-cell">Category</th>
-                <th className="hidden sm:table-cell">Value</th>
-                <th className="hidden lg:table-cell">Expert</th>
-                <th className="hidden md:table-cell">Location</th>
-                <th>Info</th>
-                <th className="hidden sm:table-cell">Status</th>
-                <th>Actions</th>
+              <tr className="bg-white text-sm sm:text-base md:text-lg">
+                <th className="text-gray-900">Lead</th>
+                <th className="text-gray-900">Time</th>
+                <th className="hidden sm:table-cell text-gray-900">Manager</th>
+                <th className="hidden md:table-cell text-gray-900">Helper</th>
+                <th className="hidden lg:table-cell text-gray-900">Category</th>
+                <th className="hidden sm:table-cell text-gray-900">Value</th>
+                <th className="hidden lg:table-cell text-gray-900">Expert</th>
+                <th className="hidden md:table-cell text-gray-900">Location</th>
+                <th className="text-gray-900">Info</th>
+                <th className="hidden sm:table-cell text-gray-900">Status</th>
+                <th className="text-gray-900">Actions</th>
               </tr>
             </thead>
             <tbody>

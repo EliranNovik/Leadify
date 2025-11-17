@@ -4,7 +4,7 @@ import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarI
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
-import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 
 // This will be replaced with dynamic scheduler list based on preferred categories
 const defaultSchedulers = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', 'Yael', 'Michael R'];
@@ -269,30 +269,58 @@ const NewCasesPage: React.FC = () => {
     fetchReassignSourceOptions();
   }, []);
 
-  // Stage badge function with proper stage mapping
-  const getStageBadge = (stage: string | null | undefined) => {
-    if (!stage) return <span className="badge badge-outline">No Stage</span>;
-    
-    // Use stage mapping to get the correct stage name
-    const mappedStage = stageMapping.get(stage) || stageMapping.get(stage.toString()) || stageMapping.get(parseInt(stage)) || stage;
-    const stageText = mappedStage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-    
-    
-    // Use custom purple color #3f28cd for all stage badges with proper text wrapping
-    return <span 
-      className="badge text-white hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
-      style={{
-        backgroundColor: '#3f28cd',
-        borderColor: '#3f28cd',
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        display: 'inline-block'
-      }}
-      title={stageText}
-    >
-      {stageText}
-    </span>;
+  // Helper to calculate contrasting text colour (same logic as LeadSearchPage)
+  const getContrastingTextColor = (hexColor?: string | null) => {
+    if (!hexColor) return '#ffffff';
+    let sanitized = hexColor.trim();
+    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+    if (sanitized.length === 3) {
+      sanitized = sanitized.split('').map(char => char + char).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+      return '#ffffff';
+    }
+    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance > 0.6 ? '#111827' : '#ffffff';
+  };
+
+  // Stage badge function with dynamic colours from lead_stages (like LeadSearchPage)
+  const getStageBadge = (stage: string | number | null | undefined) => {
+    if (!stage && stage !== 0) {
+      return <span className="badge badge-outline">No Stage</span>;
+    }
+
+    const stageStr = String(stage);
+
+    // Prefer stageUtils for consistent naming/colouring
+    const stageName = getStageName(stageStr) || (stageMapping.get(stageStr) as string) || stageStr;
+    const stageColour = getStageColour(stageStr);
+    const badgeTextColour = getContrastingTextColor(stageColour);
+
+    const backgroundColor = stageColour || '#3f28cd';
+    const textColor = stageColour ? badgeTextColour : '#ffffff';
+
+    return (
+      <span
+        className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+        style={{
+          backgroundColor,
+          borderColor: backgroundColor,
+          color: textColor,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+        }}
+        title={stageName}
+      >
+        {stageName}
+      </span>
+    );
   };
 
   // Card rendering function with selection functionality
@@ -327,7 +355,7 @@ const NewCasesPage: React.FC = () => {
               {lead.name}
             </h2>
             </div>
-            {getStageBadge(lead.stage)}
+            {getStageBadge(lead.stage_id ?? lead.stage)}
         </div>
         
         <p className="text-sm text-base-content/60 font-mono mb-4">#{lead.lead_number}</p>
@@ -341,7 +369,7 @@ const NewCasesPage: React.FC = () => {
           </div>
           <div className="flex items-center gap-2" title="Category">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-            <span>{lead.category || 'N/A'}</span>
+            <span>{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
           </div>
           <div className="flex items-center gap-2" title="Source">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
@@ -416,14 +444,20 @@ const NewCasesPage: React.FC = () => {
 
         const mappedLeads = uniqueLeads.map(lead => {
           const stageValue = lead.stage;
-          const numericStage = typeof stageValue === 'number' ? stageValue : parseInt(stageValue, 10);
+          const numericStage =
+            typeof stageValue === 'number' ? stageValue : parseInt(stageValue, 10);
+
+          // Keep original stage ID for colour lookups, but retain mapped name if needed elsewhere
+          const mappedStageName =
+            stageMapping.get(stageValue) ||
+            stageMapping.get(stageValue?.toString?.()) ||
+            stageMapping.get(numericStage) ||
+            stageValue;
+
           return {
             ...lead,
-            stage:
-              stageMapping.get(stageValue) ||
-              stageMapping.get(stageValue?.toString?.()) ||
-              stageMapping.get(numericStage) ||
-              stageValue,
+            stage_id: numericStage,
+            stage: mappedStageName,
           };
         });
 

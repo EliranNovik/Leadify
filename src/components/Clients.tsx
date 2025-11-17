@@ -410,6 +410,12 @@ const Clients: React.FC<ClientsProps> = ({
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
   const [showScheduleMeetingPanel, setShowScheduleMeetingPanel] = useState(false);
+  // Tabs inside Schedule Meeting drawer: 'regular' or 'paid'
+  const [meetingType, setMeetingType] = useState<'regular' | 'paid'>('regular');
+  // Controls which stage the lead should move to after successfully creating a meeting
+  // - 'meeting_scheduled' for the first meeting
+  // - 'another_meeting' for follow-up meetings
+  const [scheduleStageTarget, setScheduleStageTarget] = useState<'meeting_scheduled' | 'another_meeting'>('meeting_scheduled');
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [meetingFormData, setMeetingFormData] = useState({
     date: '',
@@ -422,8 +428,15 @@ const Clients: React.FC<ClientsProps> = ({
     complexity: 'Simple',
     car_number: '',
     calendar: 'current', // 'current' or 'active_client'
+    // Extra fields for "Paid meeting" tab
+    collection_manager: '',
+    paid_category: '',
+    paid_currency: '',
+    meeting_total: '',
   });
-  const [meetingLocations, setMeetingLocations] = useState<Array<{id: string, name: string}>>([]);
+  const [meetingLocations, setMeetingLocations] = useState<
+    Array<{ id: string | number; name: string; default_link?: string | null }>
+  >([]);
   const [meetingCountsByTime, setMeetingCountsByTime] = useState<Record<string, number>>({});
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const timeDropdownRef = useRef<HTMLDivElement>(null);
@@ -1803,7 +1816,11 @@ useEffect(() => {
             supabase.from('currencies').select('id, front_name, iso_code, name').order('id'),
             supabase.from('accounting_currencies').select('id, name, iso_code, order').order('order', { ascending: true, nullsFirst: false })
           ]).then(([newCurrencies, legacyCurrencies]) => ({ newCurrencies, legacyCurrencies })),
-          supabase.from('meeting_locations').select('id, name').eq('is_active', true).order('order_value', { ascending: true }),
+          // Fetch meeting locations from tenants_meetinglocation table (all locations for the firm)
+          supabase
+            .from('tenants_meetinglocation')
+            .select('id, name, default_link, "order"')
+            .order('order', { ascending: true }),
           // Fetch tags
           supabase.from('misc_leadtag').select('id, name, order').eq('active', true).order('order', { ascending: true })
         ]);
@@ -1854,9 +1871,16 @@ useEffect(() => {
           setCurrencies(fallbackCurrencies);
         }
         
-        // Process meeting locations
+        // Process meeting locations from tenants_meetinglocation
         if (!meetingLocationsResult.error && meetingLocationsResult.data) {
-          setMeetingLocations(meetingLocationsResult.data);
+          const processedLocations = meetingLocationsResult.data
+            .filter((loc: any) => loc && loc.name)
+            .map((loc: any) => ({
+              id: loc.id,
+              name: loc.name,
+              default_link: loc.default_link ?? null,
+            }));
+          setMeetingLocations(processedLocations);
         }
         
         // Process tags
@@ -1906,9 +1930,13 @@ useEffect(() => {
   // Set default location when meeting locations are loaded
   useEffect(() => {
     if (meetingLocations.length > 0 && !meetingFormData.location) {
+      // Prefer "Teams" as default if it exists; otherwise use the first location
+      const teamsLocation =
+        meetingLocations.find(loc => loc.name === 'Teams') || meetingLocations[0];
+
       setMeetingFormData(prev => ({
         ...prev,
-        location: meetingLocations[0].name
+        location: teamsLocation.name,
       }));
     }
   }, [meetingLocations, meetingFormData.location]);
@@ -2632,7 +2660,12 @@ useEffect(() => {
       complexity: 'Simple',
       car_number: '',
       calendar: 'current',
+      collection_manager: '',
+      paid_category: '',
+      paid_currency: '',
+      meeting_total: '',
     });
+    setMeetingType('regular');
   };
 
   // Function to test calendar access permissions
@@ -2837,102 +2870,112 @@ useEffect(() => {
       });
 
       let teamsMeetingUrl = '';
-      
-      // Create calendar event for all locations in potential clients calendar
-      let accessToken;
-      try {
-        const response = await instance.acquireTokenSilent({
-          ...loginRequest,
-          account,
-        });
-        accessToken = response.accessToken;
-      } catch (error) {
-        if (error instanceof InteractionRequiredAuthError) {
-          // If silent acquisition fails, prompt the user to log in
-          const response = await instance.loginPopup(loginRequest);
+      const selectedLocation = meetingLocations.find(
+        loc => loc.name === meetingFormData.location
+      );
+
+      // If this is a Teams meeting, create an online event via Graph as before.
+      // Otherwise, if the chosen location has a default_link, use that as the join URL.
+      if (meetingFormData.location === 'Teams') {
+        // Create calendar event for all locations in potential clients calendar
+        let accessToken;
+        try {
+          const response = await instance.acquireTokenSilent({
+            ...loginRequest,
+            account,
+          });
           accessToken = response.accessToken;
-        } else {
-          throw error; // Rethrow other errors
+        } catch (error) {
+          if (error instanceof InteractionRequiredAuthError) {
+            // If silent acquisition fails, prompt the user to log in
+            const response = await instance.loginPopup(loginRequest);
+            accessToken = response.accessToken;
+          } else {
+            throw error; // Rethrow other errors
+          }
         }
-      }
 
-      // Convert date and time to start/end times
-      const [year, month, day] = meetingFormData.date.split('-').map(Number);
-      const [hours, minutes] = meetingFormData.time.split(':').map(Number);
-      const start = new Date(year, month - 1, day, hours, minutes);
-      const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+        // Convert date and time to start/end times
+        const [year, month, day] = meetingFormData.date.split('-').map(Number);
+        const [hours, minutes] = meetingFormData.time.split(':').map(Number);
+        const start = new Date(year, month - 1, day, hours, minutes);
+        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
 
-      // Test calendar access first
-      const calendarEmail = meetingFormData.calendar === 'active_client' 
-        ? 'shared-newclients@lawoffice.org.il' 
-        : 'shared-potentialclients@lawoffice.org.il';
-      
-      console.log('🔍 Testing calendar access for:', calendarEmail);
-      const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-      
-      if (!hasAccess) {
-        toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
-          duration: 5000,
-          position: 'top-right',
-          style: {
-            background: '#ef4444',
-            color: '#fff',
-            fontWeight: '500',
-            maxWidth: '500px',
-          },
-          icon: '🔒',
-        });
-        setIsCreatingMeeting(false);
-        return;
-      }
+        // Test calendar access first
+        const calendarEmail = meetingFormData.calendar === 'active_client' 
+          ? 'shared-newclients@lawoffice.org.il' 
+          : 'shared-potentialclients@lawoffice.org.il';
+        
+        console.log('🔍 Testing calendar access for:', calendarEmail);
+        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+        
+        if (!hasAccess) {
+          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
+            duration: 5000,
+            position: 'top-right',
+            style: {
+              background: '#ef4444',
+              color: '#fff',
+              fontWeight: '500',
+              maxWidth: '500px',
+            },
+            icon: '🔒',
+          });
+          setIsCreatingMeeting(false);
+          return;
+        }
 
-      // Create calendar event with client name, category, and lead number in subject
-      console.log('🔍 Selected client data for calendar:', {
-        id: selectedClient.id,
-        name: selectedClient.name,
-        lead_number: selectedClient.lead_number,
-        category: selectedClient.category,
-        category_id: selectedClient.category_id,
-        isLegacy: selectedClient.id.toString().startsWith('legacy_')
-      });
-      const categoryName = selectedClient.category || 'No Category';
-      const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - ${meetingFormData.brief || 'Meeting'}`;
-      console.log('Creating meeting in calendar:', meetingFormData.calendar);
-      
-      try {
-        const calendarEventData = await createCalendarEvent(accessToken, {
-          subject: meetingSubject,
-          startDateTime: start.toISOString(),
-          endDateTime: end.toISOString(),
-          location: meetingFormData.location,
-          calendar: meetingFormData.calendar,
-          manager: meetingFormData.manager,
-          helper: meetingFormData.helper,
-          brief: meetingFormData.brief,
-          attendance_probability: meetingFormData.attendance_probability,
-          complexity: meetingFormData.complexity,
-          car_number: meetingFormData.car_number,
-          expert: selectedClient.expert || '---',
-          amount: 0, // Default amount for new meetings
-          currency: '₪',
+        // Create calendar event with client name, category, and lead number in subject
+        console.log('🔍 Selected client data for calendar:', {
+          id: selectedClient.id,
+          name: selectedClient.name,
+          lead_number: selectedClient.lead_number,
+          category: selectedClient.category,
+          category_id: selectedClient.category_id,
+          isLegacy: selectedClient.id.toString().startsWith('legacy_')
         });
-        teamsMeetingUrl = calendarEventData.joinUrl;
-        console.log('✅ Teams meeting URL set to:', teamsMeetingUrl);
-      } catch (calendarError) {
-        console.error('❌ Calendar creation failed:', calendarError);
-        const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
-        toast.error(`Failed to create calendar event: ${errorMessage}`, {
-          duration: 6000,
-          position: 'top-right',
-          style: {
-            background: '#ef4444',
-            color: '#fff',
-            fontWeight: '500',
-            maxWidth: '500px',
-          },
-        });
-        setIsCreatingMeeting(false);
-        return;
+        const categoryName = selectedClient.category || 'No Category';
+        const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - ${meetingFormData.brief || 'Meeting'}`;
+        console.log('Creating meeting in calendar:', meetingFormData.calendar);
+        
+        try {
+          const calendarEventData = await createCalendarEvent(accessToken, {
+            subject: meetingSubject,
+            startDateTime: start.toISOString(),
+            endDateTime: end.toISOString(),
+            location: meetingFormData.location,
+            calendar: meetingFormData.calendar,
+            manager: meetingFormData.manager,
+            helper: meetingFormData.helper,
+            brief: meetingFormData.brief,
+            attendance_probability: meetingFormData.attendance_probability,
+            complexity: meetingFormData.complexity,
+            car_number: meetingFormData.car_number,
+            expert: selectedClient.expert || '---',
+            amount: 0, // Default amount for new meetings
+            currency: '₪',
+          });
+          teamsMeetingUrl = calendarEventData.joinUrl;
+          console.log('✅ Teams meeting URL set to:', teamsMeetingUrl);
+        } catch (calendarError) {
+          console.error('❌ Calendar creation failed:', calendarError);
+          const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
+          toast.error(`Failed to create calendar event: ${errorMessage}`, {
+            duration: 6000,
+            position: 'top-right',
+            style: {
+              background: '#ef4444',
+              color: '#fff',
+              fontWeight: '500',
+              maxWidth: '500px',
+            },
+          });
+          setIsCreatingMeeting(false);
+          return;
+        }
+      } else if (selectedLocation?.default_link) {
+        // For non-Teams online locations, use the default_link from tenants_meetinglocation
+        teamsMeetingUrl = selectedLocation.default_link;
       }
 
       // Check if this is a legacy lead
@@ -2941,6 +2984,39 @@ useEffect(() => {
       // For both new and legacy leads, create meeting record in meetings table
       const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
       
+      // Resolve collection manager employee ID (used mainly for paid meetings but safe for all)
+      let collectionEmployeeId: string | number | null = null;
+      if (meetingFormData.collection_manager) {
+        const collectionEmp = allEmployees.find(
+          emp => emp.display_name === meetingFormData.collection_manager
+        );
+        if (collectionEmp) {
+          collectionEmployeeId = collectionEmp.id;
+        }
+      }
+
+      // Resolve paid-meeting category (subcategory) if selected
+      let paidCategoryId: string | null = null;
+      let paidCategoryName: string | null = null;
+      if (meetingType === 'paid' && meetingFormData.paid_category) {
+        const paidCategory = categoryOptions.find(
+          opt => opt.label === meetingFormData.paid_category
+        );
+        if (paidCategory) {
+          paidCategoryId = paidCategory.id;
+          // Stored "regular" category should be just the subcategory name without main category suffix
+          paidCategoryName = paidCategory.label.includes(' (')
+            ? paidCategory.label.split(' (')[0]
+            : paidCategory.label;
+        }
+      }
+
+      // Resolve meeting currency (for paid meetings use selected currency; otherwise keep default)
+      const resolvedMeetingCurrency =
+        meetingType === 'paid' && meetingFormData.paid_currency
+          ? meetingFormData.paid_currency
+          : '₪';
+
       const meetingData = {
         client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
         legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads
@@ -2948,8 +3024,11 @@ useEffect(() => {
         meeting_time: meetingFormData.time,
         meeting_location: meetingFormData.location,
         meeting_manager: meetingFormData.manager || '',
-        meeting_currency: '₪',
-        meeting_amount: 0,
+        meeting_currency: resolvedMeetingCurrency,
+        meeting_amount:
+          meetingType === 'paid' && meetingFormData.meeting_total
+            ? Number(meetingFormData.meeting_total) || 0
+            : 0,
         expert: selectedClient.expert || '---',
         helper: meetingFormData.helper || '---',
         teams_meeting_url: teamsMeetingUrl,
@@ -2981,53 +3060,95 @@ useEffect(() => {
       console.log('Inserted meeting record:', insertedData);
 
 
-      // Update lead stage to 'meeting_scheduled' and set scheduler
+      // Update lead stage based on context and set scheduler
       const stageActor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
 
-      const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled');
-      if (meetingScheduledStageId === null) {
-        toast.error('Unable to resolve the "Meeting scheduled" stage. Please contact an administrator.');
+      const targetStageKey =
+        scheduleStageTarget === 'another_meeting' ? 'another_meeting' : 'meeting_scheduled';
+      const targetStageId = getStageIdOrWarn(targetStageKey);
+      if (targetStageId === null) {
+        toast.error(
+          `Unable to resolve the "${targetStageKey === 'another_meeting' ? 'Another meeting' : 'Meeting scheduled'}" stage. Please contact an administrator.`
+        );
         setIsCreatingMeeting(false);
         return;
       }
 
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        const updatePayload: any = { 
+          stage: targetStageId,
+          meeting_scheduler_id: currentUserFullName,
+          stage_changed_by: stageActor.fullName,
+          stage_changed_at: stageTimestamp,
+        };
+
+        // For paid meetings, persist meeting_total and category/currency on legacy lead
+        if (meetingType === 'paid') {
+          if (meetingFormData.meeting_total) {
+            // Legacy column is text, store as string
+            updatePayload.meeting_total = meetingFormData.meeting_total;
+          }
+          if (paidCategoryId && paidCategoryName) {
+            updatePayload.category_id = Number(paidCategoryId);
+            updatePayload.category = paidCategoryName;
+          }
+        }
+
+        // Always persist meeting_collection_id if a collection manager was chosen
+        if (collectionEmployeeId) {
+          updatePayload.meeting_collection_id = collectionEmployeeId;
+        }
+
         const { error } = await supabase
           .from('leads_lead')
-          .update({ 
-            stage: meetingScheduledStageId,
-            meeting_scheduler_id: currentUserFullName,
-            stage_changed_by: stageActor.fullName,
-            stage_changed_at: stageTimestamp,
-          })
+          .update(updatePayload)
           .eq('id', legacyId);
 
         if (error) throw error;
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: meetingScheduledStageId,
+          stage: targetStageId,
           actor: stageActor,
           timestamp: stageTimestamp,
         });
       } else {
+        const updatePayload: any = { 
+          stage: targetStageId,
+          scheduler: currentUserFullName,
+          stage_changed_by: stageActor.fullName,
+          stage_changed_at: stageTimestamp,
+        };
+
+        // For paid meetings, persist meeting_total and category/currency on new lead
+        if (meetingType === 'paid') {
+          if (meetingFormData.meeting_total) {
+            // New leads column is numeric
+            updatePayload.meeting_total = Number(meetingFormData.meeting_total) || 0;
+          }
+          if (paidCategoryId && paidCategoryName) {
+            updatePayload.category_id = paidCategoryId;
+            updatePayload.category = paidCategoryName;
+          }
+        }
+
+        // Always persist meeting_collection_id if a collection manager was chosen
+        if (collectionEmployeeId) {
+          updatePayload.meeting_collection_id = collectionEmployeeId;
+        }
+
         const { error } = await supabase
           .from('leads')
-          .update({ 
-            stage: meetingScheduledStageId,
-            scheduler: currentUserFullName,
-            stage_changed_by: stageActor.fullName,
-            stage_changed_at: stageTimestamp,
-          })
+          .update(updatePayload)
           .eq('id', selectedClient.id);
 
         if (error) throw error;
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: meetingScheduledStageId,
+          stage: targetStageId,
           actor: stageActor,
           timestamp: stageTimestamp,
         });
@@ -3039,7 +3160,7 @@ useEffect(() => {
       setIsCreatingMeeting(false);
       setSelectedStage(null); // Close the dropdown
       
-      // Reset form
+      // Reset form and tab
       setMeetingFormData({
         date: '',
         time: '09:00',
@@ -3051,7 +3172,12 @@ useEffect(() => {
         complexity: 'Simple',
         car_number: '',
         calendar: 'current',
+        collection_manager: '',
+        paid_category: '',
+        paid_currency: '',
+        meeting_total: '',
       });
+      setMeetingType('regular');
       
       // Show success message
       toast.success('Meeting scheduled successfully!', {
@@ -4516,7 +4642,8 @@ useEffect(() => {
     setIsSavingPaymentPlan(true);
 
     // Optimistic UI update
-    setShowPaymentsPlanDrawer(false);
+    // NOTE: do not close the finance plan drawer here; the user may still
+    // be working in the Finances tab. FinancesTab handles its own drawer state.
     setPayments([]); // Optionally, setPayments(newPayments) if you want to show them immediately
     setActiveTab('finances');
     toast.success('Payment plan saved!');
@@ -5222,24 +5349,24 @@ useEffect(() => {
         event.preventDefault();
       }
 
-      if (isStageNumeric) {
-        if (stageNumeric >= 55) {
-          setShowScheduleMeetingPanel(true);
-          (document.activeElement as HTMLElement | null)?.blur();
-          return;
-        }
+      // Decide which stage we want AFTER the meeting is successfully created:
+      // - If the current stage is 40+ (already in meeting flow), this is an "Another meeting" action
+      // - Otherwise it's the first "Schedule Meeting"
+      const stageNumeric =
+        selectedClient?.stage !== null && selectedClient?.stage !== undefined
+          ? Number(selectedClient.stage)
+          : null;
 
-        if (stageNumeric >= 40) {
-          void updateLeadStage('another_meeting');
-          (document.activeElement as HTMLElement | null)?.blur();
-          return;
-        }
+      if (stageNumeric !== null && Number.isFinite(stageNumeric) && stageNumeric >= 40) {
+        setScheduleStageTarget('another_meeting');
+      } else {
+        setScheduleStageTarget('meeting_scheduled');
       }
 
       setShowScheduleMeetingPanel(true);
       (document.activeElement as HTMLElement | null)?.blur();
     },
-    [isStageNumeric, stageNumeric, updateLeadStage]
+    [selectedClient?.stage]
   );
 
   if (selectedClient && areStagesEquivalent(currentStageName, 'Created')) {
@@ -7016,6 +7143,34 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
+              {/* Tabs: Regular vs Paid meeting */}
+              <div className="mb-4">
+                <div className="inline-flex rounded-lg bg-base-200 p-1">
+                  <button
+                    type="button"
+                    className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors ${
+                      meetingType === 'regular'
+                        ? 'bg-base-100 text-primary shadow-sm'
+                        : 'text-base-content/60'
+                    }`}
+                    onClick={() => setMeetingType('regular')}
+                  >
+                    Regular meeting
+                  </button>
+                  <button
+                    type="button"
+                    className={`px-4 py-2 text-sm font-semibold rounded-md transition-colors ${
+                      meetingType === 'paid'
+                        ? 'bg-base-100 text-primary shadow-sm'
+                        : 'text-base-content/60'
+                    }`}
+                    onClick={() => setMeetingType('paid')}
+                  >
+                    Paid meeting
+                  </button>
+                </div>
+              </div>
+
               <div className="flex flex-col gap-4">
               {/* Location */}
               <div>
@@ -7109,36 +7264,137 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               {/* Manager (Optional) */}
               <div>
                 <label className="block font-semibold mb-1">Manager (Optional)</label>
-                <select
-                  className="select select-bordered w-full"
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="Select a manager..."
+                  list="meeting-manager-options"
                   value={meetingFormData.manager}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, manager: e.target.value }))}
-                >
-                  <option value="">Select a manager...</option>
-                  {['Anna Zh', 'Mindi', 'Sarah L', 'David K'].map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
+                  onChange={(e) =>
+                    setMeetingFormData(prev => ({ ...prev, manager: e.target.value }))
+                  }
+                />
+                <datalist id="meeting-manager-options">
+                  {allEmployees.map(emp => (
+                    <option key={emp.id} value={emp.display_name} />
                   ))}
-                </select>
+                </datalist>
               </div>
 
               {/* Helper (Optional) */}
               <div>
                 <label className="block font-semibold mb-1">Helper (Optional)</label>
-                <select
-                  className="select select-bordered w-full"
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="Select a helper..."
+                  list="meeting-helper-options"
                   value={meetingFormData.helper}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, helper: e.target.value }))}
-                >
-                  <option value="">Select a helper...</option>
-                  {['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'].map((h) => (
-                    <option key={h} value={h}>
-                      {h}
-                    </option>
+                  onChange={(e) =>
+                    setMeetingFormData(prev => ({ ...prev, helper: e.target.value }))
+                  }
+                />
+                <datalist id="meeting-helper-options">
+                  {allEmployees.map(emp => (
+                    <option key={emp.id} value={emp.display_name} />
                   ))}
-                </select>
+                </datalist>
               </div>
+
+              {/* Extra fields only for Paid meeting */}
+              {meetingType === 'paid' && (
+                <>
+                  {/* Meeting collection manager */}
+                  <div>
+                    <label className="block font-semibold mb-1">Meeting collection manager</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Select a collection manager..."
+                      list="meeting-collection-manager-options"
+                      value={meetingFormData.collection_manager}
+                      onChange={(e) =>
+                        setMeetingFormData(prev => ({ ...prev, collection_manager: e.target.value }))
+                      }
+                    />
+                    <datalist id="meeting-collection-manager-options">
+                      {allEmployees.map(emp => (
+                        <option key={emp.id} value={emp.display_name} />
+                      ))}
+                    </datalist>
+                  </div>
+
+                  {/* Paid meeting category (only subcategories related to paid meetings) */}
+                  <div>
+                    <label className="block font-semibold mb-1">Paid meeting category</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={meetingFormData.paid_category}
+                      onChange={(e) =>
+                        setMeetingFormData(prev => ({ ...prev, paid_category: e.target.value }))
+                      }
+                    >
+                      <option value="">Please choose</option>
+                      {categoryOptions
+                        .filter(opt => {
+                          const labelLower = opt.label.toLowerCase();
+                          const mainName =
+                            (opt.raw as any)?.misc_maincategory?.name?.toLowerCase?.() || '';
+                          // Heuristic: only categories whose main category or label mentions "paid"
+                          return (
+                            labelLower.includes('paid meeting') ||
+                            mainName.includes('paid meeting') ||
+                            labelLower.includes('paid') ||
+                            mainName.includes('paid')
+                          );
+                        })
+                        .map(opt => (
+                          <option key={opt.id} value={opt.label}>
+                            {opt.label}
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+
+                  {/* Paid meeting currency */}
+                  <div>
+                    <label className="block font-semibold mb-1">Paid meeting currency</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={meetingFormData.paid_currency}
+                      onChange={(e) =>
+                        setMeetingFormData(prev => ({ ...prev, paid_currency: e.target.value }))
+                      }
+                    >
+                      <option value="">Please choose</option>
+                      {currencies.map((currency: any) => (
+                        <option key={currency.id} value={currency.front_name || currency.iso_code}>
+                          {currency.front_name || currency.iso_code || currency.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Meeting total */}
+                  <div>
+                    <label className="block font-semibold mb-1">Meeting total</label>
+                    <input
+                      type="number"
+                      className="input input-bordered w-full no-arrows"
+                      placeholder="Enter total amount..."
+                      value={meetingFormData.meeting_total}
+                      onChange={(e) =>
+                        setMeetingFormData(prev => ({
+                          ...prev,
+                          meeting_total: e.target.value,
+                        }))
+                      }
+                      min="0"
+                      step="0.01"
+                    />
+                  </div>
+                </>
+              )}
 
               {/* Meeting Brief (Optional) */}
               <div>

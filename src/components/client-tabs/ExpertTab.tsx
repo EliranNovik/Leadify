@@ -292,8 +292,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  // Function to fetch expert_id for legacy leads
-  const fetchExpertId = async () => {
+  // Function to fetch the assigned expert (legacy + new leads)
+  const fetchAssignedExpert = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     
     if (isLegacyLead) {
@@ -312,19 +312,29 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         }
         
         if (data && data.expert_id) {
-          // Get the expert name from the ID
-          const expertName = await getExpertName(data.expert_id);
-          setExpertName(expertName);
+          const resolvedName = await getExpertName(data.expert_id);
+          setExpertName(resolvedName || 'Not assigned');
         } else {
           setExpertName('Not assigned');
         }
       } catch (error) {
-        console.error('Error in fetchExpertId:', error);
+        console.error('Error in fetchAssignedExpert (legacy):', error);
         setExpertName('Not assigned');
       }
     } else {
-      // For new leads, use the expert field from client
-      setExpertName(client.expert || 'Not assigned');
+      try {
+        const expertIdentifier = client.expert_id || client.expert;
+        if (!expertIdentifier) {
+          setExpertName('Not assigned');
+          return;
+        }
+
+        const resolvedName = await getExpertName(expertIdentifier);
+        setExpertName(resolvedName || 'Not assigned');
+      } catch (error) {
+        console.error('Error in fetchAssignedExpert (new lead):', error);
+        setExpertName(client.expert || 'Not assigned');
+      }
     }
   };
 
@@ -392,7 +402,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     cleanupExistingNotes();
     fetchTrackingInfo();
     fetchDocsUrl();
-    fetchExpertId();
+    fetchAssignedExpert();
     fetchLegacyEligibilityData();
   }, [client.id]);
 
@@ -942,7 +952,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   })
                   .eq('id', client.id);
             }
-            u
             if (onClientUpdate) {
                 await onClientUpdate();
             }

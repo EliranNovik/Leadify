@@ -2,12 +2,54 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { supabase } from '../lib/supabase';
 import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
-import { useMsal } from '@azure/msal-react';
-import { loginRequest } from '../msalConfig';
 import { appendEmailSignature } from '../lib/emailSignature';
 import sanitizeHtml from 'sanitize-html';
 import { createPortal } from 'react-dom';
-import { stripSignatureAndQuotedTextPreserveHtml } from '../lib/graphEmailSync';
+import {
+  getMailboxStatus,
+  triggerMailboxSync,
+  sendEmailViaBackend,
+  downloadAttachmentFromBackend,
+  fetchEmailBodyFromBackend,
+} from '../lib/mailboxApi';
+
+const normalizeEmailForFilter = (value?: string | null) =>
+  value ? value.trim().toLowerCase() : '';
+
+const sanitizeEmailForFilter = (value: string) =>
+  value.replace(/[^a-z0-9@._+!~-]/g, '');
+
+const collectContactEmails = (contact: Contact): string[] => {
+  const emails: string[] = [];
+  const pushEmail = (val?: string | null) => {
+    const normalized = normalizeEmailForFilter(val);
+    if (normalized) {
+      emails.push(normalized);
+    }
+  };
+
+  pushEmail(contact?.email);
+
+  if (Array.isArray((contact as any)?.emails)) {
+    ((contact as any).emails || []).forEach((entry: any) => {
+      if (typeof entry === 'string') {
+        pushEmail(entry);
+      } else if (entry && typeof entry === 'object') {
+        if (typeof entry.email === 'string') {
+          pushEmail(entry.email);
+        }
+        if (typeof entry.value === 'string') {
+          pushEmail(entry.value);
+        }
+        if (typeof entry.address === 'string') {
+          pushEmail(entry.address);
+        }
+      }
+    });
+  }
+
+  return Array.from(new Set(emails));
+};
 
 interface Contact {
   id: number | string;
@@ -22,6 +64,7 @@ interface Contact {
   unread_count?: number | null;
   lead_type?: 'legacy' | 'new';
   client_uuid?: string | null;
+  user_internal_id?: string | number | null;
 }
 
 interface EmailMessage {
@@ -189,17 +232,12 @@ const replaceTemplateTokens = (content: string, contact: Contact | null) => {
     .replace(/\{lead_type\}/gi, contact?.lead_type || '');
 };
 
-const GRAPH_SYNC_LOOKBACK_DAYS = 30;
-const GRAPH_SYNC_MAX_MESSAGES = 400;
-const GRAPH_SYNC_PAGE_SIZE = 50;
-
 interface EmailThreadModalProps {
   isOpen: boolean;
   onClose: () => void;
-  allowGraphSync?: boolean;
 }
 
-const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, allowGraphSync = true }) => {
+const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) => {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [filteredContacts, setFilteredContacts] = useState<Contact[]>([]);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
@@ -238,6 +276,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string>('');
+  const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; lastSync?: string | null; error?: string | null }>({
+    connected: false,
+  });
+  const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
+  const [currentUserFullName, setCurrentUserFullName] = useState('');
 
   useEffect(() => {
     if (!isOpen) return;
@@ -290,6 +335,86 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [templateDropdownOpen]);
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadAuthUser = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        if (!isMounted) return;
+        const authUser = data?.user;
+        if (authUser) {
+          setUserId(authUser.id);
+          setUserEmail(authUser.email || '');
+        } else {
+          setUserId(null);
+          setUserEmail('');
+        }
+      } catch (error) {
+        console.error('Failed to load authenticated user for EmailThreadModal:', error);
+        if (isMounted) {
+          setUserId(null);
+          setUserEmail('');
+        }
+      }
+    };
+
+    loadAuthUser();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const refreshMailboxStatus = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const status = await getMailboxStatus(userId);
+      setMailboxStatus(status || { connected: false });
+    } catch (error) {
+      console.error('Failed to fetch mailbox status for EmailThreadModal:', error);
+      setMailboxStatus(prev => ({
+        ...prev,
+        connected: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch mailbox status',
+      }));
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    refreshMailboxStatus();
+  }, [refreshMailboxStatus]);
+
+  useEffect(() => {
+    if (!userId) {
+      setCurrentUserFullName('');
+      return;
+    }
+    let isMounted = true;
+    const loadFullName = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('full_name, email')
+          .eq('auth_id', userId)
+          .maybeSingle();
+        if (!isMounted) return;
+        if (!error && data) {
+          if (data.full_name) {
+            setCurrentUserFullName(data.full_name);
+          }
+          if (data.email && !userEmail) {
+            setUserEmail(data.email);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load current user details for EmailThreadModal:', error);
+      }
+    };
+    loadFullName();
+    return () => {
+      isMounted = false;
+    };
+  }, [userId, userEmail]);
 
   const pushRecipient = (list: string[], address: string) => {
     const normalized = address.trim();
@@ -444,439 +569,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
   };
   
   // MSAL for email sending
-  const { instance, accounts } = useMsal();
-  const [hasSyncedOnOpen, setHasSyncedOnOpen] = useState(false);
-  const cleanMicrosoftDiagnosticEmail = (html: string): string => {
-    if (!html) return html;
-    
-    const isMicrosoftDiagnostic = html.includes('Delivery has failed') || 
-                                 html.includes('Diagnostic information for administrators') ||
-                                 html.includes('MicrosoftExchange') ||
-                                 html.includes('Undeliverable');
-    
-    if (!isMicrosoftDiagnostic) return html;
-    
-    let cleaned = html;
-    
-    cleaned = cleaned.replace(/<b>Diagnostic information for administrators:<\/b>.*?(?=<b>|$)/gis, '');
-    cleaned = cleaned.replace(/Generating server:.*?<br\s*\/?>/gi, '');
-    cleaned = cleaned.replace(/Receiving server:.*?<br\s*\/?>/gi, '');
-    cleaned = cleaned.replace(/\d+\/\d+\/\d+ \d+:\d+:\d+ (AM|PM).*?<br\s*\/?>/gi, '');
-    cleaned = cleaned.replace(/\d+\.\d+\.\d+.*?<br\s*\/?>/gi, '');
-    cleaned = cleaned.replace(/DNS.*?<br\s*\/?>/gi, '');
-    cleaned = cleaned.replace(/Original message headers:.*$/gis, '');
-    cleaned = cleaned.replace(/(<br\s*\/?>){3,}/gi, '<br><br>');
-    
-    if (html.includes('Delivery has failed')) {
-      const failureReason = html.match(/Your message couldn't be delivered\.([^<]+)/i);
-      if (failureReason) {
-        cleaned = `<div style="background-color: #fee2e2; border: 1px solid #fca5a5; border-radius: 8px; padding: 16px; margin: 16px 0;">
-          <h3 style="color: #dc2626; margin: 0 0 8px 0; font-size: 16px;">📧 Delivery Failed</h3>
-          <p style="color: #7f1d1d; margin: 0;">${failureReason[1].trim()}</p>
-        </div>` + cleaned;
-      }
-    }
-    
-    return cleaned;
-  };
 
-  const syncAllEmails = async (token: string) => {
-    console.log('🔄 Starting comprehensive email sync from Microsoft Graph...');
-    
-    try {
-      const lookbackDate = new Date();
-      lookbackDate.setDate(lookbackDate.getDate() - GRAPH_SYNC_LOOKBACK_DAYS);
-      const lookbackIso = lookbackDate.toISOString();
-      
-      console.log('📅 Fetching emails from:', lookbackIso);
-
-      const collectedMessages: any[] = [];
-      const seenMessageIds = new Set<string>();
-      const baseParams = new URLSearchParams({
-        '$select': 'id,subject,from,toRecipients,ccRecipients,receivedDateTime,body,conversationId,hasAttachments',
-        '$expand': 'attachments',
-        '$filter': `receivedDateTime ge ${lookbackIso}`,
-        '$top': String(GRAPH_SYNC_PAGE_SIZE),
-        '$orderby': 'receivedDateTime desc',
-      });
-      const initialUrl = `https://graph.microsoft.com/v1.0/me/messages?${baseParams.toString()}`;
-      let nextUrl: string | null = initialUrl;
-
-      while (nextUrl && collectedMessages.length < GRAPH_SYNC_MAX_MESSAGES) {
-        console.log('🌐 Fetching from URL:', nextUrl);
-        const res: Response = await fetch(nextUrl, { 
-          headers: { 
-            Authorization: `Bearer ${token}`,
-            ConsistencyLevel: 'eventual',
-          } 
-        });
-        
-        if (!res.ok) {
-          const errorText = await res.text();
-          console.error("❌ Microsoft Graph API error:", res.status, errorText);
-          throw new Error(`Failed to fetch from Microsoft Graph: ${res.status}`);
-        }
-
-        const json = await res.json() as {
-          value?: any[];
-          '@odata.nextLink'?: string;
-        };
-        const pageMessages = json.value || [];
-        const beforeAppend = collectedMessages.length;
-
-        for (const message of pageMessages) {
-          const messageId = message?.id;
-          if (!messageId || seenMessageIds.has(messageId)) continue;
-          collectedMessages.push(message);
-          seenMessageIds.add(messageId);
-          if (collectedMessages.length >= GRAPH_SYNC_MAX_MESSAGES) break;
-        }
-
-        console.log(`📧 Page fetched ${pageMessages.length} messages, appended ${collectedMessages.length - beforeAppend}, total ${collectedMessages.length}`);
-
-        if (collectedMessages.length >= GRAPH_SYNC_MAX_MESSAGES) {
-          console.log(`⚠️ Reached capped maximum of ${GRAPH_SYNC_MAX_MESSAGES} messages for this sync.`);
-          break;
-        }
-
-        const nextLink: string | undefined = json['@odata.nextLink'];
-        nextUrl = typeof nextLink === 'string' ? nextLink : null;
-      }
-
-      console.log(`📧 Fetched ${collectedMessages.length} total emails from Microsoft Graph (after pagination)`);
-      
-      if (collectedMessages.length > 0) {
-        console.log('📧 Sample emails:', collectedMessages.slice(0, 3).map((msg: any) => ({
-          id: msg.id,
-          subject: msg.subject,
-          from: msg.from?.emailAddress?.address,
-          to: (msg.toRecipients || []).map((r: any) => r.emailAddress.address),
-          received: msg.receivedDateTime
-        })));
-      }
-
-      const lawOfficeMessages = collectedMessages.filter((msg: any) => {
-        const fromEmail = msg.from?.emailAddress?.address?.toLowerCase() || '';
-        const toEmails = (msg.toRecipients || []).map((r: any) => r.emailAddress.address.toLowerCase());
-        const ccEmails = (msg.ccRecipients || []).map((r: any) => r.emailAddress.address.toLowerCase());
-        
-        const involvesLawOffice = fromEmail.includes('lawoffice.org.il') || 
-               toEmails.some((email: string) => email.includes('lawoffice.org.il')) ||
-               ccEmails.some((email: string) => email.includes('lawoffice.org.il'));
-        
-        if (involvesLawOffice) {
-          console.log('🏢 Found lawoffice.org.il email:', {
-            subject: msg.subject,
-            from: fromEmail,
-            to: toEmails,
-            cc: ccEmails
-          });
-        }
-        
-        return involvesLawOffice;
-      });
-
-      console.log(`🏢 Found ${lawOfficeMessages.length} emails involving lawoffice.org.il`);
-
-      if (lawOfficeMessages.length === 0) {
-        console.log("❌ No emails involving lawoffice.org.il found.");
-        return;
-      }
-
-      lawOfficeMessages.sort((a: any, b: any) => new Date(b.receivedDateTime).getTime() - new Date(a.receivedDateTime).getTime());
-
-      console.log('👥 Fetching contacts for email matching...');
-      
-      let newLeads: any[] = [];
-      let newLeadsError: any = null;
-      
-      try {
-        const result = await supabase
-          .from('leads')
-          .select('id, name, email, lead_number');
-        newLeads = result.data || [];
-        newLeadsError = result.error;
-      } catch (error) {
-        console.error('❌ Network error fetching new leads:', error);
-        newLeadsError = error;
-      }
-      
-      if (newLeadsError) {
-        console.error('❌ Error fetching new leads:', newLeadsError);
-      }
-
-      let legacyLeads: any[] = [];
-      let legacyLeadsError: any = null;
-      
-      try {
-        const result = await supabase
-          .from('leads_lead')
-          .select(`
-            id, 
-            name, 
-            email
-          `);
-        legacyLeads = result.data || [];
-        legacyLeadsError = result.error;
-      } catch (error) {
-        console.error('❌ Network error fetching legacy leads:', error);
-        legacyLeadsError = error;
-      }
-      
-      if (legacyLeadsError) {
-        console.error('❌ Error fetching legacy leads:', legacyLeadsError);
-      }
-
-      const baseNewContacts: Contact[] = (newLeads || []).map(lead => ({
-        ...lead,
-        id: lead.id,
-        idstring: lead.id ? String(lead.id) : null,
-        client_uuid: lead.id ? String(lead.id) : null,
-        lead_type: 'new' as const
-      }));
-
-      const baseLegacyContacts: Contact[] = (legacyLeads || []).map(lead => ({
-        ...lead,
-        lead_number: lead.id?.toString(),
-        created_at: lead.cdate,
-        topic: null,
-        lead_type: 'legacy' as const,
-        idstring: null,
-        client_uuid: null
-      }));
-
-      let contactRows: Array<{
-        id: string | number | null;
-        lead_id?: string | number | null;
-        legacy_lead_id?: string | number | null;
-        legacy_id?: string | number | null;
-        lead?: string | number | null;
-        leadId?: string | number | null;
-        email?: string | null;
-        name?: string | null;
-      }> = [];
-
-      try {
-        const { data: contactsData, error: contactsError } = await supabase
-          .from('contacts')
-          .select('*')
-          .not('email', 'is', null);
-
-        if (contactsError) {
-          console.error('❌ Error fetching contacts table emails:', contactsError);
-        } else if (Array.isArray(contactsData)) {
-          contactRows = contactsData;
-        }
-      } catch (contactFetchError) {
-        console.error('❌ Network error fetching contacts table emails:', contactFetchError);
-      }
-
-      const extraContacts: Contact[] = [];
-      contactRows.forEach((row) => {
-        const rawEmail = typeof row.email === 'string' ? row.email.trim() : '';
-        if (!rawEmail) return;
-
-        const normalisedEmail = rawEmail.toLowerCase();
-        const leadId =
-          row.lead_id ??
-          row.legacy_lead_id ??
-          row.legacy_id ??
-          row.lead ??
-          row.leadId ??
-          null;
-        if (!leadId) return;
-
-        const legacyRef =
-          row.legacy_lead_id ??
-          row.legacy_id ??
-          null;
-
-        const isLegacyContact = legacyRef !== null && legacyRef !== undefined;
-        const leadNumber = String(leadId);
-
-        extraContacts.push({
-          id: row.id ?? leadNumber,
-          name: row.name || null,
-          email: normalisedEmail,
-          lead_number: leadNumber,
-          lead_type: isLegacyContact ? 'legacy' : 'new',
-          client_uuid: isLegacyContact ? null : String(leadId),
-          idstring: String(leadId),
-        } as Contact);
-      });
-
-      const allContacts: Contact[] = [
-        ...baseNewContacts,
-        ...baseLegacyContacts,
-        ...extraContacts,
-      ];
-
-      console.log(`👥 Found ${allContacts?.length || 0} total contacts to match against`);
-      console.log(`   - New leads: ${newLeads?.length || 0}`);
-      console.log(`   - Legacy leads: ${legacyLeads?.length || 0}`);
-      
-      if (allContacts && allContacts.length > 0) {
-        console.log('👥 Sample contacts:', allContacts.slice(0, 5).map((contact: any) => ({
-          id: contact.id,
-          name: contact.name,
-          email: contact.email,
-          lead_number: contact.lead_number,
-          lead_type: contact.lead_type
-        })));
-      } else {
-        console.log('❌ No contacts found at all!');
-      }
-
-      const emailsToUpsert: any[] = [];
-      const processedMessageIds = new Set<string>();
-      
-      console.log('🔄 Processing emails for client matching...');
-      
-      for (const msg of lawOfficeMessages) {
-        const isOutgoing = msg.from?.emailAddress?.address?.toLowerCase().includes('lawoffice.org.il');
-        const originalBody = msg.body?.content || '';
-        let processedBody = !isOutgoing ? stripSignatureAndQuotedTextPreserveHtml(originalBody) : originalBody;
-        
-        processedBody = cleanMicrosoftDiagnosticEmail(processedBody);
-
-        const matchingContacts = allContacts?.filter((contact: any) => {
-          if (!contact || !contact.email || !contact.lead_number) return false;
-          
-          const contactEmail = contact.email.toLowerCase();
-          const leadNumber = contact.lead_number;
-          const subject = msg.subject || '';
-          
-          const fromEmail = msg.from?.emailAddress?.address?.toLowerCase() || '';
-          const toEmails = (msg.toRecipients || []).map((r: any) => r.emailAddress?.address?.toLowerCase() || '').filter(Boolean);
-          const ccEmails = (msg.ccRecipients || []).map((r: any) => r.emailAddress?.address?.toLowerCase() || '').filter(Boolean);
-          
-          const matches = (
-            fromEmail === contactEmail ||
-            toEmails.includes(contactEmail) ||
-            ccEmails.includes(contactEmail) ||
-            subject.includes(leadNumber) ||
-            subject.includes(`L${leadNumber}`) ||
-            subject.includes(`#${leadNumber}`) ||
-            subject.includes(`#L${leadNumber}`)
-          );
-          
-          return matches;
-        }) || [];
-
-        if (matchingContacts.length > 0 && !processedMessageIds.has(msg.id)) {
-          const preferredContact = matchingContacts.find((contact: any) => contact.lead_type !== 'legacy') || matchingContacts[0];
-          const isLegacyContact =
-            preferredContact.lead_type === 'legacy' ||
-            (typeof preferredContact.id === 'string' && preferredContact.id.startsWith('legacy_'));
-
-          const legacyId = isLegacyContact
-            ? (() => {
-                const raw = preferredContact.lead_number ?? preferredContact.id;
-                const numeric = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
-                return Number.isFinite(numeric) ? numeric : null;
-              })()
-            : null;
-
-          const preferredClientUuid = preferredContact.client_uuid
-            ?? preferredContact.idstring
-            ?? (typeof preferredContact.id === 'string' && preferredContact.id.includes('-') ? preferredContact.id : null);
-
-          const emailRecord = {
-            message_id: msg.id,
-            client_id: isLegacyContact ? null : preferredClientUuid,
-            legacy_id: legacyId,
-            thread_id: msg.conversationId,
-            sender_name: msg.from?.emailAddress?.name,
-            sender_email: msg.from?.emailAddress?.address,
-            recipient_list: (msg.toRecipients || []).map((r: any) => r.emailAddress.address).join(', '),
-            subject: msg.subject,
-            body_html: processedBody,
-            sent_at: msg.receivedDateTime,
-            direction: isOutgoing ? 'outgoing' : 'incoming',
-            attachments: Array.isArray(msg.attachments)
-              ? msg.attachments.map((att: any) => ({
-                  id: att.id,
-                  name: att.name,
-                  contentType: att.contentType,
-                  size: att.size,
-                  isInline: att.isInline ?? null,
-                }))
-              : null,
-          };
-
-          emailsToUpsert.push(emailRecord);
-          processedMessageIds.add(msg.id);
-        }
-      }
-
-      console.log(`📝 Prepared ${emailsToUpsert.length} email records for database`);
-
-      if (emailsToUpsert.length > 0) {
-        console.log('💾 Inserting emails into database...');
-        console.log('📊 Sample email record:', emailsToUpsert[0]);
-        
-        const { data: insertData, error: syncError } = await supabase
-          .from('emails')
-          .upsert(emailsToUpsert, { onConflict: 'message_id' })
-          .select();
-          
-        if (syncError) {
-          console.error('❌ Error syncing emails to database:', syncError);
-          console.error('❌ Failed email records:', emailsToUpsert);
-          throw new Error(`Failed to sync emails to database: ${syncError.message}`);
-        }
-        
-        console.log(`✅ Successfully synced ${emailsToUpsert.length} emails to database`);
-        console.log('📊 Insert result:', insertData?.length || 0, 'records inserted/updated');
-      } else {
-        console.log('📧 No emails to sync to database');
-      }
-      
-    } catch (error: any) {
-      console.error('❌ Error in syncAllEmails:', error);
-      throw error;
-    }
-  };
-
-  useEffect(() => {
-    if (!isOpen) {
-      setHasSyncedOnOpen(false);
-      return;
-    }
-    if (!allowGraphSync || hasSyncedOnOpen || !instance || !accounts[0]) {
-      return;
-    }
-
-    let cancelled = false;
-
-    const syncOnOpen = async () => {
-      try {
-        let tokenResponse;
-        try {
-          tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
-        } catch (error) {
-          tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
-        }
-        if (!tokenResponse?.accessToken) return;
-        console.log('🔄 Initial Graph sync on modal open...');
-        await syncAllEmails(tokenResponse.accessToken);
-        if (!cancelled) {
-          console.log('✅ Initial Graph sync completed');
-          setHasSyncedOnOpen(true);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.warn('Initial Graph sync failed on modal open:', error);
-        }
-      }
-    };
-
-    syncOnOpen();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, allowGraphSync, instance, accounts, hasSyncedOnOpen]);
 
 
   // Helper function to clean up Microsoft diagnostic emails
@@ -1091,28 +784,20 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
   }, [searchAllContacts, allContacts]);
 
   // Fetch email thread for selected contact
-  const hydrateEmailThreadBodies = useCallback(async (messages: EmailMessage[]) => {
-    if (!allowGraphSync) return;
-    if (!messages || messages.length === 0) return;
-    if (!instance || !accounts[0]) return;
+  const hydrateEmailThreadBodies = useCallback(
+    async (messages: EmailMessage[]) => {
+      if (!messages || messages.length === 0) return;
+      if (!userId) return;
 
-    const requiresHydration = messages.filter(message => {
-      const body = (message.body_html || '').trim();
-      const preview = (message.body_preview || '').trim();
-      if (!body && !preview) return true;
-      const normalised = (body || preview).replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim();
-      return normalised.length < 8 || normalised === message.subject;
-    });
-
-    if (requiresHydration.length === 0) return;
-
-    try {
-      const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] }).catch(async error => {
-        console.warn('Silent token acquisition failed, using popup', error);
-        return instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
+      const requiresHydration = messages.filter(message => {
+        const body = (message.body_html || '').trim();
+        const preview = (message.body_preview || '').trim();
+        if (!body && !preview) return true;
+        const normalised = (body || preview).replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim();
+        return normalised.length < 8 || normalised === message.subject;
       });
-      if (!tokenResponse) return;
-      const accessToken = tokenResponse.accessToken;
+
+      if (requiresHydration.length === 0) return;
 
       const updates: Record<string, { html: string; preview: string }> = {};
 
@@ -1120,15 +805,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
         requiresHydration.map(async message => {
           if (!message.id) return;
           try {
-            const response = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${message.id}?$select=body`, {
-              headers: { Authorization: `Bearer ${accessToken}` },
-            });
-            if (!response.ok) {
-              console.warn('Failed to hydrate email body for thread', message.id, await response.text());
-              return;
-            }
-            const graphMessage = await response.json();
-            const rawContent = graphMessage?.body?.content;
+            const rawContent = await fetchEmailBodyFromBackend(userId, message.id);
             if (!rawContent || typeof rawContent !== 'string') return;
 
             const cleanedHtml = sanitizeEmailHtml(extractHtmlBody(rawContent));
@@ -1144,7 +821,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
               .update({ body_html: rawContent, body_preview: rawContent })
               .eq('message_id', message.id);
           } catch (err) {
-            console.error('Unexpected error hydrating email thread body', err);
+            console.warn('Failed to hydrate email body from backend', err);
           }
         })
       );
@@ -1162,147 +839,164 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
           })
         );
       }
-    } catch (error) {
-      console.error('Failed to hydrate email bodies for thread', error);
-    }
-  }, [accounts, allowGraphSync, instance]);
+    },
+    [userId]
+  );
 
-  useEffect(() => {
-    const fetchEmailThread = async () => {
-      if (!selectedContact) {
+  const fetchEmailThread = useCallback(async () => {
+    if (!selectedContact) {
+      setEmailThread([]);
+      setIsLoading(false);
+      return;
+    }
+
+    console.log(`🔄 Fetching email thread for contact: ${selectedContact.name} (ID: ${selectedContact.id})`);
+    
+    setEmailThread([]);
+    setIsLoading(true);
+    
+    try {
+      const isLegacyContact =
+        selectedContact.lead_type === 'legacy' ||
+        selectedContact.id.toString().startsWith('legacy_');
+
+      const clientUuid = selectedContact.client_uuid
+        ?? selectedContact.idstring
+        ?? (typeof selectedContact.id === 'string' && selectedContact.id.includes('-') ? selectedContact.id : null);
+
+      let legacyId: number | null = null;
+      if (isLegacyContact) {
+        const derivedFromLeadNumber = Number((selectedContact.lead_number || '').replace(/[^0-9]/g, ''));
+        if (!Number.isNaN(derivedFromLeadNumber) && derivedFromLeadNumber > 0) {
+          legacyId = derivedFromLeadNumber;
+        } else {
+          const derivedFromId = Number(selectedContact.id.toString().replace(/[^0-9]/g, ''));
+          if (!Number.isNaN(derivedFromId) && derivedFromId > 0) {
+            legacyId = derivedFromId;
+          }
+        }
+      }
+
+      let emailQuery = supabase
+        .from('emails')
+        .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id')
+        .order('sent_at', { ascending: true });
+
+      if (legacyId !== null) {
+        console.log(`📧 Querying legacy emails by legacy_id=${legacyId}`);
+        emailQuery = emailQuery.eq('legacy_id', legacyId);
+      } else if (clientUuid) {
+        emailQuery = emailQuery.eq('client_id', clientUuid);
+      } else {
+        console.warn('Skipping email fetch: contact lacks valid client UUID or legacy id', selectedContact);
         setEmailThread([]);
         setIsLoading(false);
         return;
       }
 
-      console.log(`🔄 Fetching email thread for contact: ${selectedContact.name} (ID: ${selectedContact.id})`);
-      
-      // Clear email thread immediately when contact changes
+    const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
+    const filterClauses: string[] = [];
+    if (legacyId !== null) {
+      filterClauses.push(`legacy_id.eq.${legacyId}`);
+    }
+    if (clientUuid) {
+      filterClauses.push(`client_id.eq.${clientUuid}`);
+    }
+    if (contactEmail) {
+      filterClauses.push(`sender_email.ilike.${contactEmail}`);
+      filterClauses.push(`recipient_list.ilike.%${contactEmail}%`);
+    }
+
+    if (filterClauses.length === 0) {
+      console.warn('📧 No valid identifiers for email fetch', selectedContact);
       setEmailThread([]);
-      setIsLoading(true);
+      setIsLoading(false);
+      return;
+    }
+
+    emailQuery = emailQuery.or(filterClauses.join(','));
+
+    const { data, error } = await emailQuery;
+
+      if (error) throw error;
       
-      try {
-        // First, sync with Microsoft Graph to get latest emails (only if we have a selected contact)
-        if (allowGraphSync && selectedContact && instance && accounts[0]) {
-          try {
-            let tokenResponse;
-            try {
-              tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
-            } catch (error) {
-              tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
-            }
-
-            console.log('🔄 Syncing all emails from Microsoft Graph...');
-            await syncAllEmails(tokenResponse.accessToken);
-            console.log('✅ Graph sync completed');
-          } catch (syncError) {
-            console.warn('Graph sync failed, continuing with database fetch:', syncError);
-            // Continue with database fetch even if sync fails
-          }
-        }
-
-        // Then fetch from database - ONLY emails for this specific contact
-        console.log(`📧 Fetching emails from database for client_id: ${selectedContact.id}`);
-        const isLegacyContact =
-          selectedContact.lead_type === 'legacy' ||
-          selectedContact.id.toString().startsWith('legacy_');
-
-        const clientUuid = selectedContact.client_uuid
-          ?? selectedContact.idstring
-          ?? (typeof selectedContact.id === 'string' && selectedContact.id.includes('-') ? selectedContact.id : null);
-
-        let legacyId: number | null = null;
-        if (isLegacyContact) {
-          const derivedFromLeadNumber = Number((selectedContact.lead_number || '').replace(/[^0-9]/g, ''));
-          if (!Number.isNaN(derivedFromLeadNumber) && derivedFromLeadNumber > 0) {
-            legacyId = derivedFromLeadNumber;
-          } else {
-            const derivedFromId = Number(selectedContact.id.toString().replace(/[^0-9]/g, ''));
-            if (!Number.isNaN(derivedFromId) && derivedFromId > 0) {
-              legacyId = derivedFromId;
-            }
-          }
-        }
-
-        let emailQuery = supabase
-          .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id')
-          .order('sent_at', { ascending: true });
-
-        if (legacyId !== null) {
-          console.log(`📧 Querying legacy emails by legacy_id=${legacyId}`);
-          emailQuery = emailQuery.eq('legacy_id', legacyId);
-        } else if (clientUuid) {
-          emailQuery = emailQuery.eq('client_id', clientUuid);
-        } else {
-          console.warn('Skipping email fetch: contact lacks valid client UUID or legacy id', selectedContact);
-          setEmailThread([]);
-          setIsLoading(false);
-          return;
-        }
-
-        const { data, error } = await emailQuery;
-
-        if (error) throw error;
-        
-        // Debug: Log the email data to see what we're getting
-        console.log(`📧 Found ${data?.length || 0} emails for contact ${selectedContact.name} (ID: ${selectedContact.id})`);
-        if (data && data.length > 0) {
-          console.log('📧 Sample email:', {
-            id: data[0].id,
-            subject: data[0].subject,
-            sender: data[0].sender_email,
-            direction: data[0].direction,
-            date: data[0].sent_at
-          });
-        } else {
-          console.log('📧 No emails found for this contact');
-        }
-        
-        const formattedThread: EmailMessage[] = (data || []).map((row: any) => {
-          const rawHtml = typeof row.body_html === 'string' ? row.body_html : null;
-          const rawPreview = typeof row.body_preview === 'string' ? row.body_preview : null;
-          const cleanedHtml = rawHtml ? extractHtmlBody(rawHtml) : null;
-          const cleanedPreview = rawPreview ? extractHtmlBody(rawPreview) : null;
-
-          // If both html and preview are missing, fall back to subject so the UI shows something
-          const fallbackText = cleanedPreview || cleanedHtml || row.subject || '';
-          const resolvedHtml = cleanedHtml ?? (fallbackText ? convertBodyToHtml(fallbackText) : null);
-          const sanitizedHtml = resolvedHtml ? sanitizeEmailHtml(resolvedHtml) : null;
-          const sanitizedPreview = cleanedPreview
-            ? sanitizeEmailHtml(cleanedPreview)
-            : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(convertBodyToHtml(fallbackText)) : null);
-
-          return {
-            id: row.message_id || row.id?.toString?.() || `email_${row.id}`,
-            subject: row.subject || 'No Subject',
-            body_html: sanitizedHtml,
-            body_preview: sanitizedPreview ?? null,
-            sender_name: row.sender_name || 'Team',
-            sender_email: row.sender_email || '',
-            recipient_list: row.recipient_list || '',
-            sent_at: row.sent_at,
-            direction: row.direction === 'outgoing' ? 'outgoing' : 'incoming',
-            attachments: row.attachments || []
-          } as EmailMessage;
+      console.log(`📧 Found ${data?.length || 0} emails for contact ${selectedContact.name} (ID: ${selectedContact.id})`);
+      if (data && data.length > 0) {
+        console.log('📧 Sample email:', {
+          id: data[0].id,
+          subject: data[0].subject,
+          sender: data[0].sender_email,
+          direction: data[0].direction,
+          date: data[0].sent_at
         });
-
-        setEmailThread(formattedThread);
-        hydrateEmailThreadBodies(formattedThread);
-      } catch (error) {
-        console.error(`❌ Error fetching email thread for ${selectedContact.name}:`, error);
-        // Only show toast for actual errors, not when no emails found
-        if (error && typeof error === 'object' && 'message' in error) {
-          toast.error(`Failed to load emails for ${selectedContact.name}`);
-        }
-        setEmailThread([]); // Clear thread on error
-      } finally {
-        setIsLoading(false);
+      } else {
+        console.log('📧 No emails found for this contact');
       }
-    };
+      
+      const formattedThread: EmailMessage[] = (data || []).map((row: any) => {
+        const rawHtml = typeof row.body_html === 'string' ? row.body_html : null;
+        const rawPreview = typeof row.body_preview === 'string' ? row.body_preview : null;
+        const cleanedHtml = rawHtml ? extractHtmlBody(rawHtml) : null;
+        const cleanedPreview = rawPreview ? extractHtmlBody(rawPreview) : null;
 
+        const fallbackText = cleanedPreview || cleanedHtml || row.subject || '';
+        const resolvedHtml = cleanedHtml ?? (fallbackText ? convertBodyToHtml(fallbackText) : null);
+        const sanitizedHtml = resolvedHtml ? sanitizeEmailHtml(resolvedHtml) : null;
+        const sanitizedPreview = cleanedPreview
+          ? sanitizeEmailHtml(cleanedPreview)
+          : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(convertBodyToHtml(fallbackText)) : null);
+
+        return {
+          id: row.message_id || row.id?.toString?.() || `email_${row.id}`,
+          subject: row.subject || 'No Subject',
+          body_html: sanitizedHtml,
+          body_preview: sanitizedPreview ?? null,
+          sender_name: row.sender_name || 'Team',
+          sender_email: row.sender_email || '',
+          recipient_list: row.recipient_list || '',
+          sent_at: row.sent_at,
+          direction: row.direction === 'outgoing' ? 'outgoing' : 'incoming',
+          attachments: row.attachments || []
+        } as EmailMessage;
+      });
+
+      setEmailThread(formattedThread);
+      hydrateEmailThreadBodies(formattedThread);
+    } catch (error) {
+      console.error(`❌ Error fetching email thread for ${selectedContact?.name}:`, error);
+      if (error && typeof error === 'object' && 'message' in error) {
+        toast.error(`Failed to load emails for ${selectedContact?.name}`);
+      }
+      setEmailThread([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedContact, hydrateEmailThreadBodies]);
+
+  useEffect(() => {
     fetchEmailThread();
-  }, [selectedContact, instance, accounts, hydrateEmailThreadBodies, allowGraphSync]);
+  }, [fetchEmailThread]);
+
+  const runMailboxSync = useCallback(async () => {
+    if (!userId) {
+      toast.error('Please sign in to sync emails.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Mailbox not connected. Please connect it from the Interactions tab.');
+      return;
+    }
+
+    try {
+      await triggerMailboxSync(userId);
+      await refreshMailboxStatus();
+      await fetchEmailThread();
+    } catch (error) {
+      console.error('Mailbox sync failed:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to sync emails.');
+    }
+  }, [userId, mailboxStatus.connected, refreshMailboxStatus, fetchEmailThread]);
+
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
@@ -1373,10 +1067,46 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
     }
   };
 
+  const readFileAsBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.split(',')[1];
+        if (!base64) {
+          reject(new Error(`Failed to encode ${file.name}`));
+          return;
+        }
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+      reader.readAsDataURL(file);
+    });
+
+  const mapAttachmentsForBackend = async (files: File[]) => {
+    const encoded = [];
+    for (const file of files) {
+      const contentBytes = await readFileAsBase64(file);
+      encoded.push({
+        name: file.name,
+        contentType: file.type || 'application/octet-stream',
+        contentBytes,
+      });
+    }
+    return encoded;
+  };
 
   const handleSendEmail = async () => {
     if (!selectedContact || !newMessage.trim()) {
       toast.error('Please enter a message');
+      return;
+    }
+    if (!userId) {
+      toast.error('Please sign in to send emails.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Mailbox not connected. Please connect it before sending emails.');
       return;
     }
 
@@ -1396,6 +1126,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
     }
 
     if (finalToRecipients.length === 0) {
+      const fallbackRecipients = normaliseAddressList(selectedContact.email);
+      if (fallbackRecipients.length > 0) {
+        finalToRecipients.push(...fallbackRecipients);
+      }
+    }
+
+    if (finalToRecipients.length === 0) {
       setRecipientError('Please add at least one recipient.');
       return;
     }
@@ -1410,191 +1147,102 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
       setCcInput('');
     }
 
-    setIsSending(true);
-    try {
-      // Get current user info
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        toast.error('User not authenticated');
-        return;
-      }
+    // Take snapshots so we can send in the background without being affected
+    // by immediate UI resets.
+    const messageSnapshot = newMessage;
+    const attachmentsSnapshot = [...attachments];
+    const finalToSnapshot = [...finalToRecipients];
+    const finalCcSnapshot = [...finalCcRecipients];
+    const senderName = currentUserFullName || userEmail || 'Team Member';
+    const derivedSubject =
+      subject && subject.trim()
+        ? subject.trim()
+        : `${selectedContact.lead_number || selectedContact.id} - ${selectedContact.name}`;
 
-      // Get user's full name
-      const { data: userData } = await supabase
-        .from('users')
-        .select('full_name, email')
-        .eq('auth_id', user.id)
-        .single();
+    // Optimistic UI: append an outgoing email immediately using basic HTML conversion.
+    const optimisticId = `temp_${Date.now()}`;
+    const optimisticSentAt = new Date().toISOString();
+    const optimisticHtmlBody = convertBodyToHtml(messageSnapshot);
 
-      const senderName = userData?.full_name || user.email || 'Team Member';
-      const senderEmail = userData?.email || user.email || '';
+    const optimisticMessage: EmailMessage = {
+      id: optimisticId,
+      subject: derivedSubject,
+      body_html: optimisticHtmlBody,
+      body_preview: optimisticHtmlBody,
+      sender_name: senderName,
+      sender_email: userEmail || '',
+      recipient_list: finalToSnapshot.join(', '),
+      sent_at: optimisticSentAt,
+      direction: 'outgoing',
+      attachments: attachmentsSnapshot.map((file) => ({
+        name: file.name,
+        contentType: file.type || 'application/octet-stream',
+      })),
+    };
 
-      // Prepare email content with signature for database storage
-      const baseEmailContent = convertBodyToHtml(newMessage);
-      const emailContentWithSignature = await appendEmailSignature(baseEmailContent);
-      const cleanedHtmlBody = extractHtmlBody(emailContentWithSignature);
-      
-      // Create email record in database
-      const { data: emailRecord, error: dbError } = await supabase
-        .from('emails')
-        .insert({
-          client_id: selectedContact.id,
-          message_id: `email_${Date.now()}`,
-          sender_name: senderName,
-          sender_email: senderEmail,
-          recipient_list: [...finalToRecipients, ...finalCcRecipients].join(', '),
-          subject: subject,
-          body_html: cleanedHtmlBody,
-          body_preview: cleanedHtmlBody,
-          sent_at: new Date().toISOString(),
-          direction: 'outgoing',
-          // Add attachment info if any
-          attachments: attachments.length > 0 ? attachments.map(file => ({
-            name: file.name,
-            size: file.size,
-            type: file.type
-          })) : null
-        })
-        .select()
-        .single();
+    setEmailThread((prev) => [...prev, optimisticMessage]);
 
-      if (dbError) {
-        console.error('Database error:', dbError);
-        throw new Error('Failed to save email to database');
-      }
-
-      // Send email via Microsoft Graph API
-      try {
-        if (!instance || !accounts[0]) {
-          throw new Error('Not authenticated with Microsoft Graph');
-        }
-
-        // Acquire access token
-        let tokenResponse;
-        try {
-          tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
-        } catch (error) {
-          tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
-        }
-        const accessToken = tokenResponse.accessToken;
-
-        // Convert attachments to base64 if any
-        const emailAttachments = [];
-        for (const file of attachments) {
-          const base64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const base64String = (reader.result as string).split(',')[1];
-              resolve(base64String);
-            };
-            reader.readAsDataURL(file);
-          });
-          
-          emailAttachments.push({
-            '@odata.type': '#microsoft.graph.fileAttachment',
-            name: file.name,
-            contentType: file.type,
-            contentBytes: base64,
-          });
-        }
-
-        // Prepare email message with signature
-        const emailBodyWithSignature = emailContentWithSignature;
-        
-        const draftMessage = {
-          subject: subject,
-          body: { contentType: 'HTML', content: emailBodyWithSignature },
-          toRecipients: finalToRecipients.map(address => ({ emailAddress: { address } })),
-          ...(finalCcRecipients.length > 0
-            ? {
-                ccRecipients: finalCcRecipients.map(address => ({ emailAddress: { address } })),
-              }
-            : {}),
-          attachments: emailAttachments,
-        };
-
-        // Create draft
-        const draftRes = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
-          method: 'POST',
-          headers: { 
-            Authorization: `Bearer ${accessToken}`, 
-            'Content-Type': 'application/json' 
-          },
-          body: JSON.stringify(draftMessage),
-        });
-
-        if (!draftRes.ok) {
-          const errorText = await draftRes.text();
-          console.error('Draft creation failed:', errorText);
-          throw new Error('Failed to create email draft');
-        }
-
-        const createdDraft = await draftRes.json();
-        const messageId = createdDraft.id;
-        
-        if (!messageId) {
-          throw new Error('Could not get message ID from draft');
-        }
-
-        // Send draft
-        const sendRes = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}` },
-        });
-
-        if (!sendRes.ok) {
-          const errorText = await sendRes.text();
-          console.error('Email sending failed:', errorText);
-          throw new Error('Failed to send email');
-        }
-
-        console.log('Email successfully sent to:', selectedContact.email);
-        console.log('Subject:', subject);
-        console.log('Body:', newMessage);
-        
-      } catch (emailError) {
-        console.error('Email sending error:', emailError);
-        // Even if email sending fails, we still save to database
-        toast.error('Email saved to database but sending failed. Please try again.');
-      }
-
-      // Add the new email to the thread
-      const sanitizedBodyHtml = cleanedHtmlBody ? sanitizeEmailHtml(cleanedHtmlBody) : null;
-      const newEmail: EmailMessage = {
-        id: emailRecord.id.toString(),
-        subject: subject,
-        body_html: sanitizedBodyHtml,
-        sender_name: senderName,
-        sender_email: senderEmail,
-        sent_at: emailRecord.sent_at,
-        direction: 'outgoing',
-        attachments: attachments.length > 0 ? attachments.map(file => ({
-          name: file.name,
-          size: file.size,
-          type: file.type
-        })) : undefined
-      };
-
-      setEmailThread(prev => [...prev, newEmail]);
-      setNewMessage('');
-      if (selectedContact) {
-        const category = selectedContact.topic || 'General';
-        setSubject(`${selectedContact.lead_number} - ${selectedContact.name} - ${category}`);
-      } else {
-        setSubject('');
-      }
-      setAttachments([]);
-      setShowLinkForm(false);
-      setLinkLabel('');
-      setLinkUrl('');
-      setShowCompose(false);
-      toast.success('Email sent successfully and saved to database');
-    } catch (error) {
-      console.error('Error sending email:', error);
-      toast.error('Failed to send email');
-    } finally {
-      setIsSending(false);
+    // Reset compose UI immediately for a snappy experience
+    toast.success('Email queued to send');
+    setNewMessage('');
+    if (selectedContact) {
+      const category = selectedContact.topic || 'General';
+      setSubject(`${selectedContact.lead_number} - ${selectedContact.name} - ${category}`);
+    } else {
+      setSubject('');
     }
+    setAttachments([]);
+    setShowLinkForm(false);
+    setLinkLabel('');
+    setLinkUrl('');
+    setShowCompose(false);
+
+    // Fire-and-forget: actually send the email in the background.
+    (async () => {
+      try {
+        const baseEmailContent = convertBodyToHtml(messageSnapshot);
+        const emailContentWithSignature = await appendEmailSignature(baseEmailContent);
+        const cleanedHtmlBody = extractHtmlBody(emailContentWithSignature);
+        const backendAttachments = await mapAttachmentsForBackend(attachmentsSnapshot);
+
+        const isLegacyLead =
+          selectedContact.lead_type === 'legacy' ||
+          selectedContact.id.toString().startsWith('legacy_');
+        const legacyId = isLegacyLead
+          ? (() => {
+              const numeric = parseInt(selectedContact.id.toString().replace('legacy_', ''), 10);
+              return Number.isNaN(numeric) ? null : numeric;
+            })()
+          : null;
+
+        await sendEmailViaBackend({
+          userId,
+          subject: derivedSubject,
+          bodyHtml: emailContentWithSignature,
+          to: finalToSnapshot,
+          cc: finalCcSnapshot,
+          attachments: backendAttachments.length > 0 ? backendAttachments : undefined,
+          context: {
+            clientId: !isLegacyLead ? selectedContact.client_uuid ?? selectedContact.id : null,
+            legacyLeadId: isLegacyLead ? legacyId : null,
+            leadType: selectedContact.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+            leadNumber: selectedContact.lead_number || null,
+            contactEmail: selectedContact.email || null,
+            contactName: selectedContact.name || null,
+            senderName,
+            userInternalId: selectedContact.user_internal_id || undefined,
+          },
+        });
+
+        // Refresh the thread in the background to replace any optimistic
+        // messages with the final stored versions.
+        await fetchEmailThread();
+      } catch (error) {
+        console.error('Error sending email (background):', error);
+        toast.error(error instanceof Error ? error.message : 'Failed to send email');
+        // Optionally we could mark the optimistic message as failed here.
+      }
+    })();
   };
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1643,36 +1291,71 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
     }
   };
 
-  const downloadAttachment = (attachment: any) => {
+  const downloadAttachment = async (messageId: string, attachment: any) => {
+    if (attachment?.contentBytes) {
+      try {
+        const byteCharacters = atob(attachment.contentBytes);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const byteArray = new Uint8Array(byteNumbers);
+        const blob = new Blob([byteArray], { type: attachment.contentType || 'application/octet-stream' });
+        const url = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = attachment.name || 'attachment';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        window.URL.revokeObjectURL(url);
+        toast.success(`Downloaded ${attachment.name || 'attachment'}`);
+      } catch (error) {
+        console.error('Error downloading inline attachment:', error);
+        toast.error('Failed to download attachment');
+      }
+      return;
+    }
+
+    if (!attachment?.id) {
+      toast.error('Attachment content not available yet.');
+      return;
+    }
+    if (!userId) {
+      toast.error('Please sign in to download attachments.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Mailbox not connected. Connect it to download attachments.');
+      return;
+    }
+    if (downloadingAttachments[attachment.id]) {
+      return;
+    }
+
+    setDownloadingAttachments(prev => ({ ...prev, [attachment.id]: true }));
+    toast.loading(`Downloading ${attachment.name || 'attachment'}...`, { id: attachment.id });
+
     try {
-      if (!attachment.contentBytes) {
-        toast.error('Attachment content not available');
-        return;
-      }
-
-      // Convert base64 to blob
-      const byteCharacters = atob(attachment.contentBytes);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: attachment.contentType || 'application/octet-stream' });
-
-      // Create download link
+      const { blob, fileName } = await downloadAttachmentFromBackend(userId, messageId, attachment.id);
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = attachment.name;
+      link.download = fileName || attachment.name || 'attachment';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-
-      toast.success(`Downloaded ${attachment.name}`);
+      toast.success(`Downloaded ${attachment.name || 'attachment'}`, { id: attachment.id });
     } catch (error) {
-      console.error('Error downloading attachment:', error);
-      toast.error('Failed to download attachment');
+      console.error('Error downloading attachment via backend:', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to download attachment', { id: attachment.id });
+    } finally {
+      setDownloadingAttachments(prev => {
+        const next = { ...prev };
+        delete next[attachment.id];
+        return next;
+      });
     }
   };
 
@@ -1975,7 +1658,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, al
                                       </div>
                                       {attachment.contentBytes && (
                                         <button
-                                          onClick={() => downloadAttachment(attachment)}
+                                          onClick={() => downloadAttachment(message.id, attachment)}
                                           className="btn btn-sm btn-outline btn-primary"
                                           title="Download attachment"
                                         >

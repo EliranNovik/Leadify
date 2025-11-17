@@ -7,9 +7,13 @@ const router = express.Router();
 // Webhook endpoint to receive form data and create new leads
 router.post('/hook/catch', webhookController.catchFormData);
 
-// Microsoft Graph email sync webhook
+// Microsoft Graph email sync webhook (legacy manual trigger)
 router.post('/hook/graph/emails/sync', graphEmailController.syncEmails);
 router.get('/hook/graph/emails/health', graphEmailController.health);
+
+// Microsoft Graph push notifications
+router.get('/graph/webhook', graphEmailController.webhookValidation);
+router.post('/graph/webhook', graphEmailController.webhookNotification);
 
 // Health check for webhook
 router.get('/hook/health', (req, res) => {

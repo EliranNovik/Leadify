@@ -53,6 +53,8 @@ const Dashboard: React.FC = () => {
   const [scheduledTimeOffCount, setScheduledTimeOffCount] = useState(0);
   const [unavailableEmployeesData, setUnavailableEmployeesData] = useState<any[]>([]);
   const [unavailableEmployeesLoading, setUnavailableEmployeesLoading] = useState(false);
+  // Map of meeting location name -> default_link (from tenants_meetinglocation)
+  const [meetingLocationLinks, setMeetingLocationLinks] = useState<Record<string, string>>({});
 
   // 1. Add state for real signed leads
   const [realSignedLeads, setRealSignedLeads] = useState<any[]>([]);
@@ -73,6 +75,33 @@ const Dashboard: React.FC = () => {
 
   const navigate = useNavigate();
 
+  // Fetch meeting locations and their default links for join buttons
+  useEffect(() => {
+    const fetchMeetingLocations = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('tenants_meetinglocation')
+          .select('name, default_link');
+
+        if (error) {
+          console.error('Dashboard: Error fetching meeting locations:', error);
+          return;
+        }
+
+        const map: Record<string, string> = {};
+        (data || []).forEach((loc: any) => {
+          if (loc.name && loc.default_link) {
+            map[loc.name] = loc.default_link;
+          }
+        });
+        setMeetingLocationLinks(map);
+      } catch (err) {
+        console.error('Dashboard: Unexpected error fetching meeting locations:', err);
+      }
+    };
+
+    fetchMeetingLocations();
+  }, []);
 
   // Fetch detailed unavailable employees data for table
   const fetchUnavailableEmployeesData = async () => {
@@ -665,7 +694,8 @@ const Dashboard: React.FC = () => {
               meetingAmount: meeting.meeting_amount,
               meetingCurrency: meeting.meeting_currency,
             }).display,
-              link: meeting.teams_meeting_url,
+              // Prefer explicit Teams / meeting URL; fall back to default_link for the location
+              link: meeting.teams_meeting_url || meetingLocationLinks[meeting.meeting_location] || '',
             };
           });
 
@@ -1062,7 +1092,7 @@ const Dashboard: React.FC = () => {
               meetingAmount: meeting.meeting_amount,
               meetingCurrency: meeting.meeting_currency,
             }).display,
-              link: meeting.teams_meeting_url,
+              link: meeting.teams_meeting_url || meetingLocationLinks[meeting.meeting_location] || '',
             };
           });
 
@@ -3999,13 +4029,26 @@ const Dashboard: React.FC = () => {
                         </div>
                       </div>
                     {/* Action Buttons */}
-                      {isOnlineLocation(meeting.location) && getValidTeamsLink(meeting.link) && (
+                      {(() => {
+                        // meeting.link already prefers explicit Teams URL and falls back to location default_link
+                        const hasLink = !!getValidTeamsLink(meeting.link);
+                        const isTeamsMeeting = !!meeting.teams_meeting_url;
+                        const hasDefaultForLocation = !!meetingLocationLinks[meeting.location];
+                        // Show join button only for:
+                        // - real Teams meetings (teams_meeting_url present), or
+                        // - locations that have a default_link configured
+                        return hasLink && (isTeamsMeeting || hasDefaultForLocation);
+                      })() && (
                         <div className="absolute bottom-4 left-4 right-4">
                           {/* Join Meeting (Teams) */}
                           <button 
                             className="btn btn-primary btn-xs sm:btn-sm w-full"
                             onClick={() => {
-                              const url = getValidTeamsLink(meeting.link);
+                              const url = getValidTeamsLink(
+                                meeting.link ||
+                                meeting.teams_meeting_url ||
+                                meetingLocationLinks[meeting.location]
+                              );
                               if (url) {
                                 window.open(url, '_blank');
                               } else {

@@ -1334,10 +1334,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   // Helper function to get contrasting text color based on background
   const getContrastingTextColor = (hexColor?: string | null) => {
-    if (!hexColor) return '#111827'; // Default to black if no color
-    const r = parseInt(hexColor.slice(1, 3), 16);
-    const g = parseInt(hexColor.slice(3, 5), 16);
-    const b = parseInt(hexColor.slice(5, 7), 16);
+    // When we don't have a specific stage colour, we default to white text
+    // on the default purple background so the label stays readable.
+    if (!hexColor) return '#ffffff';
+
+    let sanitized = hexColor.trim();
+    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+    if (sanitized.length === 3) {
+      sanitized = sanitized.split('').map(char => char + char).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+      return '#ffffff';
+    }
+
+    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
     // Calculate luminance (perceived brightness)
     const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     return luminance > 0.55 ? '#111827' : '#ffffff';

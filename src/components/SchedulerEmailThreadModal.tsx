@@ -3,10 +3,80 @@ import { createPortal } from 'react-dom';
 import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, PlusIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
-import { buildApiUrl } from '../lib/api';
-import { useMsal } from '@azure/msal-react';
-import { loginRequest } from '../msalConfig';
-import { syncEmailsForClient } from '../lib/graphEmailSync';
+import { appendEmailSignature } from '../lib/emailSignature';
+import {
+  getMailboxStatus,
+  triggerMailboxSync,
+  sendEmailViaBackend,
+  fetchEmailBodyFromBackend,
+} from '../lib/mailboxApi';
+
+const normalizeEmailForFilter = (value?: string | null) =>
+  value ? value.trim().toLowerCase() : '';
+
+const sanitizeEmailForFilter = (value: string) =>
+  value.replace(/[^a-z0-9@._+!~-]/g, '');
+
+const collectClientEmails = (client?: { email?: string | null } | null): string[] => {
+  const emails: string[] = [];
+  const pushEmail = (val?: string | null) => {
+    const normalized = normalizeEmailForFilter(val);
+    if (normalized) {
+      emails.push(normalized);
+    }
+  };
+
+  if (client?.email) {
+    pushEmail(client.email);
+  }
+
+  const extraEmails = (client as any)?.emails;
+  if (Array.isArray(extraEmails)) {
+    extraEmails.forEach((entry: any) => {
+      if (typeof entry === 'string') {
+        pushEmail(entry);
+      } else if (entry && typeof entry === 'object') {
+        if (typeof entry.email === 'string') {
+          pushEmail(entry.email);
+        }
+        if (typeof entry.value === 'string') {
+          pushEmail(entry.value);
+        }
+        if (typeof entry.address === 'string') {
+          pushEmail(entry.address);
+        }
+      }
+    });
+  }
+
+  return Array.from(new Set(emails));
+};
+
+const buildEmailFilterClauses = (params: {
+  clientId?: string | null;
+  legacyId?: number | null;
+  emails: string[];
+}) => {
+  const clauses: string[] = [];
+
+  if (params.legacyId !== undefined && params.legacyId !== null && !Number.isNaN(params.legacyId)) {
+    clauses.push(`legacy_id.eq.${params.legacyId}`);
+  }
+
+  if (params.clientId) {
+    clauses.push(`client_id.eq.${params.clientId}`);
+  }
+
+  params.emails.forEach((email) => {
+    const sanitized = sanitizeEmailForFilter(email);
+    if (sanitized) {
+      clauses.push(`sender_email.ilike.${sanitized}`);
+      clauses.push(`recipient_list.ilike.%${sanitized}%`);
+    }
+  });
+
+  return clauses;
+};
 
 interface SchedulerEmailThreadModalProps {
   isOpen: boolean;
@@ -18,6 +88,7 @@ interface SchedulerEmailThreadModalProps {
     email?: string;
     lead_type?: string;
     topic?: string;
+    user_internal_id?: string | number | null;
   };
   onClientUpdate?: () => Promise<void>;
 }
@@ -149,7 +220,6 @@ const replaceTemplateTokens = (content: string, client: SchedulerEmailThreadModa
 };
 
 const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ isOpen, onClose, client, onClientUpdate }) => {
-  const { instance, accounts } = useMsal();
   const [emails, setEmails] = useState<any[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState("");
@@ -158,7 +228,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [composeBody, setComposeBody] = useState("");
   const [composeAttachments, setComposeAttachments] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
-  const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
+  const [currentUserFullName, setCurrentUserFullName] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [toRecipients, setToRecipients] = useState<string[]>([]);
@@ -180,6 +250,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     if (!query) return templates;
     return templates.filter(template => template.name.toLowerCase().includes(query));
   }, [templates, templateSearch]);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string>('');
+  const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; lastSync?: string | null; error?: string | null }>({
+    connected: false,
+  });
+  const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
+  const syncOnOpenRef = useRef(false);
 
   const extractHtmlBody = (html: string) => {
     if (!html) return html;
@@ -273,19 +350,74 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [templateDropdownOpen]);
 
+  useEffect(() => {
+    let isMounted = true;
+    const loadAuthUser = async () => {
+      try {
+        const { data } = await supabase.auth.getUser();
+        if (!isMounted) return;
+        const authUser = data?.user;
+        if (authUser) {
+          setUserId(authUser.id);
+          setUserEmail(authUser.email || '');
+        } else {
+          setUserId(null);
+          setUserEmail('');
+        }
+      } catch (error) {
+        console.error('Failed to load authenticated user for SchedulerEmailThreadModal:', error);
+        if (isMounted) {
+          setUserId(null);
+          setUserEmail('');
+        }
+      }
+    };
+    loadAuthUser();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const refreshMailboxStatus = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const status = await getMailboxStatus(userId);
+      setMailboxStatus(status || { connected: false });
+    } catch (error) {
+      console.error('Failed to fetch mailbox status for scheduler modal:', error);
+      setMailboxStatus(prev => ({
+        ...prev,
+        connected: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch mailbox status',
+      }));
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    refreshMailboxStatus();
+  }, [refreshMailboxStatus]);
+
   // Fetch current user's full name
   useEffect(() => {
+    if (!userId) {
+      setCurrentUserFullName('');
+      return;
+    }
+    let isMounted = true;
     const fetchCurrentUserFullName = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user?.email) {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('full_name')
-            .eq('email', user.email)
-            .single();
-          if (userData?.full_name) {
-            setCurrentUserFullName(userData.full_name);
+        const { data, error } = await supabase
+          .from('users')
+          .select('full_name, email')
+          .eq('auth_id', userId)
+          .maybeSingle();
+        if (!isMounted) return;
+        if (!error && data) {
+          if (data.full_name) {
+            setCurrentUserFullName(data.full_name);
+          }
+          if (data.email && !userEmail) {
+            setUserEmail(data.email);
           }
         }
       } catch (error) {
@@ -293,7 +425,66 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
       }
     };
     fetchCurrentUserFullName();
-  }, []);
+    return () => {
+      isMounted = false;
+    };
+  }, [userId, userEmail]);
+
+  const hydrateEmailBodies = useCallback(
+    async (messages: any[]) => {
+      if (!messages || messages.length === 0) return;
+      if (!userId) return;
+
+      const requiresHydration = messages.filter(message => {
+        const body = (message.body_html || '').trim();
+        const preview = (message.body_preview || '').trim();
+        if (!body && !preview) return true;
+        const normalised = (body || preview).replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim();
+        return normalised.length < 8 || normalised === message.subject;
+      });
+
+      if (requiresHydration.length === 0) return;
+
+      const updates: Record<string, { html: string; preview: string }> = {};
+
+      await Promise.all(
+        requiresHydration.map(async message => {
+          if (!message.message_id) return;
+          try {
+            const rawContent = await fetchEmailBodyFromBackend(userId, message.message_id);
+            if (!rawContent || typeof rawContent !== 'string') return;
+            const cleanedHtml = extractHtmlBody(rawContent);
+            const sanitised = cleanedHtml ? cleanedHtml : rawContent;
+            updates[message.message_id] = {
+              html: sanitised,
+              preview: sanitised,
+            };
+            await supabase
+              .from('emails')
+              .update({ body_html: rawContent, body_preview: rawContent })
+              .eq('message_id', message.message_id);
+          } catch (error) {
+            console.warn('Failed to hydrate scheduler email body from backend:', error);
+          }
+        })
+      );
+
+      if (Object.keys(updates).length > 0) {
+        setEmails(prev =>
+          prev.map(email => {
+            const update = updates[email.message_id];
+            if (!update) return email;
+            return {
+              ...email,
+              body_html: update.html,
+              body_preview: update.preview,
+            };
+          })
+        );
+      }
+    },
+    [userId]
+  );
 
   // Function to fetch emails from database for the modal
   const fetchEmailsForModal = useCallback(async () => {
@@ -303,21 +494,24 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     try {
       // Fetch emails from database for this specific client
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      let emailQuery;
-      
-      if (isLegacyLead) {
-        const legacyId = parseInt(client.id.replace('legacy_', ''));
-        emailQuery = supabase
-          .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
-          .eq('legacy_id', legacyId)
-          .order('sent_at', { ascending: true });
+      const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
+      let emailQuery = supabase
+        .from('emails')
+        .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
+        .order('sent_at', { ascending: true });
+
+      const emailFilters = buildEmailFilterClauses({
+        clientId: !isLegacyLead ? String(client.id) : null,
+        legacyId,
+        emails: collectClientEmails(client),
+      });
+
+      if (emailFilters.length > 0) {
+        emailQuery = emailQuery.or(emailFilters.join(','));
+      } else if (isLegacyLead && legacyId !== null) {
+        emailQuery = emailQuery.eq('legacy_id', legacyId);
       } else {
-        emailQuery = supabase
-          .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
-          .eq('client_id', client.id)
-          .order('sent_at', { ascending: true });
+        emailQuery = emailQuery.eq('client_id', client.id);
       }
       
       const { data: emailData, error: emailError } = await emailQuery;
@@ -343,55 +537,59 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
       }));
       
       setEmails(formattedEmailsForModal);
+      await hydrateEmailBodies(formattedEmailsForModal);
     } catch (error) {
       console.error('❌ Error in fetchEmailsForModal:', error);
       setEmails([]);
     } finally {
       setEmailsLoading(false);
     }
-  }, [client]);
+  }, [client, hydrateEmailBodies]);
+
+  const runMailboxSync = useCallback(async () => {
+    if (!userId) {
+      toast.error('Please sign in to sync emails.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Mailbox not connected. Please connect it before syncing.');
+      return;
+    }
+
+    try {
+      await triggerMailboxSync(userId);
+      await refreshMailboxStatus();
+      await fetchEmailsForModal();
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error) {
+      console.warn('SchedulerEmailThreadModal: Mailbox sync failed, continuing with cached emails', error);
+      toast.error(error instanceof Error ? error.message : 'Failed to sync emails.');
+    }
+  }, [userId, mailboxStatus.connected, refreshMailboxStatus, fetchEmailsForModal, onClientUpdate]);
 
   // Fetch emails when modal opens
   useEffect(() => {
-    if (!isOpen || !client) return;
+    if (!isOpen || !client) {
+      syncOnOpenRef.current = false;
+      return;
+    }
 
     const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
-    setComposeSubject((prev) => (prev && prev.trim() ? prev : defaultSubject));
+    setComposeSubject(prev => (prev && prev.trim() ? prev : defaultSubject));
 
-    let cancelled = false;
-
-    const syncAndFetch = async () => {
-      try {
-        if (instance && accounts[0]) {
-          let tokenResponse;
-          try {
-            tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
-          } catch (error) {
-            tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
-          }
-
-          if (tokenResponse?.accessToken) {
-            await syncEmailsForClient(tokenResponse.accessToken, client);
-            if (onClientUpdate) {
-              await onClientUpdate();
-            }
-          }
-        }
-      } catch (error) {
-        console.warn('SchedulerEmailThreadModal: Graph sync failed, continuing with cached emails', error);
-      } finally {
-        if (!cancelled) {
-          await fetchEmailsForModal();
-        }
-      }
-    };
-
-    syncAndFetch();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, client, instance, accounts, fetchEmailsForModal, onClientUpdate]);
+    if (!syncOnOpenRef.current) {
+      // First open: load from DB immediately for fast UI,
+      // then trigger a background sync that will update the DB.
+      syncOnOpenRef.current = true;
+      fetchEmailsForModal();
+      runMailboxSync();
+    } else {
+      // Subsequent opens: just load from DB.
+      fetchEmailsForModal();
+    }
+  }, [isOpen, client, runMailboxSync, fetchEmailsForModal]);
 
   const handleAttachmentUpload = (files: FileList) => {
     if (!files || files.length === 0) return;
@@ -401,7 +599,18 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   };
 
   const handleSendEmail = async () => {
-    if (!instance || !accounts[0]) return;
+    if (!client || !composeBody.trim()) {
+      toast.error('Please enter a message.');
+      return;
+    }
+    if (!userId) {
+      toast.error('Please sign in to send emails.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Mailbox not connected. Please connect it before sending emails.');
+      return;
+    }
 
     const finalToRecipients = [...toRecipients];
     const finalCcRecipients = [...ccRecipients];
@@ -416,6 +625,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     } catch (error) {
       setRecipientError((error as Error).message || 'Please enter a valid email address.');
       return;
+    }
+
+    if (finalToRecipients.length === 0) {
+      const fallbackRecipients = normaliseAddressList(client.email);
+      if (fallbackRecipients.length > 0) {
+        finalToRecipients.push(...fallbackRecipients);
+      }
     }
 
     if (finalToRecipients.length === 0) {
@@ -435,101 +651,100 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
     setSending(true);
 
-    try {
-      const tokenResponse = await instance.acquireTokenSilent({
-        scopes: ['https://graph.microsoft.com/Mail.Send'],
-        account: accounts[0]
-      });
+    // Snapshot current compose state so we can send in the background
+    const bodySnapshot = composeBody;
+    const attachmentsSnapshot = [...composeAttachments];
+    const toSnapshot = [...finalToRecipients];
+    const ccSnapshot = [...finalCcRecipients];
+    const subjectSnapshot =
+      composeSubject && composeSubject.trim()
+        ? composeSubject.trim()
+        : `[${client.lead_number}] - ${client.name}`;
 
-      const bodyHtml = convertBodyToHtml(composeBody);
-      const emailData = {
-        message: {
-          subject: composeSubject,
-          body: {
-            contentType: 'HTML',
-            content: bodyHtml
-          },
-          toRecipients: finalToRecipients.map(address => ({
-            emailAddress: {
-              address
-            }
-          })),
-          ...(finalCcRecipients.length > 0
-            ? {
-                ccRecipients: finalCcRecipients.map(address => ({
-                  emailAddress: { address }
-                }))
-              }
-            : {}),
-          attachments: await Promise.all(composeAttachments.map(async file => ({
-            '@odata.type': '#microsoft.graph.fileAttachment',
+    // Optimistic UI: append an outgoing email immediately using basic HTML.
+    const optimisticId = `temp_${Date.now()}`;
+    const optimisticSentAt = new Date().toISOString();
+    const optimisticBodyHtml = convertBodyToHtml(bodySnapshot);
+
+    const optimisticEmail = {
+      id: optimisticId,
+      message_id: optimisticId,
+      subject: subjectSnapshot,
+      body_html: optimisticBodyHtml,
+      body_preview: optimisticBodyHtml,
+      from: userEmail || '',
+      to: toSnapshot.join(', '),
+      date: optimisticSentAt,
+      sent_at: optimisticSentAt,
+      direction: 'outgoing' as const,
+      attachments: attachmentsSnapshot.map((file) => ({
+        name: file.name,
+        contentType: file.type || 'application/octet-stream',
+      })),
+    };
+
+    setEmails((prev) => [...prev, optimisticEmail]);
+
+    // Reset compose UI immediately
+    toast.success('Email queued to send');
+    setComposeBody('');
+    setComposeAttachments([]);
+    const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+    setComposeSubject(defaultSubject);
+    setShowLinkForm(false);
+    setLinkLabel('');
+    setLinkUrl('');
+    setShowCompose(false);
+    setSending(false);
+
+    // Fire-and-forget: perform the actual send in the background.
+    (async () => {
+      try {
+        const bodyHtml = convertBodyToHtml(bodySnapshot);
+        const emailContentWithSignature = await appendEmailSignature(bodyHtml);
+        const attachmentsPayload = await Promise.all(
+          attachmentsSnapshot.map(async (file) => ({
             name: file.name,
-            contentType: file.type,
-            contentBytes: await fileToBase64(file)
-          })))
-        }
-      };
+            contentType: file.type || 'application/octet-stream',
+            contentBytes: await fileToBase64(file),
+          }))
+        );
 
-      const response = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${tokenResponse.accessToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(emailData)
-      });
+        const isLegacyLead =
+          client?.lead_type === 'legacy' || client?.id.toString().startsWith('legacy_');
+        const legacyId = isLegacyLead
+          ? (() => {
+              const numeric = parseInt(String(client.id).replace('legacy_', ''), 10);
+              return Number.isNaN(numeric) ? null : numeric;
+            })()
+          : null;
 
-      if (response.ok) {
-        toast.success('Email sent successfully!');
-        setComposeBody('');
-        setComposeAttachments([]);
-        if (client) {
-          const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
-          setComposeSubject(defaultSubject);
-        } else {
-          setComposeSubject('');
-        }
-        setShowLinkForm(false);
-        setLinkLabel('');
-        setLinkUrl('');
-        
-        // Save to database
-        const isLegacyLead = client?.lead_type === 'legacy' || client?.id.toString().startsWith('legacy_');
-        const emailToSave: any = {
-          message_id: `scheduler_email_${Date.now()}`,
-          client_id: isLegacyLead ? null : client?.id,
-          legacy_id: isLegacyLead ? parseInt(client!.id.replace('legacy_', '')) : null,
-          sender_name: currentUserFullName || 'Team',
-          sender_email: accounts[0].username || '',
-          recipient_list: [...finalToRecipients, ...finalCcRecipients].join(', '),
-          subject: composeSubject,
-          body_html: bodyHtml,
-          body_preview: bodyHtml,
-          sent_at: new Date().toISOString(),
-          direction: 'outgoing',
-         };
+        await sendEmailViaBackend({
+          userId,
+          subject: subjectSnapshot,
+          bodyHtml: emailContentWithSignature,
+          to: toSnapshot,
+          cc: ccSnapshot,
+          attachments: attachmentsPayload.length > 0 ? attachmentsPayload : undefined,
+          context: {
+            clientId: !isLegacyLead ? client.id : null,
+            legacyLeadId: isLegacyLead ? legacyId : null,
+            leadType: client?.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+            leadNumber: client?.lead_number || null,
+            contactEmail: client?.email || null,
+            contactName: client?.name || null,
+            senderName: currentUserFullName || userEmail || 'Team',
+            userInternalId: client?.user_internal_id || undefined,
+          },
+        });
 
-        const { error: saveError } = await supabase.from('emails').insert(emailToSave);
-        if (saveError) {
-          console.error('Failed to save scheduler email to database:', saveError);
-        }
-
-        setShowCompose(false);
- 
-        // Refresh emails
+        // Refresh from DB so optimistic email is replaced with stored one.
         await fetchEmailsForModal();
-        if (onClientUpdate) {
-          await onClientUpdate();
-        }
-      } else {
-        throw new Error('Failed to send email');
+      } catch (error) {
+        console.error('Error sending email (background):', error);
+        toast.error(error instanceof Error ? error.message : 'Failed to send email');
       }
-    } catch (error) {
-      console.error('Error sending email:', error);
-      toast.error('Failed to send email');
-    } finally {
-      setSending(false);
-    }
+    })();
   };
 
   const fileToBase64 = (file: File): Promise<string> => {

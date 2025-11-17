@@ -41,6 +41,7 @@ export interface Client extends Lead {
   expert_id?: string;
   closer_id?: string;
   case_handler_id?: string;
+  user_internal_id?: string | number | null;
 }
 
 export interface ClientInteractionsCache {

@@ -20,6 +20,8 @@ interface Meeting {
   name: string;
   topic: string;
   link: string;
+  // Optional raw Teams URL if present
+  teams_meeting_url?: string;
   manager?: string;
   brief: string;
   stage?: string | number;
@@ -700,7 +702,7 @@ const Meetings: React.FC = () => {
                 </div>
               </td>
               <td>
-                {isOnlineLocation(meeting.location) && getValidTeamsLink(meeting.link) && (
+                {getValidTeamsLink(meeting.link) && (
                   <button 
                     className="btn btn-primary btn-xs sm:btn-sm"
                     onClick={() => {

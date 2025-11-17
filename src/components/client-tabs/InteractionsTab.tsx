@@ -24,11 +24,8 @@ import {
   PlusIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
-import { useMsal } from '@azure/msal-react';
-import { loginRequest } from '../../msalConfig';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'react-hot-toast';
-import { InteractionRequiredAuthError, type IPublicClientApplication, type AccountInfo } from '@azure/msal-browser';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from './AISummaryPanel';
 import ReactQuill from 'react-quill';
@@ -40,7 +37,81 @@ import { buildApiUrl } from '../../lib/api';
 import { fetchLegacyInteractions, testLegacyInteractionsAccess } from '../../lib/legacyInteractionsApi';
 import { appendEmailSignature } from '../../lib/emailSignature';
 import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
-import { stripSignatureAndQuotedTextPreserveHtml, syncEmailsForClient } from '../../lib/graphEmailSync';
+import { stripSignatureAndQuotedTextPreserveHtml } from '../../lib/graphEmailSync';
+import {
+  sendEmailViaBackend,
+  triggerMailboxSync,
+  fetchEmailBodyFromBackend,
+  downloadAttachmentFromBackend,
+  getMailboxLoginUrl,
+  getMailboxStatus,
+} from '../../lib/mailboxApi';
+import { useAuthContext } from '../../contexts/AuthContext';
+
+const normalizeEmailForFilter = (value?: string | null) =>
+  value ? value.trim().toLowerCase() : '';
+
+const sanitizeEmailForFilter = (value: string) =>
+  value.replace(/[^a-z0-9@._+!~-]/g, '');
+
+const collectClientEmails = (client: any): string[] => {
+  const emails: string[] = [];
+  const pushEmail = (val?: string | null) => {
+    const normalized = normalizeEmailForFilter(val);
+    if (normalized) {
+      emails.push(normalized);
+    }
+  };
+
+  pushEmail(client?.email);
+
+  const extraEmails = (client as any)?.emails;
+  if (Array.isArray(extraEmails)) {
+    extraEmails.forEach((entry: any) => {
+      if (typeof entry === 'string') {
+        pushEmail(entry);
+      } else if (entry && typeof entry === 'object') {
+        if (typeof entry.email === 'string') {
+          pushEmail(entry.email);
+        }
+        if (typeof entry.value === 'string') {
+          pushEmail(entry.value);
+        }
+        if (typeof entry.address === 'string') {
+          pushEmail(entry.address);
+        }
+      }
+    });
+  }
+
+  return Array.from(new Set(emails));
+};
+
+const buildEmailFilterClauses = (params: {
+  clientId?: string | null;
+  legacyId?: number | null;
+  emails: string[];
+}) => {
+  const clauses: string[] = [];
+
+  if (params.legacyId !== undefined && params.legacyId !== null && !Number.isNaN(params.legacyId)) {
+    clauses.push(`legacy_id.eq.${params.legacyId}`);
+  }
+
+  if (params.clientId) {
+    clauses.push(`client_id.eq.${params.clientId}`);
+  }
+
+  params.emails.forEach((email) => {
+    const sanitized = sanitizeEmailForFilter(email);
+    if (sanitized) {
+      clauses.push(`sender_email.ilike.${sanitized}`);
+      clauses.push(`recipient_list.ilike.%${sanitized}%`);
+    }
+  });
+
+  return clauses;
+};
 
 interface Attachment {
   id: string;
@@ -239,118 +310,6 @@ const replaceTemplateTokens = (content: string, client: any) => {
     .replace(/\{lead_type\}/gi, client?.lead_type || '');
 };
 
-// Function to strip signatures while preserving HTML formatting
-// Helper to acquire token, falling back to popup if needed
-const acquireToken = async (instance: IPublicClientApplication, account: AccountInfo) => {
-  try {
-    return await instance.acquireTokenSilent({ ...loginRequest, account });
-  } catch (error) {
-    if (error instanceof InteractionRequiredAuthError) {
-      toast('Your session has expired. Please sign in again.', { icon: '🔑' });
-      return await instance.acquireTokenPopup({ ...loginRequest, account });
-    }
-    throw error;
-  }
-};
-
-// Microsoft Graph API: Fetch emails for a client and sync to DB
-// Microsoft Graph API: Send email (as a new message or reply)
-async function sendClientEmail(
-  token: string,
-  subject: string,
-  body: string,
-  client: ClientTabProps['client'],
-  senderName: string,
-  attachments: { name: string; contentType: string; contentBytes: string }[],
-  recipients?: { to?: string[]; cc?: string[] }
-) {
-  // Get the user's email signature from the database
-  const { getCurrentUserEmailSignature } = await import('../../lib/emailSignature');
-  const userSignature = await getCurrentUserEmailSignature();
-  
-  // Handle signature (HTML or plain text)
-  let signatureHtml = '';
-  if (userSignature) {
-    // Check if signature is already HTML
-    if (userSignature.includes('<') && userSignature.includes('>')) {
-      signatureHtml = `<br><br>${userSignature}`;
-    } else {
-      // Convert plain text to HTML
-      signatureHtml = `<br><br>${userSignature.replace(/\n/g, '<br>')}`;
-    }
-  } else {
-    // Fallback to default signature
-    signatureHtml = `<br><br>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices`;
-  }
-  
-  const fullBody = body + signatureHtml;
-
-  const messageAttachments = attachments.map(att => ({
-    '@odata.type': '#microsoft.graph.fileAttachment',
-    name: att.name,
-    contentType: att.contentType,
-    contentBytes: att.contentBytes
-  }));
-
-  const toList = recipients?.to && recipients.to.length > 0
-    ? recipients.to
-    : normaliseAddressList(client.email);
-
-  if (!toList || toList.length === 0) {
-    throw new Error('No recipient specified for the email.');
-  }
-
-  const ccList = recipients?.cc || [];
-
-  const draftMessage = {
-    subject,
-    body: { contentType: 'HTML', content: fullBody },
-    toRecipients: toList.map(address => ({ emailAddress: { address } })),
-    ...(ccList.length > 0
-      ? {
-          ccRecipients: ccList.map(address => ({
-            emailAddress: { address },
-          })),
-        }
-      : {}),
-    attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
-  };
-
-  // 1. Create a draft message to get its ID
-  const createDraftUrl = `https://graph.microsoft.com/v1.0/me/messages`;
-  const draftRes = await fetch(createDraftUrl, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(draftMessage),
-  });
-
-  if (!draftRes.ok) {
-    console.error("Graph API Error creating draft:", await draftRes.text());
-    throw new Error('Failed to create email draft.');
-  }
-  const createdDraft = await draftRes.json();
-  const messageId = createdDraft.id;
-
-  if (!messageId) {
-    throw new Error('Could not get message ID from draft.');
-  }
-
-  // 2. Send the draft message
-  const sendUrl = `https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`;
-  const sendRes = await fetch(sendUrl, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-  });
-
-  if (!sendRes.ok) {
-    console.error("Graph API Error sending draft:", await sendRes.text());
-    throw new Error('Failed to send email.');
-  }
-
-  // 3. Return the created message object so we can save it to our DB.
-  return createdDraft;
-}
-
 const emailTemplates = [
   {
     name: 'Document Reminder',
@@ -404,8 +363,8 @@ function sanitizeEmailHtml(html: string): string {
   });
 }
 
-const FETCH_BATCH_SIZE = 200;
-const EMAIL_MODAL_LIMIT = 100;
+const FETCH_BATCH_SIZE = 500;
+const EMAIL_MODAL_LIMIT = 200;
 
 const InteractionsTab: React.FC<ClientTabProps> = ({
   client,
@@ -435,7 +394,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     content: '',
     observation: '',
   });
-  const { instance, accounts } = useMsal();
+  const { user } = useAuthContext();
+  const userId = user?.id ?? null;
+  const userEmail = user?.email ?? null;
+  const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; mailbox?: string | null; lastSyncedAt?: string | null }>({
+    connected: false,
+    mailbox: null,
+    lastSyncedAt: null,
+  });
+  const [isMailboxLoading, setIsMailboxLoading] = useState(false);
+  const [mailboxError, setMailboxError] = useState<string | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
   const [emails, setEmails] = useState<any[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState('');
@@ -477,6 +447,82 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const formattedLastSync = useMemo(() => {
+    if (!mailboxStatus.lastSyncedAt) return null;
+    try {
+      return new Date(mailboxStatus.lastSyncedAt).toLocaleString();
+    } catch (error) {
+      return null;
+    }
+  }, [mailboxStatus.lastSyncedAt]);
+
+  const refreshMailboxStatus = useCallback(async () => {
+    if (!userId) {
+      setMailboxStatus({ connected: false, mailbox: null, lastSyncedAt: null });
+      return;
+    }
+    try {
+      setIsMailboxLoading(true);
+      setMailboxError(null);
+      const status = await getMailboxStatus(userId);
+      setMailboxStatus({
+        connected: Boolean(status?.connected),
+        mailbox: status?.mailbox || status?.displayName || null,
+        lastSyncedAt: status?.lastSyncedAt || status?.last_synced_at || null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load mailbox status';
+      setMailboxError(message);
+      console.error('Mailbox status error:', error);
+    } finally {
+      setIsMailboxLoading(false);
+    }
+  }, [userId]);
+
+  const mailboxStatusRequestedRef = useRef(false);
+  const isMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('msal') === 'success') {
+      const connectedMailbox = params.get('mailbox');
+      toast.success(connectedMailbox ? `Mailbox ${connectedMailbox} connected` : 'Mailbox connected');
+      params.delete('msal');
+      params.delete('mailbox');
+      const newSearch = params.toString();
+      const newUrl = `${location.pathname}${newSearch ? `?${newSearch}` : ''}`;
+      window.history.replaceState({}, '', newUrl);
+      mailboxStatusRequestedRef.current = false;
+      refreshMailboxStatus();
+    }
+  }, [location.pathname, location.search, refreshMailboxStatus]);
+
+  const handleMailboxConnect = useCallback(async () => {
+    if (!userId) {
+      toast.error('Please sign in to connect your mailbox.');
+      return;
+    }
+    try {
+      setIsMailboxLoading(true);
+      const redirectTo = `${window.location.origin}${location.pathname}${location.search}`;
+      const url = await getMailboxLoginUrl(userId, redirectTo);
+      const popup = window.open(url, '_blank', 'width=640,height=780');
+      if (!popup) {
+        window.location.href = url;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to initiate mailbox connection';
+      toast.error(message);
+      console.error('Mailbox connect error:', error);
+    } finally {
+      setIsMailboxLoading(false);
+    }
+  }, [userId, location.pathname]);
 
   const filteredComposeTemplates = useMemo(() => {
     const query = composeTemplateSearch.trim().toLowerCase();
@@ -641,9 +687,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     console.log('📁 selectedFile state changed:', selectedFile);
   }, [selectedFile]);
   const [showAiSummary, setShowAiSummary] = useState(false);
-  const location = useLocation();
   const lastEmailRef = useRef<HTMLDivElement>(null);
-  const navigate = useNavigate();
   // 1. Add state for WhatsApp messages from DB
   const [whatsAppMessages, setWhatsAppMessages] = useState<any[]>([]);
   
@@ -1392,30 +1436,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Replace whatsAppChatMessages with whatsAppMessages in the modal rendering
   // 5. In the timeline, merge WhatsApp messages from DB with other interactions
   // In fetchAndCombineInteractions, fetch WhatsApp messages from DB and merge with manual_interactions and emails
-  useEffect(() => {
-    let isMounted = true;
-    const cacheForLead: ClientInteractionsCache | null =
-      interactionsCache && interactionsCache.leadId === client.id ? interactionsCache : null;
+  const fetchInteractions = useCallback(
+    async (options?: { bypassCache?: boolean }) => {
+      const cacheForLead: ClientInteractionsCache | null =
+        interactionsCache && interactionsCache.leadId === client.id ? interactionsCache : null;
 
-    if (cacheForLead) {
-      console.log('✅ InteractionsTab using cached interactions for lead:', cacheForLead.leadId);
-      if (isMounted) {
+      if (!options?.bypassCache && cacheForLead) {
+        console.log('✅ InteractionsTab using cached interactions for lead:', cacheForLead.leadId);
+        if (!isMountedRef.current) return;
         setInteractions(cacheForLead.interactions || []);
         setEmails(cacheForLead.emails || []);
         setInteractionsLoading(false);
+        const cachedCount =
+          cacheForLead.count ?? (cacheForLead.interactions ? cacheForLead.interactions.length : 0);
+        onInteractionCountUpdate?.(cachedCount);
+        return;
       }
-      const cachedCount =
-        cacheForLead.count ?? (cacheForLead.interactions ? cacheForLead.interactions.length : 0);
-      onInteractionCountUpdate?.(cachedCount);
-      return () => {
-        isMounted = false;
-      };
-    }
 
-    async function fetchAndCombineInteractions() {
       const startTime = performance.now();
       console.log('🚀 Starting InteractionsTab fetch...');
-      setInteractionsLoading(true);
+      if (isMountedRef.current) {
+        setInteractionsLoading(true);
+      }
       try {
         // Ensure currentUserFullName is set before mapping emails
         let userFullName = currentUserFullName;
@@ -1437,7 +1479,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               // Use display_name from tenants_employee if available, otherwise full_name
               const employee = Array.isArray(data.tenants_employee) ? data.tenants_employee[0] : data.tenants_employee;
               userFullName = employee?.display_name || data.full_name;
-              if (isMounted) {
+              if (isMountedRef.current) {
                 setCurrentUserFullName(userFullName);
                 userFullNameLoadedRef.current = true;
               }
@@ -1513,21 +1555,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             }
           })() : Promise.resolve([]),
 
-          client?.id ? (async () => {
-            let query = supabase
-              .from('emails')
-              .select('id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments')
-              .limit(50);
+          client?.id
+            ? (async () => {
+                let emailQuery = supabase
+                  .from('emails')
+                  .select(
+                    'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments'
+                  )
+                  .limit(EMAIL_MODAL_LIMIT)
+                  .order('sent_at', { ascending: false });
 
-            if (isLegacyLead) {
-              query = query.eq('legacy_id', legacyId);
-            } else {
-              query = query.eq('client_id', client.id);
-            }
+                if (isLegacyLead && legacyId !== null) {
+                  emailQuery = emailQuery.eq('legacy_id', legacyId);
+                } else {
+                  emailQuery = emailQuery.eq('client_id', client.id);
+                }
 
-            const { data, error } = await query.order('sent_at', { ascending: false });
-            return { data, error };
-          })() : Promise.resolve({ data: [], error: null })
+                const { data, error } = await emailQuery;
+                return { data: data || [], error };
+              })()
+            : Promise.resolve({ data: [], error: null })
         ]);
 
         // Process results from parallel queries
@@ -1611,19 +1658,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           employee: i.direction === 'out' ? (userFullName || 'You') : i.employee || client.name,
         }));
         // 2. Email interactions - prioritise freshly fetched emails, fallback to client prop
-        const clientEmails = emailsResult.data && emailsResult.data.length > 0
-          ? emailsResult.data
-          : (client as any).emails || [];
+        const clientEmails = emailsResult.data || [];
         
-        // Skip complex deduplication for small datasets
-        const uniqueEmails = clientEmails.length > 20 
-          ? clientEmails.filter((email: any, index: number, self: any[]) => {
-              const emailKey = email.message_id || email.id;
-              return index === self.findIndex((e: any) => (e.message_id || e.id) === emailKey);
-            })
-          : clientEmails; // Skip deduplication for small datasets
-        
-        const sortedEmails = [...uniqueEmails].sort((a: any, b: any) => {
+        const sortedEmails = [...clientEmails].sort((a: any, b: any) => {
           const aDate = new Date(a.sent_at || 0).getTime();
           const bDate = new Date(b.sent_at || 0).getTime();
           return bDate - aDate;
@@ -1658,24 +1695,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Combine all interactions
         const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...callLogInteractions, ...legacyInteractions];
         
-        // Simple deduplication by ID (no need for complex call log deduplication anymore)
         const uniqueInteractions = combined.filter((interaction: any, index: number, self: any[]) => 
           index === self.findIndex((i: any) => i.id === interaction.id)
         );
         
-        // Removed debug logging for performance
-        
         const sorted = uniqueInteractions.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
-        if (isMounted) {
-          setInteractions(sorted as Interaction[]);
-          
-          // Performance logging
-          const endTime = performance.now();
-          const duration = Math.round(endTime - startTime);
-          console.log(`✅ InteractionsTab loaded in ${duration}ms with ${sorted.length} interactions`);
-        }
         
-        // Also update the local emails state for the modal - use the same deduplicated emails
         const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
           const previewSource = e.body_html || e.body_preview || e.subject || '';
           const previewHtmlSource = previewSource
@@ -1695,7 +1720,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             attachments: e.attachments,
           };
         });
-        if (isMounted) setEmails(formattedEmailsForModal);
+        if (isMountedRef.current) {
+          setInteractions(sorted as Interaction[]);
+          
+          const endTime = performance.now();
+          const duration = Math.round(endTime - startTime);
+          console.log(`✅ InteractionsTab loaded in ${duration}ms with ${sorted.length} interactions`);
+          setEmails(formattedEmailsForModal);
+        }
 
         onInteractionCountUpdate?.(sorted.length);
         onInteractionsCacheUpdate?.({
@@ -1707,7 +1739,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         });
       } catch (error) {
         console.error('Error in fetchAndCombineInteractions:', error);
-        if (isMounted) {
+        if (isMountedRef.current) {
           setInteractions([]);
           setEmails([]);
         }
@@ -1720,17 +1752,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           fetchedAt: new Date().toISOString(),
         });
       } finally {
-        if (isMounted) setInteractionsLoading(false);
+        if (isMountedRef.current) setInteractionsLoading(false);
       }
-    }
-    fetchAndCombineInteractions();
-    return () => { isMounted = false; };
-  }, [client.id, interactionsCache?.leadId]); // Only run when client changes or cache updates
+    },
+    [
+      client,
+      interactionsCache,
+      currentUserFullName,
+      onInteractionCountUpdate,
+      onInteractionsCacheUpdate,
+    ]
+  );
+
+  useEffect(() => {
+    fetchInteractions();
+  }, [fetchInteractions]);
+
+  const fetchInteractionsRef = useRef<typeof fetchInteractions | null>(null);
+  useEffect(() => {
+    fetchInteractionsRef.current = fetchInteractions;
+  }, [fetchInteractions]);
 
 
   const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview: string }[]) => {
     if (!messages || messages.length === 0) return;
-    if (!instance || !accounts[0]) return;
+    if (!userId) return;
 
     const requiresHydration = messages.filter(message => {
       const preview = (message.bodyPreview || '').trim();
@@ -1742,29 +1788,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     if (requiresHydration.length === 0) return;
 
     try {
-      const tokenResponse = await acquireToken(instance, accounts[0]);
-      const accessToken = tokenResponse.accessToken;
       const updates: Record<string, { html: string; preview: string }> = {};
 
       await Promise.all(
         requiresHydration.map(async message => {
           if (!message.id) return;
           try {
-            const response = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${message.id}?$select=body`, {
-              headers: { Authorization: `Bearer ${accessToken}` },
-            });
-            if (!response.ok) {
-              console.warn('Failed to hydrate email body', message.id, await response.text());
-              return;
-            }
-            const graphMessage = await response.json();
-            const rawContent = graphMessage?.body?.content;
+            const rawContent = await fetchEmailBodyFromBackend(userId, message.id);
             if (!rawContent || typeof rawContent !== 'string') return;
 
             const cleanedHtml = sanitizeEmailHtml(extractHtmlBody(rawContent));
-            const previewHtml = cleanedHtml && cleanedHtml.trim()
-              ? cleanedHtml
-              : sanitizeEmailHtml(convertBodyToHtml(rawContent));
+            const previewHtml =
+              cleanedHtml && cleanedHtml.trim()
+                ? cleanedHtml
+                : sanitizeEmailHtml(convertBodyToHtml(rawContent));
 
             updates[message.id] = {
               html: cleanedHtml,
@@ -1794,32 +1831,29 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         );
       }
     } catch (error) {
-      console.error('Failed to hydrate email bodies from Graph', error);
+      console.error('Failed to hydrate email bodies from backend', error);
     }
-  }, [accounts, instance]);
+  }, [userId]);
 
   const fetchEmailsForModal = useCallback(async () => {
     if (!client.id) return;
     
     setEmailsLoading(true);
     try {
-      // Fetch emails from database for this specific client
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      let emailQuery;
-      
-      if (isLegacyLead) {
-        const legacyId = parseInt(client.id.replace('legacy_', ''));
-        emailQuery = supabase
-          .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
-          .eq('legacy_id', legacyId)
-          .order('sent_at', { ascending: true });
+      const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
+
+      let emailQuery = supabase
+        .from('emails')
+        .select(
+          'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments'
+        )
+        .order('sent_at', { ascending: true });
+
+      if (isLegacyLead && legacyId !== null) {
+        emailQuery = emailQuery.eq('legacy_id', legacyId);
       } else {
-        emailQuery = supabase
-          .from('emails')
-          .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments')
-          .eq('client_id', client.id)
-          .order('sent_at', { ascending: true });
+        emailQuery = emailQuery.eq('client_id', client.id);
       }
       
       const { data: emailData, error: emailError } = await emailQuery;
@@ -1859,41 +1893,45 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [client]);
 
-  // This function now ONLY syncs with Graph and then triggers a full refresh
-  const runGraphSync = useCallback(async () => {
-    if (!client.email || !instance || !accounts[0]) return;
-    
+  const runMailboxSync = useCallback(async () => {
+    if (!userId) {
+      toast.error('Sign in to sync emails.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Connect your mailbox to sync emails.');
+      return;
+    }
+
     setEmailsLoading(true);
 
     try {
-      const tokenResponse = await acquireToken(instance, accounts[0]);
-      await syncEmailsForClient(tokenResponse.accessToken, client);
-      console.log('📧 Graph sync completed, triggering client update...');
+      await triggerMailboxSync(userId);
+      await refreshMailboxStatus();
       if (onClientUpdate) {
-        await onClientUpdate(); // Refresh all client data from parent
-        console.log('📧 Client update completed');
+        await onClientUpdate();
       }
-      // Also refresh the emails in the modal
       await fetchEmailsForModal();
     } catch (e) {
-      console.error("Graph sync failed:", e);
-      toast.error("Failed to sync new emails from server.");
+      console.error('Mailbox sync failed:', e);
+      const message = e instanceof Error ? e.message : 'Failed to sync new emails from server.';
+      toast.error(message);
     } finally {
       setEmailsLoading(false);
     }
-  }, [client, instance, accounts, onClientUpdate]);
+  }, [userId, mailboxStatus.connected, onClientUpdate, fetchEmailsForModal, refreshMailboxStatus]);
 
   const syncOnComposeRef = useRef(false);
   useEffect(() => {
     if (showCompose) {
       if (!syncOnComposeRef.current) {
         syncOnComposeRef.current = true;
-        runGraphSync();
+        runMailboxSync();
       }
     } else {
       syncOnComposeRef.current = false;
     }
-  }, [showCompose, runGraphSync]);
+  }, [showCompose, runMailboxSync]);
 
   // Effect to run the slow sync only once when the component mounts
   // DISABLED: Graph sync is too slow and blocks UI loading
@@ -1901,11 +1939,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   useEffect(() => {
     // Skip automatic Graph sync for now - it's causing the 4-second delay
     // Users can manually sync emails if needed
-    console.log('InteractionsTab mounted - skipping automatic Graph sync for performance');
+    console.log('InteractionsTab mounted - skipping automatic mailbox sync for performance');
   }, [client.id]);
 
   const handleSendEmail = async () => {
-    if (!instance || !accounts[0]) return;
+    if (!userId) {
+      toast.error('Please sign in to send emails.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Connect your mailbox before sending emails.');
+      return;
+    }
 
     const finalToRecipients = [...composeToRecipients];
     const finalCcRecipients = [...composeCcRecipients];
@@ -1922,12 +1967,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       return;
     }
 
-    if (finalToRecipients.length === 0) {
-      setComposeRecipientError('Please add at least one recipient.');
-      return;
-    }
-
-    setComposeRecipientError(null);
     if (composeToInput.trim()) {
       setComposeToRecipients(finalToRecipients);
       setComposeToInput('');
@@ -1937,69 +1976,64 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       setComposeCcInput('');
     }
 
+    if (finalToRecipients.length === 0) {
+      const fallbackRecipients = normaliseAddressList(client.email);
+      if (fallbackRecipients.length > 0) {
+        finalToRecipients.push(...fallbackRecipients);
+      }
+    }
+
+    if (finalToRecipients.length === 0) {
+      setComposeRecipientError('Please add at least one recipient.');
+      return;
+    }
+
+    setComposeRecipientError(null);
     setSending(true);
-    const account = accounts[0];
 
     try {
-      const tokenResponse = await acquireToken(instance, account);
-      const senderName = account?.name || 'Your Team';
-
       const bodyHtml = convertBodyToHtml(composeBody);
       const emailContentWithSignature = await appendEmailSignature(bodyHtml);
-
-      const sentEmail = await sendClientEmail(
-        tokenResponse.accessToken, 
-        composeSubject, 
-        emailContentWithSignature, 
-        client, 
-        senderName,
-        composeAttachments,
-        {
-          to: finalToRecipients,
-          cc: finalCcRecipients,
-        }
-      );
-      
-      console.log('📧 Email sent via Graph API:', sentEmail.id);
-      
+      const subject = composeSubject && composeSubject.trim()
+        ? composeSubject
+        : `[${client.lead_number}] - ${client.name}`;
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const emailToSave = {
-        message_id: sentEmail.id,
-        client_id: isLegacyLead ? null : client.id,
-        legacy_id: isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null,
-        thread_id: sentEmail.conversationId,
-        sender_name: senderName,
-        sender_email: account?.username || 'unknown@lawoffice.org.il',
-        recipient_list: [...finalToRecipients, ...finalCcRecipients].join(', '),
-        subject: composeSubject,
-        body_html: emailContentWithSignature,
-        body_preview: emailContentWithSignature,
-        sent_at: new Date().toISOString(),
-        direction: 'outgoing',
-        attachments: composeAttachments.length > 0 ? composeAttachments.map(att => ({
-          id: `temp_${Date.now()}`,
-          name: att.name,
-          contentType: att.contentType,
-          sizeInBytes: 0,
-          isInline: false
-        })) : null,
-      };
-      
-      const { error: saveError } = await supabase.from('emails').upsert(emailToSave, { onConflict: 'message_id' });
-      if (saveError) {
-        console.error('❌ Error saving sent email to database:', saveError);
-      } else {
-        console.log('✅ Sent email saved to database');
-      }
-      
-      toast.success('Email sent and saved!');
+      const legacyId = isLegacyLead
+        ? (() => {
+            const numeric = parseInt(String(client.id).replace('legacy_', ''), 10);
+            return Number.isNaN(numeric) ? null : numeric;
+          })()
+        : null;
+      const senderName = currentUserFullName || userEmail || 'Your Team';
 
-      setTimeout(async () => {
-        await runGraphSync();
-      }, 1000); // Reduced wait time since we already saved the email
+      const sendResult = await sendEmailViaBackend({
+        userId,
+        subject,
+        bodyHtml: emailContentWithSignature,
+        to: finalToRecipients,
+        cc: finalCcRecipients,
+        attachments: composeAttachments,
+        context: {
+          clientId: !isLegacyLead ? client.id : null,
+          legacyLeadId: isLegacyLead ? legacyId : null,
+          leadType: client.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+          leadNumber: client.lead_number || null,
+          contactEmail: client.email || null,
+          contactName: client.name || null,
+          senderName,
+          userInternalId: client.user_internal_id || undefined,
+        },
+      });
+
+      const messageId = sendResult?.id || sendResult?.messageId || `temp_${Date.now()}`;
+      const conversationId = sendResult?.conversationId || null;
+      const sentAt = sendResult?.sentAt || new Date().toISOString();
       
+      toast.success('Email sent!');
+      await fetchInteractionsRef.current?.({ bypassCache: true });
+      await fetchEmailsForModal();
+
       if (onClientUpdate) {
-        console.log('🔄 Triggering client data refresh after email send');
         await onClientUpdate();
       }
 
@@ -2010,46 +2044,39 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       setComposeLinkUrl('');
       setShowCompose(false);
     } catch (e) {
-      console.error("Error in handleSendEmail:", e);
-      toast.error(e instanceof Error ? e.message : "Failed to send email.");
+      console.error('Error in handleSendEmail:', e);
+      toast.error(e instanceof Error ? e.message : 'Failed to send email.');
+    } finally {
+      setSending(false);
     }
-    setSending(false);
   };
 
   const handleDownloadAttachment = async (messageId: string, attachment: Attachment) => {
-    if (downloadingAttachments[attachment.id]) return; // Don't download if already in progress
+    if (downloadingAttachments[attachment.id]) return;
+    if (!userId) {
+      toast.error('Please sign in to download attachments.');
+      return;
+    }
+    if (!mailboxStatus.connected) {
+      toast.error('Connect your mailbox to download attachments.');
+      return;
+    }
 
     setDownloadingAttachments(prev => ({ ...prev, [attachment.id]: true }));
     toast.loading(`Downloading ${attachment.name}...`, { id: attachment.id });
 
     try {
-      const tokenResponse = await acquireToken(instance, accounts[0]);
-      const url = `https://graph.microsoft.com/v1.0/me/messages/${messageId}/attachments/${attachment.id}`;
-      const res = await fetch(url, { headers: { Authorization: `Bearer ${tokenResponse.accessToken}` } });
-
-      if (!res.ok) throw new Error('Failed to fetch attachment content.');
-      
-      const attachmentData = await res.json();
-      const base64 = attachmentData.contentBytes;
-
-      // Decode base64 and trigger download
-      const byteCharacters = atob(base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: attachmentData.contentType });
-
+      const { blob, fileName } = await downloadAttachmentFromBackend(userId, messageId, attachment.id);
+      const downloadName = fileName || attachment.name || 'attachment';
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = attachment.name;
+      link.download = downloadName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(link.href);
 
-      toast.success(`${attachment.name} downloaded.`, { id: attachment.id });
+      toast.success(`${downloadName} downloaded.`, { id: attachment.id });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Download failed.', { id: attachment.id });
     } finally {
@@ -2099,6 +2126,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // Fetch emails when modal opens (like EmailThreadModal)
       console.log('📧 Email modal opened, fetching emails...');
       fetchEmailsForModal();
+      if (!mailboxStatusRequestedRef.current) {
+        mailboxStatusRequestedRef.current = true;
+        refreshMailboxStatus();
+      }
     }
   }, [isEmailModalOpen, client, fetchEmailsForModal]);
 
@@ -2866,7 +2897,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           `}</style>
           <div className="h-full flex flex-col">
             {/* Header */}
-            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between p-4 md:p-6 border-b border-gray-200">
               <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
                 <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
                 <div className="flex items-center gap-2 min-w-0">
@@ -2876,13 +2907,49 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </span>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setIsEmailModalOpen(false)}
-                  className="btn btn-ghost btn-circle"
-                >
-                  <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-                </button>
+              <div className="flex flex-col items-end gap-2">
+                <div className="flex items-center gap-2 text-xs text-gray-500">
+                  <span
+                    className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-semibold ${
+                      mailboxStatus.connected
+                        ? 'bg-green-100 text-green-700'
+                        : 'bg-gray-100 text-gray-500'
+                    }`}
+                  >
+                    <span className="w-2 h-2 rounded-full bg-current"></span>
+                    {mailboxStatus.connected ? 'Mailbox connected' : 'Mailbox disconnected'}
+                  </span>
+                  {formattedLastSync && (
+                    <span>Last sync: {formattedLastSync}</span>
+                  )}
+                  {mailboxError && (
+                    <span className="text-error">{mailboxError}</span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline"
+                    onClick={runMailboxSync}
+                    disabled={isMailboxLoading || emailsLoading || !mailboxStatus.connected || !userId}
+                  >
+                    {isMailboxLoading ? 'Syncing...' : 'Sync emails'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-primary"
+                    onClick={handleMailboxConnect}
+                    disabled={isMailboxLoading || !userId}
+                  >
+                    {mailboxStatus.connected ? 'Reconnect mailbox' : 'Connect mailbox'}
+                  </button>
+                  <button
+                    onClick={() => setIsEmailModalOpen(false)}
+                    className="btn btn-ghost btn-circle"
+                  >
+                    <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+                  </button>
+                </div>
               </div>
             </div>
 
