@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   ChevronDownIcon, 
   ArrowRightOnRectangleIcon,
@@ -10,7 +10,8 @@ import {
   ChartBarIcon,
   Cog6ToothIcon,
   BuildingOffice2Icon,
-  ChatBubbleLeftRightIcon
+  ChatBubbleLeftRightIcon,
+  MagnifyingGlassIcon
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UsersManager from './UsersManager';
@@ -30,6 +31,7 @@ import MainCategoriesManager from './MainCategoriesManager';
 import SubCategoriesManager from './SubCategoriesManager';
 import WhatsAppNumbersManager from './WhatsAppNumbersManager';
 import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
+import EmailTemplatesManager from './EmailTemplatesManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
@@ -141,6 +143,15 @@ type RecentChange = {
   bodyRequest?: string;
 };
 
+interface AdminSectionOption {
+  key: string;
+  tabIndex: number;
+  subIndex: number;
+  tabLabel: string;
+  subLabel: string;
+  searchText: string;
+}
+
 const AdminPage: React.FC = () => {
   const { isAdmin, isLoading, refreshAdminStatus } = useAdminRole();
   const navigate = useNavigate();
@@ -168,6 +179,54 @@ const AdminPage: React.FC = () => {
   // State for recent changes
   const [recentChanges, setRecentChanges] = useState<RecentChange[]>([]);
   const [loadingChanges, setLoadingChanges] = useState(false);
+
+  // Search navigation state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const searchBoxRef = useRef<HTMLDivElement>(null);
+
+  const availableSections = useMemo<AdminSectionOption[]>(() => {
+    return ADMIN_TABS.flatMap((tab, tabIndex) => {
+      const hasAccess = !tab.requiresAdmin || isAdmin;
+      if (!hasAccess) return [];
+      return tab.subcategories.map((sub, subIndex) => ({
+        key: `${tab.label}-${sub}`,
+        tabIndex,
+        subIndex,
+        tabLabel: tab.label,
+        subLabel: sub,
+        searchText: `${tab.label} ${sub}`.toLowerCase()
+      }));
+    });
+  }, [isAdmin]);
+
+  const filteredSections = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) {
+      return availableSections.slice(0, 8);
+    }
+    return availableSections.filter(section => section.searchText.includes(query)).slice(0, 10);
+  }, [searchQuery, availableSections]);
+
+  const handleSearchSelect = (section: AdminSectionOption) => {
+    setSelected({ tab: section.tabIndex, sub: section.subIndex });
+    setOpenTab(null);
+    setIsTopSectionCollapsed(true);
+    setSearchQuery('');
+    setIsSearchFocused(false);
+    setIsMobileSidebarOpen(false);
+  };
+
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter' && filteredSections.length > 0) {
+      event.preventDefault();
+      handleSearchSelect(filteredSections[0]);
+    }
+    if (event.key === 'Escape') {
+      setIsSearchFocused(false);
+      setSearchQuery('');
+    }
+  };
 
   // Function to get time-based greeting
   const getTimeBasedGreeting = () => {
@@ -202,18 +261,17 @@ const AdminPage: React.FC = () => {
       if (openTab !== null && dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
         setOpenTab(null);
       }
+      if (isSearchFocused && searchBoxRef.current && !searchBoxRef.current.contains(event.target as Node)) {
+        setIsSearchFocused(false);
+      }
     };
 
-    // Add event listener when dropdown is open
-    if (openTab !== null) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
+    document.addEventListener('mousedown', handleClickOutside);
 
-    // Cleanup event listener
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [openTab]);
+  }, [openTab, isSearchFocused]);
 
   // Function to calculate dropdown position
   const calculateDropdownPosition = (tabIndex: number) => {
@@ -808,6 +866,49 @@ const AdminPage: React.FC = () => {
         className="flex-1 overflow-y-auto px-2 sm:px-3 md:px-6 py-4 md:py-6 transition-all duration-300"
         style={{ marginLeft: window.innerWidth >= 768 ? (isSidebarCollapsed ? '64px' : '256px') : '0' }}
       >
+      {/* Admin Search */}
+      <div className="max-w-3xl mx-auto mb-8 w-full" ref={searchBoxRef}>
+        <div className="relative">
+          <MagnifyingGlassIcon className="w-6 h-6 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            className="input input-bordered w-full pl-12 pr-4 py-3 text-base md:text-lg shadow-sm focus:shadow-md transition-all"
+            placeholder="Search admin sections…"
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setIsSearchFocused(true);
+            }}
+            onFocus={() => setIsSearchFocused(true)}
+            onKeyDown={handleSearchKeyDown}
+          />
+        </div>
+        {isSearchFocused && (
+          <div className="relative">
+            <div className="absolute z-20 w-full bg-base-100 border border-base-200 rounded-2xl shadow-2xl mt-2 max-h-80 overflow-y-auto">
+              {filteredSections.length > 0 ? (
+                filteredSections.map((section) => (
+                  <button
+                    key={section.key}
+                    onClick={() => handleSearchSelect(section)}
+                    className="w-full text-left px-4 py-3 hover:bg-primary/5 flex items-center justify-between gap-4"
+                  >
+                    <div>
+                      <p className="font-semibold text-gray-900">{section.subLabel}</p>
+                      <p className="text-xs text-gray-500">{section.tabLabel}</p>
+                    </div>
+                    <span className="text-xs text-gray-400">Enter ↵</span>
+                  </button>
+                ))
+              ) : (
+                <div className="px-4 py-4 text-sm text-gray-500">
+                  No matching admin sections
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
       {/* Welcome Section */}
       <div className={`mb-12 transition-all duration-500 ease-in-out overflow-hidden ${
         isTopSectionCollapsed ? 'max-h-0 mb-0' : 'max-h-screen'
@@ -1178,6 +1279,9 @@ const AdminPage: React.FC = () => {
             ) : selectedTab?.label === 'Misc' &&
             selectedTab?.subcategories[selected.sub] === 'Lead Stage Reasons' ? (
               <div className="w-full"><LeadStageReasonsManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Email Templates' ? (
+              <div className="w-full"><EmailTemplatesManager /></div>
             ) : selectedTab?.label === 'Misc' &&
             selectedTab?.subcategories[selected.sub] === 'Main Categories' ? (
               <div className="w-full"><MainCategoriesManager /></div>

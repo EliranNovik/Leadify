@@ -1,6 +1,41 @@
 import React from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
 
+const stripHtml = (value: unknown): string => {
+  if (typeof value !== 'string') return '';
+
+  let sanitized = value
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ');
+
+  // Collapse duplicated escape sequences one more time in case of double-encoded strings
+  sanitized = sanitized.replace(/\\+/g, '');
+
+  return sanitized.trim();
+};
+
+const buildAddressPreview = (value: unknown): string => {
+  const clean = stripHtml(value);
+  if (!clean) return '—';
+
+  const sentenceBoundary = clean.indexOf('.');
+  const lineBreak = clean.indexOf('\n');
+  const cutoffCandidates = [sentenceBoundary, lineBreak].filter((idx) => idx > -1);
+  const cutoff = cutoffCandidates.length ? Math.min(...cutoffCandidates) : -1;
+
+  const preview = cutoff > -1 ? clean.slice(0, cutoff + (clean[cutoff] === '.' ? 1 : 0)) : clean.trim();
+  const trimmed = preview.trim();
+  return trimmed ? `${trimmed} ...` : '—';
+};
+
 const MeetingLocationsManager: React.FC = () => {
   const fields = [
     {
@@ -8,119 +43,33 @@ const MeetingLocationsManager: React.FC = () => {
       label: 'Location Name',
       type: 'text' as const,
       required: true,
-      placeholder: 'e.g., Room Meeting 101'
-    },
-    {
-      name: 'is_physical_location',
-      label: 'Physical Location',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'is_tlv_with_parking',
-      label: 'TLV with Parking',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'physical_address_details',
-      label: 'Physical Address Details',
-      type: 'textarea' as const,
-      required: false,
-      placeholder: 'e.g., 5 יד חרוצים 10 קומה Yad Harutsim St. 10, 5th floor'
-    },
-    {
-      name: 'parking_gap_minutes',
-      label: 'Parking Gap (minutes)',
-      type: 'number' as const,
-      required: false,
-      placeholder: 'e.g., 60'
-    },
-    {
-      name: 'google_maps_link',
-      label: 'Google Maps Link',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., https://goo.gl/maps/r9gH3Y24MjWJJmc46'
-    },
-    {
-      name: 'waze_link',
-      label: 'Waze Link',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., https://waze.com/...'
-    },
-    {
-      name: 'allow_whatsapp_video',
-      label: 'Allow WhatsApp Video',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'whatsapp_video_notes',
-      label: 'WhatsApp Video Notes',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., Multiple at the same time'
-    },
-    {
-      name: 'allow_zoom_assign_later',
-      label: 'Allow Zoom Assign Later',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'zoom_assign_later_notes',
-      label: 'Zoom Assign Later Notes',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., Notes for zoom assign later'
-    },
-    {
-      name: 'allow_zoom_individual',
-      label: 'Allow Zoom Individual',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'zoom_individual_notes',
-      label: 'Zoom Individual Notes',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., Notes for individual zoom'
+      placeholder: 'e.g., Tel Aviv Office'
     },
     {
       name: 'default_link',
       label: 'Default Link',
       type: 'text' as const,
       required: false,
-      placeholder: 'e.g., https://meet.jit.si/DeckerPexLevi'
+      placeholder: 'https://meet.example.com/room123'
     },
     {
-      name: 'occupancy_gap',
-      label: 'Occupancy Gap',
-      type: 'text' as const,
-      required: false,
-      placeholder: 'e.g., Multiple at the same time'
-    },
-    {
-      name: 'address_notes',
-      label: 'Address Notes',
+      name: 'address',
+      label: 'Address',
       type: 'textarea' as const,
       required: false,
-      placeholder: 'e.g., Meeting instructions and notes',
-      hideInTable: true
+      placeholder: 'Street, City, Notes',
+      formatValue: (value: unknown) => (
+        <span className="block max-w-xs whitespace-pre-wrap text-sm text-gray-700">
+          {buildAddressPreview(value)}
+        </span>
+      ),
+      prepareValueForForm: (value: unknown) => stripHtml(value),
+      prepareValueForSave: (value: unknown) =>
+        typeof value === 'string' ? stripHtml(value) : ''
     },
     {
-      name: 'order_value',
-      label: 'Order Value',
-      type: 'number' as const,
-      required: false,
-      placeholder: 'e.g., 1'
-    },
-    {
-      name: 'is_active',
-      label: 'Active',
+      name: 'is_physical_location',
+      label: 'Physical Location',
       type: 'boolean' as const,
       required: false
     }
@@ -128,13 +77,14 @@ const MeetingLocationsManager: React.FC = () => {
 
   return (
     <GenericCRUDManager
-      tableName="meeting_locations"
+      tableName="tenants_meetinglocation"
       fields={fields}
       title="Meeting Location"
       description="Manage meeting locations and their configurations"
       pageSize={10}
+      sortColumn="id"
     />
   );
 };
 
-export default MeetingLocationsManager; 
+export default MeetingLocationsManager;

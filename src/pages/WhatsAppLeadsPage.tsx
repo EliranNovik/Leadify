@@ -1420,13 +1420,13 @@ const WhatsAppLeadsPage: React.FC = () => {
                     >
                       <div className="flex items-start gap-3">
                         {/* Avatar */}
-                        <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0 relative">
+                        <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative bg-white/15 border border-white/30 shadow-[0_4px_12px_rgba(0,0,0,0.35)]">
                           {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) ? (
-                            <span className="text-green-600 font-semibold text-sm md:text-lg">
+                            <span className="text-white font-semibold text-sm md:text-lg drop-shadow">
                               {lead.sender_name.charAt(0).toUpperCase()}
                             </span>
                           ) : (
-                            <PhoneIcon className="w-5 h-5 md:w-6 md:h-6 text-green-600" />
+                            <PhoneIcon className="w-5 h-5 md:w-6 md:h-6 text-white" />
                           )}
                           {/* Lock icon overlay */}
                           {locked && (
@@ -1456,7 +1456,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 {formatTime(lead.last_message_at)}
                               </span>
                               {lead.unread_count && lead.unread_count > 0 && (
-                                <span className="bg-green-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[16px] text-center">
+                                <span className="bg-cyan-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[16px] text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)]">
                                   {lead.unread_count}
                                 </span>
                               )}

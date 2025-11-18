@@ -86,6 +86,7 @@ const SettingsPage: React.FC = () => {
           options: [
             { label: 'Light', value: 'light' },
             { label: 'Dark', value: 'dark' },
+            { label: 'Alternative (Green)', value: 'alternative' },
           ]
         },
         {
@@ -281,13 +282,20 @@ const SettingsPage: React.FC = () => {
   // Apply theme changes immediately
   useEffect(() => {
     const theme = settings.theme;
-    if (theme === 'dark') {
-      document.documentElement.setAttribute('data-theme', 'dark');
-      document.documentElement.classList.add('dark');
-    } else {
-      document.documentElement.setAttribute('data-theme', 'light');
-      document.documentElement.classList.remove('dark');
-    }
+    const isDark = theme === 'dark';
+    const isAlt = theme === 'alternative';
+    const rootEl = document.getElementById('root');
+
+    document.documentElement.setAttribute('data-theme', theme);
+
+    document.documentElement.classList.toggle('dark', isDark);
+    document.body.classList.toggle('dark', isDark);
+    rootEl?.classList.toggle('dark', isDark);
+
+    document.documentElement.classList.toggle('theme-alt', isAlt);
+    document.body.classList.toggle('theme-alt', isAlt);
+    rootEl?.classList.toggle('theme-alt', isAlt);
+
     localStorage.setItem('theme', theme);
   }, [settings.theme]);
 
@@ -297,6 +305,20 @@ const SettingsPage: React.FC = () => {
   };
 
   const renderSettingItem = (item: SettingItem) => {
+    const labelClass = isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
+    const descClass = isDarkMode ? 'text-white/70' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
+    const inputClass = isDarkMode 
+      ? 'input input-bordered w-full bg-white/10 border-white/20 text-white placeholder-white/50 focus:bg-white/15 focus:border-white/40'
+      : isAltTheme
+        ? 'input input-bordered w-full bg-white border-emerald-200 text-emerald-900 placeholder-emerald-500 focus:border-lime-500 focus:ring-emerald-400'
+        : 'input input-bordered w-full';
+    const selectClass = isDarkMode
+      ? 'select select-bordered w-full bg-white/10 border-white/20 text-white focus:bg-white/15 focus:border-white/40'
+      : isAltTheme
+        ? 'select select-bordered w-full bg-white border-emerald-200 text-emerald-900 focus:border-lime-500 focus:ring-emerald-400'
+        : 'select select-bordered w-full';
+    const toggleClass = `toggle ${isAltTheme ? 'toggle-success' : 'toggle-primary'}`;
+
     switch (item.type) {
       case 'toggle':
         return (
@@ -304,37 +326,81 @@ const SettingsPage: React.FC = () => {
             <label className="label cursor-pointer justify-start gap-4">
               <input
                 type="checkbox"
-                className="toggle toggle-primary"
+                className={toggleClass}
                 checked={item.value}
                 onChange={(e) => updateSetting(item.id, e.target.checked)}
               />
               <div>
-                <div className="font-medium text-base-content">{item.label}</div>
-                <div className="text-sm text-base-content/70">{item.description}</div>
+                <div className={`font-medium ${labelClass}`}>{item.label}</div>
+                <div className={`text-sm ${descClass}`}>{item.description}</div>
               </div>
             </label>
           </div>
         );
 
       case 'select':
+        if (item.id === 'theme') {
+          return (
+            <div className="form-control w-full">
+              <label className="label">
+                <span className={`label-text font-medium ${labelClass}`}>{item.label}</span>
+              </label>
+              <div className="flex flex-col gap-2">
+                <p className={`text-sm ${descClass}`}>{item.description}</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  {item.options?.map(option => {
+                    const isActive = item.value === option.value;
+                    const baseClasses = `w-full px-4 py-3 rounded-xl border transition-all duration-200 text-center font-semibold focus:outline-none focus-visible:outline focus-visible:outline-2`;
+                    let stateClasses = '';
+                    if (isDarkMode) {
+                      stateClasses = isActive
+                        ? 'bg-white text-purple-700 border-white shadow-lg'
+                        : 'bg-white/10 text-white/80 border-white/30 hover:bg-white/15';
+                    } else if (isAltTheme) {
+                      stateClasses = isActive
+                        ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white border-lime-200 shadow-lg'
+                        : 'bg-white/80 text-emerald-800 border-emerald-200 hover:bg-lime-50';
+                    } else {
+                      stateClasses = isActive
+                        ? 'bg-primary text-primary-content border-primary shadow-lg'
+                        : 'bg-base-100 text-base-content border-base-300 hover:bg-base-200';
+                    }
+
+                    return (
+                      <button
+                        type="button"
+                        key={option.value}
+                        className={`${baseClasses} ${stateClasses}`}
+                        onClick={() => updateSetting(item.id, option.value)}
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          );
+        }
+
         return (
           <div className="form-control w-full">
             <label className="label">
-              <span className="label-text font-medium">{item.label}</span>
+              <span className={`label-text font-medium ${labelClass}`}>{item.label}</span>
             </label>
             <select
-              className="select select-bordered w-full"
+              className={selectClass}
               value={item.value}
               onChange={(e) => updateSetting(item.id, e.target.value)}
             >
               {item.options?.map(option => (
-                <option key={option.value} value={option.value}>
+                <option key={option.value} value={option.value} className={isDarkMode ? 'bg-purple-900 text-white' : ''}>
                   {option.label}
                 </option>
               ))}
             </select>
             <label className="label">
-              <span className="label-text-alt text-base-content/70">{item.description}</span>
+              <span className={`label-text-alt ${descClass}`}>{item.description}</span>
             </label>
           </div>
         );
@@ -343,18 +409,18 @@ const SettingsPage: React.FC = () => {
         return (
           <div className="form-control w-full">
             <label className="label">
-              <span className="label-text font-medium">{item.label}</span>
+              <span className={`label-text font-medium ${labelClass}`}>{item.label}</span>
             </label>
             <input
               type="number"
-              className="input input-bordered w-full"
+              className={inputClass}
               value={item.value}
               min={item.min}
               max={item.max}
               onChange={(e) => updateSetting(item.id, parseInt(e.target.value))}
             />
             <label className="label">
-              <span className="label-text-alt text-base-content/70">{item.description}</span>
+              <span className={`label-text-alt ${descClass}`}>{item.description}</span>
             </label>
           </div>
         );
@@ -363,16 +429,16 @@ const SettingsPage: React.FC = () => {
         return (
           <div className="form-control w-full">
             <label className="label">
-              <span className="label-text font-medium">{item.label}</span>
+              <span className={`label-text font-medium ${labelClass}`}>{item.label}</span>
             </label>
             <input
               type="text"
-              className="input input-bordered w-full"
+              className={inputClass}
               value={item.value}
               onChange={(e) => updateSetting(item.id, e.target.value)}
             />
             <label className="label">
-              <span className="label-text-alt text-base-content/70">{item.description}</span>
+              <span className={`label-text-alt ${descClass}`}>{item.description}</span>
             </label>
           </div>
         );
@@ -383,19 +449,86 @@ const SettingsPage: React.FC = () => {
   };
 
   const activeSettingsSection = settingsSections.find(section => section.id === activeSection);
+  const isDarkMode = settings.theme === 'dark';
+  const isAltTheme = settings.theme === 'alternative';
+
+  const pageWrapperClass = `min-h-screen p-3 sm:p-6 transition-all duration-500 ${
+    isDarkMode
+      ? 'bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] text-white'
+      : isAltTheme
+        ? 'bg-[#f7fbf5] text-emerald-900'
+        : 'bg-base-100 text-base-content'
+  }`;
+
+  const shellCardClass = `rounded-xl shadow-lg transition-all duration-300 ${
+    isDarkMode
+      ? 'p-3 sm:p-4 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+      : isAltTheme
+        ? 'p-3 sm:p-4 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_20px_45px_rgba(6,95,70,0.35)]'
+        : 'p-3 sm:p-4 bg-base-200'
+  }`;
+
+  const contentShellClass = `rounded-xl transition-all duration-300 ${
+    isDarkMode
+      ? 'p-3 sm:p-6 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+      : isAltTheme
+        ? 'p-3 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
+        : 'p-3 sm:p-6 bg-base-200'
+  }`;
+
+  const innerCardClass = `rounded-lg transition-all duration-300 ${
+    isDarkMode
+      ? 'p-3 sm:p-4 bg-white/5 border border-white/10 shadow-md'
+      : isAltTheme
+        ? 'p-3 sm:p-4 bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
+        : 'p-3 sm:p-4 bg-base-100'
+  }`;
+
+  const headerBadgeClass = `rounded-xl transition-all duration-300 ${
+    isDarkMode ? 'bg-white/20 text-white' : isAltTheme ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow' : 'bg-primary/10 text-primary'
+  }`;
+
+  const headerTextClass = isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
+  const mutedTextClass = isDarkMode ? 'text-white/80' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
+
+  const navButtonBase = isDarkMode
+    ? 'text-white/90 hover:bg-white/15 transition-all duration-200'
+    : isAltTheme
+      ? 'text-emerald-800 border border-emerald-200 bg-white/80 hover:bg-lime-50 transition-all duration-200'
+      : 'text-base-content hover:bg-base-300';
+  const navButtonActive = isDarkMode
+    ? 'bg-white text-purple-700 shadow-lg font-semibold'
+    : isAltTheme
+      ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow-lg font-semibold border border-lime-200'
+      : 'bg-primary text-primary-content font-medium';
+
+  const tabBorderClass = isDarkMode ? 'border-white/20' : isAltTheme ? 'border-emerald-200' : 'border-base-300';
+  const tabInactiveClass = isDarkMode
+    ? 'border-transparent text-white/70 hover:text-white'
+    : isAltTheme
+      ? 'border-transparent text-emerald-700 hover:text-emerald-900'
+      : 'border-transparent text-base-content/70 hover:text-base-content';
+  const tabActiveClass = isDarkMode ? 'border-white text-white' : isAltTheme ? 'border-lime-500 text-emerald-900' : 'border-primary text-primary';
+
+  const saveNoticeClass = isDarkMode
+    ? 'p-3 sm:p-4 bg-white/10 border border-white/20 text-white shadow-lg backdrop-blur-md'
+    : isAltTheme
+      ? 'p-3 sm:p-4 bg-gradient-to-r from-emerald-900 to-lime-500 text-white border border-lime-200 shadow-lg'
+      : 'p-3 sm:p-4 bg-info/10 border border-info/20 text-info';
 
   return (
-    <div className="min-h-screen bg-base-100 p-3 sm:p-6">
-      <div className="max-w-7xl mx-auto">
+    <>
+      <div className={pageWrapperClass}>
+        <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-6 sm:mb-8">
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 mb-4">
-            <div className="p-2 sm:p-3 bg-primary/10 rounded-xl">
-              <Cog6ToothIcon className="w-6 h-6 sm:w-8 sm:h-8 text-primary" />
+            <div className={`p-2 sm:p-3 ${headerBadgeClass}`}>
+              <Cog6ToothIcon className={`w-6 h-6 sm:w-8 sm:h-8 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
             </div>
             <div>
-              <h1 className="text-2xl sm:text-3xl font-bold text-base-content">Settings</h1>
-              <p className="text-sm sm:text-base text-base-content/70">Customize your CRM experience</p>
+              <h1 className={`text-2xl sm:text-3xl font-bold ${headerTextClass}`}>Settings</h1>
+              <p className={`text-sm sm:text-base ${mutedTextClass}`}>Customize your CRM experience</p>
             </div>
           </div>
         </div>
@@ -403,7 +536,7 @@ const SettingsPage: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 sm:gap-6">
           {/* Settings Navigation */}
           <div className="lg:col-span-1">
-            <div className="bg-base-200 dark:bg-base-300 rounded-xl p-3 sm:p-4">
+            <div className={shellCardClass}>
               {/* Mobile: Horizontal scrolling navigation */}
               <div className="lg:hidden">
                 <div className="flex gap-2 overflow-x-auto pb-2 hide-scrollbar">
@@ -415,9 +548,7 @@ const SettingsPage: React.FC = () => {
                         key={section.id}
                         onClick={() => setActiveSection(section.id)}
                         className={`flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-lg transition-colors duration-200 whitespace-nowrap text-sm ${
-                          isActive
-                            ? 'bg-primary text-primary-content font-medium'
-                            : 'text-base-content hover:bg-base-300 dark:hover:bg-base-100'
+                          isActive ? navButtonActive : navButtonBase
                         }`}
                       >
                         <Icon className="w-4 h-4 flex-shrink-0" />
@@ -438,9 +569,7 @@ const SettingsPage: React.FC = () => {
                       key={section.id}
                       onClick={() => setActiveSection(section.id)}
                       className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-colors duration-200 ${
-                        isActive
-                          ? 'bg-primary text-primary-content font-medium'
-                          : 'text-base-content hover:bg-base-300 dark:hover:bg-base-100'
+                        isActive ? navButtonActive : navButtonBase
                       }`}
                     >
                       <Icon className="w-5 h-5 flex-shrink-0" />
@@ -467,31 +596,29 @@ const SettingsPage: React.FC = () => {
           {/* Settings Content */}
           <div className="lg:col-span-3">
             {activeSettingsSection && (
-              <div className="bg-base-200 dark:bg-base-300 rounded-xl p-3 sm:p-6">
+              <div className={contentShellClass}>
                 <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 mb-4 sm:mb-6">
-                  <activeSettingsSection.icon className="w-5 h-5 sm:w-6 sm:h-6 text-primary" />
-                  <h2 className="text-xl sm:text-2xl font-semibold text-base-content">
+                  <activeSettingsSection.icon className={`w-5 h-5 sm:w-6 sm:h-6 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
+                  <h2 className={`text-xl sm:text-2xl font-semibold ${headerTextClass}`}>
                     {activeSettingsSection.title}
                   </h2>
                 </div>
                 
                 <div className="space-y-4 sm:space-y-6">
                   {activeSettingsSection.items.map((item) => (
-                    <div key={item.id} className="bg-base-100 dark:bg-base-300 rounded-lg p-3 sm:p-4">
+                    <div key={item.id} className={innerCardClass}>
                       {renderSettingItem(item)}
                     </div>
                   ))}
                   
                   {/* Special case for Calendar section - add tabbed interface */}
                   {activeSection === 'calendar' && (
-                    <div className="bg-base-100 dark:bg-base-300 rounded-lg p-3 sm:p-4">
+                    <div className={innerCardClass}>
                       {/* Tab Navigation */}
-                      <div className="flex border-b border-base-300 mb-4 sm:mb-6 overflow-x-auto">
+                      <div className={`flex border-b ${tabBorderClass} mb-4 sm:mb-6 overflow-x-auto`}>
                         <button
                           className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
-                            activeCalendarTab === 'availability'
-                              ? 'border-primary text-primary'
-                              : 'border-transparent text-base-content/70 hover:text-base-content'
+                            activeCalendarTab === 'availability' ? tabActiveClass : tabInactiveClass
                           }`}
                           onClick={() => setActiveCalendarTab('availability')}
                         >
@@ -500,9 +627,7 @@ const SettingsPage: React.FC = () => {
                         </button>
                         <button
                           className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
-                            activeCalendarTab === 'manage'
-                              ? 'border-primary text-primary'
-                              : 'border-transparent text-base-content/70 hover:text-base-content'
+                            activeCalendarTab === 'manage' ? tabActiveClass : tabInactiveClass
                           }`}
                           onClick={() => setActiveCalendarTab('manage')}
                         >
@@ -511,9 +636,7 @@ const SettingsPage: React.FC = () => {
                         </button>
                         <button
                           className={`flex-shrink-0 px-3 sm:px-4 py-2 font-medium text-xs sm:text-sm border-b-2 transition-colors ${
-                            activeCalendarTab === 'outlook'
-                              ? 'border-primary text-primary'
-                              : 'border-transparent text-base-content/70 hover:text-base-content'
+                            activeCalendarTab === 'outlook' ? tabActiveClass : tabInactiveClass
                           }`}
                           onClick={() => setActiveCalendarTab('outlook')}
                         >
@@ -526,8 +649,8 @@ const SettingsPage: React.FC = () => {
                       {activeCalendarTab === 'availability' && (
                         <div>
                           <div className="mb-3 sm:mb-4">
-                            <h3 className="text-base sm:text-lg font-semibold text-base-content mb-1 sm:mb-2">My Availability</h3>
-                            <p className="text-base-content/70 text-xs sm:text-sm">
+                            <h3 className={`text-base sm:text-lg font-semibold ${headerTextClass} mb-1 sm:mb-2`}>My Availability</h3>
+                            <p className={`${mutedTextClass} text-xs sm:text-sm`}>
                               Manage your unavailable times and sync with Microsoft Outlook calendar.
                             </p>
                           </div>
@@ -538,8 +661,8 @@ const SettingsPage: React.FC = () => {
                       {activeCalendarTab === 'manage' && (
                         <div>
                           <div className="mb-3 sm:mb-4">
-                            <h3 className="text-base sm:text-lg font-semibold text-base-content mb-1 sm:mb-2">Manage Employee Availability</h3>
-                            <p className="text-base-content/70 text-xs sm:text-sm">
+                            <h3 className={`text-base sm:text-lg font-semibold ${headerTextClass} mb-1 sm:mb-2`}>Manage Employee Availability</h3>
+                            <p className={`${mutedTextClass} text-xs sm:text-sm`}>
                               Set unavailable times and ranges for other team members.
                             </p>
                           </div>
@@ -561,19 +684,20 @@ const SettingsPage: React.FC = () => {
         </div>
 
         {/* Save Notice */}
-        <div className="mt-4 sm:mt-6 p-3 sm:p-4 bg-info/10 border border-info/20 rounded-lg">
-          <div className="flex items-center gap-2 text-info">
+        <div className={`mt-4 sm:mt-6 rounded-lg ${saveNoticeClass}`}>
+          <div className={`flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-info'}`}>
             <svg className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
             <span className="font-medium text-sm sm:text-base">Auto-Save Enabled</span>
           </div>
-          <p className="text-info/80 text-xs sm:text-sm mt-1">
+          <p className={`${isDarkMode ? 'text-white/70' : 'text-info/80'} text-xs sm:text-sm mt-1`}>
             All settings are automatically saved to your browser's local storage.
           </p>
         </div>
       </div>
     </div>
+  </>
   );
 };
 

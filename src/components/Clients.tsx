@@ -6619,7 +6619,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     <span className="text-base font-semibold text-gray-900">Client Information</span>
                   </div>
                   <button
-                    onClick={() => setIsClientInfoCollapsed(!isClientInfoCollapsed)}
+                    onClick={() => {
+                      const next = !(isClientInfoCollapsed && isProgressCollapsed);
+                      setIsClientInfoCollapsed(next);
+                      setIsProgressCollapsed(next);
+                    }}
                     className="btn btn-ghost btn-sm btn-circle p-0 w-8 h-8 min-h-0"
                     aria-label={isClientInfoCollapsed ? "Expand" : "Collapse"}
                   >
@@ -6654,7 +6658,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     <span className="text-base font-semibold text-gray-900">Progress & Follow-up</span>
                   </div>
                   <button
-                    onClick={() => setIsProgressCollapsed(!isProgressCollapsed)}
+                    onClick={() => {
+                      const next = !(isClientInfoCollapsed && isProgressCollapsed);
+                      setIsClientInfoCollapsed(next);
+                      setIsProgressCollapsed(next);
+                    }}
                     className="btn btn-ghost btn-sm btn-circle p-0 w-8 h-8 min-h-0"
                     aria-label={isProgressCollapsed ? "Expand" : "Collapse"}
                   >
@@ -7227,28 +7235,28 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               
               <div
                 ref={mobileTabsRef}
-                className="relative overflow-x-auto scrollbar-hide w-full -mx-6 px-6"
+                className="relative overflow-x-auto overflow-y-hidden scrollbar-hide touch-pan-x w-full -mx-4 px-4"
                 style={{ WebkitOverflowScrolling: 'touch' }}
               >
                 {/* Scroll indicator - fade gradient on left */}
                 {canScrollLeft && (
                   <div 
-                    className="absolute left-0 top-0 bottom-0 w-16 pointer-events-none z-30"
+                    className="absolute left-0 top-0 bottom-0 w-12 pointer-events-none z-30"
                     style={{
-                      background: 'linear-gradient(to right, rgba(255, 255, 255, 1) 0%, rgba(255, 255, 255, 0.9) 30%, rgba(255, 255, 255, 0.5) 60%, transparent 100%)'
+                      background: 'linear-gradient(to right, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
                     }}
                   />
                 )}
                 {/* Scroll indicator - fade gradient on right */}
                 {canScrollRight && (
                   <div 
-                    className="absolute right-0 top-0 bottom-0 w-16 pointer-events-none z-30"
+                    className="absolute right-0 top-0 bottom-0 w-12 pointer-events-none z-30"
                     style={{
-                      background: 'linear-gradient(to left, rgba(255, 255, 255, 1) 0%, rgba(255, 255, 255, 0.9) 30%, rgba(255, 255, 255, 0.5) 60%, transparent 100%)'
+                      background: 'linear-gradient(to left, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
                     }}
                   />
                 )}
-                <div className="flex gap-2 pb-1">
+                <div className="flex gap-2 pb-1 min-w-max">
                   {tabs.map((tab) => {
                     const isActive = activeTab === tab.id;
                     return (

@@ -133,7 +133,7 @@ const LoginPage: React.FC = () => {
           {/* Left: Login box */}
           <div className="w-full md:w-1/2 flex flex-col justify-center items-center min-h-screen relative z-10 bg-white">
       {/* Header bar - Mobile */}
-      <div className="md:hidden absolute top-0 left-0 right-0 z-30 bg-gradient-to-r from-purple-600 via-purple-700 to-purple-800 shadow-lg border-b border-purple-500/20">
+      <div className="md:hidden absolute top-0 left-0 right-0 z-30 bg-gradient-to-r from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] shadow-lg border-b border-cyan-300/20">
         <div className="flex items-center justify-between py-4 px-6">
           {/* Hamburger Menu Button */}
           <button
@@ -199,7 +199,7 @@ const LoginPage: React.FC = () => {
       </div>
       
       {/* Desktop Header */}
-      <div className="hidden md:block absolute top-0 left-0 right-0 z-30 bg-gradient-to-r from-purple-600 via-purple-700 to-purple-800 shadow-lg">
+      <div className="hidden md:block absolute top-0 left-0 right-0 z-30 bg-gradient-to-r from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] shadow-lg">
         <div className="flex items-center justify-between py-4 px-8">
           {/* Logo and Brand */}
           <div className="flex items-center gap-3">
@@ -445,7 +445,7 @@ const LoginPage: React.FC = () => {
       {showSuccessAnim && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center w-full h-full">
           {/* Animated gradient background */}
-          <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-blue-600 via-purple-800 to-purple-900 animate-gradient z-0" />
+          <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] animate-gradient z-0" />
           {/* Welcome message and icon */}
           <div className="relative z-10 flex flex-col items-center justify-center w-full h-full gap-6">
             {/* Employee Image or Success Icon */}

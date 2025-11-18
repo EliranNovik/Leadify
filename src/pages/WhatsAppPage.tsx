@@ -1524,8 +1524,8 @@ const WhatsAppPage: React.FC = () => {
                     >
                       <div className="flex items-center gap-2 md:gap-3">
                         {/* Avatar */}
-                        <div className="w-10 h-10 md:w-12 md:h-12 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0 relative">
-                          <span className="text-green-600 font-semibold text-sm md:text-lg">
+                        <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative bg-white/15 border border-white/30 shadow-[0_4px_12px_rgba(0,0,0,0.35)]">
+                          <span className="text-white font-semibold text-sm md:text-lg drop-shadow">
                             {client.name.charAt(0).toUpperCase()}
                           </span>
                           {/* Lock icon overlay */}
@@ -1549,7 +1549,7 @@ const WhatsAppPage: React.FC = () => {
                                 </span>
                               )}
                               {unreadCount > 0 && (
-                                <span className="bg-green-500 text-white text-xs rounded-full px-1 md:px-2 py-1 min-w-[16px] md:min-w-[20px] text-center">
+                                <span className="bg-cyan-500 text-white text-xs rounded-full px-1 md:px-2 py-1 min-w-[16px] md:min-w-[20px] text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)]">
                                   {unreadCount}
                                 </span>
                               )}

@@ -21,6 +21,10 @@ interface Field {
   hideInAdd?: boolean;
   hideInEdit?: boolean;
   readOnly?: boolean;
+  defaultValue?: any;
+  formatValue?: (value: any, record: Record) => React.ReactNode;
+  prepareValueForForm?: (value: any, record?: Record | null) => any;
+  prepareValueForSave?: (value: any, record?: Partial<Record> | null) => any;
   foreignKey?: {
     table: string;
     displayField: string;
@@ -167,7 +171,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   // Fetch foreign key data for display
   const fetchForeignKeyData = async (records: Record[]) => {
     const foreignKeyFields = fields.filter(f => f.foreignKey);
-    const fkData: {[key: string]: {[key: string]: string}} = {};
+    const fkData: {[key: string]: {[key: string]: any}} = {};
 
     console.log(`🔍 Fetching foreign key data for ${foreignKeyFields.length} fields`);
 
@@ -251,7 +255,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               if (data) {
                 console.log(`✅ Fetched ${data.length} records for ${field.name} batch`);
                 data.forEach((item: any) => {
-                  const key = item[valueField] as string;
+                  const key = String(item[valueField]);
                   let value = item[displayField] as string;
                   
                   // For users table, create a better display value
@@ -267,8 +271,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                       value = `${value} (${mainCategory})`;
                     }
                   }
+                  if (joinTable && item[joinTable]) {
+                    const joinValue = item[joinTable];
+                    fkData[field.name][key] = {
+                      label: value,
+                      joinLabel: joinValue[joinDisplayField as string] || ''
+                    };
+                    return;
+                  }
                   
-                  (fkData[field.name] as { [key: string]: string })[key] = value;
+                  (fkData[field.name] as { [key: string]: any })[key] = value;
                 });
               }
             } catch (batchError) {
@@ -537,6 +549,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
   // Create or update record
   const saveRecord = async (record: Partial<Record>) => {
+    fields.forEach(field => {
+      if (field.prepareValueForSave && field.name in record) {
+        record[field.name] = field.prepareValueForSave(record[field.name], record);
+      }
+    });
+
     // Handle array fields for Postgres
     ['languages', 'allowed_employee_names', 'groups', 'user_permissions'].forEach((arrayField) => {
       if (arrayField in record) {
@@ -576,6 +594,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     });
 
     try {
+      if (!editingRecord?.id && ((record as any).id === undefined || (record as any).id === null)) {
+        const generatedId = Date.now();
+        (record as any).id = generatedId;
+      }
       let result;
       const { data: authUser } = await supabase.auth.getUser();
       const authUserId = authUser?.user?.id ?? null;
@@ -961,13 +983,22 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     if (!record) {
       const defaultRecord: any = {};
       fields.forEach(field => {
-        if ('defaultValue' in field && field.defaultValue !== undefined) {
-          defaultRecord[field.name] = field.defaultValue;
+        if (field.defaultValue !== undefined) {
+          defaultRecord[field.name] =
+            typeof field.defaultValue === 'function'
+              ? field.defaultValue()
+              : field.defaultValue;
         }
       });
       setEditingRecord(defaultRecord);
     } else {
-      setEditingRecord(record);
+      const transformedRecord: Record = { ...record };
+      fields.forEach(field => {
+        if (field.prepareValueForForm) {
+          transformedRecord[field.name] = field.prepareValueForForm(record[field.name], record);
+        }
+      });
+      setEditingRecord(transformedRecord);
     }
     
     setIsModalOpen(true);
@@ -1218,7 +1249,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                       >
                         {fields.filter(field => !field.hideInTable).map(field => (
                           <td key={field.name}>
-                            {field.type === 'boolean' ? (
+                            {field.formatValue ? (
+                              field.formatValue(record[field.name], record)
+                            ) : field.type === 'boolean' ? (
                               <input
                                 type="checkbox"
                                 className="toggle toggle-success toggle-sm"
@@ -1231,8 +1264,21 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                             ) : field.type === 'date' || field.type === 'datetime' ? (
                               new Date(record[field.name]).toLocaleDateString()
                             ) : field.foreignKey ? (
-                              // Display foreign key name instead of ID
-                              foreignKeyData[field.name]?.[record[field.name]] || record[field.name] || '-'
+                              (() => {
+                                const fkKey = record[field.name] !== null && record[field.name] !== undefined
+                                  ? String(record[field.name])
+                                  : record[field.name];
+                                const fkEntry = foreignKeyData[field.name]?.[fkKey] as
+                                  | { label?: string; joinLabel?: string }
+                                  | string
+                                  | undefined;
+                                if (!fkEntry) return record[field.name] || '-';
+                                if (typeof fkEntry === 'object' && fkEntry !== null) {
+                                  const joinLabel = fkEntry.joinLabel ? ` (${fkEntry.joinLabel})` : '';
+                                  return `${fkEntry.label}${joinLabel}`;
+                                }
+                                return fkEntry;
+                              })()
                             ) : field.name === 'bonuses_role' ? (
                               // Special handling for bonuses_role to display mapped role names
                               (() => {

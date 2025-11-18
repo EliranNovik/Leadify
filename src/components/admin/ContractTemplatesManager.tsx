@@ -22,7 +22,8 @@ import {
   ArrowLeftIcon,
   DocumentTextIcon,
   Squares2X2Icon,
-  TableCellsIcon
+  TableCellsIcon,
+  XMarkIcon
 } from '@heroicons/react/24/outline';
 
 const DYNAMIC_FIELDS = [
@@ -155,6 +156,7 @@ interface Template {
   default_pricing_tiers?: any;
   default_currency?: string;
   default_country?: string;
+  category_id?: string | number | null;
 }
 
 const ContractTemplatesManager: React.FC = () => {
@@ -163,13 +165,16 @@ const ContractTemplatesManager: React.FC = () => {
   const [selectedSourceTable, setSelectedSourceTable] = useState<'contract_templates' | 'misc_contracttemplate' | null>(null);
   const [name, setName] = useState('');
   const [languageId, setLanguageId] = useState<string | number | null>(null);
+  const [categoryId, setCategoryId] = useState<string | number | null>(null);
   const [active, setActive] = useState<boolean>(true);
   const [languages, setLanguages] = useState<any[]>([]);
+  const [categories, setCategories] = useState<{ id: string | number; name: string; mainName?: string; label: string }[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isPreview, setIsPreview] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterLanguage, setFilterLanguage] = useState<string | null>(null);
   const [filterActive, setFilterActive] = useState<'all' | 'active' | 'inactive'>('all');
+  const [filterCategory, setFilterCategory] = useState<string | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'box' | 'list'>('box');
@@ -191,6 +196,15 @@ const ContractTemplatesManager: React.FC = () => {
   const [dynamicFields, setDynamicFields] = useState<{ [key: string]: string }>({});
   const [signatureData, setSignatureData] = useState<{ [key: string]: string }>({});
   const signatureRefs = React.useRef<{ [key: string]: SignatureCanvas | null }>({});
+  const [quickEditTemplate, setQuickEditTemplate] = useState<Template | null>(null);
+  const [quickEditValues, setQuickEditValues] = useState({
+    name: '',
+    languageId: '',
+    categoryId: '',
+    active: true
+  });
+  const [isQuickSaving, setIsQuickSaving] = useState(false);
+  const [isQuickCreating, setIsQuickCreating] = useState(false);
 
   // Editor setup - define extensions as a memoized constant so we can reuse them for generateJSON
   // This must be defined before fetchTemplates so we can use it there
@@ -246,6 +260,7 @@ const ContractTemplatesManager: React.FC = () => {
             default_pricing_tiers: template.default_pricing_tiers,
             default_currency: template.default_currency,
             default_country: template.default_country,
+            category_id: template.category_id,
           });
         });
       }
@@ -440,6 +455,7 @@ const ContractTemplatesManager: React.FC = () => {
             sourceTable: 'misc_contracttemplate',
             active: template.active !== undefined ? template.active : true, // Default to true if not set
             firm_id: template.firm_id,
+            category_id: template.category_id,
           });
         });
       }
@@ -489,12 +505,57 @@ const ContractTemplatesManager: React.FC = () => {
     fetchLanguages();
   }, []);
 
+  // Fetch categories
+  useEffect(() => {
+    const fetchCategories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_category')
+          .select('id, name, misc_maincategory ( name )')
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+        setCategories(
+          (data || []).map((cat: any) => {
+            const mainName = cat.misc_maincategory?.name || '';
+            return {
+              id: cat.id,
+              name: cat.name,
+              mainName,
+              label: mainName ? `${cat.name} (${mainName})` : cat.name
+            };
+          })
+        );
+      } catch (error) {
+        console.error('Error fetching categories:', error);
+      }
+    };
+
+    fetchCategories();
+  }, []);
+
   // Get language name by ID
   const getLanguageName = (langId: string | number | null | undefined): string => {
     if (!langId || !languages.length) return 'Not set';
     const language = languages.find(lang => String(lang.id) === String(langId));
     return language?.name || 'Not set';
   };
+
+  const getCategoryLabel = (catId: string | number | null | undefined): string => {
+    if (!catId || !categories.length) return 'Not set';
+    const category = categories.find(cat => String(cat.id) === String(catId));
+    return category?.label || category?.name || 'Not set';
+  };
+
+  useEffect(() => {
+    if (!quickEditTemplate) return;
+    setQuickEditValues({
+      name: quickEditTemplate.name,
+      languageId: quickEditTemplate.language_id ? String(quickEditTemplate.language_id) : '',
+      categoryId: quickEditTemplate.category_id ? String(quickEditTemplate.category_id) : '',
+      active: quickEditTemplate.active !== undefined ? quickEditTemplate.active : true,
+    });
+  }, [quickEditTemplate]);
 
   // Filter templates based on search term, language, and active status
   const filteredTemplates = useMemo(() => {
@@ -523,9 +584,15 @@ const ContractTemplatesManager: React.FC = () => {
         return filterActive === 'active' ? isActive : !isActive;
       });
     }
+
+    if (filterCategory) {
+      filtered = filtered.filter(template =>
+        template.category_id ? String(template.category_id) === filterCategory : false
+      );
+    }
     
     return filtered;
-  }, [templates, searchTerm, filterLanguage, filterActive]);
+  }, [templates, searchTerm, filterLanguage, filterActive, filterCategory]);
 
   const selectedTemplate = useMemo(() => {
     if (!selectedId || !selectedSourceTable) return null;
@@ -680,6 +747,7 @@ const ContractTemplatesManager: React.FC = () => {
     
     setName(selectedTemplate.name);
     setLanguageId(selectedTemplate.language_id || null);
+    setCategoryId(selectedTemplate.category_id || null);
     setActive(selectedTemplate.active !== undefined ? selectedTemplate.active : true);
     
     // Load default pricing tiers if they exist (only for contract_templates)
@@ -722,7 +790,8 @@ const ContractTemplatesManager: React.FC = () => {
             default_currency: previewData.currency,
             default_country: previewData.client_country,
             language_id: languageId || null,
-            active: active
+            active: active,
+            category_id: categoryId || null
           };
           const { error } = await supabase
             .from('contract_templates')
@@ -739,6 +808,7 @@ const ContractTemplatesManager: React.FC = () => {
             name: name.trim(),
             content: content, // Save as JSON object directly (JSONB column)
             language_id: languageId || null,
+            category_id: categoryId || null,
             active: active
           };
           
@@ -767,6 +837,7 @@ const ContractTemplatesManager: React.FC = () => {
           default_currency: previewData.currency,
           default_country: previewData.client_country,
           language_id: languageId || null,
+          category_id: categoryId || null,
           active: active
         };
         const { error } = await supabase
@@ -788,15 +859,100 @@ const ContractTemplatesManager: React.FC = () => {
 
   // Create new template (only in contract_templates)
   const handleCreate = () => {
-    setSelectedId(null);
-    setSelectedSourceTable(null);
-    setName('Untitled Contract');
-    setLanguageId(null);
-    setShowEditor(true);
-    setIsPreview(false);
-    if (editor) {
-      editor.commands.setContent({ type: 'doc', content: [] });
+    const newTemplateId = uuidv4();
+    const stubTemplate: Template = {
+      id: newTemplateId,
+      name: 'Untitled Contract',
+      content: { type: 'doc', content: [] },
+      language_id: null,
+      category_id: null,
+      sourceTable: 'contract_templates',
+      active: true
+    };
+    openQuickEditDrawer(stubTemplate, { isNew: true });
+  };
+
+  const openQuickEditDrawer = (template: Template, options?: { isNew?: boolean }) => {
+    setQuickEditTemplate(template);
+    setIsQuickCreating(Boolean(options?.isNew));
+  };
+
+  const closeQuickEditDrawer = () => {
+    setQuickEditTemplate(null);
+    setIsQuickCreating(false);
+  };
+
+  const handleQuickSave = async () => {
+    if (!quickEditTemplate) return;
+    const trimmedName = quickEditValues.name.trim();
+    if (!trimmedName) {
+      alert('Template name is required');
+      return;
     }
+
+    setIsQuickSaving(true);
+    try {
+      if (isQuickCreating) {
+        const newTemplateData: any = {
+          id: quickEditTemplate.id,
+          name: trimmedName,
+          content: { type: 'doc', content: [] },
+          default_pricing_tiers: previewData.pricing_tiers,
+          default_currency: previewData.currency,
+          default_country: previewData.client_country,
+          language_id: quickEditValues.languageId || null,
+          category_id: quickEditValues.categoryId || null,
+          active: quickEditValues.active
+        };
+
+        const { error } = await supabase
+          .from('contract_templates')
+          .insert([newTemplateData]);
+
+        if (error) throw error;
+        await fetchTemplates();
+        closeQuickEditDrawer();
+        setSelectedId(String(newTemplateData.id));
+        setSelectedSourceTable('contract_templates');
+        setName(trimmedName);
+        setLanguageId(quickEditValues.languageId || null);
+        setCategoryId(quickEditValues.categoryId || null);
+        setActive(quickEditValues.active);
+        setShowEditor(true);
+        setIsPreview(false);
+        if (editor) {
+          editor.commands.setContent({ type: 'doc', content: [] });
+        }
+      } else {
+        const payload: any = {
+          name: trimmedName,
+          language_id: quickEditValues.languageId || null,
+          category_id: quickEditValues.categoryId || null,
+          active: quickEditValues.active,
+        };
+
+        const { error } = await supabase
+          .from(quickEditTemplate.sourceTable)
+          .update(payload)
+          .eq('id', quickEditTemplate.id);
+
+        if (error) throw error;
+        await fetchTemplates();
+        closeQuickEditDrawer();
+      }
+    } catch (error: any) {
+      console.error('Error saving template metadata:', error);
+      alert(error.message || 'Failed to save template changes.');
+    } finally {
+      setIsQuickSaving(false);
+    }
+  };
+
+  const handleOpenEditorFromDrawer = () => {
+    if (!quickEditTemplate) return;
+    const { id, sourceTable } = quickEditTemplate;
+    closeQuickEditDrawer();
+    handleEditTemplate(id, sourceTable);
   };
 
   // Open template for editing
@@ -806,6 +962,9 @@ const ContractTemplatesManager: React.FC = () => {
     const template = templates.find(t => t.id === id && t.sourceTable === sourceTable);
     if (template) {
       setName(template.name);
+       setLanguageId(template.language_id || null);
+       setCategoryId(template.category_id || null);
+       setActive(template.active !== undefined ? template.active : true);
       setShowEditor(true);
       setIsPreview(false);
     }
@@ -818,6 +977,7 @@ const ContractTemplatesManager: React.FC = () => {
     setSelectedSourceTable(null);
     setIsPreview(false);
     setLanguageId(null);
+    setCategoryId(null);
     setActive(true);
   };
 
@@ -1159,6 +1319,22 @@ const ContractTemplatesManager: React.FC = () => {
               </select>
             </div>
             
+            {/* Category Filter */}
+            <div className="form-control w-full sm:w-auto sm:min-w-[220px]">
+              <select
+                className="select select-bordered w-full"
+                value={filterCategory || ''}
+                onChange={(e) => setFilterCategory(e.target.value || null)}
+              >
+                <option value="">All Categories</option>
+                {categories.map(cat => (
+                  <option key={cat.id} value={String(cat.id)}>
+                    {cat.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Active/Inactive Filter */}
             <div className="form-control w-full sm:w-auto sm:min-w-[180px]">
               <select
@@ -1173,12 +1349,13 @@ const ContractTemplatesManager: React.FC = () => {
             </div>
             
             {/* Clear Filters Button */}
-            {(filterLanguage || filterActive !== 'all' || searchTerm) && (
+            {(filterLanguage || filterCategory || filterActive !== 'all' || searchTerm) && (
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setSearchTerm('');
                   setFilterLanguage(null);
+                  setFilterCategory(null);
                   setFilterActive('all');
                 }}
               >
@@ -1224,7 +1401,7 @@ const ContractTemplatesManager: React.FC = () => {
                   <div
                     key={`${template.sourceTable}_${template.id}`}
                     className="card bg-white shadow-lg border border-gray-200 hover:shadow-xl transition-all duration-300 cursor-pointer group relative"
-                    onClick={() => handleEditTemplate(template.id, template.sourceTable)}
+                    onClick={() => openQuickEditDrawer(template)}
                   >
                     <div className="card-body p-6">
                       <div className="flex items-start justify-between mb-4">
@@ -1264,6 +1441,11 @@ const ContractTemplatesManager: React.FC = () => {
                             {template.active ? 'Active' : 'Inactive'}
                           </span>
                         )}
+                        {template.category_id && (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-100 text-blue-700 border border-blue-200">
+                            {getCategoryLabel(template.category_id)}
+                          </span>
+                        )}
                         {template.language_id && (
                           <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-100 text-purple-700 border border-purple-200">
                             {getLanguageName(template.language_id)}
@@ -1292,14 +1474,19 @@ const ContractTemplatesManager: React.FC = () => {
                         <tr
                           key={`${template.sourceTable}_${template.id}`}
                           className="hover:bg-gray-50 cursor-pointer transition-colors"
-                          onClick={() => handleEditTemplate(template.id, template.sourceTable)}
+                          onClick={() => openQuickEditDrawer(template)}
                         >
                           <td>
                             <div className="flex items-center gap-3">
                               <div className="p-2 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg">
                                 <DocumentTextIcon className="w-4 h-4 text-white" />
                               </div>
-                              <span className="font-medium text-gray-900">{template.name}</span>
+                              <div>
+                                <span className="font-medium text-gray-900 block">{template.name}</span>
+                                <span className="text-xs text-gray-500">
+                                  {template.category_id ? getCategoryLabel(template.category_id) : 'No category'}
+                                </span>
+                              </div>
                             </div>
                           </td>
                           <td>
@@ -1356,6 +1543,114 @@ const ContractTemplatesManager: React.FC = () => {
             Found {filteredTemplates.length} template{filteredTemplates.length !== 1 ? 's' : ''}
           </div>
         )}
+
+        {quickEditTemplate && (
+          <>
+            <div
+              className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40"
+              onClick={closeQuickEditDrawer}
+            />
+            <div
+              className="fixed inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl z-50 flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-5 border-b border-gray-200 flex items-center justify-between">
+                <div>
+                  <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">
+                    Quick edit
+                  </p>
+                  <h3 className="text-xl font-semibold text-gray-900 truncate max-w-xs">
+                    {quickEditTemplate.name}
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-1">
+                    {quickEditTemplate.sourceTable === 'contract_templates' ? 'Contract template' : 'Legacy template'}
+                  </p>
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={closeQuickEditDrawer}>
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-5 space-y-4">
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text font-medium">Template name</span>
+                  </label>
+                  <input
+                    className="input input-bordered w-full"
+                    value={quickEditValues.name}
+                    onChange={(e) => setQuickEditValues((prev) => ({ ...prev, name: e.target.value }))}
+                  />
+                </div>
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text font-medium">Language</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={quickEditValues.languageId}
+                    onChange={(e) => setQuickEditValues((prev) => ({ ...prev, languageId: e.target.value }))}
+                  >
+                    <option value="">Not set</option>
+                    {languages.map((lang) => (
+                      <option key={lang.id} value={String(lang.id)}>
+                        {lang.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="form-control">
+                  <label className="label">
+                    <span className="label-text font-medium">Category</span>
+                  </label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={quickEditValues.categoryId}
+                    onChange={(e) => setQuickEditValues((prev) => ({ ...prev, categoryId: e.target.value }))}
+                  >
+                    <option value="">Not set</option>
+                    {categories.map((cat) => (
+                      <option key={cat.id} value={String(cat.id)}>
+                        {cat.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center justify-between border border-gray-200 rounded-xl p-4">
+                  <div>
+                    <p className="text-sm font-medium text-gray-800">Status</p>
+                    <p className="text-xs text-gray-500">
+                      {quickEditValues.active ? 'Template is available for use' : 'Template hidden from new contracts'}
+                    </p>
+                  </div>
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-primary"
+                    checked={quickEditValues.active}
+                    onChange={(e) => setQuickEditValues((prev) => ({ ...prev, active: e.target.checked }))}
+                  />
+                </div>
+              </div>
+              <div className="p-5 border-t border-gray-200 space-y-3">
+                <button
+                  className="btn btn-primary w-full"
+                  disabled={isQuickSaving}
+                  onClick={handleQuickSave}
+                >
+                  {isQuickSaving
+                    ? 'Saving...'
+                    : isQuickCreating
+                      ? 'Save & open editor'
+                      : 'Save changes'}
+                </button>
+                {!isQuickCreating && (
+                  <button className="btn btn-outline w-full" onClick={handleOpenEditorFromDrawer}>
+                    Open template editor
+                  </button>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -1403,6 +1698,18 @@ const ContractTemplatesManager: React.FC = () => {
               {languages.map(lang => (
                 <option key={lang.id} value={lang.id}>
                   {lang.name}
+                </option>
+              ))}
+            </select>
+            <select
+              className="select select-bordered w-48"
+              value={categoryId || ''}
+              onChange={(e) => setCategoryId(e.target.value || null)}
+            >
+              <option value="">Select Category...</option>
+              {categories.map(cat => (
+                <option key={cat.id} value={String(cat.id)}>
+                  {cat.label}
                 </option>
               ))}
             </select>

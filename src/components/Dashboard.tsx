@@ -3480,7 +3480,7 @@ const Dashboard: React.FC = () => {
             {categories.map(category => (
               <th key={category} className="text-center px-5 py-3 font-semibold text-slate-700">{category}</th>
             ))}
-            <th className="text-center px-5 py-3 font-semibold text-white" style={{backgroundColor: '#411cce'}}>Total</th>
+            <th className="text-center px-5 py-3 font-semibold text-slate-700">Total</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
@@ -3505,7 +3505,7 @@ const Dashboard: React.FC = () => {
                     return (
                       <td key={`${category}-combined`} className="px-5 py-3 text-center">
                         <div className="space-y-1">
-                          <div className="badge font-semibold px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">{data?.count || 0}</div>
+                          <div className="badge font-semibold px-2 py-1 bg-slate-100 text-slate-700 border border-slate-200">{data?.count || 0}</div>
                           <div className="border-t border-slate-200 my-1"></div>
                           <div className="font-semibold text-slate-700">₪{Math.ceil(amount).toLocaleString()}</div>
                         </div>
@@ -3513,10 +3513,10 @@ const Dashboard: React.FC = () => {
                     );
                   })}
                   {/* Total column for this time period */}
-                  <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
+                  <td className="px-5 py-3 text-center text-slate-700">
                     <div className="space-y-1">
                       <div className="flex items-center justify-center">
-                        <div className="badge badge-white font-semibold px-2 py-1" style={{color: '#411cce'}}>
+                        <div className="badge bg-slate-100 text-slate-700 font-semibold px-2 py-1 border border-slate-200">
                           {(() => {
                             if (isToday) {
                               return dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.count || 0), 0);
@@ -3529,8 +3529,8 @@ const Dashboard: React.FC = () => {
                           })()}
                         </div>
                       </div>
-                      <div className="border-t border-white/20 my-1"></div>
-                      <div className="font-semibold text-white">
+                      <div className="border-t border-slate-200 my-1"></div>
+                      <div className="font-semibold text-slate-700">
                         ₪{(() => {
                           if (isToday) {
                             return Math.ceil(dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0)).toLocaleString();
@@ -3547,7 +3547,7 @@ const Dashboard: React.FC = () => {
                 </tr>
                 {/* Target row - only show for current month */}
                 {isThisMonth && (
-                  <tr className="bg-white border-2 border-purple-600">
+                  <tr className="bg-white border border-slate-200">
                     <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
                     {categories.map((category, index) => {
                       const data = dataSource[selectedMonth]?.[index];
@@ -3562,16 +3562,12 @@ const Dashboard: React.FC = () => {
                       );
                     })}
                     {/* Total target column */}
-                    <td className="px-5 py-3 text-center text-white" style={{backgroundColor: '#411cce'}}>
+                    <td className="px-5 py-3 text-center font-semibold text-slate-700">
                       {(() => {
                         // For invoiced data, sum all 5 department targets (indices 0-4)
                         // For agreement data, sum departments 1-5 (indices 0-4, excluding General)
                         const totalTarget = dataSource[selectedMonth]?.slice(0, 5).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
-                        return (
-                          <span className="font-semibold text-white">
-                            {totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—'}
-                          </span>
-                        );
+                        return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
                       })()}
                     </td>
                   </tr>

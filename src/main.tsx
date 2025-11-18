@@ -11,8 +11,28 @@ import { supabase, sessionManager } from './lib/supabase'
 (window as any).supabase = supabase;
 (window as any).sessionManager = sessionManager;
 
-// Force light theme
-document.documentElement.setAttribute('data-theme', 'light');
+// Apply saved theme preference before React mounts
+const savedTheme = (() => {
+  try {
+    const stored = localStorage.getItem('theme');
+    return stored === 'dark' || stored === 'alternative' ? stored : 'light';
+  } catch {
+    return 'light';
+  }
+})();
+document.documentElement.setAttribute('data-theme', savedTheme);
+const applyThemeClass = (theme: string) => {
+  const isDark = theme === 'dark';
+  const isAlt = theme === 'alternative';
+  document.documentElement.classList.toggle('dark', isDark);
+  document.body.classList.toggle('dark', isDark);
+  document.getElementById('root')?.classList.toggle('dark', isDark);
+
+  document.documentElement.classList.toggle('theme-alt', isAlt);
+  document.body.classList.toggle('theme-alt', isAlt);
+  document.getElementById('root')?.classList.toggle('theme-alt', isAlt);
+};
+applyThemeClass(savedTheme);
 
 // Register Service Worker for PWA
 if ('serviceWorker' in navigator) {
