@@ -49,10 +49,18 @@ const logAccess = async (req, res, responseBody, processingTime) => {
     }
     
     // Prepare log data
+    const hasBody = req.body && Object.keys(req.body || {}).length > 0;
+    const hasQuery = req.query && Object.keys(req.query || {}).length > 0;
+    const serializedBody = hasBody
+      ? JSON.stringify(req.body)
+      : hasQuery
+        ? JSON.stringify({ query: req.query })
+        : null;
+
     const logData = {
       request_method: req.method,
-      endpoint: req.originalUrl || req.url,
-      request_body: req.body ? JSON.stringify(req.body) : null,
+      endpoint: req.path || req.originalUrl || req.url,
+      request_body: serializedBody,
       response_body: responseBody ? String(responseBody).substring(0, 10000) : null, // Limit to 10KB
       response_code: res.statusCode,
       ip_address: req.ip || req.connection.remoteAddress,
