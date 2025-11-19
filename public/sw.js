@@ -1,5 +1,5 @@
-// Service Worker for Leadify CRM PWA
-const CACHE_NAME = 'leadify-crm-v1';
+// Service Worker for RMQ 2.0 PWA
+const CACHE_NAME = 'rmq-2.0-v1';
 const OFFLINE_PAGE = '/offline.html';
 
 const urlsToCache = [
@@ -98,13 +98,13 @@ self.addEventListener('fetch', (event) => {
 self.addEventListener('push', (event) => {
   if (event.data) {
     const data = event.data.json();
-    const title = data.title || 'Leadify CRM';
+    const title = data.title || 'RMQ 2.0';
     const options = {
       body: data.body || 'You have a new notification',
       icon: '/icon-192x192.png',
       badge: '/icon-72x72.png',
       vibrate: [200, 100, 200],
-      tag: 'leadify-notification',
+      tag: 'rmq-notification',
       requireInteraction: false
     };
 

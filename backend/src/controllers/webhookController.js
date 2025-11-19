@@ -1,5 +1,7 @@
 const supabase = require('../config/supabase');
 
+const FACEBOOK_VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+
 const webhookController = {
   /**
    * Catch form data and create a new lead
@@ -174,6 +176,101 @@ const webhookController = {
         success: false,
         error: 'Internal server error'
       });
+    }
+  },
+
+  /**
+   * Facebook webhook verification handler
+   */
+  async verifyFacebookWebhook(req, res) {
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+
+    if (!FACEBOOK_VERIFY_TOKEN) {
+      console.error('VERIFY_TOKEN is not configured');
+      return res.status(500).send('VERIFY_TOKEN is not configured');
+    }
+
+    if (mode === 'subscribe' && token === FACEBOOK_VERIFY_TOKEN) {
+      console.log('✅ Facebook webhook verified successfully');
+      return res.status(200).send(challenge || 'OK');
+    }
+
+    console.warn('❌ Facebook webhook verification failed');
+    return res.status(403).send('Verification failed');
+  },
+
+  /**
+   * Handle Facebook lead webhook payload
+   */
+  async handleFacebookLead(req, res) {
+    try {
+      if (!FACEBOOK_VERIFY_TOKEN) {
+        console.error('VERIFY_TOKEN is not configured');
+        return res.status(500).json({ error: 'VERIFY_TOKEN is not configured' });
+      }
+
+      const { source_code, about, email, name } = req.body || {};
+
+      if (!source_code || !name || !email) {
+        return res.status(400).json({
+          error: 'Missing required fields: source_code, name, and email are required'
+        });
+      }
+
+      console.log('📥 Received Facebook lead:', {
+        source_code,
+        about,
+        email,
+        name
+      });
+
+      const { data: newLead, error: insertError } = await supabase.rpc('create_lead_with_source_validation', {
+        p_lead_name: name,
+        p_lead_email: email.toLowerCase(),
+        p_lead_phone: null,
+        p_lead_topic: about || null,
+        p_lead_language: 'EN',
+        p_lead_source: 'Facebook',
+        p_created_by: 'facebook@webhook',
+        p_source_code: source_code,
+        p_balance_currency: 'NIS',
+        p_proposal_currency: 'NIS'
+      });
+
+      if (insertError) {
+        console.error('Error creating Facebook lead:', insertError);
+        return res.status(500).json({
+          error: 'Failed to create lead',
+          details: insertError.message
+        });
+      }
+
+      if (!newLead || newLead.length === 0) {
+        console.error('No lead data returned from Facebook webhook insertion');
+        return res.status(500).json({ error: 'Failed to create lead - no data returned' });
+      }
+
+      const createdLead = newLead[0];
+      console.log('✅ Facebook lead created:', createdLead);
+
+      res.status(201).json({
+        success: true,
+        data: {
+          lead_number: createdLead.lead_number,
+          id: createdLead.id,
+          name: createdLead.name,
+          email: createdLead.email,
+          source_id: createdLead.source_id,
+          source_name: createdLead.source_name,
+          created_at: new Date().toISOString()
+        },
+        message: 'Facebook lead created successfully'
+      });
+    } catch (error) {
+      console.error('Facebook webhook error:', error);
+      res.status(500).json({ error: 'Internal server error' });
     }
   }
 };

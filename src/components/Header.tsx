@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { searchLeads } from '../lib/legacyLeadsApi';
@@ -52,6 +52,27 @@ interface Notification {
   time: string;
   read: boolean;
 }
+
+interface AssignmentNotification {
+  key: string;
+  table: 'legacy' | 'new';
+  leadId: string | number;
+  leadRouteId: string | number;
+  leadNumber: string;
+  roleLabel: string;
+  updatedAt?: string;
+}
+
+const ASSIGNMENT_ROLE_COLUMNS = [
+  { field: 'case_handler_id', label: 'Handler' },
+  { field: 'meeting_manager_id', label: 'Manager' },
+  { field: 'meeting_lawyer_id', label: 'Helper' },
+  { field: 'meeting_scheduler_id', label: 'Scheduler' },
+  { field: 'expert_id', label: 'Expert' },
+  { field: 'closer_id', label: 'Closer' },
+] as const;
+
+const ASSIGNMENT_SEEN_STORAGE_KEY = 'rmq_assignment_seen_v1';
 
 interface RMQMessage {
   id: number;
@@ -131,6 +152,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [assignmentNotifications, setAssignmentNotifications] = useState<AssignmentNotification[]>([]);
+  const [seenAssignmentKeys, setSeenAssignmentKeys] = useState<Set<string>>(new Set());
   
   // RMQ Messages state
   const [rmqMessages, setRmqMessages] = useState<RMQMessage[]>([]);
@@ -147,7 +170,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const stageIdsReadyRef = useRef(false);
   const resolvingStageIdsRef = useRef<Promise<void> | null>(null);
 
-  const unreadCount = rmqUnreadCount + whatsappLeadsUnreadCount;
+  const unreadCount = rmqUnreadCount + whatsappLeadsUnreadCount + assignmentNotifications.length;
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
@@ -161,6 +184,48 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem(ASSIGNMENT_SEEN_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          setSeenAssignmentKeys(new Set(parsed));
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load assignment notification cache', error);
+    }
+  }, []);
+
+  const persistSeenAssignments = useCallback((nextSet: Set<string>) => {
+    if (typeof window === 'undefined') return;
+    try {
+      localStorage.setItem(ASSIGNMENT_SEEN_STORAGE_KEY, JSON.stringify(Array.from(nextSet)));
+    } catch (error) {
+      console.error('Failed to persist assignment notification cache', error);
+    }
+  }, []);
+
+  const rememberAssignments = useCallback((keys: string[]) => {
+    if (!keys.length) return;
+    setSeenAssignmentKeys(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      keys.forEach(key => {
+        if (!next.has(key)) {
+          next.add(key);
+          changed = true;
+        }
+      });
+      if (changed) {
+        persistSeenAssignments(next);
+      }
+      return next;
+    });
+  }, [persistSeenAssignments]);
 
   const navTabs = [
     {
@@ -894,6 +959,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
+
   const ensureStageIds = async () => {
     if (stageIdsReadyRef.current) {
       return;
@@ -1067,11 +1133,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (newShowState && currentUser) {
       fetchRmqMessages();
       fetchWhatsappLeadsMessages();
+      fetchWhatsappClientsUnreadCount();
+    }
+    if (newShowState && (currentUser || currentUserEmployee)) {
+      fetchAssignmentNotifications();
     }
   };
 
   const markAllAsRead = async () => {
-    if (!currentUser) return;
+    if (!currentUser) {
+      if (assignmentNotifications.length > 0) {
+        rememberAssignments(assignmentNotifications.map(notification => notification.key));
+        setAssignmentNotifications([]);
+      }
+      return;
+    }
 
     try {
       // Get all conversations where the user participates
@@ -1122,6 +1198,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Clear WhatsApp leads messages from notifications
       setWhatsappLeadsMessages([]);
       setWhatsappLeadsUnreadCount(0);
+      if (assignmentNotifications.length > 0) {
+        rememberAssignments(assignmentNotifications.map(notification => notification.key));
+        setAssignmentNotifications([]);
+      }
       
     } catch (error) {
       console.error('Error marking all conversations as read:', error);
@@ -1269,6 +1349,97 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     // For direct messages, just show the content without sender name
     return message.content;
   };
+  
+  const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
+    if (!row) return '';
+    const leadNumber = row.lead_number?.toString().trim();
+    if (leadNumber) return leadNumber;
+    return '';
+  };
+
+  const fetchAssignmentNotifications = useCallback(async () => {
+    const employeeId = currentUserEmployee?.id ?? currentUser?.employee_id;
+    if (!employeeId) return;
+
+    const employeeIdStr = String(employeeId).trim();
+    if (!employeeIdStr) return;
+    const sanitizedEmployeeId = employeeIdStr.replace(/"/g, '\\"');
+
+    const orFilter = ASSIGNMENT_ROLE_COLUMNS.map(role => `${role.field}.eq."${sanitizedEmployeeId}"`).join(',');
+    if (!orFilter) return;
+
+    const roleFields = ASSIGNMENT_ROLE_COLUMNS.map(role => role.field).join(', ');
+
+    try {
+      const [legacyResult, newResult] = await Promise.all([
+        supabase
+          .from('leads_lead')
+          .select(`id, lead_number, manual_id, udate, ${roleFields}`)
+          .or(orFilter)
+          .order('udate', { ascending: false })
+          .limit(50),
+        supabase
+          .from('leads')
+          .select(`id, lead_number, manual_id, created_at, ${roleFields}`)
+          .or(orFilter)
+          .order('created_at', { ascending: false })
+          .limit(50),
+      ]);
+
+      const notifications: AssignmentNotification[] = [];
+
+      const pushNotifications = (rows: any[] | null | undefined, table: 'legacy' | 'new') => {
+        if (!rows) return;
+        rows.forEach(row => {
+          ASSIGNMENT_ROLE_COLUMNS.forEach(role => {
+            const value = row[role.field];
+            if (value === null || value === undefined) return;
+            if (String(value).trim() !== employeeIdStr) return;
+            const timestamp =
+              table === 'legacy'
+                ? (row.udate || row.updated_at || row.created_at)
+                : (row.updated_at || row.created_at);
+            const key = [table, row.id, role.field, value, timestamp || ''].join(':');
+            if (seenAssignmentKeys.has(key)) return;
+            notifications.push({
+              key,
+              table,
+              leadId: row.id,
+              leadRouteId: getLeadRouteIdentifier(row, table),
+              leadNumber: getLeadRouteIdentifier(row, table),
+              roleLabel: role.label,
+              updatedAt: timestamp,
+            });
+          });
+        });
+      };
+
+      if (legacyResult.error) {
+        console.error('Error fetching legacy assignments:', legacyResult.error);
+      } else {
+        pushNotifications(legacyResult.data, 'legacy');
+      }
+
+      if (newResult.error) {
+        console.error('Error fetching lead assignments:', newResult.error);
+      } else {
+        pushNotifications(newResult.data, 'new');
+      }
+
+      setAssignmentNotifications(notifications);
+    } catch (error) {
+      console.error('Error fetching assignment notifications:', error);
+    }
+  }, [currentUser?.employee_id, currentUserEmployee?.id, seenAssignmentKeys]);
+
+  useEffect(() => {
+    if (!currentUser && !currentUserEmployee) return;
+    fetchAssignmentNotifications();
+    const interval = setInterval(() => {
+      fetchAssignmentNotifications();
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [currentUser, currentUserEmployee, fetchAssignmentNotifications]);
 
   const handleRmqMessageClick = async (message: RMQMessage) => {
     // Close notifications dropdown
@@ -1330,6 +1501,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     } catch (error) {
       console.error('Error marking WhatsApp message as read:', error);
     }
+  };
+
+  const handleAssignmentDismiss = (key: string) => {
+    rememberAssignments([key]);
+    setAssignmentNotifications(prev => prev.filter(notification => notification.key !== key));
+  };
+
+  const handleAssignmentOpen = (notification: AssignmentNotification) => {
+    rememberAssignments([notification.key]);
+    setAssignmentNotifications(prev => prev.filter(item => item.key !== notification.key));
+    setShowNotifications(false);
+    navigate(`/clients/${notification.leadRouteId}`);
   };
 
   // Helper function to get contrasting text color based on background
@@ -1528,8 +1711,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </div>
           
           <div className="h-16 flex items-center">
-            <Link to="/" className="hidden md:block">
-              <span className="md:ml-4 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+            <Link to="/" className="hidden md:flex items-center gap-2">
+           
+              <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
           {/* Quick Actions Dropdown - Desktop only */}
@@ -2376,6 +2560,58 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                           <p className="text-sm">No recent messages</p>
                         </div>
                       )}
+                    </div>
+                  )}
+                  
+                  {/* Lead Assignment Notifications */}
+                  {assignmentNotifications.length > 0 && (
+                    <div className="border-b border-base-200">
+                      <div className="p-3 bg-blue-50 border-b border-blue-100">
+                        <div className="flex items-center gap-2">
+                          <UserGroupIcon className="w-4 h-4 text-blue-600" />
+                          <span className="text-sm font-semibold text-blue-800">Lead Assignments</span>
+                        </div>
+                      </div>
+                      {assignmentNotifications.map(notification => (
+                        <div
+                          key={notification.key}
+                          className="p-4 text-left hover:bg-blue-50 transition-colors duration-200 border-b border-blue-100"
+                        >
+                          <div className="flex items-start gap-3">
+                            <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                              <UserIcon className="w-4 h-4 text-blue-700" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-gray-800 leading-relaxed">
+                                <span className="font-semibold">{userFullName || 'You'}</span>, you have been assigned as{' '}
+                                <span className="font-semibold">{notification.roleLabel}</span> to lead{' '}
+                                <span className="font-semibold">{notification.leadNumber}</span>.
+                              </p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                <button
+                                  className="btn btn-xs btn-primary"
+                                  onClick={() => handleAssignmentOpen(notification)}
+                                >
+                                  Open lead
+                                </button>
+                                <button
+                                  className="btn btn-xs"
+                                  onClick={() => handleAssignmentDismiss(notification.key)}
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+                            </div>
+                            <button
+                              className="text-gray-400 hover:text-gray-600"
+                              onClick={() => handleAssignmentDismiss(notification.key)}
+                              title="Dismiss"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                   

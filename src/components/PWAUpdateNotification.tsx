@@ -73,7 +73,7 @@ const PWAUpdateNotification: React.FC = () => {
             Update Available
           </h3>
           <p className="text-xs text-blue-700 mb-3">
-            A new version of Leadify CRM is available. Update now to get the latest features.
+            A new version of RMQ 2.0 is available. Update now to get the latest features.
           </p>
           <div className="flex gap-2">
             <button

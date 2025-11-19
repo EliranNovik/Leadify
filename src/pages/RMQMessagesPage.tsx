@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import websocketService, { MessageData, TypingData } from '../lib/websocket';
@@ -110,7 +110,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isSending, setIsSending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [allUsers, setAllUsers] = useState<User[]>([]);
-  const [activeTab, setActiveTab] = useState<'chats' | 'contacts'>('chats');
+  const [activeTab, setActiveTab] = useState<'chats' | 'groups'>('chats');
   const [showMobileConversations, setShowMobileConversations] = useState(true);
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
@@ -152,6 +152,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [playingVoiceId, setPlayingVoiceId] = useState<number | null>(null);
   const [voiceAudio, setVoiceAudio] = useState<HTMLAudioElement | null>(null);
   const [voiceProgress, setVoiceProgress] = useState<{ [key: number]: number }>({});
+  const [failedPhotoIds, setFailedPhotoIds] = useState<Record<string, boolean>>({});
   
   // Typing indicators removed - causing too many issues
   
@@ -214,6 +215,50 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
+  interface AvatarOptions {
+    userId?: string | number | null;
+    name: string;
+    photoUrl?: string | null;
+    sizeClass?: string;
+    borderClass?: string;
+    gradientClass?: string;
+    textClass?: string;
+  }
+
+  const handleAvatarError = useCallback((userIdKey: string) => {
+    setFailedPhotoIds(prev => (prev[userIdKey] ? prev : { ...prev, [userIdKey]: true }));
+  }, []);
+
+  const renderUserAvatar = ({
+    userId,
+    name,
+    photoUrl,
+    sizeClass = 'w-12 h-12',
+    borderClass = 'border-2 border-white',
+    gradientClass = 'from-purple-500 to-blue-500',
+    textClass = 'text-sm'
+  }: AvatarOptions) => {
+    const fallbackKey = userId ? String(userId) : name || 'unknown';
+    if (photoUrl && !failedPhotoIds[fallbackKey]) {
+      return (
+        <img
+          src={photoUrl}
+          alt={name}
+          className={`${sizeClass} rounded-full object-cover ${borderClass}`}
+          onError={() => handleAvatarError(fallbackKey)}
+        />
+      );
+    }
+
+    return (
+      <div
+        className={`${sizeClass} rounded-full bg-gradient-to-br ${gradientClass} flex items-center justify-center text-white font-bold ${textClass} ${borderClass}`}
+      >
+        {getInitials(name)}
+      </div>
+    );
+  };
+
   // Helper function to detect if message contains only emojis
   const isEmojiOnly = (text: string): boolean => {
     // Simple approach: check if the text length is very short and contains emoji-like characters
@@ -264,6 +309,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     
     // If no links found, return original content
     return parts.length > 0 ? parts : content;
+  };
+
+  const isImageMessage = (message: Message): boolean => {
+    if (!message.attachment_url) return false;
+    if (message.message_type === 'image') return true;
+    if (message.attachment_type && message.attachment_type.startsWith('image/')) return true;
+    return false;
   };
 
   // Lead search functionality
@@ -748,10 +800,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Media gallery functions
   const getConversationMedia = (): Message[] => {
     if (!selectedConversation) return [];
-    return messages.filter(message => 
-      message.attachment_url && 
-      (message.message_type === 'image' || message.message_type === 'file')
-    );
+    return messages.filter((message) => isImageMessage(message));
   };
 
   const openMediaModal = (message: Message) => {
@@ -798,54 +847,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   };
 
   const getConversationAvatar = (conversation: Conversation): JSX.Element => {
-    // For direct conversations with exactly 2 participants
     if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
       const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.id);
-      
       if (otherParticipant?.user) {
-        const name = otherParticipant.user.tenants_employee?.display_name || 
-                     otherParticipant.user.full_name || 
-                   'Unknown User';
+        const name =
+          otherParticipant.user.tenants_employee?.display_name ||
+          otherParticipant.user.full_name ||
+          'Unknown User';
         const photoUrl = otherParticipant.user.tenants_employee?.photo_url;
-      
-        // Show photo if available, otherwise show colored circle with initials
-      if (photoUrl && photoUrl.trim() !== '') {
-        return (
-          <img 
-            src={photoUrl} 
-            alt={name}
-            className="w-12 h-12 rounded-full object-cover border-2 border-white shadow-md"
-            onError={(e) => {
-              // If image fails to load, replace with colored circle
-              const target = e.target as HTMLImageElement;
-              const parent = target.parentElement;
-              if (parent) {
-                parent.innerHTML = `
-                  <div class="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-white shadow-md">
-                    ${getInitials(name)}
-                  </div>
-                `;
-              }
-            }}
-          />
-        );
-      }
-      
-        // Default: colored circle with initials for direct chat
-      return (
-        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-white shadow-md">
-          {getInitials(name)}
-        </div>
-      );
+        const avatarKey = otherParticipant.user.id || otherParticipant.user_id;
+        return renderUserAvatar({
+          userId: avatarKey,
+          name,
+          photoUrl,
+          sizeClass: 'w-12 h-12',
+          borderClass: 'border-2 border-white shadow-md',
+          textClass: 'text-sm',
+        });
       }
     }
-    
-    // Group chat avatar or fallback
-      return (
-        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md">
-          <UserGroupIcon className="w-6 h-6" />
-        </div>
-      );
+
+    return (
+      <div className="w-12 h-12 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md">
+        <UserGroupIcon className="w-6 h-6" />
+      </div>
+    );
   };
 
   // Initialize and load data first, then connect WebSocket
@@ -2116,12 +2142,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Typing indicators removed - no cleanup needed
 
   // Filter conversations and users based on search and active tab
-  const filteredConversations = conversations.filter(conv => {
-    const title = getConversationTitle(conv).toLowerCase();
-    const preview = conv.last_message_preview?.toLowerCase() || '';
+  const filteredGroupConversations = useMemo(() => {
     const query = searchQuery.toLowerCase();
-    return title.includes(query) || preview.includes(query);
-  });
+    return conversations
+      .filter(conv => conv.type === 'group')
+      .filter(conv => {
+        if (!query) return true;
+        const title = getConversationTitle(conv).toLowerCase();
+        const preview = conv.last_message_preview?.toLowerCase() || '';
+        return title.includes(query) || preview.includes(query);
+      });
+  }, [conversations, searchQuery, currentUser]);
 
   const filteredUsers = allUsers.filter(user => {
     const userName = (user.tenants_employee?.display_name || user.full_name || '').toLowerCase();
@@ -2153,18 +2184,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       <div className="hidden lg:flex w-80 bg-white border-r border-gray-200 flex-col shadow-lg">
         {/* Header */}
         <div className="p-6 border-b border-gray-200 bg-white">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
-                <ChatBubbleLeftRightIcon className="w-6 h-6 text-purple-600" />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                  <ChatBubbleLeftRightIcon className="w-6 h-6 text-purple-600" />
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
+                  <p className="text-gray-500 text-sm">Internal Communications</p>
+                </div>
               </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
-                <p className="text-gray-500 text-sm">Internal Communications</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-2">
-              {activeTab === 'contacts' && (
+              <div className="flex items-center gap-2">
+              {activeTab === 'groups' && (
                 <button
                   onClick={() => setShowCreateGroupModal(true)}
                   className="btn btn-sm bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-200 gap-2"
@@ -2195,24 +2226,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }`}
           >
             Chats
-            {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0) > 0 && (
-              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
-                {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0)}
-              </span>
-            )}
+            <span className="ml-2 text-xs text-gray-400">
+              {allUsers.length}
+            </span>
           </button>
           <button
-            onClick={() => setActiveTab('contacts')}
+            onClick={() => setActiveTab('groups')}
             className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
-              activeTab === 'contacts'
+              activeTab === 'groups'
                 ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
             }`}
           >
-            Contacts
-            <span className="ml-2 text-xs text-gray-400">
-              {allUsers.length}
-            </span>
+            Groups
+            {filteredGroupConversations.length > 0 && (
+              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
+                {filteredGroupConversations.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -2222,7 +2253,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
-              placeholder={activeTab === 'chats' ? 'Search conversations...' : 'Search contacts...'}
+              placeholder={activeTab === 'chats' ? 'Search contacts...' : 'Search groups...'}
               className="input input-bordered w-full pl-10 input-sm"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -2233,15 +2264,75 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'chats' ? (
-            // Conversations List
-            filteredConversations.length === 0 ? (
+            filteredUsers.length === 0 ? (
               <div className="p-6 text-center text-gray-500">
-                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p className="font-medium">No conversations yet</p>
-                <p className="text-sm">Click on a contact to start chatting</p>
+                <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No contacts found</p>
+                <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              filteredConversations.map((conversation) => (
+              filteredUsers.map((user) => {
+                const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
+                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
+                  ? rawDisplayName.trim() 
+                  : `User ${user.id.slice(-4)}`;
+                
+                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
+                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
+                const userDept = user.tenants_employee?.tenant_departement?.name || '';
+                const userPhoto = user.tenants_employee?.photo_url;
+                const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
+
+                return (
+                  <div
+                    key={user.id}
+                    onClick={() => startDirectConversation(user.id)}
+                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-center gap-3">
+                      {renderUserAvatar({
+                        userId: user.id,
+                        name: userName,
+                        photoUrl: userPhoto,
+                        sizeClass: 'w-12 h-12',
+                        borderClass: 'border-2 border-gray-200',
+                        textClass: 'text-sm',
+                      })}
+                    
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-900 truncate">
+                          {userName || `User ${user.id.slice(-4)}`}
+                          {!hasCompleteInfo && (
+                            <span className="ml-2 text-xs text-orange-500 bg-orange-100 px-2 py-1 rounded-full">
+                              Incomplete Profile
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm text-gray-500 truncate">
+                          {userRole} {userDept && `• ${userDept}`}
+                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
+                            <span className="text-orange-500">Profile setup needed</span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="text-gray-400">
+                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )
+          ) : (
+            filteredGroupConversations.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">
+                <UserGroupIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No group chats yet</p>
+                <p className="text-sm">Use the button above to create one</p>
+              </div>
+            ) : (
+              filteredGroupConversations.map((conversation) => (
                 <div
                   key={conversation.id}
                   onClick={() => {
@@ -2274,108 +2365,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       <p className="text-sm text-gray-600 truncate mt-1">
                         {conversation.last_message_preview || 'No messages yet'}
                       </p>
-                      {conversation.type === 'group' && (
-                        <p className="text-xs text-gray-400 mt-1">
-                          {conversation.participants?.length || 0} members
-                        </p>
-                      )}
+                      <p className="text-xs text-gray-400 mt-1">
+                        {conversation.participants?.length || 0} members
+                      </p>
                     </div>
                   </div>
                 </div>
               ))
-            )
-          ) : (
-            // Contacts List
-            filteredUsers.length === 0 ? (
-              <div className="p-6 text-center text-gray-500">
-                <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p className="font-medium">No contacts found</p>
-                <p className="text-sm">Try adjusting your search</p>
-              </div>
-            ) : (
-              filteredUsers.map((user) => {
-                // More robust name handling
-                const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
-                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
-                  ? rawDisplayName.trim() 
-                  : `User ${user.id.slice(-4)}`;
-                
-                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
-                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
-                const userDept = user.tenants_employee?.tenant_departement?.name || '';
-                const userPhoto = user.tenants_employee?.photo_url;
-                const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
-
-                // Debug logging to help identify the issue
-                console.log('🔍 Contact rendering:', {
-                  userId: user.id,
-                  userName: userName,
-                  userRole: userRole,
-                  userDept: userDept,
-                  hasEmployee: !!user.tenants_employee,
-                  displayName: user.tenants_employee?.display_name,
-                  fullName: user.full_name,
-                  hasPhoto: !!userPhoto,
-                  initials: getInitials(userName)
-                });
-
-                return (
-                  <div
-                    key={user.id}
-                    onClick={() => startDirectConversation(user.id)}
-                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      {userPhoto && userPhoto.trim() !== '' ? (
-                        <div className="w-12 h-12 rounded-full border-2 border-gray-200 overflow-hidden">
-                          <img
-                            src={userPhoto}
-                            alt={userName}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              // Replace with colored circle if image fails to load
-                              const target = e.target as HTMLImageElement;
-                              const container = target.parentElement;
-                              if (container) {
-                                container.innerHTML = `
-                                  <div class="w-full h-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
-                                    ${getInitials(userName)}
-                                  </div>
-                                `;
-                              }
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
-                          {getInitials(userName)}
-                        </div>
-                      )}
-                      
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-gray-900 truncate">
-                          {userName || `User ${user.id.slice(-4)}`}
-                          {!hasCompleteInfo && (
-                            <span className="ml-2 text-xs text-orange-500 bg-orange-100 px-2 py-1 rounded-full">
-                              Incomplete Profile
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-sm text-gray-500 truncate">
-                          {userRole} {userDept && `• ${userDept}`}
-                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
-                            <span className="text-orange-500">Profile setup needed</span>
-                          )}
-                        </div>
-                      </div>
-                      
-                      <div className="text-gray-400">
-                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
             )
           )}
         </div>
@@ -2385,18 +2381,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-white flex flex-col`}>
         {/* Mobile Header */}
         <div className="p-4 border-b border-gray-200 bg-white">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
-                <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
+                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
+                </div>
+                <div>
+                  <h1 className="text-lg font-bold text-gray-900">Messages</h1>
+                  <p className="text-gray-500 text-xs">Internal Communications</p>
+                </div>
               </div>
-              <div>
-                <h1 className="text-lg font-bold text-gray-900">Messages</h1>
-                <p className="text-gray-500 text-xs">Internal Communications</p>
-              </div>
-            </div>
             <div className="flex items-center gap-2">
-              {activeTab === 'contacts' && (
+              {activeTab === 'groups' && (
                 <button
                   onClick={() => setShowCreateGroupModal(true)}
                   className="btn btn-sm bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-200"
@@ -2420,24 +2416,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }`}
           >
             Chats
-            {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0) > 0 && (
-              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
-                {conversations.reduce((total, conv) => total + (conv.unread_count || 0), 0)}
-              </span>
-            )}
+            <span className="ml-2 text-xs text-gray-400">
+              {allUsers.length}
+            </span>
           </button>
           <button
-            onClick={() => setActiveTab('contacts')}
+            onClick={() => setActiveTab('groups')}
             className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
-              activeTab === 'contacts'
+              activeTab === 'groups'
                 ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
             }`}
           >
-            Contacts
-            <span className="ml-2 text-xs text-gray-400">
-              {allUsers.length}
-            </span>
+            Groups
+            {filteredGroupConversations.length > 0 && (
+              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
+                {filteredGroupConversations.length}
+              </span>
+            )}
           </button>
         </div>
 
@@ -2447,7 +2443,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               type="text"
-              placeholder={activeTab === 'chats' ? 'Search conversations...' : 'Search contacts...'}
+              placeholder={activeTab === 'chats' ? 'Search contacts...' : 'Search groups...'}
               className="input input-bordered w-full pl-9 input-sm"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
@@ -2458,15 +2454,75 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         {/* Mobile Content */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'chats' ? (
-            // Mobile Conversations
-            filteredConversations.length === 0 ? (
+            filteredUsers.length === 0 ? (
               <div className="p-6 text-center text-gray-500">
-                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p className="font-medium">No conversations yet</p>
-                <p className="text-sm">Click on a contact to start chatting</p>
+                <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No contacts found</p>
+                <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              filteredConversations.map((conversation) => (
+              filteredUsers.map((user) => {
+                const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
+                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
+                  ? rawDisplayName.trim() 
+                  : `User ${user.id.slice(-4)}`;
+                
+                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
+                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
+                const userDept = user.tenants_employee?.tenant_departement?.name || '';
+                const userPhoto = user.tenants_employee?.photo_url;
+                const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
+
+                return (
+                  <div
+                    key={user.id}
+                    onClick={() => startDirectConversation(user.id)}
+                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100"
+                  >
+                    <div className="flex items-center gap-3">
+                      {renderUserAvatar({
+                        userId: user.id,
+                        name: userName,
+                        photoUrl: userPhoto,
+                        sizeClass: 'w-12 h-12',
+                        borderClass: 'border-2 border-gray-200',
+                        textClass: 'text-sm',
+                      })}
+                    
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-900 truncate">
+                          {userName || `User ${user.id.slice(-4)}`}
+                          {!hasCompleteInfo && (
+                            <span className="ml-1 text-xs text-orange-500 bg-orange-100 px-1 py-0.5 rounded">
+                              Incomplete
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm text-gray-500 truncate">
+                          {userRole} {userDept && `• ${userDept}`}
+                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
+                            <span className="text-orange-500">Setup needed</span>
+                          )}
+                        </div>
+                      </div>
+                      
+                      <div className="text-gray-400">
+                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )
+          ) : (
+            filteredGroupConversations.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">
+                <UserGroupIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p className="font-medium">No group chats yet</p>
+                <p className="text-sm">Use the button above to create one</p>
+              </div>
+            ) : (
+              filteredGroupConversations.map((conversation) => (
                 <div
                   key={conversation.id}
                   onClick={() => {
@@ -2497,90 +2553,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       <p className="text-sm text-gray-600 truncate mt-1">
                         {conversation.last_message_preview || 'No messages yet'}
                       </p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {conversation.participants?.length || 0} members
+                      </p>
                     </div>
                   </div>
                 </div>
               ))
-            )
-          ) : (
-            // Mobile Contacts
-            filteredUsers.length === 0 ? (
-              <div className="p-6 text-center text-gray-500">
-                <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p className="font-medium">No contacts found</p>
-                <p className="text-sm">Try adjusting your search</p>
-              </div>
-            ) : (
-              filteredUsers.map((user) => {
-                // More robust name handling
-                const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
-                const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
-                  ? rawDisplayName.trim() 
-                  : `User ${user.id.slice(-4)}`;
-                
-                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
-                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
-                const userDept = user.tenants_employee?.tenant_departement?.name || '';
-                const userPhoto = user.tenants_employee?.photo_url;
-                const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
-
-                return (
-                  <div
-                    key={user.id}
-                    onClick={() => startDirectConversation(user.id)}
-                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100"
-                  >
-                    <div className="flex items-center gap-3">
-                      {userPhoto && userPhoto.trim() !== '' ? (
-                        <div className="w-12 h-12 rounded-full border-2 border-gray-200 overflow-hidden">
-                          <img
-                            src={userPhoto}
-                            alt={userName}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              // Replace with colored circle if image fails to load
-                              const target = e.target as HTMLImageElement;
-                              const container = target.parentElement;
-                              if (container) {
-                                container.innerHTML = `
-                                  <div class="w-full h-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
-                                    ${getInitials(userName)}
-                                  </div>
-                                `;
-                              }
-                            }}
-                          />
-                        </div>
-                      ) : (
-                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm border-2 border-gray-200">
-                          {getInitials(userName)}
-                        </div>
-                      )}
-                      
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-gray-900 truncate">
-                          {userName || `User ${user.id.slice(-4)}`}
-                          {!hasCompleteInfo && (
-                            <span className="ml-1 text-xs text-orange-500 bg-orange-100 px-1 py-0.5 rounded">
-                              Incomplete
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-sm text-gray-500 truncate">
-                          {userRole} {userDept && `• ${userDept}`}
-                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
-                            <span className="text-orange-500">Setup needed</span>
-                          )}
-                        </div>
-                      </div>
-                      
-                      <div className="text-gray-400">
-                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
             )
           )}
         </div>
@@ -2756,7 +2735,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     </div>
                                   </div>
                                 </div>
-                              ) : message.message_type === 'image' ? (
+                              ) : isImageMessage(message) ? (
                                 // Image preview
                                 <div className="space-y-2">
                                   <div 
@@ -3267,7 +3246,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </div>
                                 </div>
                               </div>
-                            ) : message.message_type === 'image' ? (
+                            ) : isImageMessage(message) ? (
                               // Image preview
                               <div className="space-y-2">
                                 <div 
@@ -3659,29 +3638,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         }`}
                       >
                         <div className="relative">
-                          {userPhoto && userPhoto.trim() !== '' ? (
-                            <img
-                              src={userPhoto}
-                              alt={userName}
-                              className="w-10 h-10 rounded-full object-cover"
-                              onError={(e) => {
-                                // Replace with colored circle if image fails to load
-                                const target = e.target as HTMLImageElement;
-                                const parent = target.parentElement;
-                                if (parent) {
-                                  parent.innerHTML = `
-                                    <div class="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
-                                      ${getInitials(userName)}
-                                    </div>
-                                  `;
-                                }
-                              }}
-                            />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white font-bold text-sm">
-                              {getInitials(userName)}
-                            </div>
-                          )}
+                          {renderUserAvatar({
+                            userId: user.id,
+                            name: userName,
+                            photoUrl: userPhoto,
+                            sizeClass: 'w-10 h-10',
+                            borderClass: '',
+                            textClass: 'text-sm',
+                          })}
                           {isSelected && (
                             <div className="absolute -top-1 -right-1 w-5 h-5 bg-purple-500 rounded-full flex items-center justify-center">
                               <CheckIcon className="w-3 h-3 text-white" />

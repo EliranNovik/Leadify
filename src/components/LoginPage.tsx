@@ -133,12 +133,12 @@ const LoginPage: React.FC = () => {
           {/* Left: Login box */}
           <div className="w-full md:w-1/2 flex flex-col justify-center items-center min-h-screen relative z-10 bg-white">
       {/* Header bar - Mobile */}
-      <div className="md:hidden absolute top-0 left-0 right-0 z-30 bg-gradient-to-r from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] shadow-lg border-b border-cyan-300/20">
+      <div className="md:hidden absolute top-0 left-0 right-0 z-30 bg-white">
         <div className="flex items-center justify-between py-4 px-6">
           {/* Hamburger Menu Button */}
           <button
             onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="text-white hover:text-purple-200 transition-colors duration-200"
+            className="text-gray-800 hover:text-primary transition-colors duration-200"
           >
             {isMenuOpen ? (
               <XMarkIcon className="w-6 h-6" />
@@ -149,13 +149,8 @@ const LoginPage: React.FC = () => {
           
           {/* Centered Logo and Text */}
           <div className="flex items-center gap-3">
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 text-white" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M2 19h20M2 7l5.586 5.586a2 2 0 0 0 2.828 0L12 11l1.586 1.586a2 2 0 0 0 2.828 0L22 7l-3 12H5L2 7z"/>
-              <circle cx="4" cy="4" r="2" fill="currentColor"/>
-              <circle cx="12" cy="4" r="2" fill="currentColor"/>
-              <circle cx="20" cy="4" r="2" fill="currentColor"/>
-            </svg>
-            <span className="text-lg font-bold text-white tracking-tight" style={{ letterSpacing: '-0.02em' }}>
+            <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-14 h-14 object-contain" />
+            <span className="text-lg font-bold text-primary tracking-tight" style={{ letterSpacing: '-0.02em' }}>
               Rainmaker Queen 2.0
             </span>
           </div>
@@ -164,7 +159,7 @@ const LoginPage: React.FC = () => {
         
         {/* Mobile Menu Overlay */}
         {isMenuOpen && (
-          <div className="absolute top-full left-0 right-0 bg-white shadow-lg border-b border-gray-200 z-40">
+          <div className="absolute top-full left-0 right-0 bg-white shadow-lg z-40">
             <div className="py-2">
               <button
                 onClick={() => {
@@ -199,17 +194,12 @@ const LoginPage: React.FC = () => {
       </div>
       
       {/* Desktop Header */}
-      <div className="hidden md:block absolute top-0 left-0 right-0 z-30 bg-gradient-to-r from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] shadow-lg">
+      <div className="hidden md:block absolute top-0 left-0 right-0 z-30 bg-white">
         <div className="flex items-center justify-between py-4 px-8">
           {/* Logo and Brand */}
           <div className="flex items-center gap-3">
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-10 h-10 text-white" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M2 19h20M2 7l5.586 5.586a2 2 0 0 0 2.828 0L12 11l1.586 1.586a2 2 0 0 0 2.828 0L22 7l-3 12H5L2 7z"/>
-              <circle cx="4" cy="4" r="2" fill="currentColor"/>
-              <circle cx="12" cy="4" r="2" fill="currentColor"/>
-              <circle cx="20" cy="4" r="2" fill="currentColor"/>
-            </svg>
-            <span className="text-xl font-extrabold text-white tracking-tight" style={{ letterSpacing: '-0.03em' }}>
+            <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-16 h-16 object-contain" />
+            <span className="text-xl font-extrabold text-primary tracking-tight" style={{ letterSpacing: '-0.03em' }}>
               Rainmaker Queen 2.0
             </span>
           </div>
@@ -218,19 +208,19 @@ const LoginPage: React.FC = () => {
           <div className="flex items-center gap-8">
             <button
               onClick={() => navigate('/about')}
-              className="text-white hover:text-purple-200 transition-colors duration-200 font-medium"
+              className="text-gray-700 hover:text-primary transition-colors duration-200 font-medium"
             >
               About Us
             </button>
             <button
               onClick={() => navigate('/contact')}
-              className="text-white hover:text-purple-200 transition-colors duration-200 font-medium"
+              className="text-gray-700 hover:text-primary transition-colors duration-200 font-medium"
             >
               Contact
             </button>
             <button
               onClick={() => navigate('/how-it-works')}
-              className="text-white hover:text-purple-200 transition-colors duration-200 font-medium"
+              className="text-gray-700 hover:text-primary transition-colors duration-200 font-medium"
             >
               How It Works
             </button>
@@ -335,7 +325,7 @@ const LoginPage: React.FC = () => {
                             <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
                             <div>
                               <div className="text-xs font-medium">Check your email inbox</div>
-                              <div className="text-xs text-gray-400">Look for email from Leadify CRM (check spam folder)</div>
+                              <div className="text-xs text-gray-400">Look for email from RMQ 2.0 (check spam folder)</div>
                             </div>
                           </div>
                           <div className="flex items-start gap-3">

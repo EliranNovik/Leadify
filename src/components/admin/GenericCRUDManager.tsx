@@ -33,6 +33,7 @@ interface Field {
     joinField?: string;
     joinDisplayField?: string;
   };
+  searchableSelect?: boolean;
 }
 
 interface GenericCRUDManagerProps {
@@ -76,6 +77,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const [foreignKeyData, setForeignKeyData] = useState<{[key: string]: {[key: string]: string}}>({});
   const [allForeignKeyOptions, setAllForeignKeyOptions] = useState<{[key: string]: {value: string; label: string}[]}>({});
   const [preferredCategoryData, setPreferredCategoryData] = useState<{[employeeId: string]: string}>({}); // For employees preferred category
+  const [searchTerms, setSearchTerms] = useState<{[key: string]: string}>({});
+  const [searchDropdownOpen, setSearchDropdownOpen] = useState<{[key: string]: boolean}>({});
 
   // Fetch records
   const fetchRecords = async () => {
@@ -547,6 +550,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     };
   };
 
+  const manualIdTables = new Set([
+    'misc_leadsource',
+  ]);
+
   // Create or update record
   const saveRecord = async (record: Partial<Record>) => {
     fields.forEach(field => {
@@ -593,11 +600,34 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
     });
 
-    try {
-      if (!editingRecord?.id && ((record as any).id === undefined || (record as any).id === null)) {
-        const generatedId = Date.now();
-        (record as any).id = generatedId;
+    // Assign manual IDs for tables without database defaults
+    if (
+      !editingRecord?.id &&
+      manualIdTables.has(tableName) &&
+      ((record as any).id === undefined || (record as any).id === null)
+    ) {
+      try {
+        const { data: latest, error: latestError } = await supabase
+          .from(tableName)
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestError) {
+          console.error(`Error fetching latest ID for ${tableName}:`, latestError);
+          (record as any).id = 1;
+        } else {
+          const nextId = latest?.id ? Number(latest.id) + 1 : 1;
+          (record as any).id = nextId;
+        }
+      } catch (manualIdError) {
+        console.error(`Error assigning manual ID for ${tableName}:`, manualIdError);
+        (record as any).id = 1;
       }
+    }
+
+    try {
       let result;
       const { data: authUser } = await supabase.auth.getUser();
       const authUserId = authUser?.user?.id ?? null;
@@ -666,17 +696,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             updated_by,
             ...updateDataWithoutId 
           } = updateData;
-          if (updatedByUserId) {
-            updateDataWithoutId.updated_by = updatedByUserId;
-          } else {
-            delete updateDataWithoutId.updated_by;
-          }
-          console.log(`Updating ${tableName} record with ID: ${editingRecord.id}`, updateDataWithoutId);
           
-          // First, check if the record exists
+          // First, check if the record exists and get its structure
           const { data: existingRecord, error: checkError } = await supabase
             .from(tableName)
-            .select('id')
+            .select('*')
             .eq('id', String(editingRecord.id))
             .single();
           
@@ -686,6 +710,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           }
           
           console.log(`Record exists:`, existingRecord);
+          
+          // Only set updated_by if the table has that column
+          const hasUpdatedByColumn = existingRecord && 'updated_by' in existingRecord;
+          if (updatedByUserId && hasUpdatedByColumn) {
+            updateDataWithoutId.updated_by = updatedByUserId;
+          } else {
+            delete updateDataWithoutId.updated_by;
+          }
+          
+          console.log(`Updating ${tableName} record with ID: ${editingRecord.id}`, updateDataWithoutId);
           
           console.log(`Attempting update with query:`, {
             table: tableName,
@@ -784,13 +818,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             preferred_category, // Remove preferred_category as it's stored in separate table
             ...updateData
           } = record;
-          if (updatedByUserId) {
-            updateData.updated_by = updatedByUserId;
-          } else {
-            delete updateData.updated_by;
-          }
 
-          // First, check if the record exists
+          // First, check if the record exists and get its structure
           const { data: existingRecord, error: checkError } = await supabase
             .from(tableName)
             .select('*')
@@ -803,6 +832,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           }
           
           console.log(`Record exists:`, existingRecord);
+          
+          // Only set updated_by if the table has that column
+          const hasUpdatedByColumn = existingRecord && 'updated_by' in existingRecord;
+          if (updatedByUserId && hasUpdatedByColumn) {
+            updateData.updated_by = updatedByUserId;
+          } else {
+            delete updateData.updated_by;
+          }
           
           console.log(`Attempting update with query:`, {
             table: tableName,
@@ -1059,6 +1096,88 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         // If field has foreignKey, use all options from that table
         if (field.foreignKey) {
           const options = allForeignKeyOptions[field.name] || [];
+          
+          if (field.searchableSelect) {
+            const resolvedLabel = options.find(option => option.value === value)?.label || '';
+            const searchTerm = searchTerms[field.name] ?? resolvedLabel;
+            const filteredOptions = searchTerm
+              ? options.filter(option =>
+                  option.label.toLowerCase().includes(searchTerm.toLowerCase())
+                )
+              : options;
+
+            return (
+              <div className="relative">
+                <input
+                  type="text"
+                  className={`input input-bordered w-full pr-10 ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
+                  placeholder={`Search ${field.label}`}
+                  value={searchTerm}
+                  readOnly={field.readOnly}
+                  disabled={field.readOnly}
+                  onFocus={() =>
+                    setSearchDropdownOpen(prev => ({ ...prev, [field.name]: true }))
+                  }
+                  onBlur={() =>
+                    setTimeout(
+                      () =>
+                        setSearchDropdownOpen(prev => ({ ...prev, [field.name]: false })),
+                      150
+                    )
+                  }
+                  onChange={field.readOnly ? undefined : (e) => {
+                    const val = e.target.value;
+                    setSearchTerms(prev => ({ ...prev, [field.name]: val }));
+
+                    if (!val) {
+                      onChange('');
+                    }
+                  }}
+                  style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+                />
+                {value && !field.readOnly && (
+                  <button
+                    type="button"
+                    className="absolute right-10 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    onClick={() => {
+                      onChange('');
+                      setSearchTerms(prev => ({ ...prev, [field.name]: '' }));
+                    }}
+                  >
+                    ×
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+                >
+                  ▼
+                </button>
+
+                {searchDropdownOpen[field.name] && !field.readOnly && filteredOptions.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-auto">
+                    {filteredOptions.map(option => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`w-full text-left px-4 py-2 hover:bg-gray-50 ${
+                          option.value === value ? 'bg-primary/10 text-primary font-semibold' : ''
+                        }`}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          onChange(option.value);
+                          setSearchTerms(prev => ({ ...prev, [field.name]: option.label }));
+                          setSearchDropdownOpen(prev => ({ ...prev, [field.name]: false }));
+                        }}
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          }
           
           return (
             <select 

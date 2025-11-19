@@ -34,8 +34,8 @@ const applyThemeClass = (theme: string) => {
 };
 applyThemeClass(savedTheme);
 
-// Register Service Worker for PWA
-if ('serviceWorker' in navigator) {
+// Register Service Worker for PWA (production only to avoid dev caching issues)
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js')
       .then((registration) => {
@@ -55,6 +55,19 @@ if ('serviceWorker' in navigator) {
       console.log('🔄 Service Worker controller changed - reloading page');
       window.location.reload();
     });
+  });
+} else if ('serviceWorker' in navigator) {
+  // During local development, make sure no stale workers stay registered
+  navigator.serviceWorker.getRegistrations?.().then((registrations) => {
+    registrations.forEach((registration) => {
+      registration.unregister().then((didUnregister) => {
+        if (didUnregister) {
+          console.log('🧹 Unregistered service worker for local dev:', registration.scope);
+        }
+      });
+    });
+  }).catch((error) => {
+    console.warn('⚠️ Failed to clean up service workers in dev:', error);
   });
 }
 

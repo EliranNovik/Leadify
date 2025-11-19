@@ -7,6 +7,10 @@ const router = express.Router();
 // Webhook endpoint to receive form data and create new leads
 router.post('/hook/catch', webhookController.catchFormData);
 
+// Facebook lead webhook (verification + payload)
+router.get('/hook/facebook', webhookController.verifyFacebookWebhook);
+router.post('/hook/facebook', webhookController.handleFacebookLead);
+
 // Microsoft Graph email sync webhook (legacy manual trigger)
 router.post('/hook/graph/emails/sync', graphEmailController.syncEmails);
 router.get('/hook/graph/emails/health', graphEmailController.health);

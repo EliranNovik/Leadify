@@ -757,7 +757,7 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
             >
               <FaRobot className="h-9 w-9 text-white drop-shadow" />
             </button>
-            <h3 className="font-extrabold text-xl text-white tracking-tight drop-shadow">MY CRM AI</h3>
+            <h3 className="font-extrabold text-xl text-white tracking-tight drop-shadow">RMQ AI</h3>
           </div>
           <div className="flex items-center gap-2">
             <button

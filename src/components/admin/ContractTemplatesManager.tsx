@@ -159,6 +159,13 @@ interface Template {
   category_id?: string | number | null;
 }
 
+const getTitleSizeClass = (name: string | undefined) => {
+  if (!name) return 'text-lg';
+  if (name.length > 80) return 'text-sm';
+  if (name.length > 55) return 'text-base';
+  return 'text-lg';
+};
+
 const ContractTemplatesManager: React.FC = () => {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -201,10 +208,12 @@ const ContractTemplatesManager: React.FC = () => {
     name: '',
     languageId: '',
     categoryId: '',
+    categoryInput: '',
     active: true
   });
   const [isQuickSaving, setIsQuickSaving] = useState(false);
   const [isQuickCreating, setIsQuickCreating] = useState(false);
+  const [isQuickCategoryDropdownOpen, setIsQuickCategoryDropdownOpen] = useState(false);
 
   // Editor setup - define extensions as a memoized constant so we can reuse them for generateJSON
   // This must be defined before fetchTemplates so we can use it there
@@ -549,13 +558,25 @@ const ContractTemplatesManager: React.FC = () => {
 
   useEffect(() => {
     if (!quickEditTemplate) return;
+    const categoryLabel = quickEditTemplate.category_id ? getCategoryLabel(quickEditTemplate.category_id) : '';
     setQuickEditValues({
       name: quickEditTemplate.name,
       languageId: quickEditTemplate.language_id ? String(quickEditTemplate.language_id) : '',
       categoryId: quickEditTemplate.category_id ? String(quickEditTemplate.category_id) : '',
+      categoryInput: categoryLabel !== 'Not set' ? categoryLabel : '',
       active: quickEditTemplate.active !== undefined ? quickEditTemplate.active : true,
     });
-  }, [quickEditTemplate]);
+  }, [quickEditTemplate, categories]);
+
+  const filteredQuickCategories = useMemo(() => {
+    const term = (quickEditValues.categoryInput || '').trim().toLowerCase();
+    if (!term) {
+      return categories.slice(0, 50);
+    }
+    return categories
+      .filter((cat) => cat.label.toLowerCase().includes(term))
+      .slice(0, 50);
+  }, [categories, quickEditValues.categoryInput]);
 
   // Filter templates based on search term, language, and active status
   const filteredTemplates = useMemo(() => {
@@ -1410,7 +1431,10 @@ const ContractTemplatesManager: React.FC = () => {
                             <DocumentTextIcon className="w-6 h-6 text-white" />
                           </div>
                           <div className="flex-1 min-w-0">
-                            <h3 className="card-title text-lg font-bold text-gray-900 group-hover:text-primary transition-colors truncate mb-1">
+                            <h3
+                              className={`card-title font-bold text-gray-900 group-hover:text-primary transition-colors break-words leading-tight mb-1 ${getTitleSizeClass(template.name)}`}
+                              style={{ wordBreak: 'break-word' }}
+                            >
                               {template.name}
                             </h3>
                             {template.created_at && (
@@ -1466,6 +1490,7 @@ const ContractTemplatesManager: React.FC = () => {
                         <th className="font-semibold text-gray-700">Created</th>
                         <th className="font-semibold text-gray-700">Status</th>
                         <th className="font-semibold text-gray-700">Language</th>
+                        <th className="font-semibold text-gray-700">Category</th>
                         <th className="font-semibold text-gray-700 text-right">Actions</th>
                       </tr>
                     </thead>
@@ -1483,9 +1508,11 @@ const ContractTemplatesManager: React.FC = () => {
                               </div>
                               <div>
                                 <span className="font-medium text-gray-900 block">{template.name}</span>
-                                <span className="text-xs text-gray-500">
-                                  {template.category_id ? getCategoryLabel(template.category_id) : 'No category'}
-                                </span>
+                                {template.created_at && (
+                                  <span className="text-xs text-gray-500">
+                                    {new Date(template.created_at).toLocaleDateString()}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -1496,25 +1523,14 @@ const ContractTemplatesManager: React.FC = () => {
                                 : '-'}
                             </span>
                           </td>
-                          <td>
-                            {template.active !== undefined && (
-                              <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold ${
-                                template.active 
-                                  ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' 
-                                  : 'bg-red-100 text-red-700 border border-red-200'
-                              }`}>
-                                {template.active ? 'Active' : 'Inactive'}
-                              </span>
-                            )}
+                          <td className="text-sm text-gray-700">
+                            {template.active !== undefined ? (template.active ? 'Active' : 'Inactive') : '-'}
                           </td>
-                          <td>
-                            {template.language_id ? (
-                              <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-100 text-purple-700 border border-purple-200">
-                                {getLanguageName(template.language_id)}
-                              </span>
-                            ) : (
-                              <span className="text-sm text-gray-400">-</span>
-                            )}
+                          <td className="text-sm text-gray-700">
+                            {template.language_id ? getLanguageName(template.language_id) : '-'}
+                          </td>
+                          <td className="text-sm text-gray-700">
+                            {template.category_id ? getCategoryLabel(template.category_id) : '-'}
                           </td>
                           <td>
                             <div className="flex items-center justify-end gap-1">
@@ -1602,18 +1618,66 @@ const ContractTemplatesManager: React.FC = () => {
                   <label className="label">
                     <span className="label-text font-medium">Category</span>
                   </label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={quickEditValues.categoryId}
-                    onChange={(e) => setQuickEditValues((prev) => ({ ...prev, categoryId: e.target.value }))}
-                  >
-                    <option value="">Not set</option>
-                    {categories.map((cat) => (
-                      <option key={cat.id} value={String(cat.id)}>
-                        {cat.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      className="input input-bordered w-full pr-10"
+                      placeholder="Search category..."
+                      value={quickEditValues.categoryInput}
+                      onFocus={() => setIsQuickCategoryDropdownOpen(true)}
+                      onBlur={() => setTimeout(() => setIsQuickCategoryDropdownOpen(false), 150)}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setQuickEditValues((prev) => ({
+                          ...prev,
+                          categoryInput: value,
+                          categoryId: value ? prev.categoryId : '',
+                        }));
+                      }}
+                    />
+                    {quickEditValues.categoryId && (
+                      <button
+                        type="button"
+                        className="absolute right-10 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        onClick={() =>
+                          setQuickEditValues((prev) => ({
+                            ...prev,
+                            categoryId: '',
+                            categoryInput: '',
+                          }))
+                        }
+                      >
+                        ×
+                      </button>
+                    )}
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                      ▼
+                    </span>
+                    {isQuickCategoryDropdownOpen && filteredQuickCategories.length > 0 && (
+                      <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-60 overflow-auto">
+                        {filteredQuickCategories.map((cat) => (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            className={`w-full text-left px-4 py-2 hover:bg-gray-50 ${
+                              String(cat.id) === quickEditValues.categoryId ? 'bg-primary/10 text-primary font-semibold' : ''
+                            }`}
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => {
+                              setQuickEditValues((prev) => ({
+                                ...prev,
+                                categoryId: String(cat.id),
+                                categoryInput: cat.label,
+                              }));
+                              setIsQuickCategoryDropdownOpen(false);
+                            }}
+                          >
+                            {cat.label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center justify-between border border-gray-200 rounded-xl p-4">
                   <div>

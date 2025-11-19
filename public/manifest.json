@@ -1,7 +1,7 @@
 {
-  "name": "Leadify CRM",
-  "short_name": "Leadify",
-  "description": "Leadify CRM - Customer Relationship Management System",
+  "name": "RMQ 2.0",
+  "short_name": "RMQ 2.0",
+  "description": "RMQ 2.0 - Customer Relationship Management System",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

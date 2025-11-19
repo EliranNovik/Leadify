@@ -57,14 +57,6 @@ const SourcesManager: React.FC = () => {
       placeholder: 'e.g., Website Referral'
     },
     {
-      name: 'kind',
-      label: 'Kind',
-      type: 'number' as const,
-      required: true,
-      placeholder: 'e.g., 1',
-      defaultValue: 1
-    },
-    {
       name: 'default_topic',
       label: 'Default Topic',
       type: 'text' as const,
@@ -76,6 +68,7 @@ const SourcesManager: React.FC = () => {
       label: 'Default Category',
       type: 'select' as const,
       required: false,
+      searchableSelect: true,
       foreignKey: {
         table: 'misc_category',
         valueField: 'id',
@@ -84,14 +77,6 @@ const SourcesManager: React.FC = () => {
         joinField: 'parent_id',
         joinDisplayField: 'name'
       }
-    },
-    {
-      name: 'firm_id',
-      label: 'Firm ID',
-      type: 'number' as const,
-      required: true,
-      placeholder: 'e.g., 1',
-      defaultValue: 1
     },
     {
       name: 'code',
@@ -108,8 +93,8 @@ const SourcesManager: React.FC = () => {
       placeholder: 'e.g., CAMP123'
     },
     {
-      name: 'bonus_formula_id',
-      label: 'Bonus Formula ID',
+      name: 'priority',
+      label: 'Priority',
       type: 'number' as const,
       required: true,
       placeholder: 'e.g., 1',
@@ -120,16 +105,10 @@ const SourcesManager: React.FC = () => {
       label: 'Order',
       type: 'number' as const,
       required: true,
-      placeholder: 'e.g., 1',
-      defaultValue: 0
-    },
-    {
-      name: 'priority',
-      label: 'Priority',
-      type: 'number' as const,
-      required: true,
-      placeholder: 'e.g., 1',
-      defaultValue: 0
+      defaultValue: 0,
+      hideInAdd: true,
+      hideInEdit: true,
+      hideInTable: true
     },
     {
       name: 'active',
