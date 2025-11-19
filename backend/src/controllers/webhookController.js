@@ -256,6 +256,13 @@ const webhookController = {
    * Handle Facebook lead webhook payload
    */
   async handleFacebookLead(req, res) {
+    // Log immediately when handler is called
+    console.log('🔔 Facebook webhook handler called at:', new Date().toISOString());
+    console.log('🔔 Request method:', req.method);
+    console.log('🔔 Request path:', req.path);
+    console.log('🔔 Request URL:', req.originalUrl || req.url);
+    console.log('🔔 Request headers:', JSON.stringify(req.headers, null, 2));
+    
     try {
       if (!FACEBOOK_VERIFY_TOKEN) {
         console.error('VERIFY_TOKEN is not configured');
@@ -297,7 +304,21 @@ const webhookController = {
         null;
 
       const phone = getField('phone_number') || getField('phone') || null;
-      const sourceCodeFromField = parseIntegerSourceCode(getField('source_code'));
+      
+      // Try multiple variations of source_code field name (Facebook may send it with spaces, underscores, etc.)
+      const sourceCodeRaw = 
+        getField('source_code') || 
+        getField('source code') || 
+        getField('source-code') ||
+        getField('sourceCode') ||
+        getField('source_code_value') ||
+        null;
+      
+      // Log all available field names for debugging
+      console.log('📋 Available Facebook field names:', fieldData.map(f => f.name));
+      console.log('🔍 Looking for source_code, found raw value:', sourceCodeRaw);
+      
+      const sourceCodeFromField = parseIntegerSourceCode(sourceCodeRaw);
 
       // Determine numeric source code (required by misc_leadsource.code)
       const sourceCodeFromForm = resolveSourceCodeFromIdentifier(value.form_id);
@@ -312,11 +333,12 @@ const webhookController = {
       const sourceResolutionDetails = {
         form_id: value.form_id,
         leadgen_id: value.leadgen_id,
-        source_code_field_value: getField('source_code'),
+        source_code_field_value: sourceCodeRaw,
         from_source_code_field: sourceCodeFromField,
         from_form_id: sourceCodeFromForm,
         from_leadgen_id: sourceCodeFromLeadgen,
-        fallback_default: FACEBOOK_DEFAULT_SOURCE_CODE
+        fallback_default: FACEBOOK_DEFAULT_SOURCE_CODE,
+        all_field_names: fieldData.map(f => f.name)
       };
 
       if (!source_code || !name || !email) {

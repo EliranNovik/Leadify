@@ -8,8 +8,18 @@ const router = express.Router();
 router.post('/hook/catch', webhookController.catchFormData);
 
 // Facebook lead webhook (verification + payload)
-router.get('/hook/facebook', webhookController.verifyFacebookWebhook);
-router.post('/hook/facebook', webhookController.handleFacebookLead);
+router.get('/hook/facebook', (req, res, next) => {
+  console.log('🔔 GET /hook/facebook called at:', new Date().toISOString());
+  console.log('🔔 Query params:', req.query);
+  next();
+}, webhookController.verifyFacebookWebhook);
+
+router.post('/hook/facebook', (req, res, next) => {
+  console.log('🔔 POST /hook/facebook called at:', new Date().toISOString());
+  console.log('🔔 Request IP:', req.ip || req.connection.remoteAddress);
+  console.log('🔔 User-Agent:', req.get('User-Agent'));
+  next();
+}, webhookController.handleFacebookLead);
 
 // Microsoft Graph email sync webhook (legacy manual trigger)
 router.post('/hook/graph/emails/sync', graphEmailController.syncEmails);
