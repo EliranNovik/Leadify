@@ -20,6 +20,8 @@ interface ExpandedRow {
 
 const escapeIlikePattern = (value: string) => value.replace(/[%_]/g, '\\$&');
 
+const HOOK_ENDPOINTS = ['/api/hook/catch', '/api/hook/facebook'];
+
 const AccessLogsManager: React.FC = () => {
   const [logs, setLogs] = useState<AccessLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,8 +53,13 @@ const AccessLogsManager: React.FC = () => {
       let query = supabase
         .from('access_logs')
         .select('*', { count: 'exact' })
-        .eq('endpoint', '/api/hook/catch')
         .order('created_at', { ascending: false });
+
+      if (filters.endpoint && filters.endpoint.trim() !== '') {
+        query = query.eq('endpoint', filters.endpoint.trim());
+      } else {
+        query = query.in('endpoint', HOOK_ENDPOINTS);
+      }
 
       // Apply additional filters (excluding endpoint filter since we're already filtering for /api/hook/catch)
       if (filters.responseCode && filters.responseCode.trim() !== '') {
@@ -167,7 +174,9 @@ const getMethodColor = (method: string) => {
     <div className="p-6">
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Hook Endpoint Logs</h2>
-        <p className="text-gray-600">View access logs for /api/hook/catch endpoint only</p>
+        <p className="text-gray-600">
+          View access logs for {HOOK_ENDPOINTS.join(' & ')}
+        </p>
         <button
           onClick={fetchLogs}
           className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
@@ -180,6 +189,19 @@ const getMethodColor = (method: string) => {
       <div className="bg-white p-4 rounded-lg shadow-sm mb-6">
         <h3 className="text-lg font-semibold mb-4">Filters</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Endpoint</label>
+            <select
+              value={filters.endpoint}
+              onChange={(e) => setFilters(prev => ({ ...prev, endpoint: e.target.value }))}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">All Hook Endpoints</option>
+              {HOOK_ENDPOINTS.map(endpoint => (
+                <option key={endpoint} value={endpoint}>{endpoint}</option>
+              ))}
+            </select>
+          </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Search Request Body</label>
             <input
