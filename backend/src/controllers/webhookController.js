@@ -3,16 +3,16 @@ const supabase = require('../config/supabase');
 const FACEBOOK_VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
 /**
- * Helper to parse numeric source codes that must match misc_leadsource.code (int2)
- * Returns null if value is not a valid 16-bit integer.
+ * Helper to parse numeric source codes that must match misc_leadsource.code (integer)
+ * Returns null if value is not a valid 32-bit integer.
  * @param {string|number|null|undefined} value
  * @returns {number|null}
  */
-const parseNumericSourceCode = (value) => {
+const parseIntegerSourceCode = (value) => {
   if (value === undefined || value === null || value === '') return null;
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || !Number.isInteger(numeric)) return null;
-  if (numeric < -32768 || numeric > 32767) return null;
+  if (numeric < -2147483648 || numeric > 2147483647) return null;
   return numeric;
 };
 
@@ -26,9 +26,9 @@ const FACEBOOK_FORM_SOURCE_CODES = (() => {
   try {
     const parsed = JSON.parse(raw);
     Object.keys(parsed).forEach((key) => {
-      const numeric = parseNumericSourceCode(parsed[key]);
+      const numeric = parseIntegerSourceCode(parsed[key]);
       if (numeric === null) {
-        console.warn(`⚠️ Invalid numeric source code for Facebook form mapping "${key}". Value must be an int2.`);
+        console.warn(`⚠️ Invalid numeric source code for Facebook form mapping "${key}". Value must be a 32-bit integer.`);
         delete parsed[key];
       } else {
         parsed[key] = numeric;
@@ -41,14 +41,14 @@ const FACEBOOK_FORM_SOURCE_CODES = (() => {
   }
 })();
 
-const FACEBOOK_DEFAULT_SOURCE_CODE = parseNumericSourceCode(process.env.FACEBOOK_DEFAULT_SOURCE_CODE);
+const FACEBOOK_DEFAULT_SOURCE_CODE = parseIntegerSourceCode(process.env.FACEBOOK_DEFAULT_SOURCE_CODE);
 
 const resolveSourceCodeFromIdentifier = (identifier) => {
   if (!identifier) return null;
   if (FACEBOOK_FORM_SOURCE_CODES[identifier] !== undefined) {
     return FACEBOOK_FORM_SOURCE_CODES[identifier];
   }
-  return parseNumericSourceCode(identifier);
+  return parseIntegerSourceCode(identifier);
 };
 
 const webhookController = {
@@ -62,6 +62,8 @@ const webhookController = {
       console.log('📥 Received webhook data:', req.body);
       
       // Log the received form data
+      const parsedSourceCode = parseIntegerSourceCode(req.body.source_code);
+
       const formData = {
         name: req.body.name,
         email: req.body.email,
@@ -70,7 +72,7 @@ const webhookController = {
         facts: req.body.facts,
         source: req.body.source || 'webhook',
         language: req.body.language || 'English',
-        source_code: req.body.source_code || null
+        source_code: parsedSourceCode
       };
 
       // Validate required fields
@@ -295,7 +297,7 @@ const webhookController = {
         null;
 
       const phone = getField('phone_number') || getField('phone') || null;
-      const sourceCodeFromField = parseNumericSourceCode(getField('source_code'));
+      const sourceCodeFromField = parseIntegerSourceCode(getField('source_code'));
 
       // Determine numeric source code (required by misc_leadsource.code)
       const sourceCodeFromForm = resolveSourceCodeFromIdentifier(value.form_id);

@@ -1,5 +1,5 @@
 -- Drop existing function if it exists
-DROP FUNCTION IF EXISTS create_lead_with_source_validation(text, text, text, text, text, text, text, smallint, text, text);
+DROP FUNCTION IF EXISTS create_lead_with_source_validation(text, text, text, text, text, text, text, integer, text, text);
 
 -- Create function to create a new lead with source validation and default values
 CREATE OR REPLACE FUNCTION create_lead_with_source_validation(
@@ -10,7 +10,7 @@ CREATE OR REPLACE FUNCTION create_lead_with_source_validation(
   p_lead_language text DEFAULT 'EN',
   p_lead_source text DEFAULT 'Webhook',
   p_created_by text DEFAULT NULL,
-  p_source_code smallint DEFAULT NULL,
+  p_source_code integer DEFAULT NULL,
   p_balance_currency text DEFAULT 'NIS',
   p_proposal_currency text DEFAULT 'NIS'
 )
