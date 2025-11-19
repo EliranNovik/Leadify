@@ -2,6 +2,55 @@ const supabase = require('../config/supabase');
 
 const FACEBOOK_VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 
+/**
+ * Helper to parse numeric source codes that must match misc_leadsource.code (int2)
+ * Returns null if value is not a valid 16-bit integer.
+ * @param {string|number|null|undefined} value
+ * @returns {number|null}
+ */
+const parseNumericSourceCode = (value) => {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || !Number.isInteger(numeric)) return null;
+  if (numeric < -32768 || numeric > 32767) return null;
+  return numeric;
+};
+
+/**
+ * Reads FACEBOOK_FORM_SOURCE_CODES env var (JSON map) once at startup
+ * Expected format: {"FORM_ID_ABC": 101, "123456789": 102}
+ */
+const FACEBOOK_FORM_SOURCE_CODES = (() => {
+  const raw = process.env.FACEBOOK_FORM_SOURCE_CODES;
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    Object.keys(parsed).forEach((key) => {
+      const numeric = parseNumericSourceCode(parsed[key]);
+      if (numeric === null) {
+        console.warn(`⚠️ Invalid numeric source code for Facebook form mapping "${key}". Value must be an int2.`);
+        delete parsed[key];
+      } else {
+        parsed[key] = numeric;
+      }
+    });
+    return parsed;
+  } catch (error) {
+    console.error('❌ Failed to parse FACEBOOK_FORM_SOURCE_CODES JSON:', error);
+    return {};
+  }
+})();
+
+const FACEBOOK_DEFAULT_SOURCE_CODE = parseNumericSourceCode(process.env.FACEBOOK_DEFAULT_SOURCE_CODE);
+
+const resolveSourceCodeFromIdentifier = (identifier) => {
+  if (!identifier) return null;
+  if (FACEBOOK_FORM_SOURCE_CODES[identifier] !== undefined) {
+    return FACEBOOK_FORM_SOURCE_CODES[identifier];
+  }
+  return parseNumericSourceCode(identifier);
+};
+
 const webhookController = {
   /**
    * Catch form data and create a new lead
@@ -247,8 +296,22 @@ const webhookController = {
 
       const phone = getField('phone_number') || getField('phone') || null;
 
-      // Decide what to use as source_code (form_id or leadgen_id)
-      const source_code = value.form_id || value.leadgen_id || null;
+      // Determine numeric source code (required by misc_leadsource.code)
+      const sourceCodeFromForm = resolveSourceCodeFromIdentifier(value.form_id);
+      const sourceCodeFromLeadgen = sourceCodeFromForm === null
+        ? resolveSourceCodeFromIdentifier(value.leadgen_id)
+        : null;
+      const source_code = sourceCodeFromForm
+        ?? sourceCodeFromLeadgen
+        ?? FACEBOOK_DEFAULT_SOURCE_CODE;
+
+      const sourceResolutionDetails = {
+        form_id: value.form_id,
+        leadgen_id: value.leadgen_id,
+        from_form_id: sourceCodeFromForm,
+        from_leadgen_id: sourceCodeFromLeadgen,
+        fallback_default: FACEBOOK_DEFAULT_SOURCE_CODE
+      };
 
       if (!source_code || !name || !email) {
         console.warn('Missing required mapped fields from Facebook:', {
@@ -257,7 +320,8 @@ const webhookController = {
           email,
           about,
           phone,
-          availableFields: fieldData.map(f => f.name)
+          availableFields: fieldData.map(f => f.name),
+          sourceResolutionDetails
         });
 
         return res.status(400).json({
@@ -268,6 +332,7 @@ const webhookController = {
               name: !name,
               email: !email
             },
+            sourceResolutionDetails,
             availableFields: fieldData.map(f => f.name)
           }
         });
@@ -278,7 +343,8 @@ const webhookController = {
         about,
         email,
         name,
-        phone
+        phone,
+        sourceResolutionDetails
       });
 
       const { data: newLead, error: insertError } = await supabase.rpc('create_lead_with_source_validation', {
