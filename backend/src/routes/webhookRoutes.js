@@ -15,9 +15,14 @@ router.get('/hook/facebook', (req, res, next) => {
 }, webhookController.verifyFacebookWebhook);
 
 router.post('/hook/facebook', (req, res, next) => {
-  console.log('🔔 POST /hook/facebook called at:', new Date().toISOString());
+  console.log('='.repeat(80));
+  console.log('🔔🔔🔔 POST /hook/facebook ROUTE MIDDLEWARE TRIGGERED 🔔🔔🔔');
+  console.log('🔔 Time:', new Date().toISOString());
   console.log('🔔 Request IP:', req.ip || req.connection.remoteAddress);
   console.log('🔔 User-Agent:', req.get('User-Agent'));
+  console.log('🔔 Request body exists:', !!req.body);
+  console.log('🔔 Request body keys:', req.body ? Object.keys(req.body) : 'no body');
+  console.log('='.repeat(80));
   next();
 }, webhookController.handleFacebookLead);
 

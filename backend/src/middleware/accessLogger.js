@@ -43,6 +43,11 @@ const accessLogger = async (req, res, next) => {
  */
 const logAccess = async (req, res, responseBody, processingTime) => {
   try {
+    // Always log Facebook webhook requests to console for debugging
+    if (req.path === '/api/hook/facebook' || req.originalUrl?.includes('/hook/facebook')) {
+      console.log('📊 ACCESS LOGGER: Facebook webhook request logged to database');
+    }
+    
     // Skip logging for certain endpoints if needed
     if (req.path === '/health' || req.path === '/favicon.ico') {
       return;

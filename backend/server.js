@@ -295,6 +295,19 @@ if (!require('fs').existsSync(uploadsDir)) {
   require('fs').mkdirSync(uploadsDir, { recursive: true });
 }
 
+// Log all incoming requests to /api/hook/facebook BEFORE routing
+app.use('/api/hook/facebook', (req, res, next) => {
+  console.log('='.repeat(100));
+  console.log('🔥🔥🔥 INCOMING REQUEST TO /api/hook/facebook 🔥🔥🔥');
+  console.log('🔥 Method:', req.method);
+  console.log('🔥 Time:', new Date().toISOString());
+  console.log('🔥 IP:', req.ip || req.connection.remoteAddress);
+  console.log('🔥 Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('🔥 Body exists:', !!req.body);
+  console.log('='.repeat(100));
+  next();
+});
+
 // API routes
 app.use('/api', userRoutes);
 app.use('/api/teams', teamsCallingRoutes);

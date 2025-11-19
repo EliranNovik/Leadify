@@ -309,9 +309,16 @@ const webhookController = {
    * Facebook sends only leadgen_id in the webhook - we must fetch field_data from Graph API
    */
   async handleFacebookLead(req, res) {
-    // Log immediately when handler is called
-    console.log('🔔 Facebook webhook handler called at:', new Date().toISOString());
-    console.log('🌐 Raw Facebook webhook body:', JSON.stringify(req.body, null, 2));
+    // Log immediately when handler is called - VERY VISIBLE
+    console.log('='.repeat(80));
+    console.log('🎯🎯🎯 FACEBOOK WEBHOOK HANDLER CALLED 🎯🎯🎯');
+    console.log('🎯 Time:', new Date().toISOString());
+    console.log('🎯 Request method:', req.method);
+    console.log('🎯 Request path:', req.path);
+    console.log('🎯 Request URL:', req.originalUrl || req.url);
+    console.log('🎯 Request body type:', typeof req.body);
+    console.log('🎯 Request body:', JSON.stringify(req.body, null, 2));
+    console.log('='.repeat(80));
     
     // Always acknowledge to Facebook immediately to prevent retries
     // We'll process asynchronously
