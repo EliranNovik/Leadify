@@ -1,6 +1,28 @@
 const supabase = require('../config/supabase');
 
 const FACEBOOK_VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+const FB_GRAPH_VERSION = process.env.FB_GRAPH_VERSION || 'v21.0';
+
+/**
+ * Get the appropriate page access token based on page_id
+ * @param {string} pageId - Facebook page ID
+ * @returns {string|null} Page access token or null if not found
+ */
+function getPageAccessToken(pageId) {
+  if (!pageId) {
+    // Fallback to default token if no page_id
+    return process.env.FB_PAGE_ACCESS_TOKEN || null;
+  }
+  
+  // Try page-specific token first
+  const pageSpecificToken = process.env[`FB_PAGE_ACCESS_TOKEN_${pageId}`];
+  if (pageSpecificToken) {
+    return pageSpecificToken;
+  }
+  
+  // Fallback to default token
+  return process.env.FB_PAGE_ACCESS_TOKEN || null;
+}
 
 /**
  * Helper to parse numeric source codes that must match misc_leadsource.code (integer)
@@ -50,6 +72,36 @@ const resolveSourceCodeFromIdentifier = (identifier) => {
   }
   return parseIntegerSourceCode(identifier);
 };
+
+/**
+ * Fetch lead details from Facebook Graph API using leadgen_id
+ * @param {string} leadgenId - The leadgen_id from the webhook
+ * @param {string} pageId - The page_id from the webhook (used to select correct token)
+ * @returns {Promise<Object>} Lead details with field_data
+ */
+async function fetchLeadDetailsFromGraph(leadgenId, pageId) {
+  const accessToken = getPageAccessToken(pageId);
+  
+  if (!accessToken) {
+    throw new Error(`No page access token found for page_id: ${pageId || 'unknown'}. Please configure FB_PAGE_ACCESS_TOKEN_${pageId} or FB_PAGE_ACCESS_TOKEN`);
+  }
+
+  const url = `https://graph.facebook.com/${FB_GRAPH_VERSION}/${leadgenId}?fields=field_data,created_time,ad_id,form_id,page_id&access_token=${accessToken}`;
+  
+  console.log(`🔍 Fetching lead details from Graph API for leadgen_id: ${leadgenId}, page_id: ${pageId}`);
+  
+  const response = await fetch(url);
+  
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Facebook Graph API error ${response.status}: ${errorText}`);
+  }
+  
+  const leadDetails = await response.json();
+  console.log(`✅ Successfully fetched lead details:`, JSON.stringify(leadDetails, null, 2));
+  
+  return leadDetails;
+}
 
 const webhookController = {
   /**
@@ -254,34 +306,44 @@ const webhookController = {
 
   /**
    * Handle Facebook lead webhook payload
+   * Facebook sends only leadgen_id in the webhook - we must fetch field_data from Graph API
    */
   async handleFacebookLead(req, res) {
     // Log immediately when handler is called
     console.log('🔔 Facebook webhook handler called at:', new Date().toISOString());
-    console.log('🔔 Request method:', req.method);
-    console.log('🔔 Request path:', req.path);
-    console.log('🔔 Request URL:', req.originalUrl || req.url);
-    console.log('🔔 Request headers:', JSON.stringify(req.headers, null, 2));
+    console.log('🌐 Raw Facebook webhook body:', JSON.stringify(req.body, null, 2));
+    
+    // Always acknowledge to Facebook immediately to prevent retries
+    // We'll process asynchronously
+    res.status(200).json({ received: true });
     
     try {
-      if (!FACEBOOK_VERIFY_TOKEN) {
-        console.error('VERIFY_TOKEN is not configured');
-        return res.status(500).json({ error: 'VERIFY_TOKEN is not configured' });
-      }
-
-      console.log('🌐 Raw Facebook webhook body:', JSON.stringify(req.body, null, 2));
-
       // Facebook payload is nested - get first change
       const entry = req.body.entry?.[0];
       const change = entry?.changes?.[0];
       const value = change?.value;
 
-      if (!value) {
-        console.error('No value in Facebook webhook payload');
-        return res.status(400).json({ error: 'Invalid Facebook payload' });
+      if (!value || !value.leadgen_id) {
+        console.warn('⚠️ No leadgen_id in Facebook webhook payload. Webhook acknowledged but no lead created.');
+        return;
       }
 
-      const fieldData = value.field_data || [];
+      const leadgenId = value.leadgen_id;
+      const formId = value.form_id;
+      const pageId = value.page_id;
+
+      console.log(`📥 Processing Facebook lead: leadgen_id=${leadgenId}, form_id=${formId}, page_id=${pageId}`);
+
+      // Fetch lead details from Graph API
+      let leadDetails;
+      try {
+        leadDetails = await fetchLeadDetailsFromGraph(leadgenId, pageId);
+      } catch (graphError) {
+        console.error(`❌ Failed to fetch lead details from Graph API for leadgen_id ${leadgenId}, page_id ${pageId}:`, graphError);
+        return; // Already acknowledged, just log and exit
+      }
+
+      const fieldData = leadDetails.field_data || [];
 
       // Helper function to extract field values from Facebook field_data array
       const getField = (fieldName) => {
@@ -289,6 +351,10 @@ const webhookController = {
         if (!field || !Array.isArray(field.values) || field.values.length === 0) return null;
         return field.values[0];
       };
+
+      // Log all available field names for debugging
+      const availableFieldNames = fieldData.map(f => f.name);
+      console.log('📋 Available Facebook field names:', availableFieldNames);
 
       // Extract fields from Facebook payload
       const firstName = getField('first_name');
@@ -314,16 +380,14 @@ const webhookController = {
         getField('source_code_value') ||
         null;
       
-      // Log all available field names for debugging
-      console.log('📋 Available Facebook field names:', fieldData.map(f => f.name));
       console.log('🔍 Looking for source_code, found raw value:', sourceCodeRaw);
       
       const sourceCodeFromField = parseIntegerSourceCode(sourceCodeRaw);
 
       // Determine numeric source code (required by misc_leadsource.code)
-      const sourceCodeFromForm = resolveSourceCodeFromIdentifier(value.form_id);
+      const sourceCodeFromForm = resolveSourceCodeFromIdentifier(formId);
       const sourceCodeFromLeadgen = sourceCodeFromField === null && sourceCodeFromForm === null
-        ? resolveSourceCodeFromIdentifier(value.leadgen_id)
+        ? resolveSourceCodeFromIdentifier(leadgenId)
         : null;
       const source_code = sourceCodeFromField
         ?? sourceCodeFromForm
@@ -331,39 +395,36 @@ const webhookController = {
         ?? FACEBOOK_DEFAULT_SOURCE_CODE;
 
       const sourceResolutionDetails = {
-        form_id: value.form_id,
-        leadgen_id: value.leadgen_id,
+        form_id: formId,
+        leadgen_id: leadgenId,
         source_code_field_value: sourceCodeRaw,
         from_source_code_field: sourceCodeFromField,
         from_form_id: sourceCodeFromForm,
         from_leadgen_id: sourceCodeFromLeadgen,
         fallback_default: FACEBOOK_DEFAULT_SOURCE_CODE,
-        all_field_names: fieldData.map(f => f.name)
+        all_field_names: availableFieldNames
       };
 
-      if (!source_code || !name || !email) {
-        console.warn('Missing required mapped fields from Facebook:', {
-          source_code,
+      if (!name || !email) {
+        console.warn('⚠️ Missing required fields (name/email) after fetching lead details:', {
           name,
           email,
+          source_code,
           about,
           phone,
-          availableFields: fieldData.map(f => f.name),
+          availableFields: availableFieldNames,
           sourceResolutionDetails
         });
+        return; // Already acknowledged, just log and exit
+      }
 
-        return res.status(400).json({
-          error: 'Missing required fields after mapping Facebook payload',
-          details: {
-            missing: {
-              source_code: !source_code,
-              name: !name,
-              email: !email
-            },
-            sourceResolutionDetails,
-            availableFields: fieldData.map(f => f.name)
-          }
+      if (!source_code) {
+        console.warn('⚠️ Missing source_code. Lead will be created without source validation:', {
+          name,
+          email,
+          sourceResolutionDetails
         });
+        // Continue anyway - the function will handle null source_code
       }
 
       console.log('📥 Mapped Facebook lead:', {
@@ -389,37 +450,27 @@ const webhookController = {
       });
 
       if (insertError) {
-        console.error('Error creating Facebook lead:', insertError);
-        return res.status(500).json({
-          error: 'Failed to create lead',
-          details: insertError.message
-        });
+        console.error('❌ Error creating Facebook lead:', insertError);
+        return; // Already acknowledged, just log and exit
       }
 
       if (!newLead || newLead.length === 0) {
-        console.error('No lead data returned from Facebook webhook insertion');
-        return res.status(500).json({ error: 'Failed to create lead - no data returned' });
+        console.error('❌ No lead data returned from Facebook webhook insertion');
+        return; // Already acknowledged, just log and exit
       }
 
       const createdLead = newLead[0];
-      console.log('✅ Facebook lead created:', createdLead);
-
-      return res.status(201).json({
-        success: true,
-        data: {
-          lead_number: createdLead.lead_number,
-          id: createdLead.id,
-          name: createdLead.name,
-          email: createdLead.email,
-          source_id: createdLead.source_id,
-          source_name: createdLead.source_name,
-          created_at: new Date().toISOString()
-        },
-        message: 'Facebook lead created successfully'
+      console.log('✅ Facebook lead created successfully:', {
+        lead_number: createdLead.lead_number,
+        id: createdLead.id,
+        name: createdLead.name,
+        email: createdLead.email,
+        source_id: createdLead.source_id,
+        source_name: createdLead.source_name
       });
     } catch (error) {
-      console.error('Facebook webhook error:', error);
-      return res.status(500).json({ error: 'Internal server error' });
+      console.error('❌ Facebook webhook processing error:', error);
+      // Already acknowledged, just log and exit
     }
   }
 };
