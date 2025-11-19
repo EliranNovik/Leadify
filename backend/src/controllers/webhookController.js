@@ -295,19 +295,23 @@ const webhookController = {
         null;
 
       const phone = getField('phone_number') || getField('phone') || null;
+      const sourceCodeFromField = parseNumericSourceCode(getField('source_code'));
 
       // Determine numeric source code (required by misc_leadsource.code)
       const sourceCodeFromForm = resolveSourceCodeFromIdentifier(value.form_id);
-      const sourceCodeFromLeadgen = sourceCodeFromForm === null
+      const sourceCodeFromLeadgen = sourceCodeFromField === null && sourceCodeFromForm === null
         ? resolveSourceCodeFromIdentifier(value.leadgen_id)
         : null;
-      const source_code = sourceCodeFromForm
+      const source_code = sourceCodeFromField
+        ?? sourceCodeFromForm
         ?? sourceCodeFromLeadgen
         ?? FACEBOOK_DEFAULT_SOURCE_CODE;
 
       const sourceResolutionDetails = {
         form_id: value.form_id,
         leadgen_id: value.leadgen_id,
+        source_code_field_value: getField('source_code'),
+        from_source_code_field: sourceCodeFromField,
         from_form_id: sourceCodeFromForm,
         from_leadgen_id: sourceCodeFromLeadgen,
         fallback_default: FACEBOOK_DEFAULT_SOURCE_CODE
