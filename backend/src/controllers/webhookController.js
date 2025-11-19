@@ -211,25 +211,80 @@ const webhookController = {
         return res.status(500).json({ error: 'VERIFY_TOKEN is not configured' });
       }
 
-      const { source_code, about, email, name } = req.body || {};
+      console.log('🌐 Raw Facebook webhook body:', JSON.stringify(req.body, null, 2));
+
+      // Facebook payload is nested - get first change
+      const entry = req.body.entry?.[0];
+      const change = entry?.changes?.[0];
+      const value = change?.value;
+
+      if (!value) {
+        console.error('No value in Facebook webhook payload');
+        return res.status(400).json({ error: 'Invalid Facebook payload' });
+      }
+
+      const fieldData = value.field_data || [];
+
+      // Helper function to extract field values from Facebook field_data array
+      const getField = (fieldName) => {
+        const field = fieldData.find(f => f.name === fieldName);
+        if (!field || !Array.isArray(field.values) || field.values.length === 0) return null;
+        return field.values[0];
+      };
+
+      // Extract fields from Facebook payload
+      const firstName = getField('first_name');
+      const lastName = getField('last_name');
+      const fullName = getField('full_name') || getField('name');
+      const name = fullName || (firstName && lastName ? `${firstName} ${lastName}` : firstName || lastName || null);
+
+      const email = getField('email');
+      const about =
+        getField('about') ||
+        getField('additional_info') ||
+        getField('message') ||
+        null;
+
+      const phone = getField('phone_number') || getField('phone') || null;
+
+      // Decide what to use as source_code (form_id or leadgen_id)
+      const source_code = value.form_id || value.leadgen_id || null;
 
       if (!source_code || !name || !email) {
+        console.warn('Missing required mapped fields from Facebook:', {
+          source_code,
+          name,
+          email,
+          about,
+          phone,
+          availableFields: fieldData.map(f => f.name)
+        });
+
         return res.status(400).json({
-          error: 'Missing required fields: source_code, name, and email are required'
+          error: 'Missing required fields after mapping Facebook payload',
+          details: {
+            missing: {
+              source_code: !source_code,
+              name: !name,
+              email: !email
+            },
+            availableFields: fieldData.map(f => f.name)
+          }
         });
       }
 
-      console.log('📥 Received Facebook lead:', {
+      console.log('📥 Mapped Facebook lead:', {
         source_code,
         about,
         email,
-        name
+        name,
+        phone
       });
 
       const { data: newLead, error: insertError } = await supabase.rpc('create_lead_with_source_validation', {
         p_lead_name: name,
         p_lead_email: email.toLowerCase(),
-        p_lead_phone: null,
+        p_lead_phone: phone || null,
         p_lead_topic: about || null,
         p_lead_language: 'EN',
         p_lead_source: 'Facebook',
@@ -255,7 +310,7 @@ const webhookController = {
       const createdLead = newLead[0];
       console.log('✅ Facebook lead created:', createdLead);
 
-      res.status(201).json({
+      return res.status(201).json({
         success: true,
         data: {
           lead_number: createdLead.lead_number,
@@ -270,7 +325,7 @@ const webhookController = {
       });
     } catch (error) {
       console.error('Facebook webhook error:', error);
-      res.status(500).json({ error: 'Internal server error' });
+      return res.status(500).json({ error: 'Internal server error' });
     }
   }
 };
