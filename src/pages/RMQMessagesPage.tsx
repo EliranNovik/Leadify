@@ -2250,6 +2250,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       });
   }, [filteredUsers, conversations, currentUser]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const totalUnread = conversations.reduce((sum, conv) => sum + (conv.unread_count || 0), 0);
+    window.dispatchEvent(new CustomEvent('rmq:unread-count', { detail: { count: totalUnread } }));
+  }, [conversations]);
+
   // Don't render if not open
   if (!isOpen) return null;
 

@@ -541,6 +541,18 @@ const NewCasesPage: React.FC = () => {
           <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
         </div>
 
+        <div className="mt-4 pt-4 border-t border-base-200/50">
+          <button
+            className="btn btn-primary btn-sm w-full"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/clients/${lead.lead_number || lead.id}`);
+            }}
+          >
+            View Lead
+          </button>
+        </div>
+
       </div>
     </div>
   );

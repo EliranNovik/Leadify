@@ -191,6 +191,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [whatsappLeadsMessages, setWhatsappLeadsMessages] = useState<any[]>([]);
   const [whatsappLeadsUnreadCount, setWhatsappLeadsUnreadCount] = useState(0);
   const [whatsappClientsUnreadCount, setWhatsappClientsUnreadCount] = useState(0);
+  const [emailUnreadCount, setEmailUnreadCount] = useState(0);
   const [isRmqModalOpen, setIsRmqModalOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -228,6 +229,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     } catch (error) {
       console.error('Failed to load assignment notification cache', error);
     }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleEmailUnreadEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ count: number }>).detail;
+      if (detail && typeof detail.count === 'number') {
+        setEmailUnreadCount(detail.count);
+      }
+    };
+    const handleRmqUnreadEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ count: number }>).detail;
+      if (detail && typeof detail.count === 'number') {
+        setRmqUnreadCount(detail.count);
+      }
+    };
+
+    window.addEventListener('email:unread-count', handleEmailUnreadEvent as EventListener);
+    window.addEventListener('rmq:unread-count', handleRmqUnreadEvent as EventListener);
+
+    return () => {
+      window.removeEventListener('email:unread-count', handleEmailUnreadEvent as EventListener);
+      window.removeEventListener('rmq:unread-count', handleRmqUnreadEvent as EventListener);
+    };
   }, []);
 
   const persistSeenAssignments = useCallback((nextSet: Set<string>) => {
@@ -989,6 +1014,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
+  const fetchEmailUnreadCount = useCallback(async () => {
+    try {
+      const { count, error } = await supabase
+        .from('emails')
+        .select('id', { count: 'exact', head: true })
+        .eq('direction', 'incoming')
+        .or('is_read.is.null,is_read.eq.false');
+
+      if (error) {
+        console.error('Error fetching email unread count:', error);
+        return;
+      }
+
+      setEmailUnreadCount(count || 0);
+    } catch (error) {
+      console.error('Unexpected error fetching email unread count:', error);
+    }
+  }, []);
+
 
   const ensureStageIds = async () => {
     if (stageIdsReadyRef.current) {
@@ -1076,15 +1120,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       fetchRmqMessages();
       fetchWhatsappLeadsMessages();
       fetchWhatsappClientsUnreadCount();
+      fetchEmailUnreadCount();
       // Refresh messages every 60 seconds
       const interval = setInterval(() => {
         fetchRmqMessages();
         fetchWhatsappLeadsMessages();
         fetchWhatsappClientsUnreadCount();
+        fetchEmailUnreadCount();
       }, 60000);
       return () => clearInterval(interval);
     }
-  }, [currentUser]);
+  }, [currentUser, fetchEmailUnreadCount]);
 
   // Fetch new leads count when component mounts and every 30 seconds
   useEffect(() => {
@@ -1796,10 +1842,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       onOpenMessaging();
                     }
                   }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
                 >
                   <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
                   <span className="text-sm font-medium">RMQ Messages</span>
+                  {rmqUnreadCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                      {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
+                    </span>
+                  )}
                 </button>
 
                 {/* WhatsApp Option */}
@@ -1829,10 +1880,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       onOpenEmailThread();
                     }
                   }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50"
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
                 >
                   <EnvelopeIcon className="w-5 h-5 text-gray-500" />
                   <span className="text-sm font-medium">Email Thread</span>
+                  {emailUnreadCount > 0 && (
+                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                      {emailUnreadCount > 9 ? '9+' : emailUnreadCount}
+                    </span>
+                  )}
                 </button>
 
                 {/* My Profile Option */}
@@ -2637,22 +2693,36 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             )}
           </div>
           
-          <button
-            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
-            title="Open RMQ Messages"
-            onClick={onOpenMessaging}
-          >
-            <ChatBubbleLeftRightIcon className="w-7 h-7 text-purple-600" />
-          </button>
+          <div className="relative hidden md:block">
+            <button
+              className="btn btn-ghost btn-circle flex items-center justify-center"
+              title="Open RMQ Messages"
+              onClick={onOpenMessaging}
+            >
+              <ChatBubbleLeftRightIcon className="w-7 h-7 text-purple-600" />
+            </button>
+            {rmqUnreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
+              </span>
+            )}
+          </div>
 
           {/* Email Thread Button */}
-          <button
-            className="btn btn-ghost btn-circle hidden md:flex items-center justify-center"
-            title="Open Email Thread"
-            onClick={onOpenEmailThread}
-          >
-            <EnvelopeIcon className="w-7 h-7 text-blue-600" />
-          </button>
+          <div className="relative hidden md:block">
+            <button
+              className="btn btn-ghost btn-circle flex items-center justify-center"
+              title="Open Email Thread"
+              onClick={onOpenEmailThread}
+            >
+              <EnvelopeIcon className="w-7 h-7 text-blue-600" />
+            </button>
+            {emailUnreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                {emailUnreadCount > 9 ? '9+' : emailUnreadCount}
+              </span>
+            )}
+          </div>
 
           {/* Microsoft sign in/out button */}
           <button 
@@ -2727,7 +2797,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         </div>
                       </div>
                       {whatsappLeadsMessages.map((message) => (
-                        <div key={message.id} className="relative border-b border-green-100">
+                        <div key={message.id} className="border-b border-green-100">
                           <div
                             role="button"
                             tabIndex={0}
@@ -2771,16 +2841,17 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                               </div>
                             </div>
                           </div>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleWhatsappMessageRead(message);
-                            }}
-                            className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
-                            title="Dismiss"
-                          >
-                            <XMarkIcon className="w-4 h-4" />
-                          </button>
+                          <div className="px-4 py-2 border-t border-green-100 flex justify-end">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleWhatsappMessageRead(message);
+                              }}
+                              className="text-xs font-medium text-green-700 hover:text-green-900"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -2799,18 +2870,20 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         rmqMessages.map((message) => (
                           <div
                             key={message.id}
-                            className="relative border-b border-purple-100 cursor-pointer"
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => handleRmqMessageClick(message)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter' || e.key === ' ') {
-                                e.preventDefault();
-                                handleRmqMessageClick(message);
-                              }
-                            }}
+                            className="border-b border-purple-100 cursor-pointer"
                           >
-                            <div className="w-full p-4 text-left hover:bg-purple-50 transition-colors duration-200">
+                            <div
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => handleRmqMessageClick(message)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  handleRmqMessageClick(message);
+                                }
+                              }}
+                              className="w-full p-4 text-left hover:bg-purple-50 transition-colors duration-200"
+                            >
                               <div className="flex gap-3">
                                 <div className="flex-shrink-0">
                                   {getConversationIcon(message)}
@@ -2825,20 +2898,17 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                                 </div>
                               </div>
                             </div>
-                            <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                            <div className="px-4 pb-3 border-t border-purple-100 flex items-center justify-between text-[11px] text-gray-500">
+                              <span>{formatMessageTime(message.sent_at)}</span>
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   dismissRmqMessage(message.id);
                                 }}
-                                className="text-gray-400 hover:text-gray-600"
-                                title="Dismiss"
+                                className="text-xs font-medium text-purple-700 hover:text-purple-900"
                               >
-                                <XMarkIcon className="w-4 h-4" />
+                                Dismiss
                               </button>
-                              <p className="text-[11px] text-gray-500">
-                                {formatMessageTime(message.sent_at)}
-                              </p>
                             </div>
                           </div>
                         ))
@@ -2863,18 +2933,20 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       {assignmentNotifications.map(notification => (
                         <div
                           key={notification.key}
-                          className="relative border-b border-blue-100 cursor-pointer"
-                          role="button"
-                          tabIndex={0}
-                          onClick={() => handleAssignmentOpen(notification)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault();
-                              handleAssignmentOpen(notification);
-                            }
-                          }}
+                          className="border-b border-blue-100 cursor-pointer"
                         >
-                          <div className="w-full text-left p-4 pr-8 hover:bg-blue-50 transition-colors duration-200">
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleAssignmentOpen(notification)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleAssignmentOpen(notification);
+                              }
+                            }}
+                            className="w-full text-left p-4 hover:bg-blue-50 transition-colors duration-200"
+                          >
                             <div className="flex items-start gap-3">
                               <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
                                 <UserIcon className="w-4 h-4 text-blue-700" />
@@ -2889,16 +2961,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                               </div>
                             </div>
                           </div>
-                          <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                          <div className="px-4 pb-3 border-t border-blue-100 flex justify-end">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 dismissAssignmentNotification(notification);
                               }}
-                              className="text-gray-400 hover:text-gray-600"
-                              title="Dismiss"
+                              className="text-xs font-medium text-blue-700 hover:text-blue-900"
                             >
-                              <XMarkIcon className="w-4 h-4" />
+                              Dismiss
                             </button>
                           </div>
                         </div>
@@ -2985,9 +3056,9 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
       
       <style>{`
         .glassy-notification-box {
-          background: rgba(255,255,255,0.60);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
+          background: #ffffff;
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
           border-radius: 1rem;
         }
         .search-input-placeholder::placeholder {

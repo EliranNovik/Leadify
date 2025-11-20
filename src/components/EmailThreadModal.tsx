@@ -783,6 +783,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
     }
   }, [searchAllContacts, allContacts]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const totalUnread = contacts.reduce((sum, contact) => sum + (contact.unread_count || 0), 0);
+    window.dispatchEvent(new CustomEvent('email:unread-count', { detail: { count: totalUnread } }));
+  }, [contacts]);
+
   // Fetch email thread for selected contact
   const hydrateEmailThreadBodies = useCallback(
     async (messages: EmailMessage[]) => {

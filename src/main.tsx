@@ -37,20 +37,46 @@ applyThemeClass(savedTheme);
 // Register Service Worker for PWA (production only to avoid dev caching issues)
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js')
+    navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' })
       .then((registration) => {
         console.log('✅ Service Worker registered successfully:', registration.scope);
         
-        // Check for updates periodically
-        setInterval(() => {
-          registration.update();
-        }, 60000); // Check every minute
+        // Check for updates on every page load/refresh
+        const checkForUpdates = () => {
+          registration.update().catch((error) => {
+            console.warn('⚠️ Service Worker update check failed:', error);
+          });
+        };
+        
+        // Check immediately on load
+        checkForUpdates();
+        
+        // Also check when page becomes visible (user returns to tab)
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) {
+            checkForUpdates();
+          }
+        });
+        
+        // Listen for service worker updates
+        registration.addEventListener('updatefound', () => {
+          const newWorker = registration.installing;
+          if (newWorker) {
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                // New service worker is ready - reload immediately
+                console.log('🔄 New Service Worker installed - reloading page');
+                window.location.reload();
+              }
+            });
+          }
+        });
       })
       .catch((error) => {
         console.warn('⚠️ Service Worker registration failed:', error);
       });
 
-    // Listen for service worker updates
+    // Listen for service worker controller changes
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       console.log('🔄 Service Worker controller changed - reloading page');
       window.location.reload();

@@ -1,26 +1,31 @@
 // Service Worker for RMQ 2.0 PWA
-const CACHE_NAME = 'rmq-2.0-v1';
+// Static cache for assets that don't change often
+const STATIC_CACHE_NAME = 'rmq-2.0-static-v1';
 const OFFLINE_PAGE = '/offline.html';
 
-const urlsToCache = [
-  '/',
-  '/index.html',
-  '/offline.html'
+// Files that should always be fetched from network (never cached)
+// This ensures HTML, JS bundles, and API calls always get fresh content
+const NETWORK_ONLY_PATTERNS = [
+  /\/api\//,
+  /\.html$/,
+  /\/index\.html$/,
+  /\/manifest\.json$/,
+  // JS bundles (Vite creates hash-based filenames, but we still want network-first)
+  /\/assets\/.*\.js$/,
+  // CSS files (also hash-based, but network-first to ensure updates)
+  /\/assets\/.*\.css$/,
 ];
 
-// Install event - cache resources
+// Static assets that can be cached (images, fonts, etc.)
+const STATIC_ASSET_PATTERNS = [
+  /\.(?:png|jpg|jpeg|svg|gif|webp|ico)$/,
+  /\.(?:woff|woff2|ttf|eot)$/,
+];
+
+// Install event - skip waiting to activate immediately
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then((cache) => {
-        console.log('Service Worker: Caching files');
-        return cache.addAll(urlsToCache);
-      })
-      .catch((error) => {
-        console.error('Service Worker: Cache failed', error);
-      })
-  );
-  // Force the waiting service worker to become the active service worker
+  console.log('Service Worker: Installing new version');
+  // Force the waiting service worker to become the active service worker immediately
   self.skipWaiting();
 });
 
@@ -30,16 +35,19 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          if (cacheName !== CACHE_NAME) {
+          // Delete all old caches (keep only current static cache)
+          if (cacheName !== STATIC_CACHE_NAME && cacheName.startsWith('rmq-2.0-')) {
             console.log('Service Worker: Deleting old cache', cacheName);
             return caches.delete(cacheName);
           }
+          return Promise.resolve();
         })
       );
+    }).then(() => {
+      // Take control of all pages immediately
+      return self.clients.claim();
     })
   );
-  // Take control of all pages immediately
-  return self.clients.claim();
 });
 
 // Listen for messages from the client
@@ -49,7 +57,7 @@ self.addEventListener('message', (event) => {
   }
 });
 
-// Fetch event - serve from cache, fallback to network
+// Fetch event - network-first strategy for HTML/JS, cache-first for static assets
 self.addEventListener('fetch', (event) => {
   // Skip non-GET requests
   if (event.request.method !== 'GET') {
@@ -61,33 +69,75 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request)
-      .then((response) => {
-        // Return cached version or fetch from network
-        return response || fetch(event.request)
-          .then((response) => {
-            // Don't cache if not a valid response
-            if (!response || response.status !== 200 || response.type !== 'basic') {
+  const url = new URL(event.request.url);
+  const isNetworkOnly = NETWORK_ONLY_PATTERNS.some(pattern => pattern.test(url.pathname));
+  const isStaticAsset = STATIC_ASSET_PATTERNS.some(pattern => pattern.test(url.pathname));
+
+  // Network-first strategy for HTML, API, and manifest (always get fresh content)
+  if (isNetworkOnly) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          // Don't cache network-only resources
+          return response;
+        })
+        .catch(() => {
+          // If fetch fails and it's a navigation request, show offline page
+          if (event.request.mode === 'navigate') {
+            return caches.match(OFFLINE_PAGE) || new Response('Offline', { status: 503 });
+          }
+          return new Response('Offline', { status: 503 });
+        })
+    );
+    return;
+  }
+
+  // Cache-first strategy for static assets (images, fonts, CSS, JS bundles)
+  if (isStaticAsset) {
+    event.respondWith(
+      caches.match(event.request)
+        .then((cachedResponse) => {
+          if (cachedResponse) {
+            return cachedResponse;
+          }
+          // Fetch from network and cache for future use
+          return fetch(event.request)
+            .then((response) => {
+              // Only cache valid responses
+              if (response && response.status === 200 && response.type === 'basic') {
+                const responseToCache = response.clone();
+                caches.open(STATIC_CACHE_NAME)
+                  .then((cache) => {
+                    cache.put(event.request, responseToCache);
+                  });
+              }
               return response;
+            });
+        })
+        .catch(() => {
+          return new Response('Offline', { status: 503 });
+        })
+    );
+    return;
+  }
+
+  // Default: network-first for everything else
+  event.respondWith(
+    fetch(event.request)
+      .then((response) => {
+        return response;
+      })
+      .catch(() => {
+        // Fallback to cache if network fails
+        return caches.match(event.request)
+          .then((cachedResponse) => {
+            if (cachedResponse) {
+              return cachedResponse;
             }
-
-            // Clone the response
-            const responseToCache = response.clone();
-
-            caches.open(CACHE_NAME)
-              .then((cache) => {
-                cache.put(event.request, responseToCache);
-              });
-
-            return response;
-          })
-          .catch(() => {
-            // If fetch fails and it's a navigation request, show offline page
+            // If it's a navigation request and no cache, show offline page
             if (event.request.mode === 'navigate') {
-              return caches.match(OFFLINE_PAGE);
+              return caches.match(OFFLINE_PAGE) || new Response('Offline', { status: 503 });
             }
-            // For other requests, return a basic error response
             return new Response('Offline', { status: 503 });
           });
       })
