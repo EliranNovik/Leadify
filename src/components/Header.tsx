@@ -63,13 +63,43 @@ interface AssignmentNotification {
   updatedAt?: string;
 }
 
-const ASSIGNMENT_ROLE_COLUMNS = [
-  { field: 'case_handler_id', label: 'Handler' },
-  { field: 'meeting_manager_id', label: 'Manager' },
-  { field: 'meeting_lawyer_id', label: 'Helper' },
-  { field: 'meeting_scheduler_id', label: 'Scheduler' },
-  { field: 'expert_id', label: 'Expert' },
-  { field: 'closer_id', label: 'Closer' },
+const ASSIGNMENT_ROLE_FIELDS = [
+  {
+    label: 'Handler',
+    legacyField: 'case_handler_id',
+    newNumericField: 'case_handler_id',
+    newTextField: 'handler'
+  },
+  {
+    label: 'Manager',
+    legacyField: 'meeting_manager_id',
+    newNumericField: 'meeting_manager_id',
+    newTextField: 'manager'
+  },
+  {
+    label: 'Helper',
+    legacyField: 'meeting_lawyer_id',
+    newNumericField: 'meeting_lawyer_id',
+    newTextField: 'helper'
+  },
+  {
+    label: 'Scheduler',
+    legacyField: 'meeting_scheduler_id',
+    newNumericField: 'meeting_scheduler_id',
+    newTextField: 'scheduler'
+  },
+  {
+    label: 'Expert',
+    legacyField: 'expert_id',
+    newNumericField: 'expert_id',
+    newTextField: 'expert'
+  },
+  {
+    label: 'Closer',
+    legacyField: 'closer_id',
+    newNumericField: 'closer_id',
+    newTextField: 'closer'
+  },
 ] as const;
 
 const ASSIGNMENT_SEEN_STORAGE_KEY = 'rmq_assignment_seen_v1';
@@ -1350,56 +1380,197 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return message.content;
   };
   
-  const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
-    if (!row) return '';
-    const leadNumber = row.lead_number?.toString().trim();
-    if (leadNumber) return leadNumber;
-    return '';
-  };
+const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
+  if (!row) return '';
+  const leadNumber = row.lead_number?.toString().trim();
+  if (leadNumber) return leadNumber;
+  if (table === 'legacy') {
+    const legacyId = row.id?.toString().trim();
+    if (legacyId) return legacyId;
+  }
+  return '';
+};
+
+  const resolveNumericEmployeeId = useCallback(async () => {
+    const candidateIds = [
+      currentUserEmployee?.id,
+      currentUserEmployee?.tenants_employee?.id,
+      currentUser?.employee_id,
+      (currentUser as any)?.tenants_employee?.id,
+    ]
+      .filter((value) => value !== undefined && value !== null)
+      .map((value) => String(value).trim());
+
+    for (const id of candidateIds) {
+      if (/^\d+$/.test(id)) {
+        return id;
+      }
+    }
+
+    const candidateNames = [
+      currentUserEmployee?.display_name,
+      currentUser?.full_name,
+      userFullName,
+    ]
+      .filter(Boolean)
+      .map((name) => String(name).trim())
+      .filter((name) => name.length > 0);
+
+    if (candidateNames.length > 0) {
+      const { data, error } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .in('display_name', candidateNames)
+        .limit(1);
+
+      if (!error && data && data.length > 0) {
+        const resolvedId = data[0].id;
+        if (resolvedId !== undefined && resolvedId !== null) {
+          const trimmed = String(resolvedId).trim();
+          if (/^\d+$/.test(trimmed)) {
+            return trimmed;
+          }
+        }
+      }
+    }
+
+    console.warn('Unable to resolve numeric employee ID for assignment notifications.');
+    return null;
+  }, [currentUser, currentUserEmployee, userFullName]);
 
   const fetchAssignmentNotifications = useCallback(async () => {
-    const employeeId = currentUserEmployee?.id ?? currentUser?.employee_id;
-    if (!employeeId) return;
+    const numericEmployeeId = await resolveNumericEmployeeId();
+    if (!numericEmployeeId) return;
 
-    const employeeIdStr = String(employeeId).trim();
-    if (!employeeIdStr) return;
-    const sanitizedEmployeeId = employeeIdStr.replace(/"/g, '\\"');
+    const stringIdentifierCandidates = [
+      currentUserEmployee?.display_name,
+      currentUser?.full_name,
+      userFullName
+    ]
+      .filter(Boolean)
+      .map(value => String(value).trim())
+      .filter(value => value.length > 0);
 
-    const orFilter = ASSIGNMENT_ROLE_COLUMNS.map(role => `${role.field}.eq."${sanitizedEmployeeId}"`).join(',');
-    if (!orFilter) return;
+    const sanitizedStringIdentifiers: string[] = stringIdentifierCandidates.map(value =>
+      value.replace(/"/g, '\\"')
+    );
+    const normalizedStringIdentifiers: string[] = stringIdentifierCandidates.map(value =>
+      value.toLowerCase()
+    );
 
-    const roleFields = ASSIGNMENT_ROLE_COLUMNS.map(role => role.field).join(', ');
+    const addNumericCondition = (arr: string[], field?: string, value?: string) => {
+      if (!field || !value) return;
+      arr.push(`${field}.eq.${value}`);
+    };
+
+    const addStringCondition = (arr: string[], field?: string, value?: string) => {
+      if (!field || !value) return;
+      arr.push(`${field}.eq."${value}"`);
+    };
+
+    const legacyConditions: string[] = [];
+    const newConditions: string[] = [];
+    
+    ASSIGNMENT_ROLE_FIELDS.forEach(role => {
+      addNumericCondition(legacyConditions, role.legacyField, numericEmployeeId);
+      addNumericCondition(newConditions, role.newNumericField, numericEmployeeId);
+      sanitizedStringIdentifiers.forEach((identifier: string) => {
+        addStringCondition(newConditions, role.newTextField, identifier);
+      });
+    });
+
+    const legacyOrFilter = legacyConditions.length ? legacyConditions.join(',') : null;
+    const newOrFilter = newConditions.length ? newConditions.join(',') : null;
+
+    const legacyRoleFields = ASSIGNMENT_ROLE_FIELDS
+      .map(role => role.legacyField)
+      .filter(Boolean)
+      .join(', ');
+    const newRoleFields = Array.from(
+      new Set(
+        ASSIGNMENT_ROLE_FIELDS.flatMap(role =>
+          [role.newNumericField, role.newTextField].filter(Boolean)
+        )
+      )
+    ).join(', ');
 
     try {
       const [legacyResult, newResult] = await Promise.all([
-        supabase
-          .from('leads_lead')
-          .select(`id, lead_number, manual_id, udate, ${roleFields}`)
-          .or(orFilter)
-          .order('udate', { ascending: false })
-          .limit(50),
-        supabase
-          .from('leads')
-          .select(`id, lead_number, manual_id, created_at, ${roleFields}`)
-          .or(orFilter)
-          .order('created_at', { ascending: false })
-          .limit(50),
+        legacyOrFilter
+          ? supabase
+              .from('leads_lead')
+              .select(`id, lead_number, manual_id, udate, ${legacyRoleFields}`)
+              .or(legacyOrFilter)
+              .order('udate', { ascending: false })
+              .limit(50)
+          : Promise.resolve({ data: [], error: null }),
+        newOrFilter
+          ? supabase
+              .from('leads')
+              .select(`id, lead_number, manual_id, created_at, ${newRoleFields}`)
+              .or(newOrFilter)
+              .order('created_at', { ascending: false })
+              .limit(50)
+          : Promise.resolve({ data: [], error: null }),
       ]);
 
       const notifications: AssignmentNotification[] = [];
 
+    const numericMatchValues = [numericEmployeeId];
+
       const pushNotifications = (rows: any[] | null | undefined, table: 'legacy' | 'new') => {
         if (!rows) return;
         rows.forEach(row => {
-          ASSIGNMENT_ROLE_COLUMNS.forEach(role => {
-            const value = row[role.field];
-            if (value === null || value === undefined) return;
-            if (String(value).trim() !== employeeIdStr) return;
+          ASSIGNMENT_ROLE_FIELDS.forEach(role => {
+            const { legacyField, newNumericField, newTextField } = role;
+            let match = false;
+            let matchedField = '';
+            let matchedValue: string | number | null = null;
+
+            if (table === 'legacy' && legacyField) {
+              const value = row[legacyField];
+              if (value !== null && value !== undefined) {
+                const valueStr = String(value).trim();
+                if (numericMatchValues.includes(valueStr)) {
+                  match = true;
+                  matchedField = legacyField;
+                  matchedValue = value;
+                }
+              }
+            }
+
+            if (!match && table === 'new') {
+              if (newNumericField) {
+                const value = row[newNumericField];
+                if (value !== null && value !== undefined) {
+                  const valueStr = String(value).trim();
+                  if (numericMatchValues.includes(valueStr)) {
+                    match = true;
+                    matchedField = newNumericField;
+                    matchedValue = value;
+                  }
+                }
+              }
+              if (!match && newTextField) {
+                const value = row[newTextField];
+                if (value !== null && value !== undefined) {
+                  const valueStr = String(value).trim().toLowerCase();
+                  if (normalizedStringIdentifiers.includes(valueStr)) {
+                    match = true;
+                    matchedField = newTextField;
+                    matchedValue = value;
+                  }
+                }
+              }
+            }
+
+            if (!match) return;
+
             const timestamp =
               table === 'legacy'
-                ? (row.udate || row.updated_at || row.created_at)
-                : (row.updated_at || row.created_at);
-            const key = [table, row.id, role.field, value, timestamp || ''].join(':');
+                ? (row.udate || row.created_at)
+                : (row.updated_at || row.created_at || row.createdAt);
+            const key = [table, row.id, matchedField, matchedValue, timestamp || ''].join(':');
             if (seenAssignmentKeys.has(key)) return;
             notifications.push({
               key,
@@ -1503,9 +1674,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
-  const handleAssignmentDismiss = (key: string) => {
-    rememberAssignments([key]);
-    setAssignmentNotifications(prev => prev.filter(notification => notification.key !== key));
+  const dismissRmqMessage = (messageId: number) => {
+    setRmqMessages(prev => prev.filter(m => m.id !== messageId));
+    setRmqUnreadCount(prev => Math.max(0, prev - 1));
+  };
+
+  const dismissAssignmentNotification = (notification: AssignmentNotification) => {
+    rememberAssignments([notification.key]);
+    setAssignmentNotifications(prev => prev.filter(item => item.key !== notification.key));
   };
 
   const handleAssignmentOpen = (notification: AssignmentNotification) => {
@@ -2511,7 +2687,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             </button>
 
             {showNotifications && (
-              <div className="absolute right-0 mt-2 w-80 glassy-notification-box shadow-xl rounded-xl overflow-hidden z-50">
+              <div
+                className={`glassy-notification-box shadow-xl rounded-xl overflow-hidden z-50 ${
+                  isMobile
+                    ? 'fixed inset-x-0 top-[72px] w-[calc(100vw-16px)] mx-auto text-[11px]'
+                    : 'absolute right-0 mt-2 w-80 text-sm'
+                }`}
+              >
                 <div className="p-4 border-b border-base-200">
                   <div className="flex justify-between items-center">
                     <h3 className="font-semibold">Messages</h3>
@@ -2524,35 +2706,130 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   </div>
                 </div>
                 <div className="max-h-96 overflow-y-auto">
-                  {/* RMQ Messages Section */}
-                  {currentUser && (
+                  {/* WhatsApp Leads Messages Section */}
+                  {whatsappLeadsMessages.length > 0 && (
                     <div className="border-b border-base-200">
-                      {rmqMessages.length > 0 ? (
-                        rmqMessages.map((message) => (
-                          <button
-                            key={message.id}
-                            onClick={() => handleRmqMessageClick(message)}
-                            className="w-full p-4 text-left hover:bg-purple-50 transition-colors duration-200 border-b border-purple-100"
+                      <div className="p-3 bg-green-50 border-b border-green-100">
+                        <div className="flex items-center gap-2">
+                          <FaWhatsapp className="w-4 h-4 text-green-600" />
+                          <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
+                        </div>
+                      </div>
+                      {whatsappLeadsMessages.map((message) => (
+                        <div key={message.id} className="relative border-b border-green-100">
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={handleWhatsappLeadsClick}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleWhatsappLeadsClick();
+                              }
+                            }}
+                            className="w-full p-4 text-left hover:bg-green-50 transition-colors duration-200 cursor-pointer"
                           >
                             <div className="flex gap-3">
                               <div className="flex-shrink-0">
-                                {getConversationIcon(message)}
+                                <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
+                                  <PhoneIcon className="w-4 h-4 text-green-600" />
+                                </div>
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center justify-between">
                                   <p className="text-sm font-semibold text-gray-900 truncate">
-                                    {getConversationTitle(message)}
+                                    {message.sender_name && message.sender_name !== message.phone_number && !message.sender_name.match(/^\d+$/) 
+                                      ? message.sender_name 
+                                      : message.phone_number}
                                   </p>
-                                  <p className="text-xs text-gray-500 ml-2">
-                                    {formatMessageTime(message.sent_at)}
+                                  <p className="text-xs text-gray-500">
+                                    {new Date(message.latest_message_time).toLocaleTimeString([], { 
+                                      hour: '2-digit', 
+                                      minute: '2-digit' 
+                                    })}
                                   </p>
                                 </div>
                                 <p className="text-xs text-gray-600 mt-1 truncate">
-                                  {getMessageDisplayText(message)}
+                                  {message.latest_message}
                                 </p>
+                                {message.message_count > 1 && (
+                                  <p className="text-xs text-green-600 mt-1">
+                                    {message.message_count} messages
+                                  </p>
+                                )}
                               </div>
                             </div>
+                          </div>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleWhatsappMessageRead(message);
+                            }}
+                            className="absolute top-2 right-2 text-gray-400 hover:text-gray-600"
+                            title="Dismiss"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
                           </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  
+                  {/* RMQ Messages Section */}
+                  {currentUser && (
+                    <div className="border-b border-base-200">
+                      <div className="p-3 bg-purple-50 border-b border-purple-100">
+                        <div className="flex items-center gap-2">
+                          <ChatBubbleLeftRightIcon className="w-4 h-4 text-purple-600" />
+                          <span className="text-sm font-semibold text-purple-800">RMQ Messages</span>
+                        </div>
+                      </div>
+                      {rmqMessages.length > 0 ? (
+                        rmqMessages.map((message) => (
+                          <div
+                            key={message.id}
+                            className="relative border-b border-purple-100 cursor-pointer"
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => handleRmqMessageClick(message)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleRmqMessageClick(message);
+                              }
+                            }}
+                          >
+                            <div className="w-full p-4 text-left hover:bg-purple-50 transition-colors duration-200">
+                              <div className="flex gap-3">
+                                <div className="flex-shrink-0">
+                                  {getConversationIcon(message)}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-semibold text-gray-900 truncate">
+                                    {getConversationTitle(message)}
+                                  </p>
+                                  <p className="text-xs text-gray-600 mt-1 truncate">
+                                    {getMessageDisplayText(message)}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                            <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  dismissRmqMessage(message.id);
+                                }}
+                                className="text-gray-400 hover:text-gray-600"
+                                title="Dismiss"
+                              >
+                                <XMarkIcon className="w-4 h-4" />
+                              </button>
+                              <p className="text-[11px] text-gray-500">
+                                {formatMessageTime(message.sent_at)}
+                              </p>
+                            </div>
+                          </div>
                         ))
                       ) : (
                         <div className="p-4 text-center text-gray-500">
@@ -2575,104 +2852,45 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       {assignmentNotifications.map(notification => (
                         <div
                           key={notification.key}
-                          className="p-4 text-left hover:bg-blue-50 transition-colors duration-200 border-b border-blue-100"
+                          className="relative border-b border-blue-100 cursor-pointer"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => handleAssignmentOpen(notification)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              handleAssignmentOpen(notification);
+                            }
+                          }}
                         >
-                          <div className="flex items-start gap-3">
-                            <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                              <UserIcon className="w-4 h-4 text-blue-700" />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm text-gray-800 leading-relaxed">
-                                <span className="font-semibold">{userFullName || 'You'}</span>, you have been assigned as{' '}
-                                <span className="font-semibold">{notification.roleLabel}</span> to lead{' '}
-                                <span className="font-semibold">{notification.leadNumber}</span>.
-                              </p>
-                              <div className="mt-3 flex flex-wrap gap-2">
-                                <button
-                                  className="btn btn-xs btn-primary"
-                                  onClick={() => handleAssignmentOpen(notification)}
-                                >
-                                  Open lead
-                                </button>
-                                <button
-                                  className="btn btn-xs"
-                                  onClick={() => handleAssignmentDismiss(notification.key)}
-                                >
-                                  Dismiss
-                                </button>
+                          <div className="w-full text-left p-4 pr-8 hover:bg-blue-50 transition-colors duration-200">
+                            <div className="flex items-start gap-3">
+                              <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                                <UserIcon className="w-4 h-4 text-blue-700" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm text-gray-800 leading-relaxed">
+                                  <span className="font-semibold">{userFullName || 'You'}</span>, you have been assigned as{' '}
+                                  <span className="font-semibold">{notification.roleLabel}</span> to lead{' '}
+                                  <span className="font-semibold">{notification.leadNumber}</span>.
+                                </p>
+                                <p className="text-xs text-blue-600 mt-2">Tap to open lead</p>
                               </div>
                             </div>
+                          </div>
+                          <div className="absolute top-2 right-2 flex flex-col items-end gap-1">
                             <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                dismissAssignmentNotification(notification);
+                              }}
                               className="text-gray-400 hover:text-gray-600"
-                              onClick={() => handleAssignmentDismiss(notification.key)}
                               title="Dismiss"
                             >
                               <XMarkIcon className="w-4 h-4" />
                             </button>
                           </div>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {/* WhatsApp Leads Messages Section */}
-                  {whatsappLeadsMessages.length > 0 && (
-                    <div className="border-b border-base-200">
-                      <div className="p-3 bg-green-50 border-b border-green-100">
-                        <div className="flex items-center gap-2">
-                          <FaWhatsapp className="w-4 h-4 text-green-600" />
-                          <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
-                        </div>
-                      </div>
-                      {whatsappLeadsMessages.map((message) => (
-                        <button
-                          key={message.id}
-                          onClick={handleWhatsappLeadsClick}
-                          className="w-full p-4 text-left hover:bg-green-50 transition-colors duration-200 border-b border-green-100"
-                        >
-                          <div className="flex gap-3">
-                            <div className="flex-shrink-0">
-                              <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
-                                <PhoneIcon className="w-4 h-4 text-green-600" />
-                              </div>
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between">
-                                <p className="text-sm font-semibold text-gray-900 truncate">
-                                  {message.sender_name && message.sender_name !== message.phone_number && !message.sender_name.match(/^\d+$/) 
-                                    ? message.sender_name 
-                                    : message.phone_number}
-                                </p>
-                                <div className="flex items-center gap-2">
-                                  <p className="text-xs text-gray-500">
-                                    {new Date(message.latest_message_time).toLocaleTimeString([], { 
-                                      hour: '2-digit', 
-                                      minute: '2-digit' 
-                                    })}
-                                  </p>
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleWhatsappMessageRead(message);
-                                    }}
-                                    className="btn btn-ghost btn-xs text-green-600 hover:bg-green-100"
-                                    title="Mark as read"
-                                  >
-                                    ✓
-                                  </button>
-                                </div>
-                              </div>
-                              <p className="text-xs text-gray-600 mt-1 truncate">
-                                {message.latest_message}
-                              </p>
-                              {message.message_count > 1 && (
-                                <p className="text-xs text-green-600 mt-1">
-                                  {message.message_count} messages
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </button>
                       ))}
                     </div>
                   )}

@@ -8,6 +8,7 @@ import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } fr
 
 // This will be replaced with dynamic scheduler list based on preferred categories
 const defaultSchedulers = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', 'Yael', 'Michael R'];
+const SCHEDULER_STAGE_ID = 10;
 
 const categories = [
   'German Citizenship',
@@ -576,6 +577,7 @@ const NewCasesPage: React.FC = () => {
           mapping.set(name.toLowerCase(), name);
         });
         mapping.set('created', 'Created');
+        mapping.set(SCHEDULER_STAGE_ID, 'Scheduler Assigned');
         mapping.set('scheduler_assigned', 'Scheduler Assigned');
         setStageMapping(mapping);
 
@@ -1395,7 +1397,7 @@ const NewCasesPage: React.FC = () => {
         .from('leads')
         .update({ 
               scheduler: employee, 
-          stage: 'scheduler_assigned',
+          stage: SCHEDULER_STAGE_ID,
           stage_changed_by: currentUserFullName,
           stage_changed_at: new Date().toISOString()
         })
@@ -1498,7 +1500,7 @@ const NewCasesPage: React.FC = () => {
         .from('leads')
         .update({ 
           scheduler: schedulerName || null,
-          stage: 'scheduler_assigned',
+          stage: SCHEDULER_STAGE_ID,
           stage_changed_by: currentUserFullName,
           stage_changed_at: new Date().toISOString()
         })
