@@ -183,9 +183,11 @@ CREATE OR REPLACE FUNCTION get_voice_message_chunks(
 DECLARE
     v_conversation_id INTEGER;
     v_is_participant BOOLEAN;
+    v_session_id UUID;
+    v_attachment_url TEXT;
 BEGIN
-    -- Verify user is participant in conversation
-    SELECT m.conversation_id INTO v_conversation_id
+    -- Get message info including attachment_url which contains the session_id
+    SELECT m.conversation_id, m.attachment_url INTO v_conversation_id, v_attachment_url
     FROM messages m
     WHERE m.id = p_message_id AND m.is_voice_message = TRUE;
     
@@ -203,22 +205,35 @@ BEGIN
         RETURN;
     END IF;
     
-    -- Return chunks in order
+    -- Extract session_id from attachment_url
+    -- Format: 'voice_message_' || session_id || '.webm'
+    IF v_attachment_url IS NOT NULL AND v_attachment_url LIKE 'voice_message_%.webm' THEN
+        -- Extract UUID from attachment_url (between 'voice_message_' and '.webm')
+        v_session_id := substring(v_attachment_url from 'voice_message_(.+?)\.webm')::UUID;
+    END IF;
+    
+    -- If we couldn't extract session_id from attachment_url, fall back to finding by message sender and conversation
+    -- This is a fallback for older messages that might not have the session_id in attachment_url
+    IF v_session_id IS NULL THEN
+        SELECT vs.id INTO v_session_id
+        FROM voice_message_sessions vs
+        JOIN messages m ON m.conversation_id = vs.conversation_id 
+            AND m.sender_id = vs.user_id
+        WHERE m.id = p_message_id
+            AND vs.status = 'completed'
+        ORDER BY vs.created_at DESC
+        LIMIT 1;
+    END IF;
+    
+    IF v_session_id IS NULL THEN
+        RETURN;
+    END IF;
+    
+    -- Return chunks for the specific session
     RETURN QUERY
     SELECT vc.chunk_number, vc.chunk_data, vc.chunk_size
     FROM voice_message_chunks vc
-    JOIN voice_message_sessions vs ON vc.session_id = vs.id
-    WHERE vs.id = (
-        SELECT vs2.id FROM voice_message_sessions vs2
-        WHERE vs2.id = (
-            SELECT id FROM voice_message_sessions
-            WHERE conversation_id = v_conversation_id
-            AND user_id = (
-                SELECT sender_id FROM messages WHERE id = p_message_id
-            )
-            ORDER BY created_at DESC LIMIT 1
-        )
-    )
+    WHERE vc.session_id = v_session_id
     ORDER BY vc.chunk_number;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -277,6 +292,10 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- 7. Add RLS policies for voice message tables
 ALTER TABLE voice_message_sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE voice_message_chunks ENABLE ROW LEVEL SECURITY;
+
+-- Drop existing policies if they exist (to allow re-running this script)
+DROP POLICY IF EXISTS "Users can access their own voice message sessions" ON voice_message_sessions;
+DROP POLICY IF EXISTS "Users can access chunks from their sessions" ON voice_message_chunks;
 
 -- Policy for voice_message_sessions
 CREATE POLICY "Users can access their own voice message sessions" ON voice_message_sessions

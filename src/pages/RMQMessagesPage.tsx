@@ -137,6 +137,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isSearchingLeads, setIsSearchingLeads] = useState(false);
   const [selectedLead, setSelectedLead] = useState<any>(null);
   const [showMobileTools, setShowMobileTools] = useState(false);
+  const [showDesktopTools, setShowDesktopTools] = useState(false);
   
   // Group member management state
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
@@ -173,6 +174,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const desktopMessagesContainerRef = useRef<HTMLDivElement>(null);
   const mobileMessagesContainerRef = useRef<HTMLDivElement>(null);
   const mobileToolsRef = useRef<HTMLDivElement>(null);
+  const desktopToolsRef = useRef<HTMLDivElement>(null);
   
   // Auto-scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
@@ -256,7 +258,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <img
           src={photoUrl}
           alt={name}
-          className={`${sizeClass} rounded-full object-cover ${borderClass}`}
+          loading="lazy"
+          decoding="async"
+          className={`${sizeClass} rounded-full object-cover ${borderClass} bg-gray-200`}
           onError={() => handleAvatarError(fallbackKey)}
         />
       );
@@ -507,6 +511,40 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Combine chunks into single audio blob
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
       
+      // Calculate actual duration and generate waveform from audio blob
+      let actualDuration = recordingDuration;
+      let waveformData: number[] | null = null;
+      
+      try {
+        const audioUrl = URL.createObjectURL(audioBlob);
+        const audio = new Audio(audioUrl);
+        
+        // Get duration
+        await new Promise((resolve, reject) => {
+          audio.onloadedmetadata = () => {
+            actualDuration = Math.round(audio.duration);
+            URL.revokeObjectURL(audioUrl);
+            resolve(actualDuration);
+          };
+          audio.onerror = () => {
+            URL.revokeObjectURL(audioUrl);
+            resolve(recordingDuration);
+          };
+          setTimeout(() => {
+            URL.revokeObjectURL(audioUrl);
+            resolve(recordingDuration);
+          }, 2000);
+        });
+        
+        // Generate waveform
+        waveformData = await generateWaveform(audioBlob);
+      } catch (error) {
+        console.warn('Could not calculate audio duration or waveform, using recording duration:', error);
+        actualDuration = recordingDuration;
+        // Generate a simple fallback waveform
+        waveformData = Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+      }
+      
       // Upload chunks to database
       const chunkSize = 64 * 1024; // 64KB chunks
       const totalChunks = Math.ceil(audioBlob.size / chunkSize);
@@ -531,12 +569,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         if (error) throw error;
       }
       
-      // Finalize voice message
-      const duration = recordingDuration;
+      // Finalize voice message with actual duration and waveform
       const { data: finalizeData, error: finalizeError } = await supabase.rpc('finalize_voice_message', {
         p_session_token: sessionToken,
-        p_duration: duration,
-        p_waveform_data: null // We can add waveform generation later
+        p_duration: actualDuration,
+        p_waveform_data: waveformData ? { waveform: waveformData } : null
       });
       
       if (finalizeError) throw finalizeError;
@@ -554,6 +591,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
       
       toast.success('Voice message sent!');
+      
+      // Refresh messages to get the updated message with correct duration
+      if (selectedConversation) {
+        await fetchMessages(selectedConversation.id);
+      }
       
       // Reset state
       setAudioChunks([]);
@@ -580,6 +622,41 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Generate waveform data from audio blob (similar to WhatsApp)
+  const generateWaveform = async (audioBlob: Blob): Promise<number[]> => {
+    try {
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      
+      const rawData = audioBuffer.getChannelData(0); // Get first channel
+      const samples = 50; // Number of bars in waveform (like WhatsApp)
+      const blockSize = Math.floor(rawData.length / samples);
+      const filteredData: number[] = [];
+      
+      for (let i = 0; i < samples; i++) {
+        const blockStart = blockSize * i;
+        let sum = 0;
+        for (let j = 0; j < blockSize; j++) {
+          sum += Math.abs(rawData[blockStart + j] || 0);
+        }
+        filteredData.push(sum / blockSize);
+      }
+      
+      // Normalize to 0-1 range
+      const max = Math.max(...filteredData);
+      if (max > 0) {
+        return filteredData.map(value => value / max);
+      }
+      
+      return filteredData;
+    } catch (error) {
+      console.warn('Error generating waveform, using fallback:', error);
+      // Return a simple animated waveform as fallback
+      return Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+    }
   };
 
   // Voice playback functions
@@ -1005,19 +1082,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const formatMessageTime = (timestamp: string): string => {
     const date = new Date(timestamp);
     const now = new Date();
-    const diffInDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
     
     if (isToday(date)) {
       return format(date, 'HH:mm');
     } else if (isYesterday(date)) {
       // Show actual time instead of "Yesterday"
       return format(date, 'HH:mm');
-    } else if (diffInDays <= 7) {
-      // Show day of week for messages within the last week
-      return format(date, 'EEEE HH:mm');
     } else {
-      // Show date and time for older messages
-      return format(date, 'MMM d, yyyy HH:mm');
+      // Always show day of week and time for older messages
+      return format(date, 'EEE HH:mm'); // Day of week + time (e.g., "Mon 14:30")
     }
   };
 
@@ -1459,6 +1532,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           attachment_size,
           reply_to_message_id,
           reactions,
+          voice_duration,
+          voice_waveform,
+          is_voice_message,
           sender:users!sender_id(
             id,
             full_name,
@@ -2318,13 +2394,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     };
   }, []);
 
-  // Fetch conversations and users when user is loaded
+  // Fetch conversations and users when user is loaded (in parallel for faster loading)
   useEffect(() => {
     const loadData = async () => {
     if (currentUser) {
         console.log('📊 Loading conversations and users data...');
-        await fetchConversations();
-        await fetchAllUsers();
+        // Load conversations and users in parallel for faster initial load
+        await Promise.all([
+          fetchConversations(),
+          fetchAllUsers()
+        ]);
         console.log('✅ All data loaded successfully');
       }
     };
@@ -2345,9 +2424,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   }, [isOpen, initialConversationId, conversations, fetchMessages]);
 
-  // Initial loading
+  // Initial loading - reduce timeout for faster perceived loading
   useEffect(() => {
-    const timer = setTimeout(() => setIsLoading(false), 1000);
+    const timer = setTimeout(() => setIsLoading(false), 300);
     return () => clearTimeout(timer);
   }, []);
 
@@ -2400,6 +2479,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   const handleMobileToolSelect = (tool: 'lead' | 'file' | 'emoji' | 'voice') => {
     setShowMobileTools(false);
+    switch (tool) {
+      case 'lead':
+        setIsLeadSearchOpen(prev => !prev);
+        break;
+      case 'file':
+        fileInputRef.current?.click();
+        break;
+      case 'emoji':
+        setIsEmojiPickerOpen(prev => !prev);
+        break;
+      case 'voice':
+        if (!isRecording) {
+          startVoiceRecording();
+        }
+        break;
+      default:
+        break;
+    }
+  };
+
+  const handleDesktopToolSelect = (tool: 'lead' | 'file' | 'emoji' | 'voice') => {
+    setShowDesktopTools(false);
     switch (tool) {
       case 'lead':
         setIsLeadSearchOpen(prev => !prev);
@@ -3186,11 +3287,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     !isSameDay(new Date(message.sent_at), new Date(messages[index - 1].sent_at));
 
                   return (
-                    <div key={message.id}>
-                      {/* Date Separator */}
+                    <div key={message.id} className="relative">
+                      {/* Date Separator - Sticky */}
                       {showDateSeparator && (
-                        <div className="flex items-center justify-center my-4">
-                          <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-sm font-medium border-b border-gray-300">
+                        <div 
+                          className="flex items-center justify-center my-4"
+                          style={{
+                            position: 'sticky',
+                            top: '0px',
+                            zIndex: 20,
+                            backgroundColor: 'white',
+                            paddingTop: '8px',
+                            paddingBottom: '8px',
+                            marginTop: '0',
+                            marginBottom: '16px'
+                          }}
+                        >
+                          <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
                             {formatDateSeparator(message.sent_at)}
                           </div>
                         </div>
@@ -3214,21 +3327,38 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         </div>
                       )}
                       
-                      <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                      {/* Sticky timestamp positioned on the side - outside message container */}
+                      <span 
+                        className={`text-xs text-white px-2 py-1 rounded-md bg-green-500 shadow-sm flex-shrink-0 ${
+                          isOwn ? 'order-3' : 'order-1'
+                        }`}
+                        style={{
+                          position: 'sticky',
+                          top: '8px',
+                          alignSelf: 'flex-start',
+                          zIndex: 10,
+                          whiteSpace: 'nowrap',
+                          height: 'fit-content'
+                        }}
+                      >
+                        {formatMessageTime(message.sent_at)}
+                      </span>
+                      
+                      <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col ${isOwn ? 'order-2' : 'order-2'}`}>
                         {!isOwn && selectedConversation.type !== 'direct' && (
                           <span className="text-xs text-gray-500 mb-1 px-3">
                             {senderName}
                           </span>
                         )}
                         
-                        <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                        <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
                           <div
                             data-message-id={message.id}
                             onClick={() => {
                               setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
                               setReactingMessageId(message.id);
                             }}
-                            className={`px-4 py-3 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow ${
+                            className={`px-4 py-3 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow relative ${
                               isOwn
                                 ? isEmojiOnly(message.content) 
                                   ? 'bg-white text-gray-900 rounded-br-md'
@@ -3262,8 +3392,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               {message.message_type === 'voice' ? (
                                 // Voice message player
                                 <div className="p-3 flex items-center gap-3">
-                                  {/* Employee image for group chats (including own messages) */}
-                                  {selectedConversation.type !== 'direct' && (
+                                  {/* Employee image for own messages (all conversation types) and group chats */}
+                                  {(isOwn || selectedConversation.type !== 'direct') && (
                                     <div className="flex-shrink-0">
                                       {renderUserAvatar({
                                         userId: message.sender_id,
@@ -3294,17 +3424,43 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </button>
                                   <div className="flex-1">
                                     <div className="flex items-center gap-2">
-                                      <div className={`flex-1 h-2 rounded-full ${
-                                        isOwn ? 'bg-white/30' : 'bg-gray-200'
-                                      }`}>
-                                        <div 
-                                          className={`h-full rounded-full transition-all duration-100 ${
-                                            isOwn ? 'bg-white' : 'bg-purple-500'
-                                          }`}
-                                          style={{ width: `${voiceProgress[message.id] || 0}%` }}
-                                        ></div>
+                                      {/* Waveform visualization */}
+                                      <div className="flex-1 flex items-end gap-0.5 h-8 px-1">
+                                        {(() => {
+                                          const waveform = message.voice_waveform?.waveform || 
+                                                          (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
+                                                          Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+                                          const isPlaying = playingVoiceId === message.id;
+                                          const progress = voiceProgress[message.id] || 0;
+                                          
+                                          return waveform.map((value: number, index: number) => {
+                                            const barHeight = Math.max(value * 100, 15); // Min 15% height
+                                            const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
+                                            
+                                            return (
+                                              <div
+                                                key={index}
+                                                className={`transition-all duration-75 ${
+                                                  isOwn 
+                                                    ? isActive 
+                                                      ? 'bg-white' 
+                                                      : 'bg-white/40'
+                                                    : isActive
+                                                      ? 'bg-purple-500'
+                                                      : 'bg-purple-300'
+                                                }`}
+                                                style={{
+                                                  width: '2px',
+                                                  height: `${barHeight}%`,
+                                                  minHeight: '3px',
+                                                  borderRadius: '1px'
+                                                }}
+                                              />
+                                            );
+                                          });
+                                        })()}
                                       </div>
-                                      <span className={`text-sm font-mono ${
+                                      <span className={`text-sm font-mono whitespace-nowrap ${
                                         isOwn ? 'text-white/80' : 'text-gray-600'
                                       }`}>
                                         {formatVoiceDuration(message.voice_duration)}
@@ -3422,10 +3578,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             ))}
                           </div>
                         )}
-                        
-                        <span className={`text-xs text-gray-400 mt-1 px-2 ${isOwn ? 'text-right' : 'text-left'}`}>
-                          {formatMessageTime(message.sent_at)}
-                        </span>
                       </div>
                     </div>
                     </div>
@@ -3459,68 +3611,80 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             {/* Message Input - Desktop Only */}
             <div className="hidden lg:block p-4 border-t border-gray-200 bg-white">
               <div className="flex items-end gap-3 relative">
-                <button
-                  onClick={() => setIsLeadSearchOpen(!isLeadSearchOpen)}
-                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-green-600"
-                  title="Attach Lead"
-                >
-                  <PlusIcon className="w-5 h-5" />
-                </button>
-                
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploadingFile || isSending}
-                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-purple-600 disabled:opacity-50"
-                  title={isUploadingFile ? 'Uploading file...' : 'Attach file'}
-                >
-                  {isUploadingFile ? (
-                    <div className="loading loading-spinner loading-sm"></div>
+                {/* Consolidated Tools Button */}
+                <div className="relative" ref={desktopToolsRef}>
+                  {!isRecording ? (
+                    <button
+                      onClick={() => setShowDesktopTools(prev => !prev)}
+                      disabled={isSending}
+                      className="btn btn-ghost btn-circle btn-md text-gray-500 hover:text-purple-600 disabled:opacity-50"
+                      title="Message tools"
+                    >
+                      <Squares2X2Icon className="w-6 h-6" />
+                    </button>
                   ) : (
-                    <PaperClipIcon className="w-5 h-5" />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={stopVoiceRecording}
+                        className="btn btn-circle btn-sm bg-red-500 hover:bg-red-600 text-white"
+                        title="Send voice message"
+                      >
+                        <StopIcon className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={cancelVoiceRecording}
+                        className="btn btn-circle btn-sm bg-gray-500 hover:bg-gray-600 text-white"
+                        title="Cancel recording"
+                      >
+                        <XMarkIcon className="w-4 h-4" />
+                      </button>
+                      <span className="text-sm text-red-600 font-mono min-w-[40px]">
+                        {formatRecordingDuration(recordingDuration)}
+                      </span>
+                    </div>
                   )}
-                </button>
+                  
+                  {/* Tools Dropdown Menu */}
+                  {showDesktopTools && !isRecording && (
+                    <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px]">
+                      <button
+                        onClick={() => handleDesktopToolSelect('lead')}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"
+                      >
+                        <PlusIcon className="w-5 h-5 text-green-600" />
+                        <span className="text-sm text-gray-700">Attach Lead</span>
+                      </button>
+                      <button
+                        onClick={() => handleDesktopToolSelect('file')}
+                        disabled={isUploadingFile}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
+                      >
+                        {isUploadingFile ? (
+                          <div className="loading loading-spinner loading-xs"></div>
+                        ) : (
+                          <PaperClipIcon className="w-5 h-5 text-purple-600" />
+                        )}
+                        <span className="text-sm text-gray-700">Attach File</span>
+                      </button>
+                      <button
+                        onClick={() => handleDesktopToolSelect('emoji')}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"
+                      >
+                        <FaceSmileIcon className="w-5 h-5 text-purple-600" />
+                        <span className="text-sm text-gray-700">Add Emoji</span>
+                      </button>
+                      <button
+                        onClick={() => handleDesktopToolSelect('voice')}
+                        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"
+                      >
+                        <MicrophoneIcon className="w-5 h-5 text-red-600" />
+                        <span className="text-sm text-gray-700">Voice Message</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
                 
                 <div className="relative">
-                <button
-                  onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                  disabled={isSending}
-                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-purple-600 disabled:opacity-50"
-                  title="Add emoji"
-                >
-                  <FaceSmileIcon className="w-5 h-5" />
-                </button>
-                
-                {/* Voice Recording Button */}
-                {!isRecording ? (
-                  <button
-                    onClick={startVoiceRecording}
-                    disabled={isSending}
-                    className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-red-600 disabled:opacity-50"
-                    title="Record voice message"
-                  >
-                    <MicrophoneIcon className="w-5 h-5" />
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={stopVoiceRecording}
-                      className="btn btn-circle btn-sm bg-red-500 hover:bg-red-600 text-white"
-                      title="Send voice message"
-                    >
-                      <StopIcon className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={cancelVoiceRecording}
-                      className="btn btn-circle btn-sm bg-gray-500 hover:bg-gray-600 text-white"
-                      title="Cancel recording"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                    <span className="text-sm text-red-600 font-mono min-w-[40px]">
-                      {formatRecordingDuration(recordingDuration)}
-                    </span>
-                  </div>
-                )}
                   
                   
                   {/* Emoji Picker */}
@@ -3783,9 +3947,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                 return (
                   <div key={message.id}>
-                    {/* Date Separator */}
+                    {/* Date Separator - Sticky */}
                     {showDateSeparator && (
-                      <div className="flex items-center justify-center my-4">
+                      <div 
+                        className="flex items-center justify-center my-4"
+                        style={{
+                          position: 'sticky',
+                          top: '0px',
+                          zIndex: 20,
+                          backgroundColor: 'white',
+                          paddingTop: '8px',
+                          paddingBottom: '8px',
+                          marginTop: '0',
+                          marginBottom: '16px'
+                        }}
+                      >
                         <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-sm font-medium border-b border-gray-300">
                           {formatDateSeparator(message.sent_at)}
                         </div>
@@ -3810,20 +3986,37 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       </div>
                     )}
                     
-                    <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                    {/* Sticky timestamp positioned on the side - as sibling of message container */}
+                    <span 
+                      className={`text-xs text-white px-2 py-1 rounded-md bg-green-500 shadow-sm flex-shrink-0 ${
+                        isOwn ? 'order-3' : 'order-1'
+                      }`}
+                      style={{
+                        position: 'sticky',
+                        top: '8px',
+                        alignSelf: 'flex-start',
+                        zIndex: 10,
+                        whiteSpace: 'nowrap',
+                        height: 'fit-content'
+                      }}
+                    >
+                      {formatMessageTime(message.sent_at)}
+                    </span>
+                    
+                    <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col ${isOwn ? 'order-2' : 'order-2'}`}>
                       {!isOwn && selectedConversation.type !== 'direct' && (
                         <span className="text-xs text-gray-500 mb-1 px-3">
                           {senderName}
                         </span>
                       )}
-                      <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
+                      <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
                         <div
                           data-message-id={message.id}
                           onClick={() => {
                             setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
                             setReactingMessageId(message.id);
                           }}
-                          className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow ${
+                          className={`px-4 py-3 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative ${
                             isOwn
                               ? isEmojiOnly(message.content) 
                                 ? 'bg-white text-gray-900 rounded-br-md'
@@ -3857,8 +4050,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             {message.message_type === 'voice' ? (
                               // Mobile voice message player
                               <div className="p-2 flex items-center gap-2">
-                                {/* Employee image for group chats (including own messages) */}
-                                {selectedConversation.type !== 'direct' && (
+                                {/* Employee image for own messages (all conversation types) and group chats */}
+                                {(isOwn || selectedConversation.type !== 'direct') && (
                                   <div className="flex-shrink-0">
                                     {renderUserAvatar({
                                       userId: message.sender_id,
@@ -3889,17 +4082,43 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 </button>
                                 <div className="flex-1">
                                   <div className="flex items-center gap-2">
-                                    <div className={`flex-1 h-2 rounded-full ${
-                                      isOwn ? 'bg-white/30' : 'bg-gray-200'
-                                    }`}>
-                                      <div 
-                                        className={`h-full rounded-full transition-all duration-100 ${
-                                          isOwn ? 'bg-white' : 'bg-purple-500'
-                                        }`}
-                                        style={{ width: `${voiceProgress[message.id] || 0}%` }}
-                                      ></div>
+                                    {/* Waveform visualization */}
+                                    <div className="flex-1 flex items-end gap-0.5 h-6 px-1">
+                                      {(() => {
+                                        const waveform = message.voice_waveform?.waveform || 
+                                                        (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
+                                                        Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+                                        const isPlaying = playingVoiceId === message.id;
+                                        const progress = voiceProgress[message.id] || 0;
+                                        
+                                        return waveform.map((value: number, index: number) => {
+                                          const barHeight = Math.max(value * 100, 15); // Min 15% height
+                                          const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
+                                          
+                                          return (
+                                            <div
+                                              key={index}
+                                              className={`transition-all duration-75 ${
+                                                isOwn 
+                                                  ? isActive 
+                                                    ? 'bg-white' 
+                                                    : 'bg-white/40'
+                                                  : isActive
+                                                    ? 'bg-purple-500'
+                                                    : 'bg-purple-300'
+                                              }`}
+                                              style={{
+                                                width: '1.5px',
+                                                height: `${barHeight}%`,
+                                                minHeight: '2px',
+                                                borderRadius: '0.75px'
+                                              }}
+                                            />
+                                          );
+                                        });
+                                      })()}
                                     </div>
-                                    <span className={`text-xs font-mono ${
+                                    <span className={`text-xs font-mono whitespace-nowrap ${
                                       isOwn ? 'text-white/80' : 'text-gray-600'
                                     }`}>
                                       {formatVoiceDuration(message.voice_duration)}
@@ -4016,10 +4235,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           ))}
                         </div>
                       )}
-                      
-                      <span className="text-xs text-gray-400 mt-1 px-2">
-                        {formatMessageTime(message.sent_at)}
-                      </span>
                     </div>
                     </div>
                   </div>
