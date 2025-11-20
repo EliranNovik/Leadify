@@ -3294,16 +3294,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           className="flex items-center justify-center my-4"
                           style={{
                             position: 'sticky',
-                            top: '0px',
-                            zIndex: 20,
-                            backgroundColor: 'white',
-                            paddingTop: '8px',
-                            paddingBottom: '8px',
-                            marginTop: '0',
-                            marginBottom: '16px'
+                            top: '8px',
+                            zIndex: 20
                           }}
                         >
-                          <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium">
+                          <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium shadow-md">
                             {formatDateSeparator(message.sent_at)}
                           </div>
                         </div>
@@ -3327,24 +3322,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         </div>
                       )}
                       
-                      {/* Sticky timestamp positioned on the side - outside message container */}
-                      <span 
-                        className={`text-xs text-white px-2 py-1 rounded-md bg-green-500 shadow-sm flex-shrink-0 ${
-                          isOwn ? 'order-3' : 'order-1'
-                        }`}
-                        style={{
-                          position: 'sticky',
-                          top: '8px',
-                          alignSelf: 'flex-start',
-                          zIndex: 10,
-                          whiteSpace: 'nowrap',
-                          height: 'fit-content'
-                        }}
-                      >
-                        {formatMessageTime(message.sent_at)}
-                      </span>
-                      
-                      <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col ${isOwn ? 'order-2' : 'order-2'}`}>
+                      <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
                         {!isOwn && selectedConversation.type !== 'direct' && (
                           <span className="text-xs text-gray-500 mb-1 px-3">
                             {senderName}
@@ -3534,6 +3512,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               )}
                             </div>
                           )}
+                          
+                          {/* Timestamp inside message bubble */}
+                          <div className={`flex items-center justify-end mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                            <span className={`text-xs ${
+                              isOwn ? 'text-white/70' : 'text-gray-500'
+                            }`}>
+                              {formatMessageTime(message.sent_at)}
+                            </span>
+                          </div>
                           </div>
                           
                           {/* Reaction picker */}
@@ -3829,11 +3816,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       </div>
 
       {/* Mobile Full Screen Chat */}
-      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white`}>
+      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white h-full`}>
         {selectedConversation && (
           <>
             {/* Mobile Chat Header */}
-            <div className="p-4 border-b border-gray-200 bg-white">
+            <div className="p-4 border-b border-gray-200 bg-white flex-none">
               <div className="flex items-center gap-3 mb-3">
                 <button
                   onClick={() => setShowMobileConversations(true)}
@@ -3932,7 +3919,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <div 
               ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
+              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white min-h-0"
             >
               {                messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
@@ -3953,16 +3940,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         className="flex items-center justify-center my-4"
                         style={{
                           position: 'sticky',
-                          top: '0px',
-                          zIndex: 20,
-                          backgroundColor: 'white',
-                          paddingTop: '8px',
-                          paddingBottom: '8px',
-                          marginTop: '0',
-                          marginBottom: '16px'
+                          top: '8px',
+                          zIndex: 20
                         }}
                       >
-                        <div className="bg-gray-100 text-gray-600 px-3 py-1 rounded-full text-sm font-medium border-b border-gray-300">
+                        <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium shadow-md">
                           {formatDateSeparator(message.sent_at)}
                         </div>
                       </div>
@@ -3986,24 +3968,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       </div>
                     )}
                     
-                    {/* Sticky timestamp positioned on the side - as sibling of message container */}
-                    <span 
-                      className={`text-xs text-white px-2 py-1 rounded-md bg-green-500 shadow-sm flex-shrink-0 ${
-                        isOwn ? 'order-3' : 'order-1'
-                      }`}
-                      style={{
-                        position: 'sticky',
-                        top: '8px',
-                        alignSelf: 'flex-start',
-                        zIndex: 10,
-                        whiteSpace: 'nowrap',
-                        height: 'fit-content'
-                      }}
-                    >
-                      {formatMessageTime(message.sent_at)}
-                    </span>
-                    
-                    <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col ${isOwn ? 'order-2' : 'order-2'}`}>
+                    <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
                       {!isOwn && selectedConversation.type !== 'direct' && (
                         <span className="text-xs text-gray-500 mb-1 px-3">
                           {senderName}
@@ -4191,6 +4156,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             )}
                           </div>
                         )}
+                        
+                        {/* Timestamp inside message bubble - Mobile */}
+                        <div className={`flex items-center justify-end mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                          <span className={`text-xs ${
+                            isOwn ? 'text-white/70' : 'text-gray-500'
+                          }`}>
+                            {formatMessageTime(message.sent_at)}
+                          </span>
+                        </div>
                         </div>
                         
                         {/* Reaction picker - Mobile */}
@@ -4247,7 +4221,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Mobile Message Input - Mobile Only */}
-            <div className="lg:hidden p-3 border-t border-gray-200 bg-white">
+            <div className="lg:hidden p-3 border-t border-gray-200 bg-white flex-none">
               <div className="relative space-y-2">
                 <div className="flex items-center gap-2">
                   <div className="relative" ref={mobileToolsRef}>
