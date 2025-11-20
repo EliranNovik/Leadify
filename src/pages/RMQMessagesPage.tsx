@@ -138,6 +138,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [selectedLead, setSelectedLead] = useState<any>(null);
   const [showMobileTools, setShowMobileTools] = useState(false);
   
+  // Group member management state
+  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
+  const [showRemoveMemberModal, setShowRemoveMemberModal] = useState(false);
+  const [membersToAdd, setMembersToAdd] = useState<string[]>([]);
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  
   // Reactions state
   const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
   const [reactingMessageId, setReactingMessageId] = useState<number | null>(null);
@@ -164,6 +170,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const mobileMessageInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const desktopMessagesContainerRef = useRef<HTMLDivElement>(null);
+  const mobileMessagesContainerRef = useRef<HTMLDivElement>(null);
   const mobileToolsRef = useRef<HTMLDivElement>(null);
   
   // Auto-scroll state
@@ -567,6 +575,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const formatVoiceDuration = (seconds: number | null | undefined) => {
+    if (!seconds || seconds === 0) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
   // Voice playback functions
   const playVoiceMessage = async (messageId: number) => {
     if (!currentUser) return;
@@ -588,10 +603,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       // Get voice message chunks from database
+      // Note: BYTEA columns are returned as hex strings with 'x' prefix by PostgreSQL/Supabase
       const { data: chunksData, error } = await supabase.rpc('get_voice_message_chunks', {
         p_message_id: messageId,
         p_user_id: currentUser.id
       });
+      
+      // Log first chunk data format for debugging
+      if (chunksData && chunksData.length > 0) {
+        const firstChunk = chunksData[0];
+        const chunkDataPreview = (firstChunk.chunk_data || '').toString().substring(0, 100);
+        console.log('First chunk data format:', {
+          type: typeof firstChunk.chunk_data,
+          startsWithX: chunkDataPreview.startsWith('x'),
+          startsWith0x: chunkDataPreview.startsWith('0x'),
+          preview: chunkDataPreview
+        });
+      }
 
       if (error) throw error;
 
@@ -603,40 +631,251 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Sort chunks by chunk_number and combine them
       const sortedChunks = chunksData.sort((a: any, b: any) => a.chunk_number - b.chunk_number);
       
-      // Convert base64 chunks back to binary data
+      // Convert chunks back to binary data (supports both base64 and hex)
       const binaryChunks = sortedChunks.map((chunk: any) => {
-        const binaryString = atob(chunk.chunk_data);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
+        try {
+          // Get chunk data
+          let data = chunk.chunk_data || '';
+          
+          // Handle different data formats
+          if (typeof data !== 'string') {
+            // If it's already binary/array, return as is
+            if (data instanceof Uint8Array) {
+              return data;
+            }
+            // Try to convert to string
+            data = String(data);
+          }
+          
+          // Clean the data (preserve original for fallback)
+          const originalData = data;
+          data = data.trim().replace(/\s/g, '');
+          
+          // Validate data exists
+          if (!data || data.length === 0) {
+            throw new Error('Empty chunk data');
+          }
+          
+          // Helper function to convert hex to bytes
+          // PostgreSQL BYTEA returns hex with 'x' prefix (e.g., 'x476b5866...')
+          const hexToBytes = (hexStr: string): Uint8Array => {
+            if (!hexStr || typeof hexStr !== 'string') {
+              throw new Error('Invalid hex string input');
+            }
+            
+            // PostgreSQL BYTEA hex format starts with 'x' followed by hex digits
+            // Remove the 'x' prefix if present
+            let hexData = hexStr.trim();
+            
+            // Handle PostgreSQL BYTEA hex format (starts with 'x')
+            if (hexData.startsWith('x') || hexData.startsWith('\\x')) {
+              hexData = hexData.substring(hexData.startsWith('\\x') ? 2 : 1);
+            } else if (hexData.startsWith('0x')) {
+              hexData = hexData.substring(2);
+            }
+            
+            // Remove any non-hex characters (spaces, newlines, etc.)
+            hexData = hexData.replace(/[^0-9a-fA-F]/g, '');
+            
+            if (hexData.length === 0) {
+              throw new Error('No valid hex data after cleaning');
+            }
+            
+            // Ensure even length for hex pairs
+            if (hexData.length % 2 !== 0) {
+              // Pad with leading zero
+              hexData = '0' + hexData;
+            }
+            
+            // Convert hex to binary
+            const bytes = new Uint8Array(hexData.length / 2);
+            for (let i = 0; i < hexData.length; i += 2) {
+              const hexPair = hexData.substr(i, 2);
+              const byteValue = parseInt(hexPair, 16);
+              if (isNaN(byteValue) || byteValue < 0 || byteValue > 255) {
+                throw new Error(`Invalid hex byte "${hexPair}" at position ${i}`);
+              }
+              bytes[i / 2] = byteValue;
+            }
+            
+            return bytes;
+          };
+          
+          // PostgreSQL BYTEA returns hex with 'x' prefix, so prioritize hex detection
+          // Check for 'x' prefix first (PostgreSQL BYTEA hex format)
+          const hasHexPrefix = data.startsWith('x') || data.startsWith('\\x');
+          const has0xPrefix = data.startsWith('0x');
+          
+          let bytes: Uint8Array;
+          
+          // If it starts with 'x' or '\\x', it's definitely PostgreSQL BYTEA hex format
+          if (hasHexPrefix) {
+            try {
+              bytes = hexToBytes(data);
+              
+              // Check if the decoded bytes are actually a base64 string
+              // (This happens when base64 was stored as text in BYTEA, then retrieved as hex)
+              const decodedString = String.fromCharCode(...bytes.slice(0, Math.min(100, bytes.length)));
+              const looksLikeBase64 = /^[A-Za-z0-9+/=\s]*$/.test(decodedString) && decodedString.length > 10;
+              
+              if (looksLikeBase64) {
+                // The hex data is actually a base64 string encoded as hex
+                // Decode hex to get base64 string, then decode base64 to get actual bytes
+                const base64String = String.fromCharCode(...bytes);
+                const base64Cleaned = base64String.replace(/[^A-Za-z0-9+/=]/g, '');
+                const padding = base64Cleaned.length % 4;
+                const base64Padded = padding ? base64Cleaned + '='.repeat(4 - padding) : base64Cleaned;
+                
+                try {
+                  const binaryString = atob(base64Padded);
+                  bytes = new Uint8Array(binaryString.length);
+                  for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                  }
+                  console.log('Detected base64-encoded hex data, decoded successfully');
+                } catch (base64Error) {
+                  // If base64 decode fails, use the hex bytes as-is
+                  console.warn('Base64 decode of hex data failed, using hex bytes directly');
+                }
+              }
+            } catch (hexError) {
+              console.error('Hex decode failed for PostgreSQL BYTEA format:', hexError, 'Data preview:', data.substring(0, 100));
+              throw new Error(`Failed to decode PostgreSQL BYTEA hex data: ${hexError instanceof Error ? hexError.message : 'Unknown error'}`);
+            }
+          } else if (has0xPrefix) {
+            // Standard hex format with 0x prefix
+            try {
+              bytes = hexToBytes(data);
+            } catch (hexError) {
+              // Try base64 as fallback
+              console.warn('Hex decode failed for 0x format, trying base64 for chunk', chunk.chunk_number);
+              const base64Data = originalData.replace(/[^A-Za-z0-9+/=]/g, '');
+              const padding = base64Data.length % 4;
+              const paddedBase64 = padding ? base64Data + '='.repeat(4 - padding) : base64Data;
+              try {
+                const binaryString = atob(paddedBase64);
+                bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                  bytes[i] = binaryString.charCodeAt(i);
+                }
+              } catch (base64Error) {
+                throw new Error(`Both hex and base64 decoding failed. Hex: ${hexError instanceof Error ? hexError.message : 'Unknown'}, Base64: ${base64Error instanceof Error ? base64Error.message : 'Unknown'}`);
+              }
+            }
+          } else {
+            // Try base64 first (original format)
+            let base64Data = data.replace(/[^A-Za-z0-9+/=]/g, '');
+            
+            // Ensure proper padding
+            const padding = base64Data.length % 4;
+            if (padding) {
+              base64Data += '='.repeat(4 - padding);
+            }
+            
+            try {
+              const binaryString = atob(base64Data);
+              bytes = new Uint8Array(binaryString.length);
+              for (let i = 0; i < binaryString.length; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+              }
+            } catch (base64Error) {
+              // If base64 fails, try hex as fallback (might be hex without prefix)
+              console.warn('Base64 decode failed, trying hex format for chunk', chunk.chunk_number);
+              try {
+                bytes = hexToBytes(originalData);
+              } catch (hexError) {
+                throw new Error(`Neither base64 nor hex decoding worked. Base64 error: ${base64Error instanceof Error ? base64Error.message : 'Unknown'}, Hex error: ${hexError instanceof Error ? hexError.message : 'Unknown'}`);
+              }
+            }
+          }
+          
+          return bytes;
+        } catch (chunkError) {
+          console.error('Error processing chunk:', chunkError, 'Chunk number:', chunk.chunk_number, 'Data preview:', (chunk.chunk_data || '').toString().substring(0, 100));
+          throw new Error(`Failed to process chunk ${chunk.chunk_number}: ${chunkError instanceof Error ? chunkError.message : 'Unknown error'}`);
         }
-        return bytes;
       });
 
       // Combine all chunks into a single Uint8Array
       const totalLength = binaryChunks.reduce((sum: number, chunk: Uint8Array) => sum + chunk.length, 0);
+      
+      if (totalLength === 0) {
+        throw new Error('No valid audio data found in chunks');
+      }
+      
       const combinedArray = new Uint8Array(totalLength);
       let offset = 0;
       for (const chunk of binaryChunks) {
-        combinedArray.set(chunk, offset);
-        offset += chunk.length;
+        if (chunk && chunk.length > 0) {
+          combinedArray.set(chunk, offset);
+          offset += chunk.length;
+        }
+      }
+
+      // Validate the audio data - check for WebM header (starts with 0x1A 0x45 0xDF 0xA3)
+      const hasWebMHeader = combinedArray.length >= 4 && 
+        combinedArray[0] === 0x1A && 
+        combinedArray[1] === 0x45 && 
+        combinedArray[2] === 0xDF && 
+        combinedArray[3] === 0xA3;
+      
+      // Log first bytes for debugging
+      if (combinedArray.length > 0) {
+        const firstBytes = Array.from(combinedArray.slice(0, 16))
+          .map(b => '0x' + b.toString(16).padStart(2, '0'))
+          .join(' ');
+        console.log('First bytes of combined audio data:', firstBytes);
+      }
+      
+      if (!hasWebMHeader && combinedArray.length > 0) {
+        console.warn('Audio data does not have WebM header. First bytes:', 
+          Array.from(combinedArray.slice(0, 4)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '),
+          'Expected: 0x1a 0x45 0xdf 0xa3'
+        );
+        // Try with different MIME type - maybe it's not WebM
+        console.warn('Attempting to play with audio/webm type anyway');
       }
 
       // Create blob from combined data
       const audioBlob = new Blob([combinedArray], { type: 'audio/webm' });
+      
+      // Validate blob size
+      if (audioBlob.size === 0) {
+        throw new Error('Created audio blob is empty');
+      }
+      
       const audioUrl = URL.createObjectURL(audioBlob);
 
       // Create audio element and play
       const audio = new Audio(audioUrl);
       audio.preload = 'metadata';
       
+      // Set a timeout to detect if metadata loading fails
+      const metadataTimeout = setTimeout(() => {
+        if (!audio.readyState || audio.readyState < 2) {
+          console.error('Audio metadata loading timeout. Blob size:', audioBlob.size, 'bytes');
+          toast.error('Voice message appears to be corrupted or in an unsupported format');
+          setPlayingVoiceId(null);
+          setVoiceAudio(null);
+          URL.revokeObjectURL(audioUrl);
+        }
+      }, 5000);
+      
       audio.onloadedmetadata = () => {
+        clearTimeout(metadataTimeout);
         setPlayingVoiceId(messageId);
         setVoiceAudio(audio);
-        audio.play();
+        audio.play().catch((playError) => {
+          console.error('Error playing audio:', playError);
+          toast.error('Failed to play voice message. The audio file may be corrupted.');
+          setPlayingVoiceId(null);
+          setVoiceAudio(null);
+          URL.revokeObjectURL(audioUrl);
+        });
       };
 
       audio.onplay = () => {
+        clearTimeout(metadataTimeout);
         setPlayingVoiceId(messageId);
       };
 
@@ -645,6 +884,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       };
 
       audio.onended = () => {
+        clearTimeout(metadataTimeout);
         setPlayingVoiceId(null);
         setVoiceAudio(null);
         setVoiceProgress(prev => ({ ...prev, [messageId]: 0 }));
@@ -659,8 +899,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       };
 
       audio.onerror = (e) => {
-        console.error('Audio playback error:', e);
-        toast.error('Failed to play voice message');
+        clearTimeout(metadataTimeout);
+        console.error('Audio playback error:', e, 'Blob size:', audioBlob.size, 'bytes');
+        const errorMessage = audio.error 
+          ? `Audio error code: ${audio.error.code} (${audio.error.message || 'Unknown error'})`
+          : 'Unknown audio playback error';
+        console.error('Audio error details:', errorMessage);
+        toast.error('Failed to play voice message. The audio file may be corrupted or in an unsupported format.');
         setPlayingVoiceId(null);
         setVoiceAudio(null);
         URL.revokeObjectURL(audioUrl);
@@ -1052,18 +1297,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               index === self.findIndex(p => p.user_id === participant.user_id)
           );
 
-          console.log('🔍 Conversation participants filtered:', {
-            conversationId: conv.id,
-            totalParticipants: conv.conversation_participants?.length || 0,
-            activeParticipants: activeParticipants.length,
-            uniqueParticipants: uniqueParticipants.length,
-            sampleParticipant: activeParticipants[0] ? {
-              user_id: activeParticipants[0].user_id,
-              name: activeParticipants[0].user?.full_name || activeParticipants[0].user?.tenants_employee?.display_name,
-              is_active: activeParticipants[0].user?.is_active
-            } : null
-          });
-
           return {
             ...conv,
             participants: uniqueParticipants,
@@ -1156,16 +1389,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Process conversations and calculate unread counts
       const processedConversations = await Promise.all(
         (conversationsData || []).map(async (conv: any) => {
-          console.log('🔍 Processing conversation:', {
-            id: conv.id,
-            type: conv.type,
-            participantCount: conv.conversation_participants?.length,
-            participants: conv.conversation_participants?.map((p: ConversationParticipant) => ({
-              user_id: p.user_id,
-              name: p.user?.tenants_employee?.display_name || p.user?.full_name
-            }))
-          });
-          
           // Get unread count for this conversation
           const userParticipant = conv.conversation_participants.find(
             (p: ConversationParticipant) => p.user_id === currentUser.id
@@ -1199,31 +1422,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               index === self.findIndex(p => p.user_id === participant.user_id)
           );
 
-          console.log('🔍 Conversation participants filtered:', {
-            conversationId: conv.id,
-            totalParticipants: conv.conversation_participants?.length || 0,
-            activeParticipants: activeParticipants.length,
-            uniqueParticipants: uniqueParticipants.length,
-            sampleParticipant: activeParticipants[0] ? {
-              user_id: activeParticipants[0].user_id,
-              name: activeParticipants[0].user?.full_name || activeParticipants[0].user?.tenants_employee?.display_name,
-              is_active: activeParticipants[0].user?.is_active
-            } : null
-          });
-
           const processedConv = {
             ...conv,
             participants: uniqueParticipants,
             unread_count: unreadCount
           };
-          
-          console.log('🔍 Processed conversation:', {
-            id: processedConv.id,
-            type: processedConv.type,
-            participantCount: processedConv.participants?.length,
-            isDirect: processedConv.type === 'direct' && processedConv.participants?.length === 2,
-            participantIds: processedConv.participants?.map((p: ConversationParticipant) => p.user_id)
-          });
 
           return processedConv;
         })
@@ -1307,6 +1510,39 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           )
         );
       }
+      
+      // Ensure auto-scroll is enabled
+      setShouldAutoScroll(true);
+      setIsUserScrolling(false);
+      
+      // Force scroll to bottom after messages are loaded (works for both desktop and mobile)
+      const attemptScroll = () => {
+        // Find the visible container (desktop or mobile)
+        let container: HTMLDivElement | null = null;
+        
+        if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
+          container = desktopMessagesContainerRef.current;
+        } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
+          container = mobileMessagesContainerRef.current;
+        }
+        
+        if (container) {
+          container.scrollTop = container.scrollHeight;
+          scrollToBottom('instant');
+        }
+      };
+      
+      // Try multiple times to catch when container becomes visible
+      setTimeout(attemptScroll, 0);
+      setTimeout(attemptScroll, 50);
+      setTimeout(attemptScroll, 100);
+      setTimeout(attemptScroll, 200);
+      
+      // Also try after render completes
+      requestAnimationFrame(() => {
+        setTimeout(attemptScroll, 100);
+        setTimeout(attemptScroll, 300);
+      });
     } catch (error) {
       console.error('Error in fetchMessages:', error);
       toast.error('Failed to load messages');
@@ -1346,16 +1582,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return;
       }
 
-      // Debug: Log all users to see what we're getting
-      console.log('🔍 RMQ Messages - Raw users data:', {
-        totalUsers: usersData?.length || 0,
-        sampleUsers: usersData?.slice(0, 3).map(user => ({
-          id: user.id,
-          full_name: user.full_name,
-          is_active: (user as any).is_active,
-          hasEmployee: !!user.tenants_employee
-        })) || []
-      });
 
       // Remove duplicates and filter out users without basic info
       const uniqueUsers = (usersData || []).filter((user, index, self) => {
@@ -1371,32 +1597,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const isNotExplicitlyInactive = (user as any).is_active !== false; // Include if not explicitly false
         const shouldInclude = user.id && isValidName && isNotExplicitlyInactive && index === self.findIndex(u => u.id === user.id);
         
-        console.log('🔍 User filter check:', {
-          id: user.id,
-          full_name: user.full_name,
-          hasName: !!hasName,
-          isValidName: isValidName,
-          isActive: isActive,
-          isNotExplicitlyInactive: isNotExplicitlyInactive,
-          hasEmployee: !!user.tenants_employee,
-          passes: shouldInclude,
-          reason: shouldInclude ? 'user has valid name and not explicitly inactive' : 
-                  !isValidName ? 'user name is too short' : 
-                  !isNotExplicitlyInactive ? 'user is explicitly marked as inactive' : 
-                  'other filtering criteria'
-        });
-        
         return shouldInclude;
-      });
-
-      console.log('🔍 RMQ Messages - Users loaded:', {
-        totalUsers: usersData?.length || 0,
-        activeUsers: uniqueUsers.length,
-        sampleUser: uniqueUsers[0] ? {
-          id: uniqueUsers[0].id,
-          name: uniqueUsers[0].full_name,
-          is_active: (uniqueUsers[0] as any).is_active
-        } : null
       });
 
       setAllUsers(uniqueUsers as unknown as User[]);
@@ -1669,8 +1870,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (!currentUser) return;
     
     try {
-      console.log('🔍 Starting direct conversation with userId:', userId);
-      
       // First check if a direct conversation already exists
       const existingConv = conversations.find(c => 
         c.type === 'direct' && 
@@ -1680,7 +1879,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       );
       
       if (existingConv) {
-        console.log('🔍 Found existing direct conversation:', existingConv.id);
         setSelectedConversation(existingConv);
         fetchMessages(existingConv.id);
         setShowMobileConversations(false);
@@ -1701,21 +1899,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         console.error('Error creating direct conversation:', error);
         throw error;
       }
-      
-      console.log('🔍 Created new conversation with ID:', conversationId);
 
       // Wait a bit for the database to be consistent, then refresh conversations
       setTimeout(async () => {
         // Fetch conversations and get the updated list
         const updatedConversations = await getUpdatedConversations();
-        console.log('🔍 Looking for new conversation with ID:', conversationId);
-        console.log('🔍 Available conversations:', updatedConversations.map(c => ({ id: c.id, type: c.type, participants: c.participants?.length || 0 })));
         
         // Find the newly created conversation in the updated list
         const newConv = updatedConversations.find(c => c.id === conversationId);
           
         if (newConv) {
-          console.log('🔍 Found new conversation:', newConv);
           setSelectedConversation(newConv);
           fetchMessages(newConv.id);
           setShowMobileConversations(false);
@@ -1865,25 +2058,152 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   };
 
-  // Smart auto-scroll logic
+  // Add members to group conversation
+  const addMembersToGroup = async (conversationId: number, userIds: string[]) => {
+    if (!currentUser || userIds.length === 0) return;
+
+    try {
+      const participantsToAdd = userIds.map(userId => ({
+        conversation_id: conversationId,
+        user_id: userId,
+        role: 'member' as const
+      }));
+
+      const { error } = await supabase
+        .from('conversation_participants')
+        .insert(participantsToAdd);
+
+      if (error) throw error;
+
+      // Refresh conversations to get updated participant list
+      await fetchConversations();
+      
+      // Update selected conversation
+      const updatedConversations = await getUpdatedConversations();
+      const updatedConversation = updatedConversations.find(c => c.id === conversationId);
+      if (updatedConversation) {
+        setSelectedConversation(updatedConversation);
+      }
+
+      setShowAddMemberModal(false);
+      setMembersToAdd([]);
+      setMemberSearchQuery('');
+      toast.success(`Added ${userIds.length} member(s) to the group`);
+    } catch (error: any) {
+      console.error('Error adding members:', error);
+      if (error.code === '23505') {
+        toast.error('One or more users are already in the group');
+      } else {
+        toast.error('Failed to add members to the group');
+      }
+    }
+  };
+
+  // Remove member from group conversation
+  const removeMemberFromGroup = async (conversationId: number, userId: string) => {
+    if (!currentUser) return;
+
+    try {
+      const { error } = await supabase
+        .from('conversation_participants')
+        .update({ is_active: false })
+        .eq('conversation_id', conversationId)
+        .eq('user_id', userId);
+
+      if (error) throw error;
+
+      // Refresh conversations to get updated participant list
+      await fetchConversations();
+      
+      // Update selected conversation
+      const updatedConversations = await getUpdatedConversations();
+      const updatedConversation = updatedConversations.find(c => c.id === conversationId);
+      if (updatedConversation) {
+        setSelectedConversation(updatedConversation);
+      }
+
+      toast.success('Member removed from the group');
+    } catch (error) {
+      console.error('Error removing member:', error);
+      toast.error('Failed to remove member from the group');
+    }
+  };
+
+  // Smart auto-scroll logic - scrolls the visible container (desktop or mobile)
   const scrollToBottom = (behavior: 'smooth' | 'instant' = 'smooth') => {
+    // Try desktop container first
+    let container: HTMLDivElement | null = null;
+    
+    if (desktopMessagesContainerRef.current) {
+      const desktopContainer = desktopMessagesContainerRef.current;
+      // Check if desktop container is visible (has dimensions)
+      if (desktopContainer.offsetWidth > 0 && desktopContainer.offsetHeight > 0) {
+        container = desktopContainer;
+      }
+    }
+    
+    // If desktop not visible, try mobile container
+    if (!container && mobileMessagesContainerRef.current) {
+      const mobileContainer = mobileMessagesContainerRef.current;
+      // Check if mobile container is visible (has dimensions)
+      if (mobileContainer.offsetWidth > 0 && mobileContainer.offsetHeight > 0) {
+        container = mobileContainer;
+      }
+    }
+    
+    // Fallback to original ref if separate refs don't work
+    if (!container && messagesContainerRef.current) {
+      const fallbackContainer = messagesContainerRef.current;
+      if (fallbackContainer.offsetWidth > 0 && fallbackContainer.offsetHeight > 0) {
+        container = fallbackContainer;
+      }
+    }
+    
+    // Scroll the visible container
+    if (container) {
+      const targetScroll = container.scrollHeight;
+      
+      if (behavior === 'instant') {
+        container.scrollTop = targetScroll;
+      } else {
+        container.scrollTo({
+          top: targetScroll,
+          behavior: 'smooth'
+        });
+      }
+    }
+    
+    // Method 2: Use scrollIntoView on the end ref (backup)
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior });
+      messagesEndRef.current.scrollIntoView({ 
+        behavior: behavior === 'instant' ? 'auto' : behavior,
+        block: 'end',
+        inline: 'nearest'
+      });
     }
   };
 
   // Check if user is near bottom of messages
   const isNearBottom = () => {
-    if (!messagesContainerRef.current) return true;
-    const { scrollTop, scrollHeight, clientHeight } = messagesContainerRef.current;
+    // Check desktop container first
+    let container: HTMLDivElement | null = null;
+    
+    if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
+      container = desktopMessagesContainerRef.current;
+    } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
+      container = mobileMessagesContainerRef.current;
+    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
+      container = messagesContainerRef.current;
+    }
+    
+    if (!container) return true;
+    const { scrollTop, scrollHeight, clientHeight } = container;
     const threshold = 100; // 100px from bottom
     return scrollHeight - scrollTop - clientHeight < threshold;
   };
 
   // Handle scroll events to detect user scrolling
   const handleScroll = useCallback(() => {
-    if (!messagesContainerRef.current) return;
-    
     const nearBottom = isNearBottom();
     
     // If user scrolls to bottom, enable auto-scroll
@@ -1899,19 +2219,78 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   // Auto-scroll to bottom when new messages arrive (only if should auto-scroll)
   useEffect(() => {
-    if (shouldAutoScroll && messages.length > 0) {
-      scrollToBottom('smooth');
+    if (shouldAutoScroll && messages.length > 0 && selectedConversation) {
+      // Use requestAnimationFrame to ensure DOM is updated
+      requestAnimationFrame(() => {
+        // Check if container is visible before scrolling
+        if (messagesContainerRef.current) {
+          const container = messagesContainerRef.current;
+          const isVisible = container.offsetWidth > 0 && container.offsetHeight > 0;
+          if (isVisible) {
+            scrollToBottom('smooth');
+          } else {
+            // If not visible, try again after a short delay
+            setTimeout(() => {
+              if (messagesContainerRef.current) {
+                const retryContainer = messagesContainerRef.current;
+                const retryVisible = retryContainer.offsetWidth > 0 && retryContainer.offsetHeight > 0;
+                if (retryVisible) {
+                  scrollToBottom('smooth');
+                }
+              }
+            }, 100);
+          }
+        }
+      });
     }
-  }, [messages, shouldAutoScroll]);
+  }, [messages.length, shouldAutoScroll, selectedConversation?.id]);
 
-  // Scroll to bottom when conversation is first selected
+  // Scroll to bottom when conversation is first selected or changes
   useEffect(() => {
-    if (selectedConversation && messages.length > 0) {
+    if (selectedConversation) {
       // Reset auto-scroll state when conversation changes
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
-      // Scroll to bottom after a short delay to ensure messages are rendered
-      setTimeout(() => scrollToBottom('instant'), 100);
+      
+      // Wait for messages to load and DOM to render, then scroll
+      const scrollAfterLoad = () => {
+        if (messagesContainerRef.current) {
+          const container = messagesContainerRef.current;
+          
+          // Check if container is visible before scrolling
+          const isVisible = container.offsetWidth > 0 && container.offsetHeight > 0;
+          
+          if (isVisible) {
+            // Try multiple times to ensure it works
+            container.scrollTop = container.scrollHeight;
+            
+            // Also try after a delay
+            setTimeout(() => {
+              if (messagesContainerRef.current) {
+                const delayedContainer = messagesContainerRef.current;
+                const delayedVisible = delayedContainer.offsetWidth > 0 && delayedContainer.offsetHeight > 0;
+                if (delayedVisible) {
+                  delayedContainer.scrollTop = delayedContainer.scrollHeight;
+                }
+              }
+              scrollToBottom('instant');
+            }, 100);
+            
+            // One more attempt after render
+            requestAnimationFrame(() => {
+              setTimeout(() => {
+                scrollToBottom('instant');
+              }, 200);
+            });
+          }
+        }
+      };
+      
+      // Try immediately and after delays with multiple attempts
+      scrollAfterLoad();
+      setTimeout(scrollAfterLoad, 50);
+      setTimeout(scrollAfterLoad, 200);
+      setTimeout(scrollAfterLoad, 400);
     }
   }, [selectedConversation?.id]);
 
@@ -2280,8 +2659,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <div className="p-6 border-b border-gray-200 bg-white">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
-                  <ChatBubbleLeftRightIcon className="w-6 h-6 text-purple-600" />
+                <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(62, 26, 195, 0.1)' }}>
+                  <ChatBubbleLeftRightIcon className="w-6 h-6" style={{ color: '#3e1ac3' }} />
                 </div>
                 <div>
                   <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
@@ -2484,8 +2863,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <div className="p-4 border-b border-gray-200 bg-white">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
-                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
+                <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(62, 26, 195, 0.1)' }}>
+                  <ChatBubbleLeftRightIcon className="w-5 h-5" style={{ color: '#3e1ac3' }} />
                 </div>
                 <div>
                   <h1 className="text-lg font-bold text-gray-900">Messages</h1>
@@ -2686,7 +3065,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           <>
             {/* Chat Header */}
             <div className="p-4 border-b border-gray-200 bg-white shadow-sm">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <button
                     onClick={() => setShowMobileConversations(true)}
@@ -2716,19 +3095,75 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </p>
                   </div>
                 </div>
-                <button 
-                  onClick={onClose}
-                  className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                  title="Close Messages"
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-2">
+                  {/* Add/Remove Member Buttons for Group Chats */}
+                  {selectedConversation.type === 'group' && (
+                    <>
+                      <button
+                        onClick={() => setShowAddMemberModal(true)}
+                        className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                        title="Add Members"
+                      >
+                        <PlusIcon className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => setShowRemoveMemberModal(true)}
+                        className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                        title="Remove Members"
+                      >
+                        <UserIcon className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+                  <button 
+                    onClick={onClose}
+                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                    title="Close Messages"
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
+              
+              {/* Group Members List */}
+              {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
+                <div className="mt-3 pt-3 border-t border-gray-100">
+                  <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
+                    <div className="flex gap-4 pb-2 min-w-max">
+                      {selectedConversation.participants.map((participant) => {
+                        const userName = participant.user?.tenants_employee?.display_name || 
+                                       participant.user?.full_name || 
+                                       `User ${participant.user_id?.slice(-4)}`;
+                        const userPhoto = participant.user?.tenants_employee?.photo_url;
+                        const isCurrentUser = participant.user_id === currentUser?.id;
+                        
+                        return (
+                          <div 
+                            key={participant.id} 
+                            onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
+                            className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                          >
+                            {renderUserAvatar({
+                              userId: participant.user_id,
+                              name: userName,
+                              photoUrl: userPhoto,
+                              sizeClass: 'w-14 h-14',
+                              borderClass: 'border-2 border-gray-200',
+                              textClass: 'text-sm',
+                            })}
+                            <span className="text-xs text-gray-900 font-medium text-center max-w-[80px] truncate">{userName}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Messages Area */}
             <div 
-              ref={messagesContainerRef}
+              ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
             >
@@ -2764,6 +3199,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       <div
                         className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
                       >
+                      
+                      {/* Avatar for group chats */}
+                      {!isOwn && selectedConversation.type !== 'direct' && (
+                        <div className="flex-shrink-0">
+                          {renderUserAvatar({
+                            userId: message.sender_id,
+                            name: senderName,
+                            photoUrl: senderPhoto,
+                            sizeClass: 'w-8 h-8',
+                            borderClass: 'border border-gray-200',
+                            textClass: 'text-xs',
+                          })}
+                        </div>
+                      )}
                       
                       <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
                         {!isOwn && selectedConversation.type !== 'direct' && (
@@ -2813,9 +3262,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               {message.message_type === 'voice' ? (
                                 // Voice message player
                                 <div className="p-3 flex items-center gap-3">
+                                  {/* Employee image for group chats (including own messages) */}
+                                  {selectedConversation.type !== 'direct' && (
+                                    <div className="flex-shrink-0">
+                                      {renderUserAvatar({
+                                        userId: message.sender_id,
+                                        name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                        photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                        sizeClass: 'w-8 h-8',
+                                        borderClass: 'border border-gray-200',
+                                        textClass: 'text-xs',
+                                      })}
+                                    </div>
+                                  )}
                                   <button
                                     onClick={() => playVoiceMessage(message.id)}
-                                    className={`p-2 rounded-full transition-all ${
+                                    className={`p-2 rounded-full transition-all flex-shrink-0 ${
                                       isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
                                     }`}
                                     title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
@@ -2845,7 +3307,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       <span className={`text-sm font-mono ${
                                         isOwn ? 'text-white/80' : 'text-gray-600'
                                       }`}>
-                                        {message.voice_duration ? `${message.voice_duration}s` : '0s'}
+                                        {formatVoiceDuration(message.voice_duration)}
                                       </span>
                                     </div>
                                   </div>
@@ -2981,7 +3443,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       setShouldAutoScroll(true);
                       scrollToBottom('smooth');
                     }}
-                    className="bg-blue-500 hover:bg-blue-600 text-white rounded-full p-3 shadow-lg transition-colors"
+                    className="bg-green-500 hover:bg-green-600 text-white rounded-full p-3 shadow-lg transition-colors"
                     title="New messages - click to scroll down"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -3208,7 +3670,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           <>
             {/* Mobile Chat Header */}
             <div className="p-4 border-b border-gray-200 bg-white">
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 mb-3">
                 <button
                   onClick={() => setShowMobileConversations(true)}
                   className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
@@ -3236,27 +3698,84 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     )}
                   </p>
                 </div>
-                <button 
-                  onClick={onClose}
-                  className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                  title="Close Messages"
-                >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
+                <div className="flex items-center gap-1">
+                  {/* Add/Remove Member Buttons for Group Chats - Mobile */}
+                  {selectedConversation.type === 'group' && (
+                    <>
+                      <button
+                        onClick={() => setShowAddMemberModal(true)}
+                        className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                        title="Add Members"
+                      >
+                        <PlusIcon className="w-5 h-5" />
+                      </button>
+                      <button
+                        onClick={() => setShowRemoveMemberModal(true)}
+                        className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                        title="Remove Members"
+                      >
+                        <UserIcon className="w-5 h-5" />
+                      </button>
+                    </>
+                  )}
+                  <button 
+                    onClick={onClose}
+                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                    title="Close Messages"
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
+                </div>
               </div>
+              
+              {/* Group Members List - Mobile */}
+              {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
+                <div className="pt-3 border-t border-gray-100">
+                  <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
+                    <div className="flex gap-4 pb-2 min-w-max">
+                      {selectedConversation.participants.map((participant) => {
+                        const userName = participant.user?.tenants_employee?.display_name || 
+                                       participant.user?.full_name || 
+                                       `User ${participant.user_id?.slice(-4)}`;
+                        const userPhoto = participant.user?.tenants_employee?.photo_url;
+                        const isCurrentUser = participant.user_id === currentUser?.id;
+                        
+                        return (
+                          <div 
+                            key={participant.id} 
+                            onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
+                            className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                          >
+                            {renderUserAvatar({
+                              userId: participant.user_id,
+                              name: userName,
+                              photoUrl: userPhoto,
+                              sizeClass: 'w-14 h-14',
+                              borderClass: 'border-2 border-gray-200',
+                              textClass: 'text-sm',
+                            })}
+                            <span className="text-xs text-gray-900 font-medium text-center max-w-[80px] truncate">{userName}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Mobile Messages */}
             <div 
-              ref={messagesContainerRef}
+              ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
             >
-              {messages.map((message, index) => {
+              {                messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
                   const senderName = message.sender?.tenants_employee?.display_name || 
                                    message.sender?.full_name || 
                                    'Unknown User';
+                  const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
                   // Check if we need to show a date separator
                   const showDateSeparator = index === 0 || 
@@ -3277,7 +3796,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
                     >
                     
+                    {/* Avatar for group chats - Mobile */}
+                    {!isOwn && selectedConversation.type !== 'direct' && (
+                      <div className="flex-shrink-0">
+                        {renderUserAvatar({
+                          userId: message.sender_id,
+                          name: senderName,
+                          photoUrl: message.sender?.tenants_employee?.photo_url,
+                          sizeClass: 'w-8 h-8',
+                          borderClass: 'border border-gray-200',
+                          textClass: 'text-xs',
+                        })}
+                      </div>
+                    )}
+                    
                     <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                      {!isOwn && selectedConversation.type !== 'direct' && (
+                        <span className="text-xs text-gray-500 mb-1 px-3">
+                          {senderName}
+                        </span>
+                      )}
                       <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}>
                         <div
                           data-message-id={message.id}
@@ -3319,9 +3857,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             {message.message_type === 'voice' ? (
                               // Mobile voice message player
                               <div className="p-2 flex items-center gap-2">
+                                {/* Employee image for group chats (including own messages) */}
+                                {selectedConversation.type !== 'direct' && (
+                                  <div className="flex-shrink-0">
+                                    {renderUserAvatar({
+                                      userId: message.sender_id,
+                                      name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                      photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                      sizeClass: 'w-7 h-7',
+                                      borderClass: 'border border-gray-200',
+                                      textClass: 'text-xs',
+                                    })}
+                                  </div>
+                                )}
                                 <button
                                   onClick={() => playVoiceMessage(message.id)}
-                                  className={`p-2 rounded-full transition-all ${
+                                  className={`p-2 rounded-full transition-all flex-shrink-0 ${
                                     isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
                                   }`}
                                   title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
@@ -3351,7 +3902,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     <span className={`text-xs font-mono ${
                                       isOwn ? 'text-white/80' : 'text-gray-600'
                                     }`}>
-                                      {message.voice_duration ? `${message.voice_duration}s` : '0s'}
+                                      {formatVoiceDuration(message.voice_duration)}
                                     </span>
                                   </div>
                                 </div>
@@ -3811,6 +4362,201 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   Create Group
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add Members Modal */}
+      {showAddMemberModal && selectedConversation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-4 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-gray-900">Add Members</h3>
+                <button
+                  onClick={() => {
+                    setShowAddMemberModal(false);
+                    setMembersToAdd([]);
+                    setMemberSearchQuery('');
+                  }}
+                  className="btn btn-ghost btn-sm btn-circle"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            
+            <div className="p-4 border-b border-gray-200">
+              <div className="relative">
+                <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search users..."
+                  className="input input-bordered w-full pl-10"
+                  value={memberSearchQuery}
+                  onChange={(e) => setMemberSearchQuery(e.target.value)}
+                />
+              </div>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4">
+              {allUsers
+                .filter(user => {
+                  // Filter out current user and already added members
+                  if (user.id === currentUser?.id) return false;
+                  const isAlreadyMember = selectedConversation.participants?.some(
+                    p => p.user_id === user.id && p.is_active
+                  );
+                  if (isAlreadyMember) return false;
+                  
+                  // Filter by search query
+                  if (memberSearchQuery.trim()) {
+                    const searchLower = memberSearchQuery.toLowerCase();
+                    const name = user.tenants_employee?.display_name || user.full_name || '';
+                    return name.toLowerCase().includes(searchLower) || 
+                           user.email?.toLowerCase().includes(searchLower);
+                  }
+                  return true;
+                })
+                .map((user) => {
+                  const userName = user.tenants_employee?.display_name || user.full_name || `User ${user.id.slice(-4)}`;
+                  const userPhoto = user.tenants_employee?.photo_url;
+                  const isSelected = membersToAdd.includes(user.id);
+                  
+                  return (
+                    <div
+                      key={user.id}
+                      onClick={() => {
+                        if (isSelected) {
+                          setMembersToAdd(membersToAdd.filter(id => id !== user.id));
+                        } else {
+                          setMembersToAdd([...membersToAdd, user.id]);
+                        }
+                      }}
+                      className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
+                        isSelected ? 'bg-purple-50 border-2 border-purple-500' : 'hover:bg-gray-50 border-2 border-transparent'
+                      }`}
+                    >
+                      {renderUserAvatar({
+                        userId: user.id,
+                        name: userName,
+                        photoUrl: userPhoto,
+                        sizeClass: 'w-10 h-10',
+                        borderClass: 'border-2 border-gray-200',
+                        textClass: 'text-sm',
+                      })}
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{userName}</p>
+                        <p className="text-sm text-gray-500">{user.email}</p>
+                      </div>
+                      {isSelected && (
+                        <CheckIcon className="w-5 h-5 text-purple-600" />
+                      )}
+                    </div>
+                  );
+                })}
+            </div>
+            
+            <div className="p-4 border-t border-gray-200 flex justify-end gap-2">
+              <button
+                onClick={() => {
+                  setShowAddMemberModal(false);
+                  setMembersToAdd([]);
+                  setMemberSearchQuery('');
+                }}
+                className="btn btn-ghost"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (membersToAdd.length > 0 && selectedConversation) {
+                    addMembersToGroup(selectedConversation.id, membersToAdd);
+                  }
+                }}
+                disabled={membersToAdd.length === 0}
+                className="btn btn-primary"
+              >
+                Add {membersToAdd.length > 0 ? `${membersToAdd.length} ` : ''}Member{membersToAdd.length !== 1 ? 's' : ''}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Remove Members Modal */}
+      {showRemoveMemberModal && selectedConversation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
+            <div className="p-4 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-gray-900">Remove Members</h3>
+                <button
+                  onClick={() => setShowRemoveMemberModal(false)}
+                  className="btn btn-ghost btn-sm btn-circle"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-4">
+              {selectedConversation.participants
+                ?.filter(p => p.is_active && p.user_id !== currentUser?.id)
+                .map((participant) => {
+                  const userName = participant.user?.tenants_employee?.display_name || 
+                                 participant.user?.full_name || 
+                                 `User ${participant.user_id?.slice(-4)}`;
+                  const userPhoto = participant.user?.tenants_employee?.photo_url;
+                  
+                  return (
+                    <div
+                      key={participant.id}
+                      className="flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 border-2 border-transparent"
+                    >
+                      {renderUserAvatar({
+                        userId: participant.user_id,
+                        name: userName,
+                        photoUrl: userPhoto,
+                        sizeClass: 'w-10 h-10',
+                        borderClass: 'border-2 border-gray-200',
+                        textClass: 'text-sm',
+                      })}
+                      <div className="flex-1">
+                        <p className="font-medium text-gray-900">{userName}</p>
+                        <p className="text-sm text-gray-500">{participant.user?.email}</p>
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (selectedConversation) {
+                            removeMemberFromGroup(selectedConversation.id, participant.user_id);
+                            if (selectedConversation.participants?.filter(p => p.is_active && p.user_id !== currentUser?.id).length === 1) {
+                              setShowRemoveMemberModal(false);
+                            }
+                          }
+                        }}
+                        className="btn btn-ghost btn-sm text-red-600 hover:bg-red-50"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  );
+                })}
+              {selectedConversation.participants?.filter(p => p.is_active && p.user_id !== currentUser?.id).length === 0 && (
+                <div className="text-center py-8 text-gray-500">
+                  <p>No members to remove</p>
+                </div>
+              )}
+            </div>
+            
+            <div className="p-4 border-t border-gray-200 flex justify-end">
+              <button
+                onClick={() => setShowRemoveMemberModal(false)}
+                className="btn btn-ghost"
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>
