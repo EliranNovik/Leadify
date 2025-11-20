@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
@@ -86,6 +86,7 @@ const NewCasesPage: React.FC = () => {
   const [categoryLoadingStats, setCategoryLoadingStats] = useState<Map<string, boolean>>(new Map());
   const [expandedCategoryBreakdowns, setExpandedCategoryBreakdowns] = useState<Map<string, boolean>>(new Map());
   const [categorySelectedLeads, setCategorySelectedLeads] = useState<Map<string, Set<string>>>(new Map());
+  const [categoryEmployeeSearch, setCategoryEmployeeSearch] = useState<Map<string, string>>(new Map());
   const [selectedLeadBoxes, setSelectedLeadBoxes] = useState<Set<string>>(new Set());
   const [showActionButtons, setShowActionButtons] = useState(false);
   const [showSchedulerDropdown, setShowSchedulerDropdown] = useState(false);
@@ -98,6 +99,12 @@ const NewCasesPage: React.FC = () => {
   const [showInactiveDropdown, setShowInactiveDropdown] = useState(false);
   const [selectedInactiveReason, setSelectedInactiveReason] = useState<string>('');
   const [customInactiveReason, setCustomInactiveReason] = useState<string>('');
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  const [drawerLeads, setDrawerLeads] = useState<any[]>([]);
+  const [drawerEmployee, setDrawerEmployee] = useState('');
+  const [drawerCategoryLabel, setDrawerCategoryLabel] = useState('');
+  const [drawerError, setDrawerError] = useState<string | null>(null);
   
   // Re-assign leads modal state
   const [showReassignModal, setShowReassignModal] = useState(false);
@@ -288,6 +295,154 @@ const NewCasesPage: React.FC = () => {
     const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     return luminance > 0.6 ? '#111827' : '#ffffff';
   };
+
+  const resolveStageLabel = (stageValue: string | number | null | undefined) => {
+    if (stageValue === null || stageValue === undefined || stageValue === '') {
+      return 'No Stage';
+    }
+
+    const valueAsString = stageValue.toString();
+    const valueAsNumber = Number(valueAsString);
+
+    return (
+      getStageName(valueAsString) ||
+      stageMapping.get(stageValue as any) ||
+      stageMapping.get(valueAsString) ||
+      (!Number.isNaN(valueAsNumber) ? stageMapping.get(valueAsNumber) : undefined) ||
+      (!Number.isNaN(valueAsNumber) ? getStageName(String(valueAsNumber)) : undefined) ||
+      valueAsString ||
+      'No Stage'
+    );
+  };
+
+  const openCategoryDrawer = useCallback(
+    async (categoryLabel: string, employeeName: string) => {
+      setDrawerOpen(true);
+      setDrawerLoading(true);
+      setDrawerLeads([]);
+      setDrawerEmployee(employeeName);
+      setDrawerCategoryLabel(categoryLabel);
+      setDrawerError(null);
+
+      try {
+        const startDate = `${statsDateFilter.fromDate}T00:00:00`;
+        const endDate = `${statsDateFilter.toDate}T23:59:59`;
+        const rows: any[] = [];
+
+        const categoryMatches = (lead: any) => {
+          const { combinedLabel } = getCategoryInfoFromLead(lead);
+          return combinedLabel === categoryLabel;
+        };
+
+        const employeeMatch = employees.find(emp => emp.display_name === employeeName);
+
+        if (employeeMatch) {
+          const { data: legacyStages, error: legacyStageError } = await supabase
+            .from('leads_leadstage')
+            .select('lead_id, cdate')
+            .eq('stage', SCHEDULER_STAGE_ID)
+            .gte('cdate', startDate)
+            .lte('cdate', endDate);
+
+          if (legacyStageError) throw legacyStageError;
+
+          const legacyDateMap = new Map<number, string>();
+          (legacyStages || []).forEach(stageRow => {
+            const leadId = Number(stageRow.lead_id);
+            if (!Number.isNaN(leadId)) {
+              legacyDateMap.set(leadId, stageRow.cdate);
+            }
+          });
+
+          const legacyIds = Array.from(legacyDateMap.keys());
+
+          if (legacyIds.length > 0) {
+            const { data: legacyLeads, error: legacyLeadsError } = await supabase
+              .from('leads_lead')
+              .select(`
+                id,
+                lead_number,
+                name,
+                stage,
+                meeting_scheduler_id,
+                category,
+                misc_category!category_id(
+                  name,
+                  misc_maincategory!parent_id(name)
+                )
+              `)
+              .in('id', legacyIds)
+              .eq('meeting_scheduler_id', employeeMatch.id);
+
+            if (legacyLeadsError) throw legacyLeadsError;
+
+            legacyLeads?.forEach(lead => {
+              if (!categoryMatches(lead)) return;
+              rows.push({
+                id: lead.id,
+                type: 'legacy',
+                leadNumber: lead.lead_number || `L${lead.id}`,
+                name: lead.name || 'Unknown',
+                categoryLabel,
+                stageLabel: resolveStageLabel(lead.stage),
+                assignedAt: legacyDateMap.get(Number(lead.id)),
+              });
+            });
+          }
+        }
+
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select(`
+            id,
+            lead_number,
+            name,
+            stage,
+            scheduler,
+            category,
+            topic,
+            misc_category!category_id(
+              name,
+              misc_maincategory!parent_id(name)
+            ),
+            stage_changed_at
+          `)
+          .eq('stage', SCHEDULER_STAGE_ID)
+          .eq('scheduler', employeeName)
+          .gte('stage_changed_at', startDate)
+          .lte('stage_changed_at', endDate);
+
+        if (newLeadsError) throw newLeadsError;
+
+        newLeads?.forEach(lead => {
+          if (!categoryMatches(lead)) return;
+          rows.push({
+            id: lead.id,
+            type: 'new',
+            leadNumber: lead.lead_number,
+            name: lead.name || 'Unknown',
+            categoryLabel,
+            stageLabel: resolveStageLabel(lead.stage),
+            assignedAt: lead.stage_changed_at,
+          });
+        });
+
+        rows.sort((a, b) => {
+          const aTime = a.assignedAt ? new Date(a.assignedAt).getTime() : 0;
+          const bTime = b.assignedAt ? new Date(b.assignedAt).getTime() : 0;
+          return bTime - aTime;
+        });
+
+        setDrawerLeads(rows);
+      } catch (error: any) {
+        console.error('Error loading breakdown leads:', error);
+        setDrawerError(error?.message || 'Failed to load leads');
+      } finally {
+        setDrawerLoading(false);
+      }
+    },
+    [employees, statsDateFilter, stageMapping]
+  );
 
   // Stage badge function with dynamic colours from lead_stages (like LeadSearchPage)
   const getStageBadge = (stage: string | number | null | undefined) => {
@@ -810,108 +965,67 @@ const NewCasesPage: React.FC = () => {
   const fetchEmployeeStats = async () => {
     setLoadingStats(true);
     try {
-      // First, let's debug what's in the leads_leadstage table
-      console.log('🔍 Debug: Checking leads_leadstage table structure...');
-      
-      // Get sample data to understand the structure
-      const { data: sampleData, error: sampleError } = await supabase
-        .from('leads_leadstage')
-        .select('*')
-        .limit(5)
-        .order('cdate', { ascending: false });
+      const startDate = `${statsDateFilter.fromDate}T00:00:00`;
+      const endDate = `${statsDateFilter.toDate}T23:59:59`;
 
-      if (sampleError) {
-        console.error('❌ Error fetching sample data:', sampleError);
-      } else {
-        console.log('🔍 Sample leads_leadstage data:', {
-          count: sampleData?.length || 0,
-          sampleRecords: sampleData,
-          dateRange: `${statsDateFilter.fromDate} to ${statsDateFilter.toDate}`
-        });
-      }
-
-      // Check what stages exist
-      const { data: stagesData, error: stagesError } = await supabase
-        .from('leads_leadstage')
-        .select('stage')
-        .not('stage', 'is', null)
-        .order('stage');
-
-      if (!stagesError && stagesData) {
-        const uniqueStages = [...new Set(stagesData.map(s => s.stage))];
-        console.log('🔍 Available stages in leads_leadstage:', uniqueStages);
-        
-        // Check if stage 10 specifically exists
-        const stage10Count = stagesData.filter(s => s.stage === 10).length;
-        console.log('🔍 Stage 10 (Scheduler assigned) count:', stage10Count);
-        
-        // If stage 10 doesn't exist, let's see what stages might be scheduler-related
-        const potentialSchedulerStages = stagesData.filter(s => 
-          s.stage && (s.stage.toString().includes('10') || s.stage.toString().includes('1'))
-        );
-        console.log('🔍 Potential scheduler-related stages:', potentialSchedulerStages.slice(0, 10));
-      }
-
-      // Check date range of available data
-      const { data: dateRangeData, error: dateRangeError } = await supabase
-        .from('leads_leadstage')
-        .select('cdate')
-        .not('cdate', 'is', null)
-        .order('cdate', { ascending: true })
-        .limit(1);
-
-      const { data: dateRangeDataMax, error: dateRangeMaxError } = await supabase
-        .from('leads_leadstage')
-        .select('cdate')
-        .not('cdate', 'is', null)
-        .order('cdate', { ascending: false })
-        .limit(1);
-
-      if (!dateRangeError && !dateRangeMaxError) {
-        console.log('🔍 Date range in leads_leadstage:', {
-          earliest: dateRangeData?.[0]?.cdate,
-          latest: dateRangeDataMax?.[0]?.cdate,
-          requestedRange: `${statsDateFilter.fromDate} to ${statsDateFilter.toDate}`
-        });
-      }
-
-      // Step 1: Fetch scheduler assignments from leads_leadstage table (stage 10 = Scheduler assigned)
-      const { data: schedulerAssignments, error: schedulerError } = await supabase
-        .from('leads_leadstage')
-        .select('lead_id, cdate')
-        .eq('stage', 10) // Stage 10 = Scheduler assigned
-        .gte('cdate', `${statsDateFilter.fromDate}T00:00:00`)
-        .lte('cdate', `${statsDateFilter.toDate}T23:59:59`);
-
-      if (schedulerError) throw schedulerError;
-
-      console.log('🔍 Scheduler assignments found:', {
-        count: schedulerAssignments?.length || 0,
-        sampleAssignment: schedulerAssignments?.[0],
-        dateRange: `${statsDateFilter.fromDate} to ${statsDateFilter.toDate}`
+      const employeeIdToName = new Map<string, string>();
+      employees.forEach(emp => {
+        if (emp?.id && emp?.display_name) {
+          employeeIdToName.set(emp.id.toString(), emp.display_name);
+        }
       });
 
-      if (!schedulerAssignments || schedulerAssignments.length === 0) {
-        // No assignments found, return empty stats for relevant employees only
-        const relevantEmployees = getRelevantEmployees();
-        const statsArray = relevantEmployees.map(emp => ({
-          employee: emp.display_name,
-          totalLeadsAssigned: 0,
-          categoryBreakdown: []
-        }));
-        setEmployeeStats(statsArray);
-        return;
+      const statsMap = new Map<
+        string,
+        {
+          employee: string;
+          totalLeadsAssigned: number;
+          categoryBreakdown: Map<string, number>;
+        }
+      >();
+
+      const ensureStatsEntry = (employeeName?: string | null) => {
+        if (!employeeName) return null;
+        if (!statsMap.has(employeeName)) {
+          statsMap.set(employeeName, {
+            employee: employeeName,
+            totalLeadsAssigned: 0,
+            categoryBreakdown: new Map()
+          });
+        }
+        return statsMap.get(employeeName)!;
+      };
+
+      const recordAssignment = (employeeName?: string | null, categoryLabel?: string) => {
+        const stats = ensureStatsEntry(employeeName?.trim());
+        if (!stats || !categoryLabel) return;
+
+        stats.totalLeadsAssigned += 1;
+
+        const normalizedCategory = categoryLabel;
+        const current = stats.categoryBreakdown.get(normalizedCategory) || 0;
+        stats.categoryBreakdown.set(normalizedCategory, current + 1);
+      };
+
+      // -------- Legacy leads (leads_lead) --------
+      const { data: legacyAssignments, error: legacyAssignmentsError } = await supabase
+        .from('leads_leadstage')
+        .select('lead_id, cdate')
+        .eq('stage', SCHEDULER_STAGE_ID)
+        .gte('cdate', startDate)
+        .lte('cdate', endDate);
+
+      if (legacyAssignmentsError) {
+        throw legacyAssignmentsError;
       }
 
-      // Step 2: Get lead IDs and fetch the corresponding leads with category info
-      // Note: leads_leadstage.lead_id refers to legacy leads_lead table, not the new leads table
-      const leadIds = schedulerAssignments.map(a => a.lead_id);
-      
-      let leads;
-      let leadsError;
-      
-      // Try to fetch from leads_lead table first
-      ({ data: leads, error: leadsError } = await supabase
+      const legacyLeadIds = (legacyAssignments || [])
+        .map(record => Number(record.lead_id))
+        .filter(id => Number.isFinite(id));
+
+      let legacyLeadMap = new Map<number, any>();
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
         .from('leads_lead')
         .select(`
           id,
@@ -922,92 +1036,68 @@ const NewCasesPage: React.FC = () => {
             misc_maincategory!parent_id(name)
           )
         `)
-        .in('id', leadIds));
+          .in('id', legacyLeadIds);
 
-      // If leads_lead doesn't exist or fails, try to fetch from leads table
-      if (leadsError || !leads || leads.length === 0) {
-        console.log('leads_lead not found or failed, trying leads table instead');
-        ({ data: leads, error: leadsError } = await supabase
+        if (legacyLeadsError) {
+          throw legacyLeadsError;
+        }
+
+        legacyLeadMap = new Map(
+          (legacyLeads || []).map(lead => [Number(lead.id), lead])
+        );
+      }
+
+      legacyAssignments?.forEach(record => {
+        const legacyId = Number(record.lead_id);
+        if (!Number.isFinite(legacyId)) return;
+        const lead = legacyLeadMap.get(legacyId);
+        if (!lead) return;
+
+        const schedulerName = employeeIdToName.get(
+          lead.meeting_scheduler_id?.toString?.() || ''
+        );
+        if (!schedulerName) return;
+
+        const { combinedLabel } = getCategoryInfoFromLead(lead);
+        recordAssignment(schedulerName, combinedLabel);
+      });
+
+      // -------- New leads (leads table) --------
+      const { data: newAssignments, error: newAssignmentsError } = await supabase
           .from('leads')
           .select(`
             id,
             scheduler,
             category,
+          topic,
             misc_category!category_id(
               name,
               misc_maincategory!parent_id(name)
-            )
-          `)
-          .in('lead_number', leadIds.map(id => `L${id}`)));
-        
-        if (!leadsError && leads && leads.length > 0) {
-          // Convert scheduler names to IDs for the stats mapping
-          leads = leads.map(lead => ({
-            ...lead,
-            meeting_scheduler_id: lead.scheduler ? 
-              employees.find(emp => emp.display_name === lead.scheduler)?.id : null
-          }));
-        }
+          ),
+          stage_changed_at
+        `)
+        .eq('stage', SCHEDULER_STAGE_ID)
+        .gte('stage_changed_at', startDate)
+        .lte('stage_changed_at', endDate);
+
+      if (newAssignmentsError) {
+        throw newAssignmentsError;
       }
 
-      if (leadsError) {
-        console.error('Error fetching leads:', leadsError);
-        throw leadsError;
-      }
-
-      console.log('🔍 Leads with scheduler info:', {
-        count: leads?.length || 0,
-        sampleLead: leads?.[0],
-        availableEmployees: employees.slice(0, 3).map(emp => ({ id: emp.id, name: emp.display_name }))
+      newAssignments?.forEach(lead => {
+        if (!lead?.scheduler || lead.scheduler === '---') return;
+        const { combinedLabel } = getCategoryInfoFromLead(lead);
+        recordAssignment(lead.scheduler, combinedLabel);
       });
 
-      // Process stats for each employee
-      const statsMap = new Map();
-      
-      // Initialize stats for relevant employees only
-      const relevantEmployees = getRelevantEmployees();
-      relevantEmployees.forEach(emp => {
-        statsMap.set(emp.display_name, {
-          employee: emp.display_name,
-          totalLeadsAssigned: 0,
-          categoryBreakdown: new Map()
-        });
-      });
-
-      // Count leads for each scheduler
-      leads?.forEach(lead => {
-        const schedulerId = lead.meeting_scheduler_id;
-        
-        // Skip invalid scheduler IDs
-        if (!schedulerId || schedulerId === '---' || schedulerId === '' || schedulerId === 0) {
-          return;
-        }
-        
-        // We need to map scheduler ID to scheduler name
-        const schedulerEmployee = employees.find(emp => emp.id.toString() === schedulerId.toString());
-        const schedulerName = schedulerEmployee?.display_name;
-        
-        if (schedulerName && statsMap.has(schedulerName)) {
-          const stats = statsMap.get(schedulerName);
-          stats.totalLeadsAssigned++;
-          
-          // Category breakdown - use same format as calendar page
-          const categoryName = (lead.misc_category as any)?.name || lead.category || 'Unknown';
-          const mainCategory = (lead.misc_category as any)?.misc_maincategory?.name;
-          const fullCategory = mainCategory ? `${categoryName} (${mainCategory})` : categoryName;
-          
-          const currentCount = stats.categoryBreakdown.get(fullCategory) || 0;
-          stats.categoryBreakdown.set(fullCategory, currentCount + 1);
-        }
-      });
-
-      // Convert to array format
       const statsArray = Array.from(statsMap.values()).map(stats => ({
         ...stats,
-        categoryBreakdown: Array.from(stats.categoryBreakdown.entries()).map((entry) => ({
-          category: (entry as [string, number])[0],
-          count: (entry as [string, number])[1]
-        }))
+        categoryBreakdown: Array.from(stats.categoryBreakdown.entries()).map(
+          ([category, count]) => ({
+            category,
+            count
+          })
+        )
       }));
 
       setEmployeeStats(statsArray);
@@ -1018,12 +1108,34 @@ const NewCasesPage: React.FC = () => {
     }
   };
 
-  // Fetch stats when date filter changes, employees are loaded, or displayed categories change
+  // Fetch overall stats when dependencies change
   useEffect(() => {
     if (employees.length > 0 && employeePreferredCategories.length > 0) {
       fetchEmployeeStats();
     }
   }, [statsDateFilter, employees, employeePreferredCategories, displayedMainCategoryIds]);
+
+  // Auto-fetch per-category stats for visible categories/date range
+  useEffect(() => {
+    if (
+      employees.length === 0 ||
+      employeePreferredCategories.length === 0 ||
+      categoryGroupedLeads.size === 0
+    ) {
+      return;
+    }
+
+    const categories = Array.from(categoryGroupedLeads.keys());
+    categories.forEach(categoryName => {
+      fetchCategoryEmployeeStats(categoryName);
+    });
+  }, [
+    categoryGroupedLeads,
+    statsDateFilter.fromDate,
+    statsDateFilter.toDate,
+    employees,
+    employeePreferredCategories
+  ]);
 
 
   // Get unique stages from current leads for the filter dropdown
@@ -1148,6 +1260,19 @@ const NewCasesPage: React.FC = () => {
     
   }, [filteredLeads, allCategories, employees, employeePreferredCategories]);
 
+  // Keep search map aligned with visible categories
+  useEffect(() => {
+    setCategoryEmployeeSearch(prev => {
+      const next = new Map<string, string>();
+      categoryGroupedLeads.forEach((_leads, categoryName) => {
+        if (prev.has(categoryName)) {
+          next.set(categoryName, prev.get(categoryName)!);
+        }
+      });
+      return next;
+    });
+  }, [categoryGroupedLeads]);
+
   // Function to get employees for a specific main category
   const getEmployeesForCategory = (mainCategoryName: string) => {
     if (!employees.length || !employeePreferredCategories.length) {
@@ -1186,54 +1311,88 @@ const NewCasesPage: React.FC = () => {
     });
 
     try {
-      // Get the main category ID
-      const mainCategory = allCategories.find(cat => 
+      // Locate the main category metadata if it exists
+      const mainCategoryRecord = allCategories.find(cat => 
         cat.misc_maincategory?.name === categoryName
       );
-      
-      if (!mainCategory?.misc_maincategory?.id) {
-        setCategoryEmployeeStats(prev => {
-          const newMap = new Map(prev);
-          newMap.set(categoryName, []);
-          return newMap;
-        });
-        return;
-      }
 
-      const mainCategoryId = mainCategory.misc_maincategory.id;
+      const mainCategoryId = mainCategoryRecord?.misc_maincategory?.id ?? null;
       
       // Get employee IDs who have this main category as preferred
-      const relevantEmployeeIds = employeePreferredCategories
-        .filter(pref => pref.maincategory_id === mainCategoryId)
-        .map(pref => pref.empoyee_id);
+      const relevantEmployeeIds = mainCategoryId
+        ? employeePreferredCategories
+            .filter(pref => pref.maincategory_id === mainCategoryId)
+            .map(pref => pref.empoyee_id)
+        : employees.map(emp => emp.id);
 
-      // Step 1: Find stage changes to ID 10 (scheduler assigned) within date range
-      const { data: schedulerAssignments, error: schedulerError } = await supabase
-        .from('leads_leadstage')
-        .select('lead_id, cdate')
-        .eq('stage', 10) // Stage 10 = Scheduler assigned
-        .gte('cdate', `${statsDateFilter.fromDate}T00:00:00`)
-        .lte('cdate', `${statsDateFilter.toDate}T23:59:59`);
+      const startDate = `${statsDateFilter.fromDate}T00:00:00`;
+      const endDate = `${statsDateFilter.toDate}T23:59:59`;
 
-      if (schedulerError) throw schedulerError;
-
-      console.log(`🔍 Scheduler assignments found for ${categoryName}:`, {
-        count: schedulerAssignments?.length || 0,
-        sampleAssignment: schedulerAssignments?.[0]
+      const employeeIdToName = new Map<string, string>();
+      employees.forEach(emp => {
+        if (emp?.id && emp?.display_name) {
+          employeeIdToName.set(emp.id.toString(), emp.display_name);
+        }
       });
 
-      if (!schedulerAssignments || schedulerAssignments.length === 0) {
-        setCategoryEmployeeStats(prev => {
-          const newMap = new Map(prev);
-          newMap.set(categoryName, []);
-          return newMap;
-        });
-        return;
-      }
+      const statsMap = new Map<
+        string,
+        {
+          employee: string;
+          totalLeadsAssigned: number;
+          categoryBreakdown: Map<string, number>;
+        }
+      >();
 
-      // Step 2: Get lead IDs and fetch the corresponding leads with category info
-      const leadIds = schedulerAssignments.map(a => a.lead_id);
-      const { data: leads, error: leadsError } = await supabase
+      const ensureStats = (employeeName: string) => {
+        if (!statsMap.has(employeeName)) {
+          statsMap.set(employeeName, {
+            employee: employeeName,
+            totalLeadsAssigned: 0,
+            categoryBreakdown: new Map()
+          });
+        }
+        return statsMap.get(employeeName)!;
+      };
+
+      // Ensure every employee displayed in this category has a stats entry (even if zero assignments)
+      const categoryEmployees = getEmployeesForCategory(categoryName);
+      categoryEmployees.forEach(emp => {
+        if (emp?.display_name) {
+          ensureStats(emp.display_name);
+        }
+      });
+
+      const incrementStats = (employeeName: string, lead: any) => {
+        const { combinedLabel, mainCategory } = getCategoryInfoFromLead(lead);
+        const normalizedMain = mainCategory?.trim?.() || 'No Category';
+        const normalizedCategoryName = categoryName || 'No Category';
+        if (normalizedMain !== normalizedCategoryName) return;
+
+        const stats = ensureStats(employeeName);
+        stats.totalLeadsAssigned += 1;
+
+        const label = combinedLabel || 'Unknown';
+        const current = stats.categoryBreakdown.get(label) || 0;
+        stats.categoryBreakdown.set(label, current + 1);
+      };
+
+      // Legacy leads assignments (IDs)
+      const { data: legacyAssignments, error: legacyAssignmentsError } = await supabase
+        .from('leads_leadstage')
+        .select('lead_id, cdate')
+        .eq('stage', SCHEDULER_STAGE_ID)
+        .gte('cdate', startDate)
+        .lte('cdate', endDate);
+
+      if (legacyAssignmentsError) throw legacyAssignmentsError;
+
+      const legacyLeadIds = (legacyAssignments || [])
+        .map(record => Number(record.lead_id))
+        .filter(id => Number.isFinite(id));
+
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
         .from('leads_lead')
         .select(`
           id,
@@ -1244,69 +1403,72 @@ const NewCasesPage: React.FC = () => {
             misc_maincategory!parent_id(name)
           )
         `)
-        .in('id', leadIds);
+          .in('id', legacyLeadIds);
 
-      if (leadsError) throw leadsError;
+        if (legacyLeadsError) throw legacyLeadsError;
 
-      console.log(`🔍 Leads with scheduler info for ${categoryName}:`, {
-        count: leads?.length || 0,
-        sampleLead: leads?.[0]
-      });
+        const leadMap = new Map<number, any>(
+          (legacyLeads || []).map(lead => [Number(lead.id), lead])
+        );
 
-      // Process stats for each employee
-      const statsMap = new Map();
-      
-      // Initialize stats for relevant employees only
-      const relevantEmployees = employees.filter(emp => relevantEmployeeIds.includes(emp.id));
-      relevantEmployees.forEach(emp => {
-        statsMap.set(emp.display_name, {
-          employee: emp.display_name,
-          totalLeadsAssigned: 0,
-          categoryBreakdown: new Map()
-        });
-      });
-
-      // Count leads for each scheduler
-      leads?.forEach(lead => {
-        const schedulerId = lead.meeting_scheduler_id;
-        
-        // Skip invalid scheduler IDs
-        if (!schedulerId || schedulerId === '---' || schedulerId === '' || schedulerId === 0) {
+        legacyAssignments?.forEach(record => {
+          const lead = leadMap.get(Number(record.lead_id));
+          if (!lead) return;
+          const schedulerName = employeeIdToName.get(
+            lead.meeting_scheduler_id?.toString?.() || ''
+          );
+          if (
+            !schedulerName ||
+            !relevantEmployeeIds.includes(Number(lead.meeting_scheduler_id))
+          ) {
           return;
         }
-        
-        // We need to map scheduler ID to scheduler name
-        const schedulerEmployee = employees.find(emp => emp.id.toString() === schedulerId.toString());
-        const schedulerName = schedulerEmployee?.display_name;
-        
-        if (schedulerName && statsMap.has(schedulerName)) {
-          const stats = statsMap.get(schedulerName);
-          stats.totalLeadsAssigned++;
-          
-          // Category breakdown - use same format as calendar page
-          const categoryName = (lead.misc_category as any)?.name || lead.category || 'Unknown';
-          const mainCategory = (lead.misc_category as any)?.misc_maincategory?.name;
-          const fullCategory = mainCategory ? `${categoryName} (${mainCategory})` : categoryName;
-          
-          const currentCount = stats.categoryBreakdown.get(fullCategory) || 0;
-          stats.categoryBreakdown.set(fullCategory, currentCount + 1);
-        }
-      });
+          incrementStats(schedulerName, lead);
+        });
+      }
 
-      // Convert to array format
+      // New leads assignments (text scheduler)
+      const { data: newAssignments, error: newAssignmentsError } = await supabase
+        .from('leads')
+        .select(`
+          id,
+          scheduler,
+          category,
+          misc_category!category_id(
+            name,
+            misc_maincategory!parent_id(name)
+          ),
+          stage_changed_at
+        `)
+        .eq('stage', SCHEDULER_STAGE_ID)
+        .gte('stage_changed_at', startDate)
+        .lte('stage_changed_at', endDate);
+
+      if (newAssignmentsError) throw newAssignmentsError;
+
+      newAssignments
+        ?.filter(lead => lead?.scheduler && lead.scheduler !== '---')
+        ?.forEach(lead => {
+          const schedulerName = lead.scheduler as string;
+          const employeeMatch = employees.find(
+            emp =>
+              relevantEmployeeIds.includes(emp.id) &&
+              emp.display_name === schedulerName
+          );
+          if (!employeeMatch) return;
+          incrementStats(schedulerName, lead);
+        });
+
       const statsArray = Array.from(statsMap.values()).map(stats => ({
-        ...stats,
-        categoryBreakdown: Array.from(stats.categoryBreakdown.entries()).map((entry) => ({
-          category: (entry as [string, number])[0],
-          count: (entry as [string, number])[1]
-        }))
+        employee: stats.employee,
+        totalLeadsAssigned: stats.totalLeadsAssigned,
+        categoryBreakdown: Array.from(stats.categoryBreakdown.entries()).map(
+          ([cat, count]) => ({
+            category: cat,
+            count
+          })
+        )
       }));
-
-      console.log(`✅ Final stats for ${categoryName}:`, {
-        employeeCount: statsArray.length,
-        stats: statsArray,
-        totalProcessed: leads?.length || 0
-      });
       
       setCategoryEmployeeStats(prev => {
         const newMap = new Map(prev);
@@ -1821,7 +1983,7 @@ const NewCasesPage: React.FC = () => {
 
       // Combine results and normalize the data structure
       let allResults = [
-        ...(leadsResult.data || []).map(lead => ({
+        ...(leadsResult.data || []).map((lead: any) => ({
           ...lead,
           lead_type: 'new',
           scheduler: lead.scheduler || 'Unassigned', // New leads have scheduler field directly
@@ -1829,7 +1991,7 @@ const NewCasesPage: React.FC = () => {
           source: lead.source || 'Unknown', // New leads have source field directly
           language: lead.language || 'Unknown', // New leads have language field directly
         })),
-        ...(legacyLeadsResult.data || []).map(lead => ({
+        ...(legacyLeadsResult.data || []).map((lead: any) => ({
           ...lead,
           lead_type: 'legacy',
           scheduler: lead.meeting_scheduler_id ? 
@@ -1921,6 +2083,7 @@ const NewCasesPage: React.FC = () => {
           .from('leads')
           .update({ 
             scheduler: selectedEmployeeForReassign,
+            stage: SCHEDULER_STAGE_ID,
             stage_changed_by: currentUserFullName,
             stage_changed_at: new Date().toISOString()
           })
@@ -1936,6 +2099,7 @@ const NewCasesPage: React.FC = () => {
           .from('leads_lead')
           .update({ 
             meeting_scheduler_id: selectedEmployee.id,
+            stage: SCHEDULER_STAGE_ID,
             stage_changed_by: currentUserFullName,
             stage_changed_at: new Date().toISOString()
           })
@@ -1948,7 +2112,7 @@ const NewCasesPage: React.FC = () => {
       const stageRecords = reassignResults.map(lead => ({
         cdate: new Date().toISOString(),
         udate: new Date().toISOString(),
-        stage: lead.stage,
+        stage: SCHEDULER_STAGE_ID,
         date: new Date().toISOString(),
         creator_id: selectedEmployee.id,
         lead_id: lead.lead_number ? parseInt(lead.lead_number.replace('L', '')) : lead.id // Convert L36 to 36, etc., fallback to lead.id
@@ -1963,6 +2127,7 @@ const NewCasesPage: React.FC = () => {
       }
 
       alert(`Successfully re-assigned ${reassignResults.length} lead(s) to ${selectedEmployeeForReassign}!`);
+      await fetchEmployeeStats();
       
       // Clear results and close modal
       setReassignResults([]);
@@ -2178,7 +2343,7 @@ const NewCasesPage: React.FC = () => {
                         </div>
                       ) : (
                         <div className="overflow-x-auto">
-                          <table className="table table-zebra w-full">
+                          <table className="table w-full">
                             <thead>
                               <tr>
                                 <th className="font-semibold">
@@ -2277,96 +2442,148 @@ const NewCasesPage: React.FC = () => {
                         <div className="text-center py-8">
                           <span className="loading loading-spinner loading-md"></span>
                           <p className="mt-2 text-sm">Loading stats...</p>
-        </div>
-      ) : (
-                        <div className="space-y-4 max-h-96 overflow-y-auto">
-                          {getEmployeesForCategory(categoryName).map((emp, index) => {
-                            const empStats = categoryEmployeeStats.get(categoryName)?.find(stat => stat.employee === emp.display_name);
-                            return (
-                              <div 
-                                key={index} 
-                                className={`border rounded-lg p-4 cursor-pointer transition-all duration-300 border-base-200 hover:border-primary/50 bg-base-100 shadow-lg hover:shadow-xl hover:-translate-y-1 transform`}
-                                onClick={() => {
-                                  const currentSelection = categorySelectedEmployees.get(categoryName) || new Set();
-                                  const newSelected = new Set(currentSelection);
-                                  if (currentSelection.has(emp.display_name)) {
-                                    newSelected.delete(emp.display_name);
-                                  } else {
-                                    newSelected.add(emp.display_name);
-                                  }
-                                  setCategorySelectedEmployees(prev => {
-                                    const newMap = new Map(prev);
-                                    newMap.set(categoryName, newSelected);
-                                    return newMap;
+                        </div>
+                      ) : (
+                        <>
+                          {categoryName.toLowerCase() === 'no category' && (
+                            <div className="mb-4">
+                              <input
+                                type="text"
+                                placeholder="Search employee..."
+                                className="input input-bordered input-sm w-full"
+                                value={categoryEmployeeSearch.get(categoryName) || ''}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  setCategoryEmployeeSearch(prev => {
+                                    const next = new Map(prev);
+                                    next.set(categoryName, value);
+                                    return next;
                                   });
                                 }}
-                              >
-                                <div className="flex items-center justify-between mb-3">
-                                  <div className="flex items-center gap-2">
-                                    {categorySelectedEmployees.get(categoryName)?.has(emp.display_name) && (
-                                      <svg className="w-6 h-6 text-green-600 font-bold" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                                      </svg>
-                                    )}
-                                    <h4 className="font-semibold text-base">{emp.display_name}</h4>
-                                  </div>
-                                  <div className="flex items-center gap-2">
-                <span className="badge badge-primary">
-                                      {empStats?.totalLeadsAssigned || 0} leads
-                </span>
-              </div>
-                                </div>
-                                
-                                {empStats?.categoryBreakdown && empStats.categoryBreakdown.length > 0 ? (
-                                  <div className="bg-base-200/50 rounded-lg border border-base-300">
-                                    {/* Collapsible Header */}
-                                    <button
-                                      className="w-full p-3 flex items-center justify-between hover:bg-base-200/70 transition-colors rounded-t-lg"
-                                      onClick={() => {
-                                        const key = `${categoryName}-${emp.display_name}`;
-                                        setExpandedCategoryBreakdowns(prev => {
-                                          const newMap = new Map(prev);
-                                          newMap.set(key, !prev.get(key));
-                                          return newMap;
-                                        });
-                                      }}
-                                    >
-                                      <span className="text-sm font-medium text-base-content/80">
-                                        Category Breakdown ({empStats.categoryBreakdown.length})
-                                      </span>
-                                      <svg 
-                                        className={`w-4 h-4 transition-transform duration-200 ${expandedCategoryBreakdowns.get(`${categoryName}-${emp.display_name}`) ? 'rotate-180' : ''}`}
-                                        fill="none" 
-                                        stroke="currentColor" 
-                                        viewBox="0 0 24 24"
+                              />
+                            </div>
+                          )}
+                          <div className="space-y-4 max-h-96 overflow-y-auto">
+                            {getEmployeesForCategory(categoryName)
+                              .filter(emp => {
+                                const searchTerm = (categoryEmployeeSearch.get(categoryName) || '').toLowerCase();
+                                const shouldFilter = categoryName.toLowerCase() === 'no category' && searchTerm.length > 0;
+                                if (!shouldFilter) return true;
+                                return emp.display_name.toLowerCase().includes(searchTerm);
+                              })
+                              .map((emp, index) => {
+                              const categoryStats = categoryEmployeeStats.get(categoryName)?.find(stat => stat.employee === emp.display_name);
+                              const fallbackStats = employeeStats.find(stat => stat.employee === emp.display_name);
+                              const useFallback =
+                                (!categoryStats || categoryStats.totalLeadsAssigned === 0) &&
+                                fallbackStats;
+                              const effectiveStats = useFallback ? fallbackStats : categoryStats || fallbackStats;
+                              const breakdown = useFallback
+                                ? fallbackStats?.categoryBreakdown || []
+                                : categoryStats?.categoryBreakdown || fallbackStats?.categoryBreakdown || [];
+                              const totalAssigned = effectiveStats?.totalLeadsAssigned || 0;
+                              const isSelected = categorySelectedEmployees.get(categoryName)?.has(emp.display_name);
+                              return (
+                                <div 
+                                  key={index} 
+                                  className={`border rounded-lg p-4 transition-all duration-300 border-base-200 hover:border-primary/50 bg-base-100 shadow-lg hover:shadow-xl hover:-translate-y-1 transform`}
+                                >
+                                  <div className="flex items-center justify-between mb-3">
+                                    <div className="flex items-center gap-2">
+                                      {isSelected && (
+                                        <svg className="w-6 h-6 text-green-600 font-bold" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                        </svg>
+                                      )}
+                                      <h4 className="font-semibold text-base">{emp.display_name}</h4>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        className={`btn btn-xs ${isSelected ? 'btn-primary' : 'btn-outline'}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const currentSelection = categorySelectedEmployees.get(categoryName) || new Set();
+                                          const newSelected = new Set(currentSelection);
+                                          if (currentSelection.has(emp.display_name)) {
+                                            newSelected.delete(emp.display_name);
+                                          } else {
+                                            newSelected.add(emp.display_name);
+                                          }
+                                          setCategorySelectedEmployees(prev => {
+                                            const newMap = new Map(prev);
+                                            newMap.set(categoryName, newSelected);
+                                            return newMap;
+                                          });
+                                        }}
                                       >
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                                      </svg>
-                                    </button>
-                                    
-                                    {/* Collapsible Content */}
-                                    {expandedCategoryBreakdowns.get(`${categoryName}-${emp.display_name}`) && (
-                                      <div className="p-3 pt-0 space-y-2">
-                                        {empStats.categoryBreakdown.map((cat: any, catIndex: number) => (
-                                          <div key={catIndex} className="flex justify-between items-center bg-base-100 rounded-md px-3 py-2 border border-base-300">
-                                            <span className="text-sm font-medium text-base-content truncate flex-1 mr-3">{cat.category}</span>
-                                            <span className="badge badge-secondary badge-sm font-semibold min-w-[2rem] justify-center">{cat.count}</span>
-                                          </div>
-                                        ))}
-                                      </div>
-                                    )}
+                                        {isSelected ? 'Unselect' : 'Select'}
+                                      </button>
+                                      <span className="badge badge-primary">
+                                        {totalAssigned} leads
+                                      </span>
+                                    </div>
                                   </div>
-                                ) : (
-                                  <div className="bg-base-200/30 rounded-lg p-3 border border-base-300">
-                                    <p className="text-sm text-base-content/60 italic text-center">
-                                      No assignments in this period
-                                    </p>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
+                                  
+                                  {breakdown.length > 0 ? (
+                                    <div className="bg-base-200/50 rounded-lg border border-base-300">
+                                      {/* Collapsible Header */}
+                                      <button
+                                        className="w-full p-3 flex items-center justify-between hover:bg-base-200/70 transition-colors rounded-t-lg"
+                                        onClick={() => {
+                                          const key = `${categoryName}-${emp.display_name}`;
+                                          setExpandedCategoryBreakdowns(prev => {
+                                            const newMap = new Map(prev);
+                                            newMap.set(key, !prev.get(key));
+                                            return newMap;
+                                          });
+                                        }}
+                                      >
+                                        <span className="text-sm font-medium text-base-content/80">
+                                          Category Breakdown ({breakdown.length})
+                                        </span>
+                                        <svg 
+                                          className={`w-4 h-4 transition-transform duration-200 ${expandedCategoryBreakdowns.get(`${categoryName}-${emp.display_name}`) ? 'rotate-180' : ''}`}
+                                          fill="none" 
+                                          stroke="currentColor" 
+                                          viewBox="0 0 24 24"
+                                        >
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                      </button>
+                                      
+                                      {/* Collapsible Content */}
+                                      {expandedCategoryBreakdowns.get(`${categoryName}-${emp.display_name}`) && (
+                                        <div className="p-3 pt-0 space-y-2">
+                                          {breakdown.map((cat: any, catIndex: number) => (
+                                            <div key={catIndex} className="flex flex-wrap items-center gap-2 bg-base-100 rounded-md px-3 py-2 border border-base-300">
+                                              <span className="text-sm font-medium text-base-content truncate flex-1">{cat.category}</span>
+                                              <span className="badge badge-secondary badge-sm font-semibold min-w-[2rem] justify-center">{cat.count}</span>
+                                              <button
+                                                className="btn btn-ghost btn-xs text-primary"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  openCategoryDrawer(cat.category, emp.display_name);
+                                                }}
+                                              >
+                                                View leads
+                                              </button>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ) : (
+                                    <div className="bg-base-200/30 rounded-lg p-3 border border-base-300">
+                                      <p className="text-sm text-base-content/60 italic text-center">
+                                        No assignments in this period
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </>
                       )}
                       
                       {/* Category Assign Button */}
@@ -3214,8 +3431,127 @@ const NewCasesPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {drawerOpen && (
+        <div className="fixed inset-0 z-[1000] flex">
+          <div
+            className="flex-1 bg-black/50"
+            onClick={() => {
+              setDrawerOpen(false);
+              setDrawerLeads([]);
+              setDrawerError(null);
+            }}
+          />
+          <div className="w-full max-w-4xl bg-base-100 shadow-2xl animate-[slideInRight_0.3s_ease-out] overflow-hidden flex flex-col">
+            <div className="p-5 border-b border-base-200 flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm text-base-content/60 uppercase tracking-wide">Category Breakdown</p>
+                <h3 className="text-2xl font-bold mt-1">{drawerCategoryLabel || 'Selected Category'}</h3>
+                <p className="text-sm text-base-content/70 mt-1">
+                  Scheduler: <span className="font-semibold">{drawerEmployee}</span>
+                </p>
+                <p className="text-xs text-base-content/50">
+                  Date range: {statsDateFilter.fromDate} → {statsDateFilter.toDate}
+                </p>
+              </div>
+              <button
+                className="btn btn-sm btn-ghost"
+                onClick={() => {
+                  setDrawerOpen(false);
+                  setDrawerLeads([]);
+                  setDrawerError(null);
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-6 flex-1 overflow-y-auto">
+              {drawerLoading ? (
+                <div className="flex flex-col items-center justify-center py-16 gap-3 text-base-content/70">
+                  <span className="loading loading-spinner loading-lg" />
+                  <p>Loading leads...</p>
+                </div>
+              ) : drawerError ? (
+                <div className="alert alert-error">
+                  <span>{drawerError}</span>
+                </div>
+              ) : drawerLeads.length === 0 ? (
+                <div className="text-center py-16 text-base-content/60">
+                  No leads assigned during this period.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="table">
+                    <thead>
+                      <tr>
+                        <th>Lead</th>
+                        <th>Category</th>
+                        <th>Stage</th>
+                        <th>Date Assigned</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {drawerLeads.map((lead) => (
+                        <tr key={`${lead.type}-${lead.id}`}>
+                          <td>
+                            <button
+                              className="text-primary font-semibold hover:underline"
+                              onClick={() => navigate(`/clients/${lead.leadNumber || lead.id}`)}
+                            >
+                              #{lead.leadNumber || lead.id} · {lead.name}
+                            </button>
+                          </td>
+                          <td>{lead.categoryLabel}</td>
+                          <td>{lead.stageLabel}</td>
+                          <td>
+                            {lead.assignedAt ? (
+                              <span>{new Date(lead.assignedAt).toLocaleString()}</span>
+                            ) : (
+                              <span className="text-base-content/50">Unknown</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
+};
+
+const getCategoryInfoFromLead = (lead: any) => {
+  const subCategory =
+    (lead?.misc_category as any)?.name ||
+    lead?.category ||
+    lead?.topic ||
+    'Unknown';
+
+  const derivedMainFromText = () => {
+    if (typeof lead?.category === 'string') {
+      const match = lead.category.match(/\(([^)]+)\)/);
+      if (match) return match[1];
+    }
+    return undefined;
+  };
+
+  const mainCategory =
+    (lead?.misc_category as any)?.misc_maincategory?.name ||
+    derivedMainFromText() ||
+    undefined;
+
+  const normalizedSub = subCategory?.trim?.() || 'Unknown';
+  const normalizedMain = mainCategory?.trim?.();
+
+  return {
+    subCategory: normalizedSub,
+    mainCategory: normalizedMain,
+    combinedLabel: normalizedMain ? `${normalizedSub} (${normalizedMain})` : normalizedSub,
+  };
 };
 
 export default NewCasesPage; 

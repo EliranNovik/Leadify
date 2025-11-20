@@ -2160,6 +2160,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                 {(() => {
                   // Use the same exact matching logic as the search function
                   const trimmedQuery = searchValue.trim();
+                  const normalizedQueryLower = trimmedQuery.toLowerCase();
                   const digitsOnly = trimmedQuery.replace(/\D/g, '');
                   const lastFiveDigits = digitsOnly.slice(-5);
                   const isPhoneQuery = lastFiveDigits.length === 5;
@@ -2173,11 +2174,21 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                     }
                     
                     // For other queries, use exact string matching
-                    return result.name.toLowerCase() === trimmedQuery.toLowerCase() ||
-                           result.lead_number === trimmedQuery ||
-                           result.email.toLowerCase() === trimmedQuery.toLowerCase() ||
-                           result.phone === trimmedQuery ||
-                           result.mobile === trimmedQuery;
+                    const leadNumberLower = (result.lead_number || '').toLowerCase();
+                    const leadNumberDigits = (result.lead_number || '').replace(/\D/g, '');
+                    const emailLower = (result.email || '').toLowerCase();
+                    const nameLower = (result.name || '').toLowerCase();
+                    const phoneDigits = (result.phone || '').replace(/\D/g, '');
+                    const mobileDigits = (result.mobile || '').replace(/\D/g, '');
+
+                    if (nameLower === normalizedQueryLower) return true;
+                    if (emailLower === normalizedQueryLower) return true;
+                    if (leadNumberLower === normalizedQueryLower) return true;
+                    if (digitsOnly && leadNumberDigits === digitsOnly) return true;
+                    if (digitsOnly && (phoneDigits === digitsOnly || mobileDigits === digitsOnly)) return true;
+
+                    return (result.phone || '').toLowerCase() === normalizedQueryLower ||
+                           (result.mobile || '').toLowerCase() === normalizedQueryLower;
                   });
                   
                   const otherResults = searchResults.filter(result => !exactMatches.includes(result));

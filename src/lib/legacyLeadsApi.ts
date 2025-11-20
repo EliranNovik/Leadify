@@ -319,6 +319,9 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
     // Detect if original query has L or C prefix (for exact matching in new leads)
     const hasLPrefix = /^L/i.test(trimmedQuery);
     const hasCPrefix = /^C/i.test(trimmedQuery);
+    const isPrefixedNumeric = /^[A-Za-z]{1,3}\d+$/.test(trimmedQuery);
+    const uppercaseQuery = trimmedQuery.toUpperCase();
+    const lowercaseQuery = trimmedQuery.toLowerCase();
 
     // Check cache first
     const cacheKey = trimmedQuery.toLowerCase();
@@ -360,9 +363,14 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
       
       if (isNumericQuery) {
         const leadNumberFilters = new Set<string>();
-
         leadNumberFilters.add(`lead_number.eq.${trimmedQuery}`);
         leadNumberFilters.add(`lead_number.eq.${numericQuery}`);
+        if (uppercaseQuery !== trimmedQuery) {
+          leadNumberFilters.add(`lead_number.eq.${uppercaseQuery}`);
+        }
+        if (lowercaseQuery !== trimmedQuery) {
+          leadNumberFilters.add(`lead_number.eq.${lowercaseQuery}`);
+        }
         if (!hasLPrefix && !hasCPrefix) {
           leadNumberFilters.add(`lead_number.eq.L${numericQuery}`);
           leadNumberFilters.add(`lead_number.eq.C${numericQuery}`);
@@ -374,9 +382,17 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
           leadNumberFilters.add(`lead_number.ilike.%${digitsOnly}%`);
         }
 
-        const phoneSearch = digitsOnly.length >= 5
-          ? [`phone.ilike.%${lastFiveDigits}%`, `mobile.ilike.%${lastFiveDigits}%`]
-          : [`phone.ilike.%${digitsOnly}%`, `mobile.ilike.%${digitsOnly}%`];
+        const includePhoneSearch = digitsOnly.length >= 5 && !isPrefixedNumeric;
+        const phoneSearch = includePhoneSearch
+          ? [
+              `phone.ilike.%${lastFiveDigits}%`,
+              `mobile.ilike.%${lastFiveDigits}%`,
+            ]
+          : [];
+
+        if (!includePhoneSearch && digitsOnly && digitsOnly !== numericQuery) {
+          leadNumberFilters.add(`lead_number.eq.${digitsOnly}`);
+        }
 
         const filterParts = [...leadNumberFilters, ...phoneSearch];
         return await newQuery.or(filterParts.join(','));
@@ -407,7 +423,7 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
         queryWords.forEach(word => conditions.add(`name.ilike.%${word}%`));
       }
 
-      if (digitsOnly.length >= 5) {
+      if (digitsOnly.length >= 5 && !isPrefixedNumeric) {
         conditions.add(`phone.ilike.%${digitsOnly}%`);
         conditions.add(`mobile.ilike.%${digitsOnly}%`);
       }
@@ -485,11 +501,13 @@ export async function searchLegacyLeads(query: string): Promise<CombinedLead[]> 
     }
 
     const trimmedQuery = query.trim();
-    const normalizedNumeric = trimmedQuery.replace(/^[LC]/i, '');
     const digitsOnly = trimmedQuery.replace(/\D/g, '');
-    const isNumericQuery = /^\d+$/.test(normalizedNumeric);
+    const suffixDigitsMatch = trimmedQuery.match(/[0-9]+$/);
+    const normalizedNumeric = suffixDigitsMatch ? suffixDigitsMatch[0] : '';
+    const isNumericQuery = normalizedNumeric.length > 0;
     const isEmailQuery = trimmedQuery.includes('@');
-    const shouldSearchPhones = digitsOnly.length >= 5;
+    const leadNumberLike = /^[a-zA-Z]{0,2}\d+$/.test(trimmedQuery);
+    const shouldSearchPhones = digitsOnly.length >= 5 && !leadNumberLike && !isEmailQuery;
     const shouldSearchContactNames = !isNumericQuery && !isEmailQuery;
 
     console.log('[searchLegacyLeads] Searching legacy leads', {
@@ -537,8 +555,15 @@ export async function searchLegacyLeads(query: string): Promise<CombinedLead[]> 
       }
     }
 
+    const normalizePattern = (value: string) =>
+      value
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .join('%');
+
     const contactFilters: string[] = [];
-      if (isEmailQuery) {
+    if (isEmailQuery) {
       contactFilters.push(`leads_contact.email.ilike.%${trimmedQuery}%`);
       contactFilters.push(`leads_contact.additional_emails.ilike.%${trimmedQuery}%`);
     } else if (shouldSearchPhones) {
@@ -547,7 +572,8 @@ export async function searchLegacyLeads(query: string): Promise<CombinedLead[]> 
       contactFilters.push(`leads_contact.mobile.ilike.%${lastFiveDigits}%`);
       contactFilters.push(`leads_contact.additional_phones.ilike.%${lastFiveDigits}%`);
     } else if (shouldSearchContactNames && trimmedQuery.length >= 2) {
-      contactFilters.push(`leads_contact.name.ilike.%${trimmedQuery}%`);
+      const wildcardQuery = normalizePattern(trimmedQuery);
+      contactFilters.push(`leads_contact.name.ilike.%${wildcardQuery}%`);
       const nameWords = trimmedQuery.split(/\s+/).filter(Boolean);
       if (nameWords.length > 1) {
         nameWords.forEach(word => contactFilters.push(`leads_contact.name.ilike.%${word}%`));
@@ -641,9 +667,10 @@ export async function searchLegacyLeads(query: string): Promise<CombinedLead[]> 
           ].join(',')
         );
       } else {
+        const wildcardQuery = normalizePattern(trimmedQuery);
         const textFilters = new Set<string>([
-          `name.ilike.%${trimmedQuery}%`,
-          `topic.ilike.%${trimmedQuery}%`,
+          `name.ilike.%${wildcardQuery}%`,
+          `topic.ilike.%${wildcardQuery}%`,
         ]);
 
         const words = trimmedQuery.split(/\s+/).filter(Boolean);

@@ -1682,7 +1682,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                 </div>
 
                 {/* Compose Area */}
-                <div className="border-t border-gray-200 bg-white flex-1 flex flex-col">
+                <div className="border-t border-gray-200 bg-white flex-none mt-auto">
                   <div className="px-4 md:px-6 py-4 bg-white">
                     <button
                       onClick={() => {

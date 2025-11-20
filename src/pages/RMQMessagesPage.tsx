@@ -19,7 +19,8 @@ import {
   ExclamationTriangleIcon,
   InformationCircleIcon,
   MicrophoneIcon,
-  StopIcon
+  StopIcon,
+  Squares2X2Icon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 
@@ -135,6 +136,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [leadSearchResults, setLeadSearchResults] = useState<any[]>([]);
   const [isSearchingLeads, setIsSearchingLeads] = useState(false);
   const [selectedLead, setSelectedLead] = useState<any>(null);
+  const [showMobileTools, setShowMobileTools] = useState(false);
   
   // Reactions state
   const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
@@ -159,8 +161,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
+  const mobileMessageInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const mobileToolsRef = useRef<HTMLDivElement>(null);
   
   // Auto-scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
@@ -383,6 +387,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const deployedDomain = 'https://leadify-crm.onrender.com';
     const leadLink = `[Lead #${lead.lead_number} - ${lead.name}](${deployedDomain}/clients/${lead.lead_number})`;
     setNewMessage(prev => prev + leadLink + ' ');
+    resetInputHeights();
   };
 
   // Voice recording functions
@@ -1630,6 +1635,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
       
       setNewMessage('');
+      resetInputHeights();
       
       // Always scroll to bottom when user sends a message
       setTimeout(() => scrollToBottom('smooth'), 100);
@@ -1909,6 +1915,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   }, [selectedConversation?.id]);
 
+  useEffect(() => {
+    resetInputHeights();
+  }, [selectedConversation?.id]);
+
   // Cleanup audio when conversation changes or component unmounts
   useEffect(() => {
     return () => {
@@ -1962,18 +1972,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return () => clearTimeout(timer);
   }, []);
 
-  // Handle Enter key for sending messages
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+  const adjustTextareaHeight = (textarea: HTMLTextAreaElement | null, maxHeight = 200) => {
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${newHeight}px`;
+  };
+
+  const resetInputHeights = () => {
+    requestAnimationFrame(() => {
+      adjustTextareaHeight(messageInputRef.current);
+      adjustTextareaHeight(mobileMessageInputRef.current);
+    });
   };
 
   // Handle message input change
   const handleMessageInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
     setNewMessage(value);
+    adjustTextareaHeight(e.target);
+    if (e.target !== messageInputRef.current) {
+      adjustTextareaHeight(messageInputRef.current);
+    }
+    if (e.target !== mobileMessageInputRef.current) {
+      adjustTextareaHeight(mobileMessageInputRef.current);
+    }
   };
 
   // Handle emoji selection
@@ -1983,6 +2006,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     
     // Add emoji to message
     setNewMessage(prev => prev + emoji);
+    resetInputHeights();
     
     // Close picker after a small delay to ensure emoji is added first
     setTimeout(() => {
@@ -1995,11 +2019,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }, 50);
   };
 
+  const handleMobileToolSelect = (tool: 'lead' | 'file' | 'emoji' | 'voice') => {
+    setShowMobileTools(false);
+    switch (tool) {
+      case 'lead':
+        setIsLeadSearchOpen(prev => !prev);
+        break;
+      case 'file':
+        fileInputRef.current?.click();
+        break;
+      case 'emoji':
+        setIsEmojiPickerOpen(prev => !prev);
+        break;
+      case 'voice':
+        if (!isRecording) {
+          startVoiceRecording();
+        }
+        break;
+      default:
+        break;
+    }
+  };
+
   // Close emoji picker, lead search, and reaction picker when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
       if (isEmojiPickerOpen) {
-        const target = event.target as Element;
         
         // Check if click is inside emoji picker or emoji button
         const isInsideEmojiPicker = target.closest('[class*="EmojiPicker"]') || 
@@ -2012,7 +2058,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
       
       if (isLeadSearchOpen) {
-        const target = event.target as Element;
         
         // Check if click is inside lead search dropdown or plus button
         const isInsideLeadSearch = target.closest('.lead-search-dropdown') ||
@@ -2035,6 +2080,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         if (!isInsideReactionPicker) {
           setShowReactionPicker(null);
           setReactingMessageId(null);
+        }
+      }
+
+      if (showMobileTools) {
+        const insideTools = mobileToolsRef.current?.contains(target);
+        if (!insideTools) {
+          setShowMobileTools(false);
         }
       }
     };
@@ -2162,6 +2214,42 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return userName.includes(query) || userRole.includes(query) || userDept.includes(query);
   });
 
+  const contactsWithLastMessage = useMemo(() => {
+    return filteredUsers
+      .map(user => {
+        if (!currentUser) {
+          return {
+            user,
+            lastMessageAt: null as string | null,
+            lastMessagePreview: '',
+          };
+        }
+
+        const directConversation = conversations.find(conv =>
+          conv.type === 'direct' &&
+          conv.participants?.some(p => p.user_id === currentUser.id) &&
+          conv.participants?.some(p => p.user_id === user.id)
+        );
+
+        return {
+          user,
+          lastMessageAt: directConversation?.last_message_at || null,
+          lastMessagePreview: directConversation?.last_message_preview || '',
+        };
+      })
+      .sort((a, b) => {
+        if (a.lastMessageAt && b.lastMessageAt) {
+          return new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime();
+        }
+        if (a.lastMessageAt) return -1;
+        if (b.lastMessageAt) return 1;
+
+        const aName = (a.user.tenants_employee?.display_name || a.user.full_name || '').toLowerCase();
+        const bName = (b.user.tenants_employee?.display_name || b.user.full_name || '').toLowerCase();
+        return aName.localeCompare(bName);
+      });
+  }, [filteredUsers, conversations, currentUser]);
+
   // Don't render if not open
   if (!isOpen) return null;
 
@@ -2264,14 +2352,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'chats' ? (
-            filteredUsers.length === 0 ? (
+            contactsWithLastMessage.length === 0 ? (
               <div className="p-6 text-center text-gray-500">
                 <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
                 <p className="font-medium">No contacts found</p>
                 <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              filteredUsers.map((user) => {
+              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview }) => {
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
                 const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
                   ? rawDisplayName.trim() 
@@ -2279,7 +2367,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 
                 const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
                 const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
-                const userDept = user.tenants_employee?.tenant_departement?.name || '';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
 
@@ -2308,12 +2395,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </span>
                           )}
                         </div>
-                        <div className="text-sm text-gray-500 truncate">
-                          {userRole} {userDept && `• ${userDept}`}
-                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
-                            <span className="text-orange-500">Profile setup needed</span>
-                          )}
+                        <div className="flex items-center justify-between">
+                          <p className="text-sm text-gray-500 truncate">
+                            {userRole}
+                            {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
+                              <span className="text-orange-500"> Profile setup needed</span>
+                            )}
+                          </p>
+                          <span className="text-xs text-gray-400 ml-2 whitespace-nowrap">
+                            {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
+                          </span>
                         </div>
+                        <p className="text-sm text-gray-600 truncate mt-1">
+                          {lastMessagePreview || 'No messages yet'}
+                        </p>
                       </div>
                       
                       <div className="text-gray-400">
@@ -2401,6 +2496,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <UserGroupIcon className="w-4 h-4" />
                 </button>
               )}
+              <button
+                onClick={onClose}
+                className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                title="Close Messages"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
             </div>
           </div>
         </div>
@@ -2454,14 +2556,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         {/* Mobile Content */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'chats' ? (
-            filteredUsers.length === 0 ? (
+            contactsWithLastMessage.length === 0 ? (
               <div className="p-6 text-center text-gray-500">
                 <UserIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
                 <p className="font-medium">No contacts found</p>
                 <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              filteredUsers.map((user) => {
+              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview }) => {
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
                 const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
                   ? rawDisplayName.trim() 
@@ -2469,7 +2571,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 
                 const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
                 const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
-                const userDept = user.tenants_employee?.tenant_departement?.name || '';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
 
@@ -2498,12 +2599,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </span>
                           )}
                         </div>
-                        <div className="text-sm text-gray-500 truncate">
-                          {userRole} {userDept && `• ${userDept}`}
-                          {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
-                            <span className="text-orange-500">Setup needed</span>
-                          )}
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm text-gray-500 truncate">
+                            {userRole}
+                            {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
+                              <span className="text-orange-500"> Setup needed</span>
+                            )}
+                          </p>
+                          <span className="text-xs text-gray-400 whitespace-nowrap">
+                            {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
+                          </span>
                         </div>
+                        <p className="text-xs text-gray-600 truncate mt-1">
+                          {lastMessagePreview || 'No messages yet'}
+                        </p>
                       </div>
                       
                       <div className="text-gray-400">
@@ -3045,7 +3154,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     ref={messageInputRef}
                     value={newMessage}
                     onChange={handleMessageInputChange}
-                    onKeyPress={handleKeyPress}
                     placeholder="Type a message..."
                     className="textarea textarea-bordered w-full resize-none min-h-[44px] max-h-32"
                     rows={1}
@@ -3056,7 +3164,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <button
                   onClick={sendMessage}
                   disabled={!newMessage.trim() || isSending}
-                  className="btn btn-primary btn-circle"
+                  className="btn btn-primary btn-circle w-12 h-12"
                 >
                   {isSending ? (
                     <div className="loading loading-spinner loading-sm"></div>
@@ -3075,16 +3183,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               </div>
               <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
               <p className="text-gray-600 mb-6 max-w-md">
-                Click on the <span className="font-semibold text-purple-600">Contacts</span> tab to view all employees and start a conversation, or select an existing chat from your conversations.
+                Pick your <span className="font-semibold text-purple-600">Employee</span> that you want to chat with.
               </p>
               <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
                 <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-purple-500 rounded-full"></div>
-                  <span>Chats: {conversations.length}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-                  <span>Contacts: {allUsers.length}</span>
+                  
+                  
                 </div>
               </div>
             </div>
@@ -3372,184 +3476,189 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
             {/* Mobile Message Input - Mobile Only */}
             <div className="lg:hidden p-3 border-t border-gray-200 bg-white">
-              <div className="flex items-center gap-2 relative">
-                <button
-                  onClick={() => setIsLeadSearchOpen(!isLeadSearchOpen)}
-                  className="btn btn-ghost btn-circle btn-sm text-gray-500 hover:text-green-600"
-                  title="Attach Lead"
-                >
-                  <PlusIcon className="w-5 h-5" />
-                </button>
-                
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isUploadingFile || isSending}
-                  className="btn btn-ghost btn-circle btn-sm text-gray-500 disabled:opacity-50"
-                  title={isUploadingFile ? 'Uploading file...' : 'Attach file'}
-                >
-                  {isUploadingFile ? (
-                    <div className="loading loading-spinner loading-sm"></div>
-                  ) : (
-                    <PaperClipIcon className="w-5 h-5" />
-                  )}
-                </button>
-                
-                <div className="relative">
-                  <button
-                    onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                    disabled={isSending}
-                    className="btn btn-circle btn-sm bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-50"
-                    title="Add emoji"
-                  >
-                    <FaceSmileIcon className="w-5 h-5" />
-                  </button>
-                  
-                  {/* Mobile Voice Recording Button */}
-                  {!isRecording ? (
+              <div className="relative space-y-2">
+                <div className="flex items-center gap-2">
+                  <div className="relative" ref={mobileToolsRef}>
                     <button
-                      onClick={startVoiceRecording}
-                      disabled={isSending}
-                      className="btn btn-circle btn-sm bg-white border border-gray-200 text-gray-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-                      title="Record voice message"
+                      onClick={() => setShowMobileTools(prev => !prev)}
+                      className="btn btn-circle btn-sm bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
+                      title="Message tools"
                     >
-                      <MicrophoneIcon className="w-5 h-5" />
+                      <Squares2X2Icon className="w-5 h-5" />
                     </button>
-                  ) : (
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={stopVoiceRecording}
-                        className="btn btn-circle btn-sm bg-red-500 hover:bg-red-600 text-white"
-                        title="Send voice message"
-                      >
-                        <StopIcon className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={cancelVoiceRecording}
-                        className="btn btn-circle btn-sm bg-gray-500 hover:bg-gray-600 text-white"
-                        title="Cancel recording"
-                      >
-                        <XMarkIcon className="w-4 h-4" />
-                      </button>
-                      <span className="text-xs text-red-600 font-mono min-w-[30px]">
-                        {formatRecordingDuration(recordingDuration)}
-                      </span>
-                    </div>
-                  )}
-                  
-                  
-                  {/* Mobile Emoji Picker */}
-                  {isEmojiPickerOpen && (
-                    <div className="absolute bottom-12 left-0 z-50">
-                      <EmojiPicker
-                        onEmojiClick={handleEmojiClick}
-                        width={300}
-                        height={350}
-                        skinTonesDisabled={false}
-                        searchDisabled={false}
-                        previewConfig={{
-                          showPreview: true,
-                          defaultEmoji: '1f60a',
-                          defaultCaption: 'Choose your emoji!'
-                        }}
-                        lazyLoadEmojis={false}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Mobile Lead Search Dropdown */}
-                  {isLeadSearchOpen && (
-                    <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg w-72 max-h-80 overflow-hidden lead-search-dropdown">
-                      <div className="p-3 border-b border-gray-200">
-                        <h3 className="text-sm font-semibold text-gray-900 mb-2">Attach Lead</h3>
-                        <div className="relative">
-                          <input
-                            type="text"
-                            placeholder="Search by lead number, name, or email..."
-                            className="input input-bordered w-full input-sm"
-                            value={leadSearchQuery}
-                            onChange={(e) => {
-                              setLeadSearchQuery(e.target.value);
-                              searchLeads(e.target.value);
-                            }}
-                            autoFocus
-                          />
-                          {isSearchingLeads && (
-                            <div className="absolute right-3 top-1/2 -translate-y-1/2">
-                              <div className="loading loading-spinner loading-xs"></div>
-                            </div>
-                          )}
-                        </div>
+                    {showMobileTools && (
+                      <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100">
+                        <button
+                          onClick={() => handleMobileToolSelect('lead')}
+                          className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <PlusIcon className="w-4 h-4 text-purple-600" />
+                          Attach lead
+                        </button>
+                        <button
+                          onClick={() => handleMobileToolSelect('file')}
+                          className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
+                          disabled={isUploadingFile || isSending}
+                        >
+                          <PaperClipIcon className="w-4 h-4 text-gray-600" />
+                          {isUploadingFile ? 'Uploading...' : 'Attach file'}
+                        </button>
+                        <button
+                          onClick={() => handleMobileToolSelect('emoji')}
+                          className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
+                        >
+                          <FaceSmileIcon className="w-4 h-4 text-yellow-500" />
+                          Add emojis
+                        </button>
+                        <button
+                          onClick={() => handleMobileToolSelect('voice')}
+                          className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                          disabled={isRecording}
+                        >
+                          <MicrophoneIcon className="w-4 h-4 text-red-500" />
+                          {isRecording ? 'Recording...' : 'Record voice'}
+                        </button>
                       </div>
-                      
-                      <div className="max-h-48 overflow-y-auto">
-                        {leadSearchResults.length > 0 ? (
-                          leadSearchResults.map((lead) => (
-                            <div
-                              key={`${lead.id}-${lead.lead_number}`}
-                              onClick={() => handleLeadSelect(lead)}
-                              className="p-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
-                            >
-                              <div className="flex items-center justify-between">
-                                <div className="flex-1 min-w-0">
-                                  <div className="font-medium text-sm text-gray-900 truncate">
-                                    #{lead.lead_number} - {lead.name}
-                                  </div>
-                                  <div className="text-xs text-gray-500 truncate">
-                                    {lead.email} • {lead.phone}
-                                  </div>
-                                </div>
-                                <div className="text-xs text-gray-400 ml-2">
-                                  {lead.stage || 'Unknown'}
-                                </div>
-                              </div>
-                            </div>
-                          ))
-                        ) : leadSearchQuery.length >= 2 ? (
-                          <div className="p-3 text-center text-gray-500 text-sm">
-                            No leads found
-                          </div>
-                        ) : (
-                          <div className="p-3 text-center text-gray-400 text-sm">
-                            Type at least 2 characters to search
+                    )}
+                  </div>
+                  
+                  <div className="flex-1">
+                    <textarea
+                      ref={mobileMessageInputRef}
+                      value={newMessage}
+                      onChange={handleMessageInputChange}
+                      placeholder="Type a message..."
+                      className="textarea textarea-bordered w-full resize-none text-sm min-h-[36px] max-h-40"
+                      rows={1}
+                      disabled={isSending}
+                      style={{ lineHeight: '1.4' }}
+                    />
+                  </div>
+                  
+                  <button
+                    onClick={sendMessage}
+                    disabled={!newMessage.trim() || isSending}
+                    className="btn btn-primary btn-circle w-12 h-12"
+                  >
+                    {isSending ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PaperAirplaneIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                </div>
+
+                {isRecording && (
+                  <div className="flex items-center gap-2 text-xs text-red-600">
+                    <span className="font-mono">{formatRecordingDuration(recordingDuration)}</span>
+                    <button
+                      onClick={stopVoiceRecording}
+                      className="btn btn-xs btn-error text-white"
+                    >
+                      <StopIcon className="w-3 h-3 mr-1" />
+                      Send
+                    </button>
+                    <button
+                      onClick={cancelVoiceRecording}
+                      className="btn btn-xs btn-ghost text-gray-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                )}
+
+                {/* Mobile Emoji Picker */}
+                {isEmojiPickerOpen && (
+                  <div className="absolute bottom-16 left-0 z-50">
+                    <EmojiPicker
+                      onEmojiClick={handleEmojiClick}
+                      width={300}
+                      height={350}
+                      skinTonesDisabled={false}
+                      searchDisabled={false}
+                      previewConfig={{
+                        showPreview: true,
+                        defaultEmoji: '1f60a',
+                        defaultCaption: 'Choose your emoji!'
+                      }}
+                      lazyLoadEmojis={false}
+                    />
+                  </div>
+                )}
+                
+                {/* Mobile Lead Search Dropdown */}
+                {isLeadSearchOpen && (
+                  <div className="absolute bottom-16 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg w-72 max-h-80 overflow-hidden lead-search-dropdown">
+                    <div className="p-3 border-b border-gray-200">
+                      <h3 className="text-sm font-semibold text-gray-900 mb-2">Attach Lead</h3>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Search by lead number, name, or email..."
+                          className="input input-bordered w-full input-sm"
+                          value={leadSearchQuery}
+                          onChange={(e) => {
+                            setLeadSearchQuery(e.target.value);
+                            searchLeads(e.target.value);
+                          }}
+                          autoFocus
+                        />
+                        {isSearchingLeads && (
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                            <div className="loading loading-spinner loading-xs"></div>
                           </div>
                         )}
                       </div>
-                      
-                      <div className="p-2 border-t border-gray-200">
-                        <button
-                          onClick={() => {
-                            setIsLeadSearchOpen(false);
-                            setLeadSearchQuery('');
-                            setLeadSearchResults([]);
-                          }}
-                          className="btn btn-ghost btn-xs w-full"
-                        >
-                          Cancel
-                        </button>
-                      </div>
                     </div>
-                  )}
-                </div>
-                
-                <div className="flex-1">
-                  <textarea
-                    value={newMessage}
-                    onChange={handleMessageInputChange}
-                    onKeyPress={handleKeyPress}
-                    placeholder="Type a message..."
-                    className="textarea textarea-bordered w-full resize-none text-sm min-h-[36px] max-h-20"
-                    rows={1}
-                    disabled={isSending}
-                  />
-                </div>
-                
-                <button
-                  onClick={sendMessage}
-                  disabled={!newMessage.trim() || isSending}
-                  className="btn btn-primary btn-circle btn-sm"
-                >
-                  <PaperAirplaneIcon className="w-5 h-5" />
-                </button>
+                    
+                    <div className="max-h-48 overflow-y-auto">
+                      {leadSearchResults.length > 0 ? (
+                        leadSearchResults.map((lead) => (
+                          <div
+                            key={`${lead.id}-${lead.lead_number}`}
+                            onClick={() => handleLeadSelect(lead)}
+                            className="p-3 hover:bg-gray-50 cursor-pointer border-b border-gray-100 last:border-b-0"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-sm text-gray-900 truncate">
+                                  #{lead.lead_number} - {lead.name}
+                                </div>
+                                <div className="text-xs text-gray-500 truncate">
+                                  {lead.email} • {lead.phone}
+                                </div>
+                              </div>
+                              <div className="text-xs text-gray-400 ml-2">
+                                {lead.stage || 'Unknown'}
+                              </div>
+                            </div>
+                          </div>
+                        ))
+                      ) : leadSearchQuery.length >= 2 ? (
+                        <div className="p-3 text-center text-gray-500 text-sm">
+                          No leads found
+                        </div>
+                      ) : (
+                        <div className="p-3 text-center text-gray-400 text-sm">
+                          Type at least 2 characters to search
+                        </div>
+                      )}
+                    </div>
+                    
+                    <div className="p-2 border-t border-gray-200">
+                      <button
+                        onClick={() => {
+                          setIsLeadSearchOpen(false);
+                          setLeadSearchQuery('');
+                          setLeadSearchResults([]);
+                        }}
+                        className="btn btn-ghost btn-xs w-full"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </>

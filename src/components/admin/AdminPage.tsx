@@ -11,7 +11,9 @@ import {
   Cog6ToothIcon,
   BuildingOffice2Icon,
   ChatBubbleLeftRightIcon,
-  MagnifyingGlassIcon
+  MagnifyingGlassIcon,
+  ChevronDoubleRightIcon,
+  ChevronDoubleLeftIcon
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UsersManager from './UsersManager';
@@ -170,7 +172,7 @@ const AdminPage: React.FC = () => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   
   // State for sidebar collapse and employee data
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [employeeData, setEmployeeData] = useState<{
     department?: string;
     bonusRole?: string;
@@ -709,15 +711,28 @@ const AdminPage: React.FC = () => {
         onMouseEnter={() => setIsSidebarCollapsed(false)}
         onMouseLeave={() => setIsSidebarCollapsed(true)}
       >
-        <div className={`border-b border-gray-200 flex-shrink-0 ${isSidebarCollapsed ? 'py-2' : 'py-4'} px-4`}>
-          <h2 className={`text-xl font-bold text-gray-900 transition-opacity ${isSidebarCollapsed ? 'opacity-0 w-0 h-0' : 'opacity-100'}`}>
-            {!isSidebarCollapsed && 'Admin Menu'}
-          </h2>
-          <div className={`absolute left-0 right-0 flex justify-center ${!isSidebarCollapsed ? 'hidden' : ''}`} style={{ top: '12px' }}>
-            <span className="text-2xl font-bold text-gray-900">A</span>
+        <div className="border-b border-gray-200 flex-shrink-0 px-4 py-3 flex items-center justify-between relative">
+          <div className="flex-1">
+            <h2 className={`text-xl font-bold text-gray-900 transition-opacity ${isSidebarCollapsed ? 'opacity-0 w-0 h-0' : 'opacity-100'}`}>
+              {!isSidebarCollapsed && 'Admin Menu'}
+            </h2>
+            <div className={`absolute left-0 right-0 flex justify-center pointer-events-none ${!isSidebarCollapsed ? 'hidden' : ''}`} style={{ top: '12px' }}>
+              <span className="text-2xl font-bold text-gray-900">A</span>
+            </div>
           </div>
+          <button
+            onClick={() => setIsSidebarCollapsed(prev => !prev)}
+            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+            title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            {isSidebarCollapsed ? (
+              <ChevronDoubleRightIcon className="w-5 h-5 text-gray-600" />
+            ) : (
+              <ChevronDoubleLeftIcon className="w-5 h-5 text-gray-600" />
+            )}
+          </button>
         </div>
-        <div className={`flex-1 overflow-y-auto ${isSidebarCollapsed ? 'pt-16' : 'pt-2'}`}>
+        <div className="flex-1 overflow-y-auto pt-2">
           {ADMIN_TABS.filter(tab => {
             const hasAccess = !tab.requiresAdmin || isAdmin;
             return hasAccess;
@@ -725,28 +740,25 @@ const AdminPage: React.FC = () => {
             const Icon = tab.icon;
             return (
               <div key={tab.label} className="mb-2">
-                <button
-                  onClick={() => setOpenTab(openTab === i ? null : i)}
-                  className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between'} p-3 mx-2 rounded-lg transition-all ${
-                    openTab === i
-                      ? 'bg-primary text-white shadow-md'
-                      : isSidebarCollapsed 
-                        ? 'hover:bg-gray-100 text-gray-900'
+                  <button
+                    onClick={() => setOpenTab(openTab === i ? null : i)}
+                    className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between'} p-3 mx-2 rounded-lg transition-all ${
+                      openTab === i
+                        ? 'bg-primary text-white shadow-md'
                         : 'hover:bg-gray-100 text-gray-900'
-                  }`}
-                >
-                  {isSidebarCollapsed ? (
-                    <Icon className="w-6 h-6" />
-                  ) : (
-                    <>
-                      <span className="font-semibold">{tab.label}</span>
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <Icon className="w-6 h-6" />
+                      {!isSidebarCollapsed && <span className="font-semibold">{tab.label}</span>}
+                    </div>
+                    {!isSidebarCollapsed && (
                       <ChevronDownIcon
                         className={`w-5 h-5 transition-transform ${openTab === i ? 'rotate-180' : ''}`}
                       />
-                    </>
-                  )}
-                </button>
-              {openTab === i && (
+                    )}
+                  </button>
+                {openTab === i && !isSidebarCollapsed && (
                 <div className="mt-2 space-y-1 ml-6">
                   {tab.subcategories.map((sub, j) => (
                     <button

@@ -1524,8 +1524,8 @@ const WhatsAppPage: React.FC = () => {
                     >
                       <div className="flex items-center gap-2 md:gap-3">
                         {/* Avatar */}
-                        <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative bg-white/15 border border-white/30 shadow-[0_4px_12px_rgba(0,0,0,0.35)]">
-                          <span className="text-white font-semibold text-sm md:text-lg drop-shadow">
+                        <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)] dark:bg-white/15 dark:border-white/30 dark:text-white dark:shadow-[0_4px_12px_rgba(0,0,0,0.35)]">
+                          <span className="font-semibold text-sm md:text-lg text-green-700 dark:text-white dark:drop-shadow">
                             {client.name.charAt(0).toUpperCase()}
                           </span>
                           {/* Lock icon overlay */}

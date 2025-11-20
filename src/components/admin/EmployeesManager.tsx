@@ -157,11 +157,11 @@ const EmployeesManager: React.FC = () => {
     },
     {
       name: 'preferred_category',
-      label: 'Preferred Category',
+      label: 'Preferred Categories',
       type: 'select' as const,
       required: false,
       options: mainCategories,
-      placeholder: 'Select a preferred category',
+      isMulti: true,
       hideInTable: false,
       hideInAdd: false,
       hideInEdit: false
