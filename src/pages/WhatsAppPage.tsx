@@ -1574,12 +1574,12 @@ const WhatsAppPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0 } : {}}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
             {selectedClient ? (
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <div className={`flex-shrink-0 flex items-center px-4 py-3 border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={{ zIndex: 40 }}>
+                  <div className={`flex-none flex items-center px-4 py-3 border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={{ zIndex: 40 }}>
                     <button
                       onClick={() => setShowChat(false)}
                       className="btn btn-ghost btn-circle btn-sm flex-shrink-0 mr-3"
@@ -1629,7 +1629,7 @@ const WhatsAppPage: React.FC = () => {
                 )}
 
             {/* Messages - Scrollable */}
-            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : '200px', WebkitOverflowScrolling: 'touch' } : {}}>
+            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : '200px', WebkitOverflowScrolling: 'touch' } : {}}>
               {messages.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -2019,12 +2019,12 @@ const WhatsAppPage: React.FC = () => {
 
             {/* Message Input - Fixed with glassy blur on mobile */}
             <div 
-              className={`flex-shrink-0 border-t transition-all duration-200 ${
+              className={`flex-none border-t transition-all duration-200 ${
                 isMobile 
-                  ? 'sticky bg-white/80 backdrop-blur-lg supports-[backdrop-filter]:bg-white/70 border-gray-300/50' 
+                  ? 'bg-white/80 backdrop-blur-lg supports-[backdrop-filter]:bg-white/70 border-gray-300/50' 
                   : 'bg-white border-gray-200'
               }`}
-              style={isMobile ? { zIndex: 50, bottom: 0, paddingBottom: `calc(30px + env(safe-area-inset-bottom))` } : {}}
+              style={isMobile ? { zIndex: 50, position: 'sticky', bottom: 0, paddingBottom: `calc(30px + env(safe-area-inset-bottom))` } : {}}
             >
               {/* Template Dropdown - Above input on mobile, toggled by icon */}
               {showTemplateSelector && isMobile && (

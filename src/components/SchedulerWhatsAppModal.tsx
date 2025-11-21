@@ -715,10 +715,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const clientLocked = lastIncomingMessage ? isClientLocked(lastIncomingMessage.sent_at) : false;
 
   return createPortal(
-    <div className="fixed inset-0 bg-white z-[9999]">
+    <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
       <div className="h-full flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+        <div className="flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
             <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
             <h2 className="text-lg md:text-2xl font-bold text-gray-900">WhatsApp</h2>
@@ -767,7 +767,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         </div>
 
         {/* Messages - Scrollable */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
           {messages.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -906,7 +906,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         </div>
 
         {/* Input Area */}
-        <div className="border-t border-gray-200 bg-white">
+        <div className="flex-none border-t border-gray-200 bg-white" style={{ position: 'sticky', bottom: 0, zIndex: 10 }}>
           {/* Lock Message */}
           {isLocked && (
             <div className="px-4 pb-2 pt-2">

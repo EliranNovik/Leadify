@@ -3816,11 +3816,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       </div>
 
       {/* Mobile Full Screen Chat */}
-      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white h-full`}>
+      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white fixed inset-0 z-40 overflow-hidden`}>
         {selectedConversation && (
           <>
             {/* Mobile Chat Header */}
-            <div className="p-4 border-b border-gray-200 bg-white flex-none">
+            <div className="p-4 border-b border-gray-200 bg-white flex-none z-10">
               <div className="flex items-center gap-3 mb-3">
                 <button
                   onClick={() => setShowMobileConversations(true)}
@@ -3919,7 +3919,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <div 
               ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white min-h-0"
+              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white min-h-0 overscroll-contain"
+              style={{ WebkitOverflowScrolling: 'touch' }}
             >
               {                messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
@@ -4221,7 +4222,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Mobile Message Input - Mobile Only */}
-            <div className="lg:hidden p-3 border-t border-gray-200 bg-white flex-none">
+            <div className="lg:hidden p-3 border-t border-gray-200 bg-white flex-none z-10" style={{ position: 'sticky', bottom: 0 }}>
               <div className="relative space-y-2">
                 <div className="flex items-center gap-2">
                   <div className="relative" ref={mobileToolsRef}>

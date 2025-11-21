@@ -202,12 +202,29 @@ const normaliseAddressList = (value: string | null | undefined) => {
 
 const convertBodyToHtml = (text: string) => {
   if (!text) return '';
-  const urlRegex = /(https?:\/\/[^\s]+)/gi;
-  const escaped = text.replace(urlRegex, url => {
+  // First, protect existing anchor tags by replacing them with placeholders
+  const anchorPlaceholders: string[] = [];
+  let placeholderIndex = 0;
+  const anchorRegex = /<a\s+[^>]*href=["']([^"']+)["'][^>]*>([^<]*)<\/a>/gi;
+  const textWithPlaceholders = text.replace(anchorRegex, (match) => {
+    anchorPlaceholders.push(match);
+    return `__ANCHOR_PLACEHOLDER_${placeholderIndex++}__`;
+  });
+  
+  // Convert plain URLs to links (but skip those already in anchor tags)
+  const urlRegex = /(https?:\/\/[^\s<>]+)/gi;
+  const escaped = textWithPlaceholders.replace(urlRegex, url => {
     const safeUrl = url.replace(/"/g, '&quot;');
     return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
   });
-  return escaped.replace(/\n/g, '<br>');
+  
+  // Restore original anchor tags
+  let result = escaped;
+  anchorPlaceholders.forEach((anchor, index) => {
+    result = result.replace(`__ANCHOR_PLACEHOLDER_${index}__`, anchor);
+  });
+  
+  return result.replace(/\n/g, '<br>');
 };
 
 const sanitizeEmailHtml = (html: string): string => {
@@ -267,6 +284,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
   const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const templateDropdownRef = useRef<HTMLDivElement | null>(null);
+  
+  // AI suggestions state
+  const [isLoadingAI, setIsLoadingAI] = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [showAISuggestions, setShowAISuggestions] = useState(false);
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const filteredTemplates = useMemo(() => {
     const query = templateSearch.trim().toLowerCase();
@@ -550,7 +572,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
     setNewMessage(prev => {
       const existing = prev || '';
       const trimmedExisting = existing.replace(/\s*$/, '');
-      const linkLine = label ? `${label}: ${formattedUrl}` : formattedUrl;
+      // If label is provided, create HTML anchor tag with label as clickable text
+      // If no label, just use the URL (convertBodyToHtml will make it clickable)
+      const linkLine = label 
+        ? `<a href="${formattedUrl.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        : formattedUrl;
       return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
     });
 
@@ -1102,6 +1128,70 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
     return encoded;
   };
 
+  // Handle AI suggestions
+  const handleAISuggestions = async () => {
+    if (!selectedContact || isLoadingAI) return;
+
+    setIsLoadingAI(true);
+    setShowAISuggestions(true);
+    
+    try {
+      const requestType = newMessage.trim() ? 'improve' : 'suggest';
+      
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({
+          currentMessage: newMessage.trim(),
+          conversationHistory: emailThread.map(msg => ({
+            id: msg.id,
+            direction: msg.direction === 'outgoing' ? 'out' : 'in',
+            message: msg.body_preview || msg.body_html || '',
+            sent_at: msg.sent_at,
+            sender_name: msg.sender_name || msg.sender_email
+          })),
+          clientName: selectedContact.name,
+          requestType
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        // Get the single suggestion and clean it
+        const suggestion = result.suggestion.trim();
+        setAiSuggestions([suggestion]);
+      } else {
+        if (result.code === 'OPENAI_QUOTA') {
+          toast.error('AI quota exceeded. Please check plan/billing or try again later.');
+          setAiSuggestions(['Sorry, AI is temporarily unavailable (quota exceeded).']);
+          return;
+        }
+        throw new Error(result.error || 'Failed to get AI suggestions');
+      }
+    } catch (error) {
+      console.error('Error getting AI suggestions:', error);
+      toast.error('Failed to get AI suggestions. Please try again later.');
+      setAiSuggestions(['Sorry, AI suggestions are not available right now.']);
+    } finally {
+      setIsLoadingAI(false);
+    }
+  };
+
+  // Apply AI suggestion
+  const applyAISuggestion = (suggestion: string) => {
+    setNewMessage(suggestion);
+    setShowAISuggestions(false);
+    setAiSuggestions([]);
+  };
+
   const handleSendEmail = async () => {
     if (!selectedContact || !newMessage.trim()) {
       toast.error('Please enter a message');
@@ -1368,7 +1458,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-white z-[9999]">
+    <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
       {/* CSS to ensure email content displays fully */}
       <style>{`
         .email-content .email-body {
@@ -1396,9 +1486,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
           word-wrap: break-word !important;
         }
       `}</style>
-      <div className="h-full flex flex-col">
+      <div className="h-full flex flex-col overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
+        <div className={`flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200`}>
           <div className="flex items-center gap-2 md:gap-4">
             <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
             {selectedContact && !isMobile && (
@@ -1518,7 +1608,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                  <div className="flex-none flex items-center justify-between p-4 border-b border-gray-200 bg-white">
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => setShowChat(false)}
@@ -1548,7 +1638,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
 
                 {/* Desktop Chat Header */}
                 {!isMobile && (
-                  <div className="flex items-center justify-between p-4 border-b border-gray-200 bg-white">
+                  <div className="flex-none flex items-center justify-between p-4 border-b border-gray-200 bg-white">
                     <div className="flex items-center gap-3">
                       <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold">
                         {selectedContact.name.charAt(0).toUpperCase()}
@@ -1566,7 +1656,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                 )}
 
                 {/* Email Thread */}
-                <div className="flex-1 overflow-y-auto p-4 md:p-6">
+                <div className={`flex-1 overflow-y-auto p-4 md:p-6 min-h-0 overscroll-contain ${isMobile ? '' : ''}`} style={isMobile ? { WebkitOverflowScrolling: 'touch' } : {}}>
                   {isLoading ? (
                     <div className="flex items-center justify-center h-full">
                       <div className="loading loading-spinner loading-lg text-blue-500"></div>
@@ -1733,16 +1823,16 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
       </div>
 
       {showCompose && createPortal(
-        <div className="fixed inset-0 z-[10001] flex">
+        <div className="fixed inset-0 z-[10001] flex overflow-hidden">
           <div className="fixed inset-0 bg-black/50" onClick={() => setShowCompose(false)} />
-          <div className="relative w-full h-full bg-white shadow-2xl flex flex-col">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="relative w-full h-full bg-white shadow-2xl flex flex-col overflow-hidden">
+            <div className="flex-none flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <h2 className="text-xl font-semibold">Compose Email</h2>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowCompose(false)}>
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
               <div className="space-y-2">
                 <label className="font-semibold text-sm">To</label>
                 {renderRecipients('to')}
@@ -1870,6 +1960,43 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                 </div>
               )}
 
+              {/* AI Suggestions Dropdown */}
+              {showAISuggestions && (
+                <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-semibold text-gray-900">
+                      {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAISuggestions(false);
+                        setAiSuggestions([]);
+                      }}
+                      className="btn btn-ghost btn-xs"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    {isLoadingAI ? (
+                      <div className="text-center text-gray-500 py-4">
+                        <div className="loading loading-spinner loading-sm"></div>
+                        <span className="ml-2">Getting AI suggestions...</span>
+                      </div>
+                    ) : (
+                      <div 
+                        className="w-full p-4 rounded-lg border border-gray-200 bg-white cursor-pointer hover:bg-gray-100 transition-colors"
+                        onClick={() => applyAISuggestion(aiSuggestions[0])}
+                      >
+                        <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <textarea
                 placeholder="Type your message..."
                 value={newMessage}
@@ -1894,7 +2021,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                 </div>
               )}
             </div>
-            <div className="px-6 py-4 border-t border-gray-200 flex flex-col sm:flex-row gap-3 justify-between">
+            <div className="flex-none px-6 py-4 border-t border-gray-200 flex flex-col sm:flex-row gap-3 justify-between" style={{ position: 'sticky', bottom: 0, zIndex: 10 }}>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => fileInputRef.current?.click()}
@@ -1910,6 +2037,24 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                   onChange={handleFileUpload}
                   className="hidden"
                 />
+                {/* AI Suggestions Button */}
+                <button
+                  type="button"
+                  onClick={handleAISuggestions}
+                  disabled={isLoadingAI || !selectedContact}
+                  className={`flex-shrink-0 px-3 py-2 rounded-full flex items-center justify-center transition-all text-sm font-medium ${
+                    isLoadingAI
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
+                  } ${!selectedContact ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                  title={newMessage.trim() ? "Improve message with AI" : "Get AI suggestions"}
+                >
+                  {isLoadingAI ? (
+                    <div className="loading loading-spinner loading-sm"></div>
+                  ) : (
+                    'AI'
+                  )}
+                </button>
               </div>
               <div className="flex items-center gap-2">
                 <button

@@ -1622,6 +1622,14 @@ const Dashboard: React.FC = () => {
   // Department Performance data
   const [departmentPerformanceLoading, setDepartmentPerformanceLoading] = useState<boolean>(true);
   const [invoicedDataLoading, setInvoicedDataLoading] = useState<boolean>(true);
+  
+  // Mobile card period selector
+  const [mobileCardPeriod, setMobileCardPeriod] = useState<'today' | 'last30d' | 'currentMonth' | 'target'>('today');
+  
+  // State for real chart data (daily department performance)
+  const [departmentChartData, setDepartmentChartData] = useState<{
+    [category: string]: { date: string; contracts: number; amount: number }[];
+  }>({});
 
   // Fetch real revenue this month
   useEffect(() => {
@@ -2394,11 +2402,145 @@ const Dashboard: React.FC = () => {
         console.log('🌍 Currency Distribution in Agreement Signed Data:', currencyDistribution);
         setAgreementData(newAgreementData);
         
+        // Fetch daily chart data for the last 30 days
+        await fetchDepartmentChartData(departmentIds, departmentTargets, thirtyDaysAgoStr, todayStr);
+        
       } catch (error) {
         console.error('❌ Error fetching department performance:', error);
       } finally {
         setDepartmentPerformanceLoading(false);
       }
+  };
+  
+  // Fetch real daily chart data for department performance
+  const fetchDepartmentChartData = async (
+    departmentIds: number[],
+    departmentTargets: any[],
+    fromDate: string,
+    toDate: string
+  ) => {
+    try {
+      console.log('📊 Fetching daily chart data from', fromDate, 'to', toDate);
+      
+      // Fetch stage records for the date range
+      const { data: stageRecords, error: stageError } = await supabase
+        .from('leads_leadstage')
+        .select('id, date, lead_id')
+        .eq('stage', 60)
+        .gte('date', fromDate)
+        .lte('date', toDate);
+      
+      if (stageError) {
+        console.error('❌ Error fetching stage records for chart:', stageError);
+        return;
+      }
+      
+      if (!stageRecords || stageRecords.length === 0) {
+        console.log('📊 No stage records found for chart data');
+        setDepartmentChartData({});
+        return;
+      }
+      
+      // Fetch leads data
+      const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
+      const { data: leadsData, error: leadsError } = await supabase
+        .from('leads_lead')
+        .select('id, category_id, meeting_total, meeting_total_currency_id')
+        .in('id', leadIds);
+      
+      if (leadsError) {
+        console.error('❌ Error fetching leads for chart:', leadsError);
+        return;
+      }
+      
+      // Create a map of lead_id to lead data
+      const leadsMap = new Map();
+      leadsData?.forEach(lead => {
+        leadsMap.set(lead.id, lead);
+      });
+      
+      // Create date range array
+      const startDate = new Date(fromDate);
+      const endDate = new Date(toDate);
+      const dateArray: string[] = [];
+      for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
+        dateArray.push(d.toISOString().split('T')[0]);
+      }
+      
+      // Initialize chart data structure with all categories
+      const allCategories = ['General', ...departmentTargets.map(d => d.name), 'Total'];
+      const chartDataMap: { [category: string]: { [date: string]: { contracts: number; amount: number } } } = {};
+      
+      // Initialize all categories with all dates
+      allCategories.forEach(category => {
+        chartDataMap[category] = {};
+        dateArray.forEach(date => {
+          chartDataMap[category][date] = { contracts: 0, amount: 0 };
+        });
+      });
+      
+      // Process stage records
+      stageRecords.forEach(record => {
+        const lead = leadsMap.get(record.lead_id);
+        if (!lead) return;
+        
+        const recordDate = record.date?.split('T')[0] || record.date;
+        if (!recordDate || !dateArray.includes(recordDate)) return;
+        
+        // Get department from category_id
+        const departmentId = lead.category_id;
+        const deptIndex = departmentIds.indexOf(departmentId);
+        
+        // Convert amount to NIS
+        let amountInNIS = 0;
+        if (lead.meeting_total && lead.meeting_total_currency_id) {
+          const currencyId = lead.meeting_total_currency_id;
+          const amount = parseFloat(lead.meeting_total) || 0;
+          if (currencyId === 1) { // NIS
+            amountInNIS = amount;
+          } else if (currencyId === 2) { // USD
+            amountInNIS = amount * 3.5; // Approximate conversion
+          } else if (currencyId === 3) { // EUR
+            amountInNIS = amount * 3.8; // Approximate conversion
+          }
+        }
+        
+        if (deptIndex >= 0) {
+          const categoryName = departmentTargets[deptIndex]?.name;
+          if (categoryName && chartDataMap[categoryName]) {
+            chartDataMap[categoryName][recordDate].contracts++;
+            chartDataMap[categoryName][recordDate].amount += amountInNIS;
+          }
+        }
+        
+        // Also add to General and Total
+        if (chartDataMap['General']) {
+          chartDataMap['General'][recordDate].contracts++;
+          chartDataMap['General'][recordDate].amount += amountInNIS;
+        }
+        if (chartDataMap['Total']) {
+          chartDataMap['Total'][recordDate].contracts++;
+          chartDataMap['Total'][recordDate].amount += amountInNIS;
+        }
+      });
+      
+      // Convert to array format for charts
+      const finalChartData: { [category: string]: { date: string; contracts: number; amount: number }[] } = {};
+      Object.keys(chartDataMap).forEach(category => {
+        finalChartData[category] = dateArray.map(date => ({
+          date: new Date(date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+          contracts: chartDataMap[category][date].contracts,
+          amount: chartDataMap[category][date].amount
+        }));
+      });
+      
+      setDepartmentChartData(finalChartData);
+      console.log('✅ Chart data fetched:', Object.keys(finalChartData).length, 'categories');
+      
+    } catch (error) {
+      console.error('❌ Error fetching department chart data:', error);
+      setDepartmentChartData({});
+    }
   };
 
   // Fetch invoiced data using the same logic as agreement data
@@ -4810,73 +4952,251 @@ const Dashboard: React.FC = () => {
                       <span className="loading loading-spinner loading-lg text-primary"></span>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 gap-4 md:hidden">
-                      {scoreboardCategories.map((category, index) => {
-                      const todayData = agreementData["Today"]?.[index] || { count: 0, amount: 0, expected: 0 };
-                      const last30Data = agreementData["Last 30d"]?.[index] || { count: 0, amount: 0, expected: 0 };
-                      const isFlipped = flippedCards.has(category);
-                      const chartData = generateDepartmentData(category);
-                      return (
-                        <div key={category} className="relative h-64" style={{ perspective: '1000px' }}>
-                          <div className="relative w-full h-full transition-transform duration-700 cursor-pointer" style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }} onClick={() => handleCardFlip(category)}>
-                            <div className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden group" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}>
-                              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                                <h4 className="text-sm font-semibold text-slate-800 text-center">{category}</h4>
-                              </div>
-                              <div className="p-4">
-                                <div className="grid grid-cols-2 gap-3 mb-4">
-                                  <div className="bg-slate-50 rounded-lg p-3">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="w-2 h-2 bg-indigo-500 rounded-full"></div>
-                                      <span className="text-xs font-medium text-slate-600">Today</span>
-                                    </div>
-                                    <div className="space-y-1">
-                                      <div className="text-lg font-bold text-slate-800">{todayData.count}</div>
-                                      <div className="text-xs font-medium text-slate-600">₪{todayData.amount ? Math.ceil(todayData.amount).toLocaleString() : '0'}</div>
-                                        </div>
-                                    </div>
-                                  <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg p-3 border border-purple-400">
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <div className="w-2 h-2 bg-white rounded-full"></div>
-                                      <span className="text-xs font-medium text-white">Last 30d</span>
+                    <div className="md:hidden space-y-4">
+                      {/* Period Selector */}
+                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3">
+                        <div className="grid grid-cols-4 gap-2">
+                          <button
+                            onClick={() => setMobileCardPeriod('today')}
+                            className={`px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
+                              mobileCardPeriod === 'today'
+                                ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-md'
+                                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                            }`}
+                          >
+                            Today
+                          </button>
+                          <button
+                            onClick={() => setMobileCardPeriod('last30d')}
+                            className={`px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
+                              mobileCardPeriod === 'last30d'
+                                ? 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-md'
+                                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                            }`}
+                          >
+                            Last 30d
+                          </button>
+                          <div className="relative">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const dropdown = document.getElementById('month-dropdown-mobile');
+                                if (dropdown) {
+                                  dropdown.classList.toggle('hidden');
+                                }
+                              }}
+                              className={`w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
+                                mobileCardPeriod === 'currentMonth'
+                                  ? 'bg-gradient-to-r from-blue-500 to-cyan-600 text-white shadow-md'
+                                  : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                              }`}
+                            >
+                              {selectedMonth}
+                            </button>
+                            <div
+                              id="month-dropdown-mobile"
+                              className="hidden absolute z-50 mt-1 w-full bg-white rounded-lg shadow-lg border border-gray-200 max-h-60 overflow-y-auto"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {months.map((month) => (
+                                <button
+                                  key={month}
+                                  onClick={() => {
+                                    setSelectedMonth(month);
+                                    setMobileCardPeriod('currentMonth');
+                                    const dropdown = document.getElementById('month-dropdown-mobile');
+                                    if (dropdown) {
+                                      dropdown.classList.add('hidden');
+                                    }
+                                  }}
+                                  className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-100 transition-colors ${
+                                    selectedMonth === month ? 'bg-blue-50 text-blue-600 font-medium' : 'text-gray-700'
+                                  }`}
+                                >
+                                  {month}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => setMobileCardPeriod('target')}
+                            className={`px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
+                              mobileCardPeriod === 'target'
+                                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-md'
+                                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                            }`}
+                          >
+                            Target
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Cards Grid */}
+                      <div className="grid grid-cols-1 gap-4">
+                        {scoreboardCategories.map((category, index) => {
+                          const todayData = agreementData["Today"]?.[index] || { count: 0, amount: 0, expected: 0 };
+                          const last30Data = agreementData["Last 30d"]?.[index] || { count: 0, amount: 0, expected: 0 };
+                          const monthData = agreementData[selectedMonth]?.[index] || { count: 0, amount: 0, expected: 0 };
+                          const targetData = { count: 0, amount: 0, expected: todayData.expected || last30Data.expected || monthData.expected };
+                          
+                          // Get data based on selected period
+                          const getPeriodData = () => {
+                            switch (mobileCardPeriod) {
+                              case 'today':
+                                return todayData;
+                              case 'last30d':
+                                return last30Data;
+                              case 'currentMonth':
+                                return monthData;
+                              case 'target':
+                                return targetData;
+                              default:
+                                return todayData;
+                            }
+                          };
+                          
+                          const periodData = getPeriodData();
+                          const isFlipped = flippedCards.has(category);
+                          
+                          // Calculate percentage for target
+                          const percentage = periodData.expected > 0 
+                            ? Math.min(100, Math.round((periodData.amount / periodData.expected) * 100))
+                            : 0;
+                          
+                          // Get period label and color
+                          const getPeriodInfo = () => {
+                            switch (mobileCardPeriod) {
+                              case 'today':
+                                return { label: 'Today', color: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
+                              case 'last30d':
+                                return { label: 'Last 30d', color: 'from-purple-500 to-indigo-600', dotColor: 'bg-purple-500' };
+                              case 'currentMonth':
+                                return { label: selectedMonth, color: 'from-blue-500 to-cyan-600', dotColor: 'bg-blue-500' };
+                              case 'target':
+                                return { label: 'Target', color: 'from-emerald-500 to-teal-600', dotColor: 'bg-emerald-500' };
+                              default:
+                                return { label: 'Today', color: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
+                            }
+                          };
+                          
+                          const periodInfo = getPeriodInfo();
+                          
+                          return (
+                            <div key={category} className="relative h-64" style={{ perspective: '1000px' }}>
+                              <div className="relative w-full h-full transition-transform duration-700 cursor-pointer" style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }} onClick={() => handleCardFlip(category)}>
+                                {/* Front of card */}
+                                <div className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden group" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}>
+                                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                                    <h4 className="text-sm font-semibold text-slate-800 text-center">{category}</h4>
                                   </div>
-                                    <div className="space-y-1">
-                                      <div className="text-lg font-bold text-white">{last30Data.count}</div>
-                                      <div className="text-xs font-medium text-white/90">₪{last30Data.amount ? Math.ceil(last30Data.amount).toLocaleString() : '0'}</div>
-                                </div>
+                                  <div className="p-4">
+                                    <div className={`bg-gradient-to-br ${periodInfo.color} rounded-lg p-4 border border-opacity-20 shadow-md`}>
+                                      <div className="flex items-center gap-2 mb-3">
+                                        <div className={`w-2.5 h-2.5 ${periodInfo.dotColor} rounded-full shadow-sm`}></div>
+                                        <span className="text-xs font-semibold text-white uppercase tracking-wide">{periodInfo.label}</span>
+                                      </div>
+                                      <div className="space-y-2">
+                                        <div>
+                                          <div className="text-2xl font-bold text-white mb-1">{periodData.count}</div>
+                                          <div className="text-xs font-medium text-white/90">Contracts</div>
+                                        </div>
+                                        <div className="pt-2 border-t border-white/20">
+                                          <div className="text-lg font-bold text-white mb-1">₪{periodData.amount ? Math.ceil(periodData.amount).toLocaleString() : '0'}</div>
+                                          <div className="text-xs font-medium text-white/90">Amount</div>
+                                        </div>
+                                        {mobileCardPeriod === 'target' && (
+                                          <div className="pt-2 border-t border-white/20">
+                                            <div className="flex items-center justify-between mb-1">
+                                              <span className="text-xs font-medium text-white/90">Progress</span>
+                                              <span className="text-xs font-bold text-white">{percentage}%</span>
+                                            </div>
+                                            <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden">
+                                              <div 
+                                                className={`h-full bg-white rounded-full transition-all duration-500 ${periodInfo.color}`}
+                                                style={{ width: `${percentage}%` }}
+                                              ></div>
+                                            </div>
+                                            <div className="text-xs font-medium text-white/80 mt-1">Target: ₪{periodData.expected ? Math.ceil(periodData.expected).toLocaleString() : '0'}</div>
+                                          </div>
+                                        )}
+                                        {mobileCardPeriod !== 'target' && periodData.expected > 0 && (
+                                          <div className="pt-2 border-t border-white/20">
+                                            <div className="flex items-center justify-between mb-1">
+                                              <span className="text-xs font-medium text-white/90">Target</span>
+                                              <span className="text-xs font-bold text-white">₪{Math.ceil(periodData.expected).toLocaleString()}</span>
+                                            </div>
+                                            <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden mt-1">
+                                              <div 
+                                                className={`h-full bg-white rounded-full transition-all duration-500`}
+                                                style={{ width: `${percentage}%` }}
+                                              ></div>
+                                            </div>
+                                          </div>
+                                        )}
                                       </div>
                                     </div>
                                   </div>
-                              <div className="absolute bottom-2 right-2 text-xs text-gray-400">Tap to view</div>
-                              </div>
-                            <div className="absolute inset-0 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl border border-purple-300 shadow-lg overflow-hidden" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
-                              <div className="px-4 py-3 bg-white/10 border-b border-white/20">
-                                <h4 className="text-sm font-semibold text-white text-center">{category} - 30 Day Trend</h4>
-                              </div>
-                              <div className="p-4 h-full">
-                                <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
-                                  {chartData && chartData.length > 0 ? (
-                                    <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
-                                      <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                        <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} interval={5} />
-                                        <YAxis tick={{ fontSize: 10, fill: 'white' }} axisLine={{ stroke: 'white' }} tickLine={{ stroke: 'white' }} width={25} />
-                                        <Tooltip contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} itemStyle={{ color: '#6366f1', fontWeight: 600 }} />
-                                        <Line type="monotone" dataKey="contracts" stroke="#ffffff" strokeWidth={3} dot={{ r: 3, fill: '#fff' }} />
-                                      </LineChart>
-                                    </ResponsiveContainer>
-                                  ) : (
-                                    <div className="flex items-center justify-center h-full text-white/70 text-sm">
-                                      No data available
-                                    </div>
-                                  )}
                                 </div>
-                                                             </div>
-                             </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                                
+                                {/* Back of card - Chart */}
+                                <div className={`absolute inset-0 bg-gradient-to-br ${periodInfo.color} rounded-xl border border-opacity-30 shadow-lg overflow-hidden`} style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
+                                  <div className="px-4 py-3 bg-white/10 border-b border-white/20">
+                                    <h4 className="text-sm font-semibold text-white text-center">{category} - {periodInfo.label} Trend</h4>
+                                  </div>
+                                  <div className="p-4 h-full">
+                                    <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
+                                      {(() => {
+                                        // Use real chart data if available, otherwise fallback to empty
+                                        const realChartData = departmentChartData[category];
+                                        const chartData = realChartData && realChartData.length > 0 
+                                          ? realChartData 
+                                          : [];
+                                        
+                                        return chartData && chartData.length > 0 ? (
+                                          <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
+                                            <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                              <XAxis 
+                                                dataKey="date" 
+                                                tick={{ fontSize: 10, fill: 'white' }} 
+                                                axisLine={{ stroke: 'white' }} 
+                                                tickLine={{ stroke: 'white' }} 
+                                                interval={Math.floor(chartData.length / 6)} 
+                                              />
+                                              <YAxis 
+                                                tick={{ fontSize: 10, fill: 'white' }} 
+                                                axisLine={{ stroke: 'white' }} 
+                                                tickLine={{ stroke: 'white' }} 
+                                                width={25} 
+                                              />
+                                              <Tooltip 
+                                                contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} 
+                                                itemStyle={{ color: '#6366f1', fontWeight: 600 }}
+                                                formatter={(value: number) => [value, 'Contracts']}
+                                              />
+                                              <Line 
+                                                type="monotone" 
+                                                dataKey="contracts" 
+                                                stroke="#ffffff" 
+                                                strokeWidth={3} 
+                                                dot={{ r: 3, fill: '#fff' }} 
+                                              />
+                                            </LineChart>
+                                          </ResponsiveContainer>
+                                        ) : (
+                                          <div className="flex items-center justify-center h-full text-white/70 text-sm">
+                                            No data available
+                                          </div>
+                                        );
+                                      })()}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
