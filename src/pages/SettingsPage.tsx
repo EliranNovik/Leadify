@@ -452,7 +452,9 @@ const SettingsPage: React.FC = () => {
   const isDarkMode = settings.theme === 'dark';
   const isAltTheme = settings.theme === 'alternative';
 
-  const pageWrapperClass = `min-h-screen p-3 sm:p-6 transition-all duration-500 ${
+  const pageWrapperClass = `min-h-screen transition-all duration-500 ${
+    activeSection === 'calendar' ? 'p-0 sm:p-6' : 'p-3 sm:p-6'
+  } ${
     isDarkMode
       ? 'bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] text-white'
       : isAltTheme
@@ -465,15 +467,21 @@ const SettingsPage: React.FC = () => {
       ? 'p-3 sm:p-4 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
       : isAltTheme
         ? 'p-3 sm:p-4 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_20px_45px_rgba(6,95,70,0.35)]'
-        : 'p-3 sm:p-4 bg-base-200'
+        : 'p-3 sm:p-4'
   }`;
 
   const contentShellClass = `rounded-xl transition-all duration-300 ${
-    isDarkMode
-      ? 'p-3 sm:p-6 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
-      : isAltTheme
-        ? 'p-3 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
-        : 'p-3 sm:p-6 bg-base-200'
+    activeSection === 'calendar' 
+      ? (isDarkMode
+          ? 'p-0 sm:p-6 bg-white/10 border-0 sm:border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+          : isAltTheme
+            ? 'p-0 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border-0 sm:border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
+            : 'p-0 sm:p-6')
+      : (isDarkMode
+          ? 'p-3 sm:p-6 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+          : isAltTheme
+            ? 'p-3 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
+            : 'p-3 sm:p-6')
   }`;
 
   const innerCardClass = `rounded-lg transition-all duration-300 ${
@@ -523,17 +531,17 @@ const SettingsPage: React.FC = () => {
         {/* Header */}
         <div className="mb-6 sm:mb-8">
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 mb-4">
-            <div className={`p-2 sm:p-3 ${headerBadgeClass}`}>
+            <div className={`hidden sm:flex p-2 sm:p-3 ${headerBadgeClass}`}>
               <Cog6ToothIcon className={`w-6 h-6 sm:w-8 sm:h-8 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
             </div>
-            <div>
+            <div className="px-2 sm:px-0">
               <h1 className={`text-2xl sm:text-3xl font-bold ${headerTextClass}`}>Settings</h1>
               <p className={`text-sm sm:text-base ${mutedTextClass}`}>Customize your CRM experience</p>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 sm:gap-6">
+        <div className={`grid grid-cols-1 lg:grid-cols-4 ${activeSection === 'calendar' ? 'gap-0 sm:gap-6' : 'gap-4 sm:gap-6'}`}>
           {/* Settings Navigation */}
           <div className="lg:col-span-1">
             <div className={shellCardClass}>
@@ -597,23 +605,38 @@ const SettingsPage: React.FC = () => {
           <div className="lg:col-span-3">
             {activeSettingsSection && (
               <div className={contentShellClass}>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 mb-4 sm:mb-6">
-                  <activeSettingsSection.icon className={`w-5 h-5 sm:w-6 sm:h-6 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 mb-4 sm:mb-6 px-2 sm:px-0">
+                  <activeSettingsSection.icon className={`hidden sm:block w-5 h-5 sm:w-6 sm:h-6 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
                   <h2 className={`text-xl sm:text-2xl font-semibold ${headerTextClass}`}>
                     {activeSettingsSection.title}
                   </h2>
                 </div>
                 
                 <div className="space-y-4 sm:space-y-6">
-                  {activeSettingsSection.items.map((item) => (
-                    <div key={item.id} className={innerCardClass}>
-                      {renderSettingItem(item)}
+                  {/* Show "In progress..." for notifications, crm, security, and data sections */}
+                  {(activeSection === 'notifications' || activeSection === 'crm' || activeSection === 'security' || activeSection === 'data') ? (
+                    <div className={`text-center py-8 ${mutedTextClass}`}>
+                      <p className="text-lg">In progress...</p>
                     </div>
-                  ))}
+                  ) : (
+                    <>
+                      {activeSettingsSection.items.map((item) => (
+                        <div key={item.id} className={innerCardClass}>
+                          {renderSettingItem(item)}
+                        </div>
+                      ))}
+                    </>
+                  )}
                   
                   {/* Special case for Calendar section - add tabbed interface */}
                   {activeSection === 'calendar' && (
-                    <div className={innerCardClass}>
+                    <div className={`${activeSection === 'calendar' ? 'p-2 sm:p-4' : innerCardClass} ${
+                      isDarkMode
+                        ? 'bg-white/5 border border-white/10 shadow-md'
+                        : isAltTheme
+                          ? 'bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
+                          : 'bg-base-100'
+                    } rounded-lg transition-all duration-300`}>
                       {/* Tab Navigation */}
                       <div className={`flex border-b ${tabBorderClass} mb-4 sm:mb-6 overflow-x-auto`}>
                         <button

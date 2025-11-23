@@ -7,7 +7,9 @@ import {
   TrashIcon, 
   ClockIcon,
   CheckIcon,
-  XMarkIcon
+  XMarkIcon,
+  ChevronDownIcon,
+  ChevronUpIcon
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 
@@ -57,6 +59,8 @@ const EmployeeAvailability: React.FC = () => {
   });
   const [loading, setLoading] = useState(false);
   const [outlookSyncEnabled, setOutlookSyncEnabled] = useState(false);
+  const [showAllUnavailableTimes, setShowAllUnavailableTimes] = useState(false);
+  const [showAllUnavailableRanges, setShowAllUnavailableRanges] = useState(false);
 
   // Get current month and year
   const currentMonth = currentDate.getMonth();
@@ -864,9 +868,22 @@ const EmployeeAvailability: React.FC = () => {
         ) : (
           <div className="space-y-2 sm:space-y-3">
             {unavailableTimes
-              .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+              .sort((a, b) => {
+                // Sort by date first (newest first)
+                const dateCompare = new Date(b.date).getTime() - new Date(a.date).getTime();
+                if (dateCompare !== 0) return dateCompare;
+                // If same date, sort by start time (newest first)
+                return b.startTime.localeCompare(a.startTime);
+              })
+              .slice(0, showAllUnavailableTimes ? unavailableTimes.length : 2)
               .map(time => (
-                <div key={time.id} className="flex items-center justify-between gap-2 p-3 sm:p-4 bg-base-200 rounded-lg">
+                <div 
+                  key={time.id} 
+                  className="flex items-center justify-between gap-2 p-3 sm:p-4 bg-white rounded-lg"
+                  style={{
+                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                  }}
+                >
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
                       <div className="text-sm font-medium">
@@ -897,6 +914,24 @@ const EmployeeAvailability: React.FC = () => {
                   </button>
                 </div>
               ))}
+            {unavailableTimes.length > 2 && (
+              <button
+                className="w-full flex items-center justify-center gap-2 p-3 text-sm font-medium text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                onClick={() => setShowAllUnavailableTimes(!showAllUnavailableTimes)}
+              >
+                {showAllUnavailableTimes ? (
+                  <>
+                    <ChevronUpIcon className="w-5 h-5" />
+                    Show Less
+                  </>
+                ) : (
+                  <>
+                    <ChevronDownIcon className="w-5 h-5" />
+                    Show All ({unavailableTimes.length})
+                  </>
+                )}
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -911,9 +946,22 @@ const EmployeeAvailability: React.FC = () => {
         ) : (
           <div className="space-y-2 sm:space-y-3">
             {unavailableRanges
-              .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
+              .sort((a, b) => {
+                // Sort by start date first (newest first)
+                const dateCompare = new Date(b.startDate).getTime() - new Date(a.startDate).getTime();
+                if (dateCompare !== 0) return dateCompare;
+                // If same start date, sort by end date (newest first)
+                return new Date(b.endDate).getTime() - new Date(a.endDate).getTime();
+              })
+              .slice(0, showAllUnavailableRanges ? unavailableRanges.length : 2)
               .map(range => (
-                <div key={range.id} className="flex items-center justify-between gap-2 p-3 sm:p-4 bg-base-200 rounded-lg">
+                <div 
+                  key={range.id} 
+                  className="flex items-center justify-between gap-2 p-3 sm:p-4 bg-white rounded-lg"
+                  style={{
+                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                  }}
+                >
                   <div className="flex-1 min-w-0">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
                       <div className="text-sm font-medium">
@@ -939,6 +987,24 @@ const EmployeeAvailability: React.FC = () => {
                   </button>
                 </div>
               ))}
+            {unavailableRanges.length > 2 && (
+              <button
+                className="w-full flex items-center justify-center gap-2 p-3 text-sm font-medium text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                onClick={() => setShowAllUnavailableRanges(!showAllUnavailableRanges)}
+              >
+                {showAllUnavailableRanges ? (
+                  <>
+                    <ChevronUpIcon className="w-5 h-5" />
+                    Show Less
+                  </>
+                ) : (
+                  <>
+                    <ChevronDownIcon className="w-5 h-5" />
+                    Show All ({unavailableRanges.length})
+                  </>
+                )}
+              </button>
+            )}
           </div>
         )}
       </div>

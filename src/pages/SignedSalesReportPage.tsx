@@ -944,52 +944,107 @@ const resolveLegacyLanguage = (lead: any) => {
         }
       });
 
-      // Fetch stage changes for new leads (lead_leadstage table)
+      // Fetch stage changes for new leads (leads_leadstage table)
+      // For new leads, use newlead_id (UUID) and filter for stage 60 (client signed agreement)
       const newLeadStageDates = new Map<string, string>();
       try {
-        const stageColumns = 'id, lead_id, stage, created_at, cdate, date';
-        let newLeadStageQuery = supabase.from('lead_leadstage').select(stageColumns);
-        if (startIso) newLeadStageQuery = newLeadStageQuery.gte('created_at', startIso);
-        if (endIso) newLeadStageQuery = newLeadStageQuery.lt('created_at', endIso);
-        let newLeadStageResponse = await newLeadStageQuery;
-        if (newLeadStageResponse.error && newLeadStageResponse.error.code === '42703') {
-          // Fallback to cdate if created_at column does not exist
-          newLeadStageQuery = supabase.from('lead_leadstage').select(stageColumns);
-          if (startIso) newLeadStageQuery = newLeadStageQuery.gte('cdate', startIso);
-          if (endIso) newLeadStageQuery = newLeadStageQuery.lt('cdate', endIso);
-          newLeadStageResponse = await newLeadStageQuery;
-        }
+        const stageColumns = 'id, newlead_id, stage, cdate, date';
+        // Query all stage 60 records for new leads, then filter by date client-side
+        const { data: newLeadStageResponse, error: newLeadStageError } = await supabase
+          .from('leads_leadstage')
+          .select(stageColumns)
+          .not('newlead_id', 'is', null) // Only new leads (not legacy)
+          .eq('stage', 60); // Stage 60 = Client signed agreement
 
-        if (newLeadStageResponse.error) {
-          throw newLeadStageResponse.error;
+        if (newLeadStageError) {
+          console.warn('Error fetching new lead stage history:', newLeadStageError);
+          // Continue without stage data - not critical
+        } else {
+          (newLeadStageResponse || [])
+            .filter(record => record?.newlead_id) // Filter for new leads only
+            .filter(record => {
+              // Filter by date range client-side
+              const timestamp = record.date || record.cdate || null;
+              if (!timestamp) return false;
+              const recordTime = new Date(timestamp).getTime();
+              if (Number.isNaN(recordTime)) return false;
+              if (startIso) {
+                const startTime = new Date(startIso).getTime();
+                if (recordTime < startTime) return false;
+              }
+              if (endIso) {
+                const endTime = new Date(endIso).getTime();
+                if (recordTime >= endTime) return false;
+              }
+              return true;
+            })
+            .forEach(record => {
+              const leadId = record.newlead_id?.toString?.();
+              if (!leadId) return;
+              // Use date or cdate as timestamp
+              const timestamp = record.date || record.cdate || null;
+              if (!timestamp) return;
+              const existingTimestamp = newLeadStageDates.get(leadId);
+              const nextTime = new Date(timestamp).getTime();
+              if (!existingTimestamp) {
+                newLeadStageDates.set(leadId, timestamp);
+                return;
+              }
+              const existingTime = new Date(existingTimestamp).getTime();
+              if (Number.isNaN(existingTime) || (!Number.isNaN(nextTime) && nextTime > existingTime)) {
+                newLeadStageDates.set(leadId, timestamp);
+              }
+            });
         }
-
-        (newLeadStageResponse.data || [])
-          .filter(record => record?.lead_id)
-          .filter(record => stageMatchesSigned(record.stage))
-          .forEach(record => {
-            const leadId = record.lead_id?.toString?.();
-            if (!leadId) return;
-            const timestamp = record.created_at || record.cdate || record.date || null;
-            if (!timestamp) return;
-            const existingTimestamp = newLeadStageDates.get(leadId);
-            const nextTime = new Date(timestamp).getTime();
-            if (!existingTimestamp) {
-              newLeadStageDates.set(leadId, timestamp);
-              return;
-            }
-            const existingTime = new Date(existingTimestamp).getTime();
-            if (Number.isNaN(existingTime) || (!Number.isNaN(nextTime) && nextTime > existingTime)) {
-              newLeadStageDates.set(leadId, timestamp);
-            }
-          });
       } catch (stageError) {
         console.error('Failed to load new lead stage history:', stageError);
       }
 
+      // Also fetch leads with date_signed in the date range (second factor)
+      const newLeadsWithDateSigned = new Map<string, string>();
+      try {
+        let dateSignedQuery = supabase
+          .from('leads')
+          .select('id, date_signed')
+          .not('date_signed', 'is', null);
+
+        if (startIso) {
+          dateSignedQuery = dateSignedQuery.gte('date_signed', startIso);
+        }
+        if (endIso) {
+          dateSignedQuery = dateSignedQuery.lt('date_signed', endIso);
+        }
+
+        const { data: dateSignedData, error: dateSignedError } = await dateSignedQuery;
+
+        if (dateSignedError) {
+          console.warn('Error fetching leads with date_signed:', dateSignedError);
+        } else {
+          (dateSignedData || []).forEach(lead => {
+            if (lead?.id && lead?.date_signed) {
+              const leadId = lead.id.toString();
+              const existingTimestamp = newLeadsWithDateSigned.get(leadId);
+              const signedTime = new Date(lead.date_signed).getTime();
+              if (!existingTimestamp) {
+                newLeadsWithDateSigned.set(leadId, lead.date_signed);
+              } else {
+                const existingTime = new Date(existingTimestamp).getTime();
+                if (Number.isNaN(existingTime) || (!Number.isNaN(signedTime) && signedTime > existingTime)) {
+                  newLeadsWithDateSigned.set(leadId, lead.date_signed);
+                }
+              }
+            }
+          });
+        }
+      } catch (dateSignedError) {
+        console.error('Failed to load leads with date_signed:', dateSignedError);
+      }
+
+      // Combine both sources: contracts, stage 60 records, and date_signed
       const combinedNewLeadIdSet = new Set<string>();
       newLeadContracts.forEach((_info, clientId) => combinedNewLeadIdSet.add(clientId));
       newLeadStageDates.forEach((_timestamp, leadId) => combinedNewLeadIdSet.add(leadId));
+      newLeadsWithDateSigned.forEach((_timestamp, leadId) => combinedNewLeadIdSet.add(leadId));
 
       let newLeads: any[] = [];
       const allNewLeadIds = Array.from(combinedNewLeadIdSet).filter(Boolean);
@@ -1192,8 +1247,10 @@ const resolveLegacyLanguage = (lead: any) => {
           lead.balance_currency
         );
         const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
+        // Get sign date from multiple sources: contract, stage 60 record, or date_signed
         const stageDate = newLeadStageDates.get(String(lead.id));
-        const signDate = contractInfo?.signedAt || stageDate || lead.date_signed || null;
+        const dateSignedValue = newLeadsWithDateSigned.get(String(lead.id));
+        const signDate = contractInfo?.signedAt || stageDate || dateSignedValue || lead.date_signed || null;
 
         const schedulerDisplay = resolveEmployeeDisplayValue(lead.scheduler);
         const managerDisplay = resolveEmployeeDisplayValue(lead.manager);

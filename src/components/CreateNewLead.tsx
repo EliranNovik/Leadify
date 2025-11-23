@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
@@ -31,6 +31,9 @@ const CreateNewLead: React.FC = () => {
   const [languageOptions, setLanguageOptions] = useState<Array<{ id: number; name: string | null }>>([]);
   const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([]);
   const [selectedCountryCode, setSelectedCountryCode] = useState<string>('+972'); // Default to Israel
+  const [sourceSearchTerm, setSourceSearchTerm] = useState<string>('');
+  const [showSourceDropdown, setShowSourceDropdown] = useState<boolean>(false);
+  const sourceInputRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -108,8 +111,46 @@ const CreateNewLead: React.FC = () => {
     fetchSourcesAndLanguages();
   }, []);
 
+  // Auto-select source if search term exactly matches an option
+  useEffect(() => {
+    const exactMatch = sourceOptions.find(
+      source => source.name.toLowerCase() === sourceSearchTerm.toLowerCase()
+    );
+    if (exactMatch) {
+      setForm(prev => ({ ...prev, source: exactMatch.name }));
+    } else if (sourceSearchTerm && !exactMatch) {
+      // Clear form.source if search term doesn't match exactly
+      setForm(prev => ({ ...prev, source: '' }));
+    }
+  }, [sourceSearchTerm, sourceOptions]);
+
+  // Close source dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (sourceInputRef.current && !sourceInputRef.current.contains(event.target as Node)) {
+        setShowSourceDropdown(false);
+      }
+    };
+
+    if (showSourceDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showSourceDropdown]);
+
+  // Filter source options based on search term
+  const filteredSourceOptions = sourceOptions.filter(source =>
+    source.name.toLowerCase().includes(sourceSearchTerm.toLowerCase())
+  );
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm({ ...form, [e.target.name]: e.target.value });
+  };
+
+  const handleSourceSelect = (sourceName: string) => {
+    setForm({ ...form, source: sourceName });
+    setSourceSearchTerm(sourceName);
+    setShowSourceDropdown(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -216,18 +257,42 @@ const CreateNewLead: React.FC = () => {
         </div>
         <div>
           <label className="block font-semibold mb-1">Source:</label>
-          <select
-            name="source"
-            className="select select-bordered w-full"
-            value={form.source}
-            onChange={handleChange}
-            required
-          >
-            <option value="">----------</option>
-            {sourceOptions.map(source => (
-              <option key={source.id} value={source.name}>{source.name}</option>
-            ))}
-          </select>
+          <div className="relative" ref={sourceInputRef}>
+            <input
+              type="text"
+              className="input input-bordered w-full"
+              value={sourceSearchTerm}
+              onChange={(e) => {
+                setSourceSearchTerm(e.target.value);
+                setShowSourceDropdown(true);
+                if (e.target.value !== form.source) {
+                  setForm({ ...form, source: '' });
+                }
+              }}
+              onFocus={() => setShowSourceDropdown(true)}
+              placeholder="Search or type source..."
+              required
+            />
+            {showSourceDropdown && filteredSourceOptions.length > 0 && (
+              <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                {filteredSourceOptions.map(source => (
+                  <button
+                    key={source.id}
+                    type="button"
+                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                    onClick={() => handleSourceSelect(source.name)}
+                  >
+                    {source.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {showSourceDropdown && filteredSourceOptions.length === 0 && sourceSearchTerm && (
+              <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                No sources found
+              </div>
+            )}
+          </div>
         </div>
         <div>
           <label className="block font-semibold mb-1">Language:</label>

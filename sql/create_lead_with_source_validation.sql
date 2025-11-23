@@ -38,7 +38,6 @@ DECLARE
   v_last_leads_lead_id bigint;
   v_last_leads_number text;
   v_max_number bigint;
-  v_category_name text;
   v_new_contact_id bigint;
   v_contact_cdate date;
   v_contact_udate date;
@@ -69,19 +68,8 @@ BEGIN
     -- Determine final topic (use default_topic if provided, otherwise use passed topic)
     v_final_topic := COALESCE(v_source_record.default_topic, p_lead_topic);
     
-    -- Get category name if default_category_id is provided
-    IF v_source_record.default_category_id IS NOT NULL THEN
-      SELECT mc.name INTO v_category_name
-      FROM misc_category mc
-      WHERE mc.id = v_source_record.default_category_id;
-      
-      -- If category found, use the name; otherwise keep it as NULL
-      IF v_category_name IS NOT NULL THEN
-        v_final_category_id := NULL; -- Clear the ID since we'll use the name
-      END IF;
-    ELSE
-      v_category_name := NULL;
-    END IF;
+    -- Set the category_id from the source's default_category_id
+    v_final_category_id := v_source_record.default_category_id;
     
   ELSE
     -- No source code provided, use defaults
@@ -138,7 +126,7 @@ BEGIN
     language,
     source,
     source_id,
-    category,
+    category_id,
     stage,
     status,
     created_at,
@@ -155,7 +143,7 @@ BEGIN
     p_lead_language,
     v_source_name,
     v_source_id,
-    v_category_name,
+    v_final_category_id,
     0,
     'new',
     now(),

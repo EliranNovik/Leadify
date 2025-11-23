@@ -629,7 +629,22 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       try {
         // Get contact_id if we have a selected contact from the contact selector
-        const contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+        // Also try to find it from leadContacts if not set yet
+        let contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+        
+        // If we don't have a contactId but we have leadContacts, try to find the matching contact
+        if (!contactId && leadContacts.length > 0) {
+          const matchingContact = leadContacts.find(c => 
+            (c.email && selectedClient.email && c.email === selectedClient.email) ||
+            (c.phone && selectedClient.phone && c.phone === selectedClient.phone) ||
+            (c.mobile && (selectedClient.mobile || selectedClient.phone) && c.mobile === (selectedClient.mobile || selectedClient.phone)) ||
+            (c.name && selectedClient.name && c.name === selectedClient.name)
+          );
+          if (matchingContact) {
+            contactId = matchingContact.id;
+            console.log(`📧 Found matching contact in leadContacts: ${matchingContact.name} (ID: ${contactId})`);
+          }
+        }
         
         // Only log initial loads, not polling (reduces console noise)
         if (!isPolling) {
@@ -901,7 +916,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         clearInterval((window as any).__whatsappPollInterval);
       }
     };
-  }, [selectedClient]);
+  }, [selectedClient, selectedContactId, leadContacts, propSelectedContact]);
 
   // Load user names for edited/deleted messages
   useEffect(() => {
@@ -2012,10 +2027,57 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     return (
                       <div
                         key={client.id}
-                        onClick={() => {
+                        onClick={async () => {
+                          console.log(`👤 Selecting WhatsApp client: ${client.name} (ID: ${client.id})`);
+                          
+                          // Clear previous client's messages immediately
+                          setMessages([]);
+                          setLoadingMessages(true);
                           setSelectedClient(client);
                           setShouldAutoScroll(true); // Trigger auto-scroll when chat is selected
                           setIsFirstLoad(true); // Mark as first load
+                          
+                          // Fetch contacts for this client and set selectedContactId immediately
+                          try {
+                            const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+                            const leadId = isLegacyLead 
+                              ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+                              : client.id;
+                            
+                            const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
+                            
+                            // Deduplicate contacts by ID to prevent duplicate key warnings
+                            const uniqueContacts = fetchedContacts.filter((contact, index, self) => 
+                              index === self.findIndex(c => c.id === contact.id)
+                            );
+                            
+                            setLeadContacts(uniqueContacts);
+                            
+                            // Find the matching contact from the fetched contacts
+                            // Try to match by email, phone, or name
+                            const matchingContact = uniqueContacts.find(c => 
+                              (c.email && client.email && c.email === client.email) ||
+                              (c.phone && client.phone && c.phone === client.phone) ||
+                              (c.mobile && (client.mobile || client.phone) && c.mobile === (client.mobile || client.phone)) ||
+                              (c.name && client.name && c.name === client.name)
+                            );
+                            
+                            if (matchingContact) {
+                              console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
+                              setSelectedContactId(matchingContact.id);
+                            } else if (uniqueContacts.length > 0) {
+                              // Fallback to main contact if no match found
+                              const mainContact = uniqueContacts.find(c => c.isMain) || uniqueContacts[0];
+                              console.log(`⚠️ No exact match, using main contact: ${mainContact.name} (ID: ${mainContact.id})`);
+                              setSelectedContactId(mainContact.id);
+                            } else {
+                              setSelectedContactId(null);
+                            }
+                          } catch (error) {
+                            console.error('Error fetching contacts for selected client:', error);
+                            setSelectedContactId(null);
+                          }
+                          
                           if (isMobile) {
                             setShowChat(true);
                           }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { getStageName } from '../lib/stageUtils';
+import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { 
   ArrowLeftIcon, 
   UserIcon, 
@@ -45,7 +45,6 @@ const MasterLeadPage: React.FC = () => {
   const [subLeadsLoading, setSubLeadsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [masterLeadInfo, setMasterLeadInfo] = useState<any>(null);
-  const [stageMap, setStageMap] = useState<Map<string, string>>(new Map());
 
   // Add compact table styles
   const compactTableStyles = `
@@ -117,6 +116,25 @@ const MasterLeadPage: React.FC = () => {
     }
   };
 
+  // Helper function to get contrasting text color based on background
+  const getContrastingTextColor = (hexColor?: string | null) => {
+    if (!hexColor) return '#ffffff';
+    let sanitized = hexColor.trim();
+    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+    if (sanitized.length === 3) {
+      sanitized = sanitized.split('').map(char => char + char).join('');
+    }
+    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+      return '#ffffff';
+    }
+    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return luminance > 0.55 ? '#111827' : '#ffffff';
+  };
+
   // Helper function to format contact information - only show name
   const getContactInfo = (lead: any, contactMap: Map<string, any>) => {
     // Get contact info from the contact map
@@ -133,13 +151,35 @@ const MasterLeadPage: React.FC = () => {
     return '---';
   };
 
-  const getStageBadge = (stage?: string | number, stageMap?: Map<string, string>) => {
-    if (!stage) return <span className="badge" style={{ backgroundColor: '#391bcb', color: 'white' }}>Unknown</span>;
+  const getStageBadge = (stage?: string | number) => {
+    if (!stage && stage !== 0) {
+      return (
+        <span className="badge badge-sm bg-gray-100 text-gray-600">
+          No Stage
+        </span>
+      );
+    }
     
-    const stageName = stageMap?.get(String(stage)) || String(stage);
+    const stageStr = String(stage);
+    const stageName = getStageName(stageStr);
+    const stageColor = getStageColour(stageStr);
+    const textColor = getContrastingTextColor(stageColor);
     
-    // All stage badges use the same custom color
-    return <span className="badge" style={{ backgroundColor: '#391bcb', color: 'white' }}>{stageName}</span>;
+    // Use the stage color if available, otherwise use default purple
+    const backgroundColor = stageColor || '#3b28c7';
+    
+    return (
+      <span 
+        className="badge badge-sm text-xs px-2 py-1"
+        style={{
+          backgroundColor: backgroundColor,
+          color: textColor,
+          borderColor: backgroundColor,
+        }}
+      >
+        {stageName}
+      </span>
+    );
   };
 
   const buildClientRoute = (manualId?: string | null, leadNumberValue?: string | null) => {
@@ -199,7 +239,6 @@ const MasterLeadPage: React.FC = () => {
           setError('Failed to fetch sub-leads');
           setMasterLeadInfo(masterLead);
           setSubLeads([]);
-          setStageMap(new Map());
           return true;
         }
 
@@ -322,7 +361,7 @@ const MasterLeadPage: React.FC = () => {
             currency: currencyCode,
             currency_symbol: getCurrencySymbol(currencyCode),
             category: categoryName,
-            stage: resolveStageName(lead.stage),
+            stage: String(lead.stage), // Store stage ID for badge rendering
             contact: contactName,
             applicants: Number(applicantsValue) || 0,
             agreement: agreementNode,
@@ -349,7 +388,6 @@ const MasterLeadPage: React.FC = () => {
 
         setMasterLeadInfo(masterLead);
         setSubLeads(processedSubLeads);
-        setStageMap(stageNameLookup);
         return true;
       } catch (error) {
         console.error('Error handling new master lead:', error);
@@ -420,9 +458,12 @@ const MasterLeadPage: React.FC = () => {
 
         setMasterLeadInfo(masterLead);
 
+        // Initialize stage names cache first for proper badge rendering
+        await fetchStageNames();
+
         // Fetch sub-leads with related data including employee joins
         setSubLeadsLoading(true);
-        const { data: subLeadsData, error: subLeadsError } = await supabase
+        const subLeadsQuery = supabase
           .from('leads_lead')
           .select(`
             id, name, total, stage, manual_id, master_id,
@@ -451,35 +492,35 @@ const MasterLeadPage: React.FC = () => {
           .order('id', { ascending: true })
           .limit(50);
 
+        // Run queries in parallel for better performance
+        const [
+          { data: subLeadsData, error: subLeadsError },
+          { data: categories },
+          { data: employees }
+        ] = await Promise.all([
+          subLeadsQuery,
+          supabase
+            .from('misc_category')
+            .select(`
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id (
+                id,
+                name
+              )
+            `)
+            .order('name', { ascending: true }),
+          supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+        ]);
+
         if (subLeadsError) {
           console.error('Error fetching sub-leads:', subLeadsError);
           setError('Failed to fetch sub-leads');
           return;
         }
-
-        // Fetch categories with main categories
-        const { data: categories } = await supabase
-          .from('misc_category')
-          .select(`
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id (
-              id,
-              name
-            )
-          `)
-          .order('name', { ascending: true });
-
-        // Fetch employees
-        const { data: employees } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name');
-
-        // Fetch stage names
-        const { data: stages } = await supabase
-          .from('lead_stages')
-          .select('id, name');
 
         // Fetch contact information for all leads (master + sub-leads)
         const allLeadIds = [masterLead?.id, ...(subLeadsData?.map(lead => lead.id) || [])].filter(Boolean);
@@ -515,9 +556,6 @@ const MasterLeadPage: React.FC = () => {
         const employeeMap = new Map();
         employees?.forEach(emp => employeeMap.set(String(emp.id), emp.display_name));
 
-        const stageMap = new Map();
-        stages?.forEach(stage => stageMap.set(String(stage.id), stage.name));
-        setStageMap(stageMap);
 
         // Create contact lookup map
         const contactMap = new Map();
@@ -595,7 +633,7 @@ const MasterLeadPage: React.FC = () => {
             currency: currencyInfo.currency,
             currency_symbol: currencyInfo.symbol,
             category: getCategoryName(masterLead.category_id, categories || []),
-            stage: stageMap.get(String(masterLead.stage)) || String(masterLead.stage) || 'Unknown',
+            stage: String(masterLead.stage), // Store stage ID for badge rendering
             contact: getContactInfo(masterLead, contactMap),
             applicants: parseInt(masterLead.no_of_applicants) || 0,
             agreement: masterLead.docs_url ? (
@@ -662,7 +700,7 @@ const MasterLeadPage: React.FC = () => {
               currency: currencyInfo.currency,
               currency_symbol: currencyInfo.symbol,
               category: getCategoryName(lead.category_id, categories || []),
-              stage: stageMap.get(String(lead.stage)) || String(lead.stage) || 'Unknown',
+              stage: String(lead.stage), // Store stage ID for badge rendering
               contact: getContactInfo(lead, contactMap),
               applicants: parseInt(lead.no_of_applicants) || 0,
               agreement: lead.docs_url ? (
@@ -835,125 +873,235 @@ const MasterLeadPage: React.FC = () => {
       </div>
 
       {/* Content */}
-      <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
 
-        {/* Sub-leads Table */}
+        {/* Sub-leads Section */}
         <div className="bg-white rounded-lg shadow-sm border">
-          <div className="px-6 py-4 border-b">
-            <h2 className="text-lg font-semibold text-gray-900">Sub-leads</h2>
+          <div className="px-4 sm:px-6 py-3 sm:py-4 border-b">
+            <h2 className="text-base sm:text-lg font-semibold text-gray-900">Sub-leads</h2>
           </div>
           
           {subLeads.length === 0 ? (
-            <div className="px-6 py-12 text-center">
+            <div className="px-4 sm:px-6 py-8 sm:py-12 text-center">
               <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-              <p className="text-gray-500">No sub-leads found for this master lead.</p>
+              <p className="text-sm sm:text-base text-gray-500">No sub-leads found for this master lead.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="table w-full compact-table">
-                <thead>
-                  <tr className="bg-gray-50">
-                    <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Lead
-                    </th>
-                    <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Total
-                    </th>
-                    <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Category
-                    </th>
-                    <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Stage
-                    </th>
-                    <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Contact
-                    </th>
-                    <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Applicants
-                    </th>
-                    <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Agreement
-                    </th>
-                    <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Scheduler
-                    </th>
-                    <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Closer
-                    </th>
-                    <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                      Handler
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="bg-white divide-y divide-gray-200">
-                  {subLeads.map((subLead) => (
-                    <tr 
-                      key={subLead.id} 
-                      className="hover:bg-gray-50 cursor-pointer"
+            <>
+              {/* Mobile Card View */}
+              <div className="md:hidden space-y-4 p-4">
+                {subLeads.map((subLead) => {
+                  const cardClasses = [
+                    'card',
+                    'shadow-lg',
+                    'hover:shadow-2xl',
+                    'transition-all',
+                    'duration-300',
+                    'ease-in-out',
+                    'transform',
+                    'hover:-translate-y-1',
+                    'cursor-pointer',
+                    'group',
+                    'border',
+                    'bg-base-100',
+                    'border-base-200',
+                  ].join(' ');
+
+                  return (
+                    <div
+                      key={subLead.id}
+                      className={cardClasses}
                       onClick={() => handleSubLeadClick(subLead)}
                     >
-                      <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                         
-                          <span className={`hover:text-blue-800 font-medium ${subLead.isMaster ? 'text-blue-700 font-bold' : 'text-blue-600'}`}>
-                            {subLead.lead_number}
-                          </span>
+                      <div className="card-body p-5">
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
+                              {subLead.name || 'Unknown'}
+                            </h2>
+                            {subLead.isMaster && (
+                              <span 
+                                className="badge badge-xs border-2"
+                                style={{
+                                  backgroundColor: '#4218cc',
+                                  color: '#ffffff',
+                                  borderColor: '#4218cc'
+                                }}
+                              >
+                                Master
+                              </span>
+                            )}
+                          </div>
+                          {getStageBadge(subLead.stage)}
                         </div>
-                      </td>
-                      <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <span className="text-gray-900">
-                            {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
-                          </span>
+                        
+                        <p className="text-sm text-base-content/60 font-mono mb-4">
+                          #{subLead.lead_number}
+                        </p>
+
+                        <div className="divider my-0"></div>
+
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+                          <div className="flex items-center gap-2" title="Total">
+                            <CurrencyDollarIcon className="h-4 w-4 text-base-content/50" />
+                            <span className="font-medium">
+                              {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
+                            </span>
+                          </div>
+                          {subLead.category && subLead.category !== 'Unknown' && (
+                            <div className="flex items-center gap-2" title="Category">
+                              <TagIcon className="h-4 w-4 text-base-content/50" />
+                              <span className="truncate">{subLead.category}</span>
+                            </div>
+                          )}
+                          {subLead.contact && subLead.contact !== '---' && (
+                            <div className="flex items-center gap-2" title="Contact">
+                              <UserIcon className="h-4 w-4 text-base-content/50" />
+                              <span className="truncate">{subLead.contact}</span>
+                            </div>
+                          )}
+                          {subLead.applicants > 0 && (
+                            <div className="flex items-center gap-2" title="Applicants">
+                              <UserIcon className="h-4 w-4 text-base-content/50" />
+                              <span>{subLead.applicants} applicant{subLead.applicants !== 1 ? 's' : ''}</span>
+                            </div>
+                          )}
                         </div>
-                      </td>
-                      <td className="hidden md:table-cell px-3 sm:px-6 py-4 whitespace-nowrap">
-                        <div className="flex items-center">
-                          <span className="text-gray-900">{subLead.category}</span>
-                        </div>
-                      </td>
-                      <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
-                        {getStageBadge(subLead.stage, stageMap)}
-                      </td>
-                      <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                        <div className="text-sm">
-                          {subLead.contact}
-                        </div>
-                      </td>
-                      <td className="hidden sm:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                        <div className="flex items-center">
-                          <span className="text-sm font-medium">
-                            {subLead.applicants || 0}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                        {subLead.agreement}
-                      </td>
-                      <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                        {subLead.scheduler}
-                      </td>
-                      <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                        {subLead.closer}
-                      </td>
-                      <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
-                        {subLead.handler}
-                      </td>
+
+                        {subLead.agreement && subLead.agreement !== '---' && (
+                          <div 
+                            className="mt-4 pt-4 border-t border-base-200/50"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <div className="flex items-center gap-2 text-sm">
+                              <LinkIcon className="h-4 w-4 text-base-content/50" />
+                              {subLead.agreement}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {subLeadsLoading && (
+                  <div className="card bg-base-100 border border-base-200">
+                    <div className="card-body p-5 text-center">
+                      <div className="flex items-center justify-center">
+                        <div className="loading loading-spinner loading-sm mr-2"></div>
+                        <span className="text-base-content/60 text-sm">Loading sub-leads...</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Desktop Table View */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="table w-full compact-table">
+                  <thead>
+                    <tr className="bg-gray-50">
+                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Lead
+                      </th>
+                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Total
+                      </th>
+                      <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Category
+                      </th>
+                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Stage
+                      </th>
+                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Contact
+                      </th>
+                      <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Applicants
+                      </th>
+                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Agreement
+                      </th>
+                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Scheduler
+                      </th>
+                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Closer
+                      </th>
+                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                        Handler
+                      </th>
                     </tr>
-                  ))}
-                  {subLeadsLoading && (
-                    <tr>
-                      <td colSpan={9} className="px-6 py-4 text-center">
-                        <div className="flex items-center justify-center">
-                          <div className="loading loading-spinner loading-sm mr-2"></div>
-                          <span className="text-gray-500">Loading sub-leads...</span>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {subLeads.map((subLead) => (
+                      <tr 
+                        key={subLead.id} 
+                        className="hover:bg-gray-50 cursor-pointer"
+                        onClick={() => handleSubLeadClick(subLead)}
+                      >
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                           
+                            <span className={`hover:text-blue-800 font-medium ${subLead.isMaster ? 'text-blue-700 font-bold' : 'text-blue-600'}`}>
+                              {subLead.lead_number}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <span className="text-gray-900">
+                              {subLead.currency_symbol}{subLead.total?.toLocaleString() || '0.0'}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="hidden md:table-cell px-3 sm:px-6 py-4 whitespace-nowrap">
+                          <div className="flex items-center">
+                            <span className="text-gray-900">{subLead.category}</span>
+                          </div>
+                        </td>
+                        <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
+                          {getStageBadge(subLead.stage)}
+                        </td>
+                        <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          <div className="text-sm">
+                            {subLead.contact}
+                          </div>
+                        </td>
+                        <td className="hidden sm:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          <div className="flex items-center">
+                            <span className="text-sm font-medium">
+                              {subLead.applicants || 0}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          {subLead.agreement}
+                        </td>
+                        <td className="hidden lg:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          {subLead.scheduler}
+                        </td>
+                        <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          {subLead.closer}
+                        </td>
+                        <td className="hidden xl:table-cell px-3 sm:px-6 py-4 whitespace-nowrap text-gray-900">
+                          {subLead.handler}
+                        </td>
+                      </tr>
+                    ))}
+                    {subLeadsLoading && (
+                      <tr>
+                        <td colSpan={9} className="px-6 py-4 text-center">
+                          <div className="flex items-center justify-center">
+                            <div className="loading loading-spinner loading-sm mr-2"></div>
+                            <span className="text-gray-500">Loading sub-leads...</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       </div>

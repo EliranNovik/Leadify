@@ -118,7 +118,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
-  { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
+  // { icon: UserGroupIcon, label: 'Teams', path: '/teams' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
@@ -451,33 +451,32 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                           to={item.path}
                           onClick={onClose}
                           className={`group flex items-center p-3 rounded-lg transition-all duration-200
-                            ${isActive ? 'bg-[#3b28c7] text-white font-bold' : 'text-base-content hover:bg-[#3829BF] hover:text-white'}
-                            hover:scale-105 hover:shadow-md`}
+                            ${isActive ? 'bg-[#3b28c7] text-white font-bold' : 'text-base-content'}`}
                         >
-                          <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-white' : 'text-black group-hover:text-white'}`} />
-                          <span className={`ml-3 font-medium ${isActive ? 'text-white' : 'text-black group-hover:text-white'}`}>{item.label}</span>
+                          <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-white' : 'text-black'}`} />
+                          <span className={`ml-3 font-medium ${isActive ? 'text-white' : 'text-black'}`}>{item.label}</span>
                         </Link>
                       )}
                       {hasSubItems && (
                         <>
                           <button
-                            className={`group flex items-center p-3 rounded-lg w-full transition-all duration-200 hover:scale-105 hover:shadow-md ${
-                              item.label === 'Calendar' || item.label === 'Leads'
-                                ? (isExpanded ? 'bg-white text-black font-bold shadow-lg' : 'text-black hover:bg-[#3829BF] hover:text-white')
-                                : (isExpanded ? 'sidebar-active-purple text-white shadow-lg' : 'text-base-content hover:bg-[#3829BF] hover:text-white')
+                            className={`group flex items-center p-3 rounded-lg w-full transition-all duration-200 ${
+                              item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                                ? (isExpanded ? 'bg-white text-black font-bold shadow-lg' : 'text-black')
+                                : (isExpanded ? 'sidebar-active-purple text-white shadow-lg' : 'text-base-content')
                             }`}
                             onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                             type="button"
                           >
                             <Icon className={`w-6 h-6 min-w-[1.5rem] ${
-                              item.label === 'Calendar' || item.label === 'Leads'
-                                ? (isExpanded ? 'text-black' : 'text-black group-hover:text-white')
-                                : (isExpanded ? 'text-white' : 'text-black group-hover:text-white')
+                              item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                                ? (isExpanded ? 'text-black' : 'text-black')
+                                : (isExpanded ? 'text-white' : 'text-black')
                             }`} />
                             <span className={`ml-3 font-medium ${
-                              item.label === 'Calendar' || item.label === 'Leads'
-                                ? (isExpanded ? 'text-black' : 'text-black group-hover:text-white')
-                                : (isExpanded ? 'text-white' : 'text-black group-hover:text-white')
+                              item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                                ? (isExpanded ? 'text-black' : 'text-black')
+                                : (isExpanded ? 'text-white' : 'text-black')
                             }`}>{item.label}</span>
                             <svg className={`w-4 h-4 ml-auto transition-transform duration-200 ${isExpanded ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
                           </button>
@@ -492,20 +491,20 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                                       to={sub.path!}
                                       onClick={onClose}
                                       className={`group flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer ${
-                                        item.label === 'Calendar' || item.label === 'Leads'
-                                          ? (isSubActive ? 'bg-purple-600 text-white font-bold shadow' : 'text-black hover:bg-[#3829BF] hover:text-white')
-                                          : (isSubActive ? 'bg-white text-black font-bold shadow' : 'text-white hover:bg-[#3829BF] hover:text-white')
+                                        item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                                          ? (isSubActive ? 'bg-purple-600 text-white font-bold shadow' : 'text-black')
+                                          : (isSubActive ? 'bg-white text-black font-bold shadow' : 'text-black')
                                       }`}
                                     >
                                       <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${
-                                        item.label === 'Calendar' || item.label === 'Leads'
-                                          ? (isSubActive ? 'text-white' : 'text-black group-hover:text-white')
-                                          : (isSubActive ? 'text-black' : 'text-white group-hover:text-white')
+                                        item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                                          ? (isSubActive ? 'text-white' : 'text-black')
+                                          : (isSubActive ? 'text-black' : 'text-black')
                                       }`} />
                                       <span className={`text-base font-medium whitespace-nowrap opacity-100 ${
-                                        item.label === 'Calendar' || item.label === 'Leads'
-                                          ? (isSubActive ? 'text-white' : 'text-black group-hover:text-white')
-                                          : (isSubActive ? 'text-black' : 'text-white group-hover:text-white')
+                                        item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                                          ? (isSubActive ? 'text-white' : 'text-black')
+                                          : (isSubActive ? 'text-black' : 'text-black')
                                       }`}>{sub.label}</span>
                                     </Link>
                                   </li>
@@ -521,7 +520,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 {/* AI Assistant - Mobile Only */}
                 <li>
                   <button
-                    className="flex items-center p-3 rounded-lg w-full transition-all duration-200 text-black hover:bg-purple-100 hover:text-purple-700 hover:scale-105 hover:shadow-md"
+                    className="flex items-center p-3 rounded-lg w-full transition-all duration-200 text-black"
                     onClick={() => {
                       if (onOpenAIChat) onOpenAIChat();
                       if (onClose) onClose();

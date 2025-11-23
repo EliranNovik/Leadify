@@ -3575,21 +3575,24 @@ const CalendarPage: React.FC = () => {
       {/* Action Buttons Row */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3 w-full">
         <div className="flex flex-wrap items-center gap-2">
-          <div className="btn btn-sm md:btn-md flex items-center gap-3 bg-base-200 border-base-300 hover:bg-base-300 px-4">
-            <span className="text-sm md:text-base font-medium text-base-content/70">Total Meetings:</span>
-            <span className="text-base md:text-lg font-bold text-primary">{filteredMeetings.length}</span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm md:text-base font-medium text-gray-700">Total Meetings:</span>
+            <span className="text-base md:text-lg font-bold" style={{ color: '#3b28c7' }}>{filteredMeetings.length}</span>
           </div>
-          <button
-            className="btn btn-primary btn-sm md:btn-md flex items-center gap-2 px-4"
-            onClick={openAssignStaffModal}
-          >
-            <UserGroupIcon className="w-4 h-4 md:w-5 md:h-5" />
-            <span className="text-sm md:text-base font-semibold">Assign Staff</span>
-          </button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <button
-            className="btn btn-primary btn-sm md:btn-md flex items-center gap-2 px-4"
+            className="btn btn-sm md:btn-md flex items-center gap-2 px-3 md:px-4 bg-white border-2 hover:bg-gray-50"
+            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+            onClick={openAssignStaffModal}
+            title="Assign Staff"
+          >
+            <UserGroupIcon className="w-4 h-4 md:w-5 md:h-5" />
+            <span className="hidden md:inline text-sm md:text-base font-semibold">Assign Staff</span>
+          </button>
+          <button
+            className="btn btn-sm md:btn-md flex items-center gap-2 px-3 md:px-4 bg-white border-2 hover:bg-gray-50"
+            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
             onClick={() => {
               setSelectedDateForMeeting(new Date());
               setSelectedTimeForMeeting('09:00');
@@ -3598,10 +3601,11 @@ const CalendarPage: React.FC = () => {
             title="Create Teams Meeting"
           >
             <VideoCameraIcon className="w-4 h-4 md:w-5 md:h-5" />
-            <span className="text-sm md:text-base font-semibold">Create Teams Meeting</span>
+            <span className="hidden md:inline text-sm md:text-base font-semibold">Create Teams Meeting</span>
           </button>
           <button
-            className="btn btn-outline btn-primary btn-sm md:btn-md flex items-center gap-2 px-4"
+            className="btn btn-sm md:btn-md flex items-center gap-2 px-3 md:px-4 bg-white border-2 hover:bg-gray-50"
+            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
             onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
             title={viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
           >
@@ -3610,7 +3614,7 @@ const CalendarPage: React.FC = () => {
             ) : (
               <Squares2X2Icon className="w-4 h-4 md:w-5 md:h-5" />
             )}
-            <span className="text-sm md:text-base font-semibold">{viewMode === 'cards' ? 'List View' : 'Card View'}</span>
+            <span className="hidden md:inline text-sm md:text-base font-semibold">{viewMode === 'cards' ? 'List View' : 'Card View'}</span>
           </button>
         </div>
       </div>

@@ -7,7 +7,9 @@ import {
   TrashIcon, 
   ClockIcon,
   CheckIcon,
-  XMarkIcon
+  XMarkIcon,
+  ChevronDownIcon,
+  ChevronUpIcon
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 
@@ -40,6 +42,7 @@ const EmployeeAvailability: React.FC = () => {
   });
   const [loading, setLoading] = useState(false);
   const [outlookSyncEnabled, setOutlookSyncEnabled] = useState(false);
+  const [showAllUnavailableTimes, setShowAllUnavailableTimes] = useState(false);
 
   // Get current month and year
   const currentMonth = currentDate.getMonth();
@@ -468,9 +471,22 @@ const EmployeeAvailability: React.FC = () => {
         ) : (
           <div className="space-y-3">
             {unavailableTimes
-              .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+              .sort((a, b) => {
+                // Sort by date first (newest first)
+                const dateCompare = new Date(b.date).getTime() - new Date(a.date).getTime();
+                if (dateCompare !== 0) return dateCompare;
+                // If same date, sort by start time (newest first)
+                return b.startTime.localeCompare(a.startTime);
+              })
+              .slice(0, showAllUnavailableTimes ? unavailableTimes.length : 2)
               .map(time => (
-                <div key={time.id} className="flex items-center justify-between p-4 bg-base-200 rounded-lg">
+                <div 
+                  key={time.id} 
+                  className="flex items-center justify-between p-4 bg-white rounded-lg shadow-[0_4px_6px_rgba(0,0,0,0.1),0_2px_4px_rgba(0,0,0,0.06),0_0_0_1px_rgba(0,0,0,0.05)]"
+                  style={{
+                    boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                  }}
+                >
                   <div className="flex items-center gap-4">
                     <div className="text-sm font-medium">
                       {new Date(time.date).toLocaleDateString()}
@@ -497,6 +513,24 @@ const EmployeeAvailability: React.FC = () => {
                   </button>
                 </div>
               ))}
+            {unavailableTimes.length > 2 && (
+              <button
+                className="w-full flex items-center justify-center gap-2 p-3 text-sm font-medium text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                onClick={() => setShowAllUnavailableTimes(!showAllUnavailableTimes)}
+              >
+                {showAllUnavailableTimes ? (
+                  <>
+                    <ChevronUpIcon className="w-5 h-5" />
+                    Show Less
+                  </>
+                ) : (
+                  <>
+                    <ChevronDownIcon className="w-5 h-5" />
+                    Show All ({unavailableTimes.length})
+                  </>
+                )}
+              </button>
+            )}
           </div>
         )}
       </div>

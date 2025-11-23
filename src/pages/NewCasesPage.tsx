@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
@@ -480,10 +480,10 @@ const NewCasesPage: React.FC = () => {
   };
 
   // Card rendering function with selection functionality
-  const renderResultCard = (lead: any) => (
+  const renderResultCard = (lead: any) => {
+    return (
     <div 
-      key={lead.id} 
-      className={`card shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group ${
+      className={`card shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group h-full flex flex-col ${
         selectedLeadBoxes.has(lead.id) ? 'bg-gray-300' : 'bg-base-100'
       }`}
       onClick={(e) => {
@@ -504,58 +504,62 @@ const NewCasesPage: React.FC = () => {
         navigate(`/clients/${lead.lead_number || lead.id}`);
       }}
     >
-      <div className="card-body p-5">
+      <div className="card-body p-5 flex flex-col flex-1">
         <div className="flex justify-between items-start mb-2">
-            <div className="flex items-center gap-2">
-            <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+            <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
               {lead.name}
             </h2>
             </div>
-            {getStageBadge(lead.stage_id ?? lead.stage)}
+            <div className="flex-shrink-0">
+              {getStageBadge(lead.stage_id ?? lead.stage)}
+            </div>
         </div>
         
-        <p className="text-sm text-base-content/60 font-mono mb-4">#{lead.lead_number}</p>
+        <p className="text-sm text-base-content/60 font-mono mb-4 truncate">#{lead.lead_number}</p>
 
         <div className="divider my-0"></div>
 
         <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-          <div className="flex items-center gap-2" title="Date Created">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-            <span className="font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
+          <div className="flex items-center gap-2 min-w-0" title="Date Created">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+            <span className="font-medium truncate">{new Date(lead.created_at).toLocaleDateString()}</span>
           </div>
-          <div className="flex items-center gap-2" title="Category">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-            <span>{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
+          <div className="flex items-center gap-2 min-w-0" title="Category">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+            <span className="truncate">{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
           </div>
-          <div className="flex items-center gap-2" title="Source">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            <span>{lead.source || 'N/A'}</span>
+          <div className="flex items-center gap-2 min-w-0" title="Source">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            <span className="truncate">{lead.source || 'N/A'}</span>
           </div>
-          <div className="flex items-center gap-2" title="Language">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
-            <span>{lead.language || 'N/A'}</span>
+          <div className="flex items-center gap-2 min-w-0" title="Language">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
+            <span className="truncate">{lead.language || 'N/A'}</span>
           </div>
         </div>
 
-        <div className="mt-4 pt-4 border-t border-base-200/50">
-          <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
+        <div className="mt-4 pt-4 border-t border-base-200/50 flex-1">
+          <p className="text-sm font-semibold text-base-content/80 line-clamp-2">{lead.topic || 'No topic specified'}</p>
         </div>
 
-        <div className="mt-4 pt-4 border-t border-base-200/50">
+        <div className="mt-4 pt-4 border-t border-base-200/50 flex justify-end flex-shrink-0">
           <button
-            className="btn btn-primary btn-sm w-full"
+            className="btn btn-ghost btn-sm btn-circle"
             onClick={(e) => {
               e.stopPropagation();
               navigate(`/clients/${lead.lead_number || lead.id}`);
             }}
+            title="View Lead"
           >
-            View Lead
+            <EyeIcon className="w-5 h-5" />
           </button>
         </div>
 
       </div>
     </div>
-  );
+    );
+  };
 
   useEffect(() => {
     const fetchLeads = async () => {
@@ -2244,11 +2248,11 @@ const NewCasesPage: React.FC = () => {
 
 
   return (
-    <div className="p-8">
+    <div className="p-2 sm:p-4 md:p-6 lg:p-8">
       {/* Re-assign Leads Button */}
-      <div className="mb-6">
+      <div className="mb-4 sm:mb-6">
         <button 
-          className="btn btn-primary"
+          className="btn btn-primary btn-sm sm:btn-md"
           onClick={() => setShowReassignModal(true)}
         >
           Re-assign Leads
@@ -2256,17 +2260,17 @@ const NewCasesPage: React.FC = () => {
       </div>
 
       {/* Filters Section */}
-      <div className="mb-8 p-6 bg-base-100 border border-base-200 rounded-lg shadow-sm">
+      <div className="mb-4 sm:mb-6 md:mb-8 p-3 sm:p-4 md:p-6 bg-base-100 border border-base-200 rounded-lg shadow-sm">
         <h3 className="text-lg font-semibold mb-4">Filters</h3>
         
         {/* Stage Filter and Employee Stats Date Range */}
-        <div className="flex gap-4 items-end">
-          <div className="flex-1">
+        <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 items-end">
+          <div className="flex-1 w-full sm:w-auto">
             <label className="block text-sm font-medium mb-2">Filter by Stage</label>
             <select 
               value={stageFilter}
               onChange={(e) => setStageFilter(e.target.value)}
-              className="select select-bordered w-full"
+              className="select select-bordered w-full select-sm sm:select-md"
             >
               <option value="">All Stages</option>
               {availableStages.map((stage) => (
@@ -2276,7 +2280,7 @@ const NewCasesPage: React.FC = () => {
               ))}
             </select>
           </div>
-          <div className="flex-1">
+          <div className="flex-1 w-full sm:w-auto">
             <label className="block text-sm font-medium mb-2">Employee Stats Date Range</label>
             <div className="flex gap-2">
               <div className="flex-1">
@@ -2285,7 +2289,7 @@ const NewCasesPage: React.FC = () => {
                   type="date" 
                   value={statsDateFilter.fromDate}
                   onChange={(e) => setStatsDateFilter(prev => ({ ...prev, fromDate: e.target.value }))}
-                  className="input input-bordered w-full"
+                  className="input input-bordered w-full input-sm sm:input-md"
                   defaultValue={new Date().toISOString().split('T')[0]}
                 />
               </div>
@@ -2295,16 +2299,16 @@ const NewCasesPage: React.FC = () => {
                   type="date" 
                   value={statsDateFilter.toDate}
                   onChange={(e) => setStatsDateFilter(prev => ({ ...prev, toDate: e.target.value }))}
-                  className="input input-bordered w-full"
+                  className="input input-bordered w-full input-sm sm:input-md"
                   defaultValue={new Date().toISOString().split('T')[0]}
                 />
               </div>
             </div>
           </div>
         </div>
-        <div className="mt-4 flex gap-3">
+        <div className="mt-4 flex flex-col sm:flex-row gap-2 sm:gap-3">
           <button 
-            className="btn btn-primary btn-sm"
+            className="btn btn-primary btn-sm w-full sm:w-auto"
             onClick={() => {
               // Trigger stats refresh for all categories
               Array.from(categoryGroupedLeads.keys()).forEach(categoryName => {
@@ -2315,7 +2319,7 @@ const NewCasesPage: React.FC = () => {
             Update All Stats
           </button>
           <button 
-            className="btn btn-outline btn-sm"
+            className="btn btn-outline btn-sm w-full sm:w-auto"
             onClick={() => {
               setStageFilter('');
               setStatsDateFilter({
@@ -2332,23 +2336,23 @@ const NewCasesPage: React.FC = () => {
 
       {/* Category Grouped Tables */}
       {categoryGroupedLeads.size > 0 && (
-        <div className="mt-12">
-          <h2 className="text-2xl font-bold mb-8">
+        <div className="mt-6 sm:mt-8 md:mt-12">
+          <h2 className="text-xl sm:text-2xl font-bold mb-4 sm:mb-6 md:mb-8 px-1">
             Assign Leads to Employees ({Array.from(categoryGroupedLeads.values()).reduce((sum, leads) => sum + leads.length, 0)} total leads)
           </h2>
-          <div className="space-y-12">
+          <div className="space-y-6 sm:space-y-8 md:space-y-12">
             {Array.from(categoryGroupedLeads.entries()).map(([categoryName, categoryLeads]) => (
-              <div key={categoryName} className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              <div key={categoryName} className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 md:gap-8">
                 {/* Category Table */}
                 <div className="lg:col-span-1">
                   <div className="card bg-base-100 shadow-lg">
-                    <div className="card-header p-6 border-b border-base-200">
-                      <h3 className="text-xl font-semibold flex items-center gap-2">
-                        <CalendarIcon className="w-5 h-5" />
-                        {categoryName} ({categoryLeads.length} leads)
+                    <div className="card-header p-3 sm:p-4 md:p-6 border-b border-base-200">
+                      <h3 className="text-lg sm:text-xl font-semibold flex items-center gap-2">
+                        <CalendarIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        <span className="break-words">{categoryName} ({categoryLeads.length} leads)</span>
                       </h3>
       </div>
-                    <div className="card-body p-6">
+                    <div className="card-body p-3 sm:p-4 md:p-6">
                       {categoryLeads.length === 0 ? (
         <div className="text-center py-12 text-base-content/60">
                           No leads in this category.
@@ -2358,8 +2362,8 @@ const NewCasesPage: React.FC = () => {
                           <table className="table w-full">
                             <thead>
                               <tr>
-                                <th className="font-semibold">
-                                  <div className="flex items-center gap-2">
+                                <th className="font-semibold w-24">
+                                  <div className="flex items-center gap-1">
                                     <input
                                       type="checkbox"
                                       className="checkbox checkbox-sm"
@@ -2376,10 +2380,10 @@ const NewCasesPage: React.FC = () => {
                                         });
                                       }}
                                     />
-                                    <span>Select All</span>
+                                    <span>Select</span>
                                   </div>
                                 </th>
-                                <th className="font-semibold">Lead Number</th>
+                                <th className="font-semibold pl-2">Lead</th>
                                 <th className="font-semibold">Stage</th>
                                 <th className="font-semibold">Category</th>
                                 <th className="font-semibold">Source</th>
@@ -2388,8 +2392,8 @@ const NewCasesPage: React.FC = () => {
                             <tbody>
                               {categoryLeads.map(lead => (
                                 <tr key={lead.id} className="hover">
-                                  <td>
-                                    <div className="flex items-center gap-2">
+                                  <td className="w-24">
+                                    <div className="flex items-center gap-1">
                                       <input
                                         type="checkbox"
                                         className="checkbox checkbox-sm"
@@ -2413,13 +2417,13 @@ const NewCasesPage: React.FC = () => {
                                         }}
                                       />
                                       {categorySelectedLeads.get(categoryName)?.has(lead.id) && (
-                                        <svg className="w-5 h-5 text-green-600 font-bold" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
+                                        <svg className="w-4 h-4 text-green-600 font-bold" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="3">
                                           <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                                         </svg>
                                       )}
                                     </div>
                                   </td>
-                                  <td className="font-medium cursor-pointer" onClick={() => handleCardClick(lead)}>{lead.lead_number}</td>
+                                  <td className="font-medium cursor-pointer pl-2" onClick={() => handleCardClick(lead)}>{lead.lead_number}</td>
                                   <td className="cursor-pointer" onClick={() => handleCardClick(lead)}>
                                     {stageMapping.get(lead.stage) || lead.stage || 'Created'}
                                   </td>
@@ -2442,13 +2446,13 @@ const NewCasesPage: React.FC = () => {
                 {/* Category Employee Selection */}
                 <div className="lg:col-span-1">
                   <div className="card bg-base-100 shadow-lg">
-                    <div className="card-header p-6 border-b border-base-200">
-                      <h3 className="text-xl font-semibold flex items-center gap-2">
-                        <UserIcon className="w-5 h-5" />
-                        {categoryName} - Employee Selection
+                    <div className="card-header p-3 sm:p-4 md:p-6 border-b border-base-200">
+                      <h3 className="text-lg sm:text-xl font-semibold flex items-center gap-2">
+                        <UserIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        <span className="break-words">{categoryName} - Employee Selection</span>
                       </h3>
                     </div>
-                    <div className="card-body p-6">
+                    <div className="card-body p-3 sm:p-4 md:p-6">
 
                       {categoryLoadingStats.get(categoryName) ? (
                         <div className="text-center py-8">
@@ -2654,9 +2658,9 @@ const NewCasesPage: React.FC = () => {
 
       {/* All Leads Cards Section */}
       {leads.length > 0 && (
-        <div className="mt-12">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-bold">
+        <div className="mt-6 sm:mt-8 md:mt-12">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 mb-4 sm:mb-6">
+            <h2 className="text-xl sm:text-2xl font-bold">
               All Leads ({leads.length} total)
             </h2>
             {selectedLeadBoxes.size > 0 && (
@@ -2668,15 +2672,15 @@ const NewCasesPage: React.FC = () => {
 
           {/* Action Buttons */}
           {showActionButtons && selectedLeadBoxes.size > 0 && (
-            <div className="mb-6 p-4 bg-base-100 border border-base-200 rounded-lg shadow-sm">
-              <h3 className="text-lg font-semibold mb-4">Actions for {selectedLeadBoxes.size} selected lead(s)</h3>
-              <div className="flex gap-3 flex-wrap">
-                <div className="relative scheduler-dropdown-container">
+            <div className="mb-4 sm:mb-6 p-3 sm:p-4 bg-base-100 border border-base-200 rounded-lg shadow-sm">
+              <h3 className="text-base sm:text-lg font-semibold mb-3 sm:mb-4">Actions for {selectedLeadBoxes.size} selected lead(s)</h3>
+              <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 flex-wrap">
+                <div className="relative scheduler-dropdown-container w-full sm:w-auto">
                   <div className="flex gap-2">
                     <input
                       type="text"
                       placeholder="Search employee..."
-                      className="input input-bordered input-sm w-64"
+                      className="input input-bordered input-sm w-full sm:w-64"
                       value={schedulerSearchTerm}
                       onChange={(e) => {
                         setSchedulerSearchTerm(e.target.value);
@@ -2702,7 +2706,7 @@ const NewCasesPage: React.FC = () => {
                     </button>
                   </div>
                   {showSchedulerDropdown && (
-                    <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-64 max-h-80 overflow-y-auto">
+                    <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full sm:w-64 max-h-80 overflow-y-auto">
                       <div className="p-2">
                         {employees
                           .filter(emp => 
@@ -2733,12 +2737,12 @@ const NewCasesPage: React.FC = () => {
                     </div>
                   )}
                 </div>
-                <div className="relative category-dropdown-container">
+                <div className="relative category-dropdown-container w-full sm:w-auto">
                   <div className="flex gap-2">
                     <input
                       type="text"
                       placeholder="Search category..."
-                      className="input input-bordered input-sm w-64"
+                      className="input input-bordered input-sm w-full sm:w-64"
                       value={categorySearchTerm}
                       onChange={(e) => {
                         setCategorySearchTerm(e.target.value);
@@ -2764,7 +2768,7 @@ const NewCasesPage: React.FC = () => {
                     </button>
                   </div>
                   {showCategoryDropdown && (
-                    <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-64 max-h-80 overflow-y-auto">
+                    <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full sm:w-64 max-h-80 overflow-y-auto">
                       <div className="p-2">
                         {mainCategories
                           .filter(category => 
@@ -2801,10 +2805,10 @@ const NewCasesPage: React.FC = () => {
                 >
                   Drop
                 </button>
-                <div className="relative inactive-dropdown-container">
-                  <div className="flex gap-2">
+                <div className="relative inactive-dropdown-container w-full sm:w-auto">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <button
-                      className="btn btn-outline btn-sm w-48"
+                      className="btn btn-outline btn-sm w-full sm:w-48"
                       onClick={(e) => {
                         e.stopPropagation();
                         setShowInactiveDropdown(!showInactiveDropdown);
@@ -2818,7 +2822,7 @@ const NewCasesPage: React.FC = () => {
                     <input
                       type="text"
                       placeholder="Or enter custom reason..."
-                      className="input input-bordered input-sm w-48"
+                      className="input input-bordered input-sm w-full sm:w-48"
                       value={customInactiveReason}
                       onChange={(e) => setCustomInactiveReason(e.target.value)}
                     />
@@ -2834,7 +2838,7 @@ const NewCasesPage: React.FC = () => {
                     </button>
                   </div>
                   {showInactiveDropdown && (
-                    <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-48 max-h-80 overflow-y-auto">
+                    <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full sm:w-48 max-h-80 overflow-y-auto">
                       <div className="p-2">
                         {unactivationReasons.map((reason, index) => (
                           <button 
@@ -2866,19 +2870,25 @@ const NewCasesPage: React.FC = () => {
             </div>
           )}
           
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {leads.map(renderResultCard)}
+          <div className="overflow-x-auto -mx-2 sm:-mx-4 md:-mx-6 lg:-mx-8 px-2 sm:px-4 md:px-6 lg:px-8">
+            <div className="flex gap-3 sm:gap-4 min-w-max pb-4">
+              {leads.map(lead => (
+                <div key={lead.id} className="flex-shrink-0 w-72 sm:w-80 h-[500px]">
+                  {renderResultCard(lead)}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
 
       {/* Re-assign Leads Modal */}
       {showReassignModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-base-100 rounded-lg shadow-xl w-full h-full max-h-[100vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold">Re-assign Leads</h2>
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-base-100 rounded-lg shadow-xl w-full h-full sm:h-auto sm:max-h-[90vh] overflow-y-auto">
+            <div className="p-3 sm:p-4 md:p-6">
+              <div className="flex justify-between items-center mb-4 sm:mb-6">
+                <h2 className="text-xl sm:text-2xl font-bold">Re-assign Leads</h2>
                 <button 
                   className="btn btn-sm btn-circle btn-outline"
                   onClick={() => {
@@ -2918,7 +2928,7 @@ const NewCasesPage: React.FC = () => {
               </div>
 
               {/* Filters Section */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4 mb-4 sm:mb-6">
                 {/* Column 1 */}
                 <div className="space-y-4">
                   <div>
@@ -3323,12 +3333,12 @@ const NewCasesPage: React.FC = () => {
 
               {/* Results Section */}
               {reassignResults.length > 0 && (
-                <div className="mb-6">
-                  <div className="bg-white p-4 rounded-lg mb-4 shadow-lg">
-                    <h3 className="text-lg font-semibold">
+                <div className="mb-4 sm:mb-6">
+                  <div className="bg-white p-3 sm:p-4 rounded-lg mb-3 sm:mb-4 shadow-lg">
+                    <h3 className="text-base sm:text-lg font-semibold">
                       Found {reassignResults.length} lead(s)
                     </h3>
-                    <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
                       {reassignResults.map((lead) => (
                         <div key={lead.id} className="bg-white p-3 rounded-lg border shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                           <div className="flex flex-col gap-1">
@@ -3373,7 +3383,7 @@ const NewCasesPage: React.FC = () => {
                       <input
                         type="text"
                         placeholder="Search employee..."
-                        className="input input-bordered w-full max-w-xs"
+                        className="input input-bordered w-full sm:max-w-xs"
                         value={assignEmployeeSearchTerm}
                     onChange={(e) => {
                       setAssignEmployeeSearchTerm(e.target.value);
@@ -3383,7 +3393,7 @@ const NewCasesPage: React.FC = () => {
                     }}
                       />
                       {showAssignEmployeeDropdown && (
-                        <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-w-xs max-h-80 overflow-y-auto">
+                        <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full sm:max-w-xs max-h-80 overflow-y-auto">
                           <div className="p-2">
                             {employees
                               .filter(emp => 
@@ -3454,12 +3464,12 @@ const NewCasesPage: React.FC = () => {
               setDrawerError(null);
             }}
           />
-          <div className="w-full max-w-4xl bg-base-100 shadow-2xl animate-[slideInRight_0.3s_ease-out] overflow-hidden flex flex-col">
-            <div className="p-5 border-b border-base-200 flex items-start justify-between gap-4">
-              <div>
-                <p className="text-sm text-base-content/60 uppercase tracking-wide">Category Breakdown</p>
-                <h3 className="text-2xl font-bold mt-1">{drawerCategoryLabel || 'Selected Category'}</h3>
-                <p className="text-sm text-base-content/70 mt-1">
+          <div className="w-full sm:max-w-4xl bg-base-100 shadow-2xl animate-[slideInRight_0.3s_ease-out] overflow-hidden flex flex-col">
+            <div className="p-3 sm:p-4 md:p-5 border-b border-base-200 flex items-start justify-between gap-2 sm:gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs sm:text-sm text-base-content/60 uppercase tracking-wide">Category Breakdown</p>
+                <h3 className="text-lg sm:text-xl md:text-2xl font-bold mt-1 break-words">{drawerCategoryLabel || 'Selected Category'}</h3>
+                <p className="text-xs sm:text-sm text-base-content/70 mt-1">
                   Scheduler: <span className="font-semibold">{drawerEmployee}</span>
                 </p>
                 <p className="text-xs text-base-content/50">
@@ -3477,7 +3487,7 @@ const NewCasesPage: React.FC = () => {
                 ✕
               </button>
             </div>
-            <div className="p-6 flex-1 overflow-y-auto">
+            <div className="p-3 sm:p-4 md:p-6 flex-1 overflow-y-auto">
               {drawerLoading ? (
                 <div className="flex flex-col items-center justify-center py-16 gap-3 text-base-content/70">
                   <span className="loading loading-spinner loading-lg" />

@@ -314,6 +314,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const isManuallySettingContactIdRef = useRef(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>('');
   const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; lastSync?: string | null; error?: string | null }>({
@@ -865,63 +866,141 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       }
     });
 
-    let contactToSelect: Contact;
-
-    if (!existingContact) {
-      // Add the contact to the list
-      const newContact: Contact = {
-        id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
-        name: result.name,
-        email: result.email || '',
-        lead_number: result.lead_number,
-        phone: result.phone,
-        created_at: result.created_at || new Date().toISOString(),
-        topic: result.topic,
-        lead_type: result.lead_type,
-        client_uuid: result.lead_type === 'new' ? String(result.id) : null,
-      };
-      
-      setContacts(prev => [newContact, ...prev]);
-      setFilteredContacts(prev => [newContact, ...prev]);
-      contactToSelect = newContact;
-    } else {
-      contactToSelect = existingContact;
-    }
-
-    // Set the selected contact
-    setSelectedContact(contactToSelect);
-    
-    // If this is a contact (not main contact), fetch contacts and select the specific contact
+    // If this is a contact (not main contact), fetch contacts and select the specific contact FIRST
+    // This ensures selectedContactId is set before selectedContact changes trigger the useEffect
     if (result.isContact && !result.isMainContact) {
       const isLegacyLead = result.lead_type === 'legacy';
       const leadId = isLegacyLead 
         ? (typeof result.id === 'string' ? result.id.replace('legacy_', '') : String(result.id))
         : result.id;
       
-      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-      const selectedContact = contacts.find(c => 
+      const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
+      const selectedContactFromList = fetchedContacts.find(c => 
         (c.phone && result.phone && c.phone === result.phone) ||
         (c.mobile && result.mobile && c.mobile === result.mobile) ||
         (c.email && result.email && c.email === result.email) ||
-        (c.name && result.name && c.name === result.name)
+        (c.name && (result.contactName || result.name) && c.name === (result.contactName || result.name))
       );
       
-      if (selectedContact) {
-        setLeadContacts(contacts);
-        setSelectedContactId(selectedContact.id);
+      if (selectedContactFromList) {
+        // Set flag to prevent useEffect from overriding our manual selection
+        isManuallySettingContactIdRef.current = true;
+        
+        // Set contacts and contact ID FIRST, before setting selectedContact
+        setLeadContacts(fetchedContacts);
+        setSelectedContactId(selectedContactFromList.id);
+        
+        // Create a Contact object that represents the SPECIFIC CONTACT, not the lead
+        // Use contactName if available, otherwise fall back to name
+        const contactName = result.contactName || result.name || selectedContactFromList.name;
+        const contactEmail = selectedContactFromList.email || result.email || '';
+        const contactPhone = selectedContactFromList.phone || result.phone || '';
+        
+        const contactForList: Contact = {
+          id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
+          name: contactName, // Use the contact's name, not the lead's name
+          email: contactEmail,
+          lead_number: result.lead_number,
+          phone: contactPhone,
+          created_at: result.created_at || new Date().toISOString(),
+          topic: result.topic,
+          lead_type: result.lead_type,
+          client_uuid: result.lead_type === 'new' ? String(result.id) : null,
+        };
+        
+        // Check if this contact already exists in the list
+        const existingContact = contacts.find(c => {
+          if (result.lead_type === 'legacy') {
+            return c.id === `legacy_${result.id}` || c.lead_number === result.lead_number;
+          } else {
+            return c.id === result.id || c.lead_number === result.lead_number;
+          }
+        });
+        
+        if (!existingContact) {
+          setContacts(prev => [contactForList, ...prev]);
+          setFilteredContacts(prev => [contactForList, ...prev]);
+        }
+        
+        // Small delay to ensure state updates are processed
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        // Now set the selected contact to the CONTACT, not the lead
+        setSelectedContact(contactForList);
+      } else {
+        // Contact not found in list, fall back to main contact logic
+        let contactToSelect: Contact;
+        const existingContact = contacts.find(c => {
+          if (result.lead_type === 'legacy') {
+            return c.id === `legacy_${result.id}` || c.lead_number === result.lead_number;
+          } else {
+            return c.id === result.id || c.lead_number === result.lead_number;
+          }
+        });
+        
+        if (!existingContact) {
+          const newContact: Contact = {
+            id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
+            name: result.contactName || result.name,
+            email: result.email || '',
+            lead_number: result.lead_number,
+            phone: result.phone,
+            created_at: result.created_at || new Date().toISOString(),
+            topic: result.topic,
+            lead_type: result.lead_type,
+            client_uuid: result.lead_type === 'new' ? String(result.id) : null,
+          };
+          setContacts(prev => [newContact, ...prev]);
+          setFilteredContacts(prev => [newContact, ...prev]);
+          contactToSelect = newContact;
+        } else {
+          contactToSelect = existingContact;
+        }
+        setSelectedContact(contactToSelect);
       }
     } else {
       // For main contacts, fetch contacts and select the main one
+      let contactToSelect: Contact;
+      const existingContact = contacts.find(c => {
+        if (result.lead_type === 'legacy') {
+          return c.id === `legacy_${result.id}` || c.lead_number === result.lead_number;
+        } else {
+          return c.id === result.id || c.lead_number === result.lead_number;
+        }
+      });
+      
+      if (!existingContact) {
+        const newContact: Contact = {
+          id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
+          name: result.name,
+          email: result.email || '',
+          lead_number: result.lead_number,
+          phone: result.phone,
+          created_at: result.created_at || new Date().toISOString(),
+          topic: result.topic,
+          lead_type: result.lead_type,
+          client_uuid: result.lead_type === 'new' ? String(result.id) : null,
+        };
+        setContacts(prev => [newContact, ...prev]);
+        setFilteredContacts(prev => [newContact, ...prev]);
+        contactToSelect = newContact;
+      } else {
+        contactToSelect = existingContact;
+      }
+      
       const isLegacyLead = contactToSelect.lead_type === 'legacy' || contactToSelect.id.toString().startsWith('legacy_');
       const leadId = isLegacyLead 
         ? (typeof contactToSelect.id === 'string' ? contactToSelect.id.replace('legacy_', '') : String(contactToSelect.id))
         : contactToSelect.client_uuid || contactToSelect.id;
       
-      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-      setLeadContacts(contacts);
+      const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
+      setLeadContacts(fetchedContacts);
       
-      if (contacts.length > 0) {
-        const mainContact = contacts.find(c => c.isMain) || contacts[0];
+      // Set selected contact
+      setSelectedContact(contactToSelect);
+      
+      if (fetchedContacts.length > 0) {
+        const mainContact = fetchedContacts.find(c => c.isMain) || fetchedContacts[0];
         setSelectedContactId(mainContact.id);
       }
     }
@@ -981,13 +1060,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   }, [propSelectedContact]);
 
   // Fetch contacts for the selected lead (only if no propSelectedContact)
+  // This useEffect is now mainly for initial setup - handleContactSelect handles contact switching
   useEffect(() => {
     if (propSelectedContact) return; // Skip if we have a prop contact
     
     const fetchContactsForLead = async () => {
       if (!selectedContact) {
         setLeadContacts([]);
-        setSelectedContactId(null);
+        // Don't clear selectedContactId here - it might be set by handleContactSelect
         return;
       }
 
@@ -999,12 +1079,24 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       const contacts = await fetchLeadContacts(leadId, isLegacyLead);
       setLeadContacts(contacts);
       
-      // If there are contacts, select the main contact by default, or the first one
+      // Only set selectedContactId if it's not already set or if the current one is not in the contacts list
+      // This preserves the contact selection when coming from "New Email" modal or handleContactSelect
       if (contacts.length > 0) {
-        const mainContact = contacts.find(c => c.isMain) || contacts[0];
-        setSelectedContactId(mainContact.id);
-      } else {
-        setSelectedContactId(null);
+        // Skip if we're manually setting the contact ID (from New Email modal or handleContactSelect)
+        if (isManuallySettingContactIdRef.current) {
+          isManuallySettingContactIdRef.current = false; // Reset the flag
+          return; // Don't override the manually set contact ID
+        }
+        
+        const currentContactId = selectedContactId;
+        const isCurrentContactValid = currentContactId && contacts.some(c => c.id === currentContactId);
+        
+        if (!isCurrentContactValid) {
+          // Current contact ID is not valid, select the main contact or first one
+          const mainContact = contacts.find(c => c.isMain) || contacts[0];
+          setSelectedContactId(mainContact.id);
+        }
+        // If currentContactId is valid, keep it (don't override)
       }
     };
 
@@ -1081,7 +1173,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       return;
     }
 
-    console.log(`🔄 Fetching email thread for contact: ${selectedContact.name} (ID: ${selectedContact.id})`);
+    console.log(`🔄 Fetching email thread for contact: ${selectedContact.name} (ID: ${selectedContact.id}), contactId: ${selectedContactId}`);
     
     setEmailThread([]);
     setIsLoading(true);
@@ -1109,7 +1201,22 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       }
 
       // Get contact_id if we have a selected contact from the contact selector
-      const contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+      // Use selectedContactId if available, otherwise try to find it from leadContacts
+      let contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+      
+      // If we don't have a contactId but we have leadContacts, try to find the matching contact
+      if (!contactId && leadContacts.length > 0) {
+        const matchingContact = leadContacts.find(c => 
+          (c.email && selectedContact.email && c.email === selectedContact.email) ||
+          (c.phone && selectedContact.phone && c.phone === selectedContact.phone) ||
+          (c.mobile && selectedContact.phone && c.mobile === selectedContact.phone) ||
+          (c.name && selectedContact.name && c.name === selectedContact.name)
+        );
+        if (matchingContact) {
+          contactId = matchingContact.id;
+          console.log(`📧 Found matching contact in leadContacts: ${matchingContact.name} (ID: ${contactId})`);
+        }
+      }
       
       let emailQuery = supabase
         .from('emails')
@@ -1265,7 +1372,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     } finally {
       setIsLoading(false);
     }
-  }, [selectedContact, hydrateEmailThreadBodies]);
+  }, [selectedContact, selectedContactId, leadContacts, hydrateEmailThreadBodies, propSelectedContact]);
 
   useEffect(() => {
     fetchEmailThread();
@@ -1297,11 +1404,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [emailThread]);
 
-  const handleContactSelect = (contact: Contact) => {
+  const handleContactSelect = async (contact: Contact) => {
     console.log(`👤 Selecting contact: ${contact.name} (ID: ${contact.id})`);
     
     // Clear previous contact's data immediately
     setEmailThread([]);
+    setIsLoading(true);
     setSelectedContact(contact);
     setShowCompose(false);
     setNewMessage('');
@@ -1321,6 +1429,44 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setShowLinkForm(false);
     setLinkLabel('');
     setLinkUrl('');
+    
+    // Fetch contacts for this lead and find the matching contact to set selectedContactId
+    try {
+      const isLegacyLead = contact.lead_type === 'legacy' || contact.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof contact.id === 'string' ? contact.id.replace('legacy_', '') : String(contact.id))
+        : (contact.client_uuid || contact.id);
+      
+      const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
+      setLeadContacts(fetchedContacts);
+      
+      // Find the matching contact from the fetched contacts
+      const matchingContact = fetchedContacts.find(c => 
+        (c.email && contact.email && c.email === contact.email) ||
+        (c.phone && contact.phone && c.phone === contact.phone) ||
+        (c.mobile && contact.phone && c.mobile === contact.phone) ||
+        (c.name && contact.name && c.name === contact.name)
+      );
+      
+      if (matchingContact) {
+        console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
+        // Set flag to prevent useEffect from overriding
+        isManuallySettingContactIdRef.current = true;
+        setSelectedContactId(matchingContact.id);
+      } else if (fetchedContacts.length > 0) {
+        // Fallback to main contact if no match found
+        const mainContact = fetchedContacts.find(c => c.isMain) || fetchedContacts[0];
+        console.log(`⚠️ No exact match, using main contact: ${mainContact.name} (ID: ${mainContact.id})`);
+        // Set flag to prevent useEffect from overriding
+        isManuallySettingContactIdRef.current = true;
+        setSelectedContactId(mainContact.id);
+      } else {
+        setSelectedContactId(null);
+      }
+    } catch (error) {
+      console.error('Error fetching contacts for selected contact:', error);
+      setSelectedContactId(null);
+    }
     
     if (isMobile) {
       setShowChat(true);

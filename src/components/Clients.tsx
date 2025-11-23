@@ -3096,11 +3096,22 @@ useEffect(() => {
           ? meetingFormData.paid_currency
           : '₪';
 
+      // For paid meetings, the main lead meeting should use current timestamp
+      // For regular meetings, use the date/time from the form
+      let mainMeetingDate = meetingFormData.date;
+      let mainMeetingTime = meetingFormData.time;
+      
+      if (meetingType === 'paid') {
+        const now = new Date();
+        mainMeetingDate = now.toISOString().split('T')[0]; // YYYY-MM-DD
+        mainMeetingTime = now.toTimeString().split(' ')[0].slice(0, 5); // HH:MM
+      }
+
       const meetingData = {
         client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
         legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads
-        meeting_date: meetingFormData.date,
-        meeting_time: meetingFormData.time,
+        meeting_date: mainMeetingDate,
+        meeting_time: mainMeetingTime,
         meeting_location: meetingFormData.location,
         meeting_manager: meetingFormData.manager || '',
         meeting_currency: resolvedMeetingCurrency,
@@ -3143,21 +3154,31 @@ useEffect(() => {
       const stageActor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
 
-      const targetStageKey =
-        scheduleStageTarget === 'another_meeting' ? 'another_meeting' : 'meeting_scheduled';
-      const targetStageId = getStageIdOrWarn(targetStageKey);
-      if (targetStageId === null) {
-        toast.error(
-          `Unable to resolve the "${targetStageKey === 'another_meeting' ? 'Another meeting' : 'Meeting scheduled'}" stage. Please contact an administrator.`
-        );
-        setIsCreatingMeeting(false);
-        return;
+      // For paid meetings, use stage 60 (client signed agreement) for main lead
+      // Otherwise use the normal target stage
+      let mainLeadStageId: number;
+      if (meetingType === 'paid') {
+        const clientSignedStageId = getStageIdOrWarn('Client signed agreement');
+        // Use 60 as fallback if lookup fails (60 is the ID for client signed agreement)
+        mainLeadStageId = clientSignedStageId ?? 60;
+      } else {
+        const targetStageKey =
+          scheduleStageTarget === 'another_meeting' ? 'another_meeting' : 'meeting_scheduled';
+        const targetStageId = getStageIdOrWarn(targetStageKey);
+        if (targetStageId === null) {
+          toast.error(
+            `Unable to resolve the "${targetStageKey === 'another_meeting' ? 'Another meeting' : 'Meeting scheduled'}" stage. Please contact an administrator.`
+          );
+          setIsCreatingMeeting(false);
+          return;
+        }
+        mainLeadStageId = targetStageId;
       }
 
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         const updatePayload: any = { 
-          stage: targetStageId,
+          stage: mainLeadStageId,
           meeting_scheduler_id: currentUserFullName,
           stage_changed_by: stageActor.fullName,
           stage_changed_at: stageTimestamp,
@@ -3189,13 +3210,13 @@ useEffect(() => {
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: targetStageId,
+          stage: mainLeadStageId,
           actor: stageActor,
           timestamp: stageTimestamp,
         });
       } else {
         const updatePayload: any = { 
-          stage: targetStageId,
+          stage: mainLeadStageId,
           scheduler: currentUserFullName,
           stage_changed_by: stageActor.fullName,
           stage_changed_at: stageTimestamp,
@@ -3227,10 +3248,258 @@ useEffect(() => {
 
         await recordLeadStageChange({
           lead: selectedClient,
-          stage: targetStageId,
+          stage: mainLeadStageId,
           actor: stageActor,
           timestamp: stageTimestamp,
         });
+      }
+
+      // For paid meetings, create a sublead with stage 20 and a meeting with the drawer data
+      // Note: The main lead meeting is already created above with current timestamp for paid meetings
+      if (meetingType === 'paid' && !isLegacyLead) {
+        // Create sublead asynchronously (non-blocking) so it doesn't delay the main flow
+        (async () => {
+          try {
+            // Create a sublead with the same client data
+            // Use the same logic as handleSaveSubLead to get masterBaseNumber
+            const masterBaseNumber = (() => {
+              if (selectedClient.lead_number && String(selectedClient.lead_number).trim() !== '') {
+                const trimmed = String(selectedClient.lead_number).trim();
+                return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+              }
+              if (selectedClient.master_id && String(selectedClient.master_id).trim() !== '') {
+                const trimmed = String(selectedClient.master_id).trim();
+                return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+              }
+              return '';
+            })();
+
+            if (!masterBaseNumber) {
+              console.error('Unable to determine master lead number for sublead creation');
+              toast.error('Unable to determine master lead number for sublead creation.');
+              return;
+            }
+
+            // Add timeout protection for suffix computation (increased to 15 seconds)
+            let nextSuffix: number;
+            try {
+              const suffixPromise = computeNextSubLeadSuffix(masterBaseNumber);
+              const suffixTimeout = new Promise((_, reject) => 
+                setTimeout(() => reject(new Error('Suffix computation timeout')), 15000)
+              );
+              nextSuffix = await Promise.race([suffixPromise, suffixTimeout]) as number;
+            } catch (suffixError) {
+              console.error('Error computing sublead suffix:', suffixError);
+              // Skip sublead creation if suffix computation fails
+              toast.error('Failed to compute sublead suffix. Sublead creation skipped, but main lead was updated successfully.');
+              return; // Exit early, don't create sublead
+            }
+            
+            const subLeadNumber = `${masterBaseNumber}/${nextSuffix}`;
+            const masterIdValue = extractDigits(masterBaseNumber) ?? masterBaseNumber;
+            
+            // Simplified manual ID generation - use timestamp-based approach for speed
+            // This avoids slow queries to legacy tables
+            let manualIdString: string;
+            try {
+              // Try to get next available ID from new leads table only (faster)
+              const { data: maxLeadData } = await supabase
+                .from('leads')
+                .select('manual_id')
+                .not('manual_id', 'is', null)
+                .order('manual_id', { ascending: false })
+                .limit(1)
+                .single();
+              
+              if (maxLeadData?.manual_id) {
+                const maxId = BigInt(String(maxLeadData.manual_id));
+                manualIdString = (maxId + BigInt(1)).toString();
+              } else {
+                // Fallback: use timestamp-based ID
+                manualIdString = Date.now().toString();
+              }
+            } catch (error) {
+              console.warn('Error getting manual ID, using timestamp fallback:', error);
+              // Fallback: use timestamp-based ID
+              manualIdString = Date.now().toString();
+            }
+
+            // Get stage 20 (meeting scheduled)
+            const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled');
+            if (meetingScheduledStageId === null) {
+              toast.error('Unable to resolve the "Meeting scheduled" stage. Please contact an administrator.');
+              setIsCreatingMeeting(false);
+              return;
+            }
+
+            const parseNumericInput = (value: any) => {
+              if (!value) return null;
+              const parsed = Number(value);
+              return Number.isFinite(parsed) ? parsed : null;
+            };
+
+            const meetingAmount = meetingType === 'paid' && meetingFormData.meeting_total
+              ? parseNumericInput(meetingFormData.meeting_total) ?? 0
+              : 0;
+
+            const subLeadData: Record<string, any> = {
+              manual_id: manualIdString,
+              master_id: masterIdValue,
+              lead_number: subLeadNumber,
+              name: selectedClient.name,
+              email: selectedClient.email || null,
+              phone: selectedClient.phone || null,
+              mobile: selectedClient.mobile || null,
+              category: paidCategoryName || selectedClient.category || null,
+              category_id: paidCategoryId || selectedClient.category_id || null,
+              topic: selectedClient.topic || null,
+              special_notes: selectedClient.special_notes || null,
+              source: selectedClient.source || 'Manual',
+              language: selectedClient.language || 'EN',
+              tags: selectedClient.tags || null,
+              stage: meetingScheduledStageId, // Stage 20
+              probability: 0,
+              balance: meetingAmount,
+              balance_currency: resolvedMeetingCurrency,
+              meeting_total: meetingAmount,
+              meeting_total_currency: resolvedMeetingCurrency,
+              proposal_total: meetingAmount,
+              potential_value: null,
+              handler: selectedClient.handler || null,
+              case_handler_id: selectedClient.case_handler_id || null,
+              scheduler: currentUserFullName,
+              created_at: new Date().toISOString(),
+              stage_changed_by: stageActor.fullName,
+              stage_changed_at: stageTimestamp,
+            };
+
+            if (!subLeadData.category) {
+              subLeadData.category = null;
+            }
+
+            // Insert the sublead (same as handleSaveSubLead)
+            const { data: insertedSubLead, error: subLeadError } = await supabase
+              .from('leads')
+              .insert([subLeadData])
+              .select('id')
+              .single();
+
+            if (subLeadError) {
+              console.error('Error creating sublead:', subLeadError);
+              throw subLeadError;
+            }
+
+            // 3. Create the first contact for the sublead (synchronously, same as handleSaveSubLead)
+            if (insertedSubLead?.id) {
+              // Get the next available contact ID
+              const { data: maxContactId } = await supabase
+                .from('leads_contact')
+                .select('id')
+                .order('id', { ascending: false })
+                .limit(1)
+                .single();
+              
+              const newContactId = maxContactId ? maxContactId.id + 1 : 1;
+              const currentDate = new Date().toISOString().split('T')[0];
+              
+              // Insert the first contact
+              const { error: contactError } = await supabase
+                .from('leads_contact')
+                .insert([{
+                  id: newContactId,
+                  name: selectedClient.name,
+                  mobile: selectedClient.mobile || null,
+                  phone: selectedClient.phone || null,
+                  email: selectedClient.email || null,
+                  newlead_id: insertedSubLead.id,
+                  cdate: currentDate,
+                  udate: currentDate
+                }]);
+              
+              if (contactError) {
+                console.error('Error creating contact for sublead:', contactError);
+                // Continue even if contact creation fails
+              } else {
+                // Get the next available relationship ID
+                const { data: maxRelationshipId } = await supabase
+                  .from('lead_leadcontact')
+                  .select('id')
+                  .order('id', { ascending: false })
+                  .limit(1)
+                  .single();
+                
+                const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
+                
+                // Create the relationship, marking it as main
+                const { error: relationshipError } = await supabase
+                  .from('lead_leadcontact')
+                  .insert([{
+                    id: newRelationshipId,
+                    contact_id: newContactId,
+                    newlead_id: insertedSubLead.id,
+                    main: true
+                  }]);
+                
+                if (relationshipError) {
+                  console.error('Error creating contact relationship for sublead:', relationshipError);
+                  // Continue even if relationship creation fails
+                }
+              }
+            }
+
+            // 4. Create a meeting for the sublead with the drawer data
+            const subLeadMeetingData = {
+              client_id: insertedSubLead.id,
+              legacy_lead_id: null,
+              meeting_date: meetingFormData.date,
+              meeting_time: meetingFormData.time,
+              meeting_location: meetingFormData.location,
+              meeting_manager: meetingFormData.manager || '',
+              meeting_currency: resolvedMeetingCurrency,
+              meeting_amount: meetingAmount,
+              expert: selectedClient.expert || '---',
+              helper: meetingFormData.helper || '---',
+              teams_meeting_url: teamsMeetingUrl,
+              meeting_brief: meetingFormData.brief || '',
+              attendance_probability: meetingFormData.attendance_probability,
+              complexity: meetingFormData.complexity,
+              car_number: meetingFormData.car_number || '',
+              scheduler: currentUserFullName,
+              last_edited_timestamp: new Date().toISOString(),
+              last_edited_by: currentUserFullName,
+              calendar_type: meetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+            };
+
+            const { error: subLeadMeetingError } = await supabase
+              .from('meetings')
+              .insert([subLeadMeetingData]);
+
+            if (subLeadMeetingError) {
+              console.error('Error creating sublead meeting:', subLeadMeetingError);
+              // Continue even if this fails - the sublead is already created
+            }
+
+            // Record stage change for sublead (non-blocking to avoid timeout)
+            recordLeadStageChange({
+              lead: { ...selectedClient, id: insertedSubLead.id, lead_number: subLeadNumber },
+              stage: meetingScheduledStageId,
+              actor: stageActor,
+              timestamp: stageTimestamp,
+            }).catch(err => {
+              console.error('Error recording stage change for sublead (non-blocking):', err);
+            });
+
+            toast.success(`Sublead ${subLeadNumber} created and meeting scheduled!`, {
+              duration: 5000,
+            });
+          } catch (subleadError) {
+            console.error('Error in sublead creation process (non-blocking):', subleadError);
+            // Continue - sublead creation is not critical for the main flow
+            toast.error('Sublead creation encountered an issue, but main lead was updated successfully.', {
+              duration: 5000,
+            });
+          }
+        })();
       }
 
       // Update UI
@@ -5911,56 +6180,39 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
   }
 
   const normalizedBase = baseLeadNumber.trim();
-  const normalizedNumericBase = extractDigits(normalizedBase);
   const suffixes: number[] = [];
 
-  const { data: newLeadRows, error: newLeadsError } = await supabase
-    .from('leads')
-    .select('lead_number')
-    .like('lead_number', `${normalizedBase}/%`);
+  // Only query new leads table (faster, indexed) - skip legacy for speed
+  try {
+    const { data: newLeadRows, error: newLeadsError } = await supabase
+      .from('leads')
+      .select('lead_number')
+      .like('lead_number', `${normalizedBase}/%`)
+      .limit(100); // Small limit for speed
 
-  if (newLeadsError) throw newLeadsError;
-  newLeadRows?.forEach(row => {
-    const leadNumber = row.lead_number ? String(row.lead_number) : '';
-    const match = leadNumber.match(/\/(\d+)$/);
-    if (match) {
-      const parsed = parseInt(match[1], 10);
-      if (!Number.isNaN(parsed)) {
-        suffixes.push(parsed);
-      }
+    if (newLeadsError) {
+      console.warn('Error querying new leads for suffix:', newLeadsError);
+      // Return default suffix 2 if query fails
+      return 2;
     }
-  });
 
-  let legacySuffixes: number[] = [];
-  const legacyLikeConditions: string[] = [];
-  if (normalizedBase) {
-    legacyLikeConditions.push(`manual_id.like.${normalizedBase}/%`);
-  }
-  if (normalizedNumericBase) {
-    legacyLikeConditions.push(`manual_id.like.${normalizedNumericBase}/%`);
-  }
-
-  if (legacyLikeConditions.length > 0) {
-    const { data: legacyRows, error: legacyError } = await supabase
-      .from('leads_lead')
-      .select('manual_id')
-      .or(legacyLikeConditions.join(','));
-
-    if (legacyError) throw legacyError;
-    legacyRows?.forEach(row => {
-      const manualValue = row.manual_id ? String(row.manual_id) : '';
-      const match = manualValue.match(/\/(\d+)$/);
+    newLeadRows?.forEach(row => {
+      const leadNumber = row.lead_number ? String(row.lead_number) : '';
+      const match = leadNumber.match(/\/(\d+)$/);
       if (match) {
         const parsed = parseInt(match[1], 10);
         if (!Number.isNaN(parsed)) {
-          legacySuffixes.push(parsed);
+          suffixes.push(parsed);
         }
       }
     });
+  } catch (error) {
+    console.warn('Error processing new leads for suffix:', error);
+    // Return default suffix 2 if processing fails
+    return 2;
   }
 
-  suffixes.push(...legacySuffixes);
-
+  // Calculate suffix from found values, default to 2
   const calculatedSuffix = suffixes.length > 0 ? Math.max(...suffixes) + 1 : 2;
   return Math.max(calculatedSuffix, 2);
 };
