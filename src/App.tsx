@@ -9,6 +9,7 @@ import Sidebar from './components/Sidebar';
 import Header from './components/Header';
 import AIChatWindow from './components/AIChatWindow';
 import EmailThreadModal from './components/EmailThreadModal';
+import ContactSelectorModal from './components/ContactSelectorModal';
 import { supabase, sessionManager } from './lib/supabase';
 import { CelebrationProvider } from './contexts/CelebrationContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
@@ -84,6 +85,15 @@ const AppContentInner: React.FC = () => {
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [isMessagingOpen, setIsMessagingOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<any>(null);
+  
+  // Contact selection state for email/WhatsApp
+  const [showContactSelector, setShowContactSelector] = useState(false);
+  const [contactSelectorMode, setContactSelectorMode] = useState<'email' | 'whatsapp'>('email');
+  const [selectedContactForThread, setSelectedContactForThread] = useState<{
+    contact: any;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null>(null);
   const [appJustLoggedIn, setAppJustLoggedIn] = useState(false);
   const prevUser = useRef<any>(null);
 
@@ -352,8 +362,28 @@ const AppContentInner: React.FC = () => {
                 setIsSearchOpen={setIsSearchOpen}
                 appJustLoggedIn={appJustLoggedIn}
                 onOpenAIChat={() => setIsAiChatOpen(true)}
-                onOpenEmailThread={() => setIsEmailThreadOpen(true)}
-                onOpenWhatsApp={() => setIsWhatsAppOpen(true)}
+                onOpenEmailThread={() => {
+                  if (selectedClient) {
+                    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                    const leadId = selectedClient.id || selectedClient.lead_number;
+                    setShowContactSelector(true);
+                    setContactSelectorMode('email');
+                    setSelectedClient({ ...selectedClient, _tempLeadId: leadId, _tempLeadType: isLegacy ? 'legacy' : 'new' });
+                  } else {
+                    setIsEmailThreadOpen(true);
+                  }
+                }}
+                onOpenWhatsApp={() => {
+                  if (selectedClient) {
+                    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                    const leadId = selectedClient.id || selectedClient.lead_number;
+                    setShowContactSelector(true);
+                    setContactSelectorMode('whatsapp');
+                    setSelectedClient({ ...selectedClient, _tempLeadId: leadId, _tempLeadType: isLegacy ? 'legacy' : 'new' });
+                  } else {
+                    window.location.href = '/whatsapp';
+                  }
+                }}
                 onOpenMessaging={() => setIsMessagingOpen(true)}
                 isMenuOpen={isSidebarOpen}
               />
@@ -442,13 +472,44 @@ const AppContentInner: React.FC = () => {
                 isFullPage={isAiChatFullPage}
                 onToggleFullPage={() => setIsAiChatFullPage(!isAiChatFullPage)}
               />
+              {/* Contact Selector Modal */}
+              {selectedClient && (selectedClient as any)._tempLeadId && (
+                <ContactSelectorModal
+                  isOpen={showContactSelector}
+                  onClose={() => {
+                    setShowContactSelector(false);
+                    setSelectedContactForThread(null);
+                  }}
+                  leadId={(selectedClient as any)._tempLeadId}
+                  leadType={(selectedClient as any)._tempLeadType || 'new'}
+                  leadName={selectedClient.name}
+                  leadNumber={selectedClient.lead_number}
+                  mode={contactSelectorMode}
+                  onContactSelected={(contact, leadId, leadType) => {
+                    setSelectedContactForThread({ contact, leadId, leadType });
+                    if (contactSelectorMode === 'email') {
+                      setIsEmailThreadOpen(true);
+                    } else {
+                      setIsWhatsAppOpen(true);
+                    }
+                  }}
+                />
+              )}
               <EmailThreadModal 
                 isOpen={isEmailThreadOpen} 
-                onClose={() => setIsEmailThreadOpen(false)} 
+                onClose={() => {
+                  setIsEmailThreadOpen(false);
+                  setSelectedContactForThread(null);
+                }}
+                selectedContact={selectedContactForThread}
               />
               <WhatsAppModal 
                 isOpen={isWhatsAppOpen} 
-                onClose={() => setIsWhatsAppOpen(false)} 
+                onClose={() => {
+                  setIsWhatsAppOpen(false);
+                  setSelectedContactForThread(null);
+                }}
+                selectedContact={selectedContactForThread}
               />
               <RMQMessagesPage 
                 isOpen={isMessagingOpen} 

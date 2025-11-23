@@ -212,9 +212,86 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     }
 
+    // Find contact by phone number
+    let contactId = null;
+    if (lead) {
+      const isLegacyLead = lead.id && typeof lead.id === 'number';
+      const leadIdForQuery = isLegacyLead ? lead.id : lead.id;
+      
+      // First, get all contacts for this lead
+      let leadContactsQuery = supabase
+        .from('lead_leadcontact')
+        .select('contact_id, main');
+      
+      if (isLegacyLead) {
+        leadContactsQuery = leadContactsQuery.eq('lead_id', leadIdForQuery);
+      } else {
+        leadContactsQuery = leadContactsQuery.eq('newlead_id', leadIdForQuery);
+      }
+      
+      const { data: leadContacts, error: leadContactsError } = await leadContactsQuery;
+      
+      if (!leadContactsError && leadContacts && leadContacts.length > 0) {
+        const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
+        
+        // Get contact details
+        const { data: contacts, error: contactsError } = await supabase
+          .from('leads_contact')
+          .select('id, phone, mobile')
+          .in('id', contactIds);
+        
+        if (!contactsError && contacts && contacts.length > 0) {
+          // Find the contact that matches the phone number
+          for (const contact of contacts) {
+            const contactPhoneNormalized = normalizePhone(contact.phone || '');
+            const contactMobileNormalized = normalizePhone(contact.mobile || '');
+            
+            for (const variation of incomingVariations) {
+              if (contactPhoneNormalized === variation || contactMobileNormalized === variation) {
+                contactId = contact.id;
+                console.log(`✅ Found matching contact ${contact.id} for phone ${phoneNumber}`);
+                break;
+              }
+            }
+            if (contactId) break;
+          }
+        }
+        
+        // If no contact found by phone match, try matching by last 4 digits (fallback)
+        if (!contactId && contacts && contacts.length > 0) {
+          const incomingLast4 = incomingNormalized.slice(-4);
+          if (incomingLast4.length >= 4) {
+            for (const contact of contacts) {
+              const contactPhoneNormalized = normalizePhone(contact.phone || '');
+              const contactMobileNormalized = normalizePhone(contact.mobile || '');
+              const contactPhoneLast4 = contactPhoneNormalized.slice(-4);
+              const contactMobileLast4 = contactMobileNormalized.slice(-4);
+              
+              if ((contactPhoneLast4 === incomingLast4 && contactPhoneLast4.length >= 4) ||
+                  (contactMobileLast4 === incomingLast4 && contactMobileLast4.length >= 4)) {
+                contactId = contact.id;
+                console.log(`✅ Found matching contact ${contact.id} by last 4 digits (${incomingLast4}) for phone ${phoneNumber}`);
+                break;
+              }
+            }
+          }
+        }
+        
+        // If still no contact found, use the main contact
+        if (!contactId) {
+          const mainContactRel = leadContacts.find(lc => lc.main === true || lc.main === 't');
+          if (mainContactRel) {
+            contactId = mainContactRel.contact_id;
+            console.log(`✅ Using main contact ${contactId} for lead ${leadIdForQuery}`);
+          }
+        }
+      }
+    }
+
     // Prepare message data - handle both known and unknown leads
     let messageData = {
       lead_id: lead ? lead.id : null, // null for unknown leads
+      contact_id: contactId, // Add contact_id
       sender_name: senderName,
       phone_number: phoneNumber, // Store the original phone number from WhatsApp
       direction: 'in',
@@ -481,7 +558,7 @@ const sendMessage = async (req, res) => {
       templateName: req.body.templateName,
       templateParameters: req.body.templateParameters
     });
-    const { leadId, message, phoneNumber, isTemplate, templateName, templateLanguage, templateParameters } = req.body;
+    const { leadId, message, phoneNumber, isTemplate, templateName, templateLanguage, templateParameters, contactId } = req.body;
 
     // Validate inputs: for templates, message is optional (only required if template has parameters)
     if (!phoneNumber) {
@@ -666,6 +743,7 @@ const sendMessage = async (req, res) => {
     const messageData = {
       lead_id: leadId === null ? null : (isLegacyLead ? null : leadId), // Set to null for new WhatsApp leads and legacy leads
       legacy_id: isLegacyLead ? lead.id : null, // Set legacy_id for legacy leads
+      contact_id: contactId || null, // Store contact_id if provided
       phone_number: phoneNumber, // Store phone number for new WhatsApp leads
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
@@ -721,7 +799,7 @@ const sendMedia = async (req, res) => {
   try {
 
 
-    const { leadId, mediaUrl, mediaType, caption, phoneNumber } = req.body;
+    const { leadId, mediaUrl, mediaType, caption, phoneNumber, contactId } = req.body;
 
     if (!mediaUrl || !phoneNumber) {
       return res.status(400).json({ error: 'Media URL and phone number are required' });
@@ -825,6 +903,7 @@ const sendMedia = async (req, res) => {
     const messageData = {
       lead_id: isLegacyLead ? null : leadId, // Set to null for legacy leads
       legacy_id: isLegacyLead ? lead.id : null, // Set legacy_id for legacy leads
+      contact_id: contactId || null, // Store contact_id if provided
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
       message: caption || `${mediaType} message`,

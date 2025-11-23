@@ -39,6 +39,10 @@ DECLARE
   v_last_leads_number text;
   v_max_number bigint;
   v_category_name text;
+  v_new_contact_id bigint;
+  v_contact_cdate date;
+  v_contact_udate date;
+  v_new_relationship_id bigint;
 BEGIN
   -- Validate source code if provided
   IF p_source_code IS NOT NULL THEN
@@ -161,17 +165,64 @@ BEGIN
     p_proposal_currency
   ) RETURNING leads.id INTO v_new_lead_id;
   
+  -- Create the first contact in leads_contact table
+  -- Get current date for contact dates
+  v_contact_cdate := CURRENT_DATE;
+  v_contact_udate := CURRENT_DATE;
+  
+  -- Get the next available contact ID
+  SELECT COALESCE(MAX(lc.id), 0) + 1 INTO v_new_contact_id
+  FROM leads_contact lc;
+  
+  -- Insert the first contact into leads_contact table
+  INSERT INTO leads_contact (
+    id,
+    name,
+    mobile,
+    phone,
+    email,
+    newlead_id,
+    cdate,
+    udate
+  ) VALUES (
+    v_new_contact_id,
+    p_lead_name,
+    NULL, -- mobile can be null initially
+    p_lead_phone,
+    p_lead_email,
+    v_new_lead_id,
+    v_contact_cdate,
+    v_contact_udate
+  );
+  
+  -- Get the next available relationship ID
+  SELECT COALESCE(MAX(llc.id), 0) + 1 INTO v_new_relationship_id
+  FROM lead_leadcontact llc;
+  
+  -- Create the relationship in lead_leadcontact table, marking it as main
+  INSERT INTO lead_leadcontact (
+    id,
+    contact_id,
+    newlead_id,
+    main
+  ) VALUES (
+    v_new_relationship_id,
+    v_new_contact_id,
+    v_new_lead_id,
+    true -- This is the main contact
+  );
+  
   -- Return the created lead information
   RETURN QUERY
   SELECT 
-    l.id,
-    l.lead_number,
-    l.name,
-    l.email,
-    v_source_id,
-    l.source,
-    l.topic,
-    v_final_category_id
+    l.id AS id,
+    l.lead_number AS lead_number,
+    l.name AS name,
+    l.email AS email,
+    v_source_id AS source_id,
+    l.source AS source_name,
+    l.topic AS final_topic,
+    v_final_category_id AS final_category_id
   FROM leads l
   WHERE l.id = v_new_lead_id;
 END;

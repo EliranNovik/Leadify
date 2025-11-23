@@ -6142,8 +6142,67 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       if (!categoryName) {
         newLeadData.category = null;
       }
-      const { error } = await supabase.from('leads').insert([newLeadData]);
+      const { data: insertedLead, error } = await supabase.from('leads').insert([newLeadData]).select('id').single();
       if (error) throw error;
+      
+      // Create the first contact in leads_contact and lead_leadcontact tables
+      if (insertedLead?.id) {
+        // Get the next available contact ID
+        const { data: maxContactId } = await supabase
+          .from('leads_contact')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+        
+        const newContactId = maxContactId ? maxContactId.id + 1 : 1;
+        const currentDate = new Date().toISOString().split('T')[0];
+        
+        // Insert the first contact
+        const { error: contactError } = await supabase
+          .from('leads_contact')
+          .insert([{
+            id: newContactId,
+            name: trimmedName,
+            mobile: null,
+            phone: subLeadForm.phone || null,
+            email: subLeadForm.email || null,
+            newlead_id: insertedLead.id,
+            cdate: currentDate,
+            udate: currentDate
+          }]);
+        
+        if (contactError) {
+          console.error('Error creating contact:', contactError);
+          // Continue even if contact creation fails
+        } else {
+          // Get the next available relationship ID
+          const { data: maxRelationshipId } = await supabase
+            .from('lead_leadcontact')
+            .select('id')
+            .order('id', { ascending: false })
+            .limit(1)
+            .single();
+          
+          const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
+          
+          // Create the relationship, marking it as main
+          const { error: relationshipError } = await supabase
+            .from('lead_leadcontact')
+            .insert([{
+              id: newRelationshipId,
+              contact_id: newContactId,
+              newlead_id: insertedLead.id,
+              main: true
+            }]);
+          
+          if (relationshipError) {
+            console.error('Error creating contact relationship:', relationshipError);
+            // Continue even if relationship creation fails
+          }
+        }
+      }
+      
       await fetchSubLeads(masterBaseNumber);
       toast.success(`Sub-lead created: ${subLeadNumber}`);
       setShowSubLeadDrawer(false);

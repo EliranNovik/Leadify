@@ -2269,7 +2269,9 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                                       </div>
                                     )}
                                     <div className="flex items-center gap-2">
-                                      <span className="font-semibold text-gray-900">{result.name}</span>
+                                      <span className="font-semibold text-gray-900">
+                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{result.name}
+                                      </span>
                                       <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
                                     </div>
                                   </div>
@@ -2326,7 +2328,9 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                                       </div>
                                     )}
                                     <div className="flex items-center gap-2">
-                                      <span className="font-semibold text-gray-900">{result.name}</span>
+                                      <span className="font-semibold text-gray-900">
+                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{result.name}
+                                      </span>
                                       <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
                                     </div>
                                   </div>

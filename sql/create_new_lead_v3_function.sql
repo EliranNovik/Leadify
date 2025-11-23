@@ -23,6 +23,10 @@ DECLARE
   v_creator_full_name text;
   v_last_lead_number text;
   v_next_number integer;
+  v_new_contact_id bigint;
+  v_contact_cdate date;
+  v_contact_udate date;
+  v_new_relationship_id bigint;
 BEGIN
   -- Get the last lead number from the database
   SELECT l.lead_number INTO v_last_lead_number
@@ -81,6 +85,53 @@ BEGIN
     p_created_by,
     v_creator_full_name
   ) RETURNING leads.id INTO v_new_lead_id;
+  
+  -- Create the first contact in leads_contact table
+  -- Get current date for contact dates
+  v_contact_cdate := CURRENT_DATE;
+  v_contact_udate := CURRENT_DATE;
+  
+  -- Get the next available contact ID
+  SELECT COALESCE(MAX(id), 0) + 1 INTO v_new_contact_id
+  FROM leads_contact;
+  
+  -- Insert the first contact into leads_contact table
+  INSERT INTO leads_contact (
+    id,
+    name,
+    mobile,
+    phone,
+    email,
+    newlead_id,
+    cdate,
+    udate
+  ) VALUES (
+    v_new_contact_id,
+    p_lead_name,
+    NULL, -- mobile can be null initially
+    p_lead_phone,
+    p_lead_email,
+    v_new_lead_id,
+    v_contact_cdate,
+    v_contact_udate
+  );
+  
+  -- Get the next available relationship ID
+  SELECT COALESCE(MAX(id), 0) + 1 INTO v_new_relationship_id
+  FROM lead_leadcontact;
+  
+  -- Create the relationship in lead_leadcontact table, marking it as main
+  INSERT INTO lead_leadcontact (
+    id,
+    contact_id,
+    newlead_id,
+    main
+  ) VALUES (
+    v_new_relationship_id,
+    v_new_contact_id,
+    v_new_lead_id,
+    true -- This is the main contact
+  );
   
   -- Return the created lead information
   RETURN QUERY

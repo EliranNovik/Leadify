@@ -412,7 +412,8 @@ class GraphMailboxSyncService {
       leadMappings = await fetchLeadMappingsForAddresses(Array.from(addressSet));
     }
 
-    rows.forEach((row) => {
+    // Process rows and find contact_id for each
+    for (const row of rows) {
       const recipientAddresses = row.recipient_list
         ? row.recipient_list
             .split(',')
@@ -429,6 +430,114 @@ class GraphMailboxSyncService {
       if (match) {
         row.client_id = match.clientId || null;
         row.legacy_id = match.legacyId || null;
+        
+        // Find contact_id by email address
+        let contactId = null;
+        const isLegacyLead = match.legacyId !== null;
+        const leadIdForQuery = isLegacyLead ? match.legacyId : match.clientId;
+        
+        if (leadIdForQuery) {
+          // Get all contacts for this lead
+          let leadContactsQuery = supabase
+            .from('lead_leadcontact')
+            .select('contact_id, main');
+          
+          if (isLegacyLead) {
+            leadContactsQuery = leadContactsQuery.eq('lead_id', leadIdForQuery);
+          } else {
+            leadContactsQuery = leadContactsQuery.eq('newlead_id', leadIdForQuery);
+          }
+          
+          const { data: leadContacts, error: leadContactsError } = await leadContactsQuery;
+          
+          if (!leadContactsError && leadContacts && leadContacts.length > 0) {
+            const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
+            
+            // Get contact details
+            const { data: contacts, error: contactsError } = await supabase
+              .from('leads_contact')
+              .select('id, email')
+              .in('id', contactIds);
+            
+            if (!contactsError && contacts && contacts.length > 0) {
+              // Find the contact that matches the email address
+              const normalizedSenderEmail = normalise(row.sender_email);
+              const normalizedRecipientEmails = recipientAddresses.map(addr => normalise(addr));
+              
+              // Check sender email first
+              if (normalizedSenderEmail) {
+                const matchingContact = contacts.find(c => normalise(c.email) === normalizedSenderEmail);
+                if (matchingContact) {
+                  contactId = matchingContact.id;
+                }
+              }
+              
+              // If no sender match, check recipient emails
+              if (!contactId) {
+                for (const recipientEmail of normalizedRecipientEmails) {
+                  const matchingContact = contacts.find(c => normalise(c.email) === recipientEmail);
+                  if (matchingContact) {
+                    contactId = matchingContact.id;
+                    break;
+                  }
+                }
+              }
+              
+              // If still no match, try partial email matching (fallback)
+              if (!contactId) {
+                // Try matching by email domain or partial match
+                const senderEmailDomain = normalizedSenderEmail ? normalizedSenderEmail.split('@')[0] : null;
+                if (senderEmailDomain && senderEmailDomain.length >= 3) {
+                  for (const contact of contacts) {
+                    const contactEmailNormalized = normalise(contact.email || '');
+                    if (contactEmailNormalized) {
+                      const contactEmailDomain = contactEmailNormalized.split('@')[0];
+                      // Match if email username matches (at least 3 characters)
+                      if (contactEmailDomain && contactEmailDomain.length >= 3 && 
+                          (contactEmailDomain.includes(senderEmailDomain) || senderEmailDomain.includes(contactEmailDomain))) {
+                        contactId = contact.id;
+                        console.log(`✅ Found matching contact ${contact.id} by email partial match for ${row.sender_email}`);
+                        break;
+                      }
+                    }
+                  }
+                }
+                
+                // If still no match, try recipient emails with partial matching
+                if (!contactId) {
+                  for (const recipientEmail of normalizedRecipientEmails) {
+                    const recipientEmailDomain = recipientEmail.split('@')[0];
+                    if (recipientEmailDomain && recipientEmailDomain.length >= 3) {
+                      for (const contact of contacts) {
+                        const contactEmailNormalized = normalise(contact.email || '');
+                        if (contactEmailNormalized) {
+                          const contactEmailDomain = contactEmailNormalized.split('@')[0];
+                          if (contactEmailDomain && contactEmailDomain.length >= 3 &&
+                              (contactEmailDomain.includes(recipientEmailDomain) || recipientEmailDomain.includes(contactEmailDomain))) {
+                            contactId = contact.id;
+                            console.log(`✅ Found matching contact ${contact.id} by recipient email partial match`);
+                            break;
+                          }
+                        }
+                      }
+                      if (contactId) break;
+                    }
+                  }
+                }
+              }
+              
+              // If still no match, use the main contact
+              if (!contactId) {
+                const mainContactRel = leadContacts.find(lc => lc.main === true || lc.main === 't');
+                if (mainContactRel) {
+                  contactId = mainContactRel.contact_id;
+                }
+              }
+            }
+          }
+        }
+        
+        row.contact_id = contactId;
       } else {
         console.log(
           `📭 No lead match for message ${row.message_id} | sender=${row.sender_email || 'unknown'} | recipients=${
@@ -436,7 +545,7 @@ class GraphMailboxSyncService {
           }`
         );
       }
-    });
+    }
 
     if (!rows.length) {
       return { processed: messages.length, inserted: 0, skipped: 0, trackedCount: 0 };
@@ -824,6 +933,7 @@ class GraphMailboxSyncService {
         user_id: resolvedUserId,
         client_id: clientId,
         legacy_id: isLegacy ? legacyId : null,
+        contact_id: context.contactId || context.contact_id || null,
         thread_id: result.conversationId,
         sender_name: context.senderName || null,
         sender_email: mailboxAddress,

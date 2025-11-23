@@ -29,6 +29,8 @@ const CreateNewLead: React.FC = () => {
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [sourceOptions, setSourceOptions] = useState<Array<{ id: number; name: string }>>([]);
   const [languageOptions, setLanguageOptions] = useState<Array<{ id: number; name: string | null }>>([]);
+  const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([]);
+  const [selectedCountryCode, setSelectedCountryCode] = useState<string>('+972'); // Default to Israel
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -48,18 +50,27 @@ const CreateNewLead: React.FC = () => {
   useEffect(() => {
     const fetchSourcesAndLanguages = async () => {
       try {
-        const [{ data: sourcesData, error: sourcesError }, { data: languagesData, error: languagesError }] =
-          await Promise.all([
-            supabase
-              .from('misc_leadsource')
-              .select('id, name')
-              .eq('active', true)
-              .order('order', { ascending: true }),
-            supabase
-              .from('misc_language')
-              .select('id, name')
-              .order('name', { ascending: true }),
-          ]);
+        const [
+          { data: sourcesData, error: sourcesError },
+          { data: languagesData, error: languagesError },
+          { data: countriesData, error: countriesError }
+        ] = await Promise.all([
+          supabase
+            .from('misc_leadsource')
+            .select('id, name')
+            .eq('active', true)
+            .order('order', { ascending: true }),
+          supabase
+            .from('misc_language')
+            .select('id, name')
+            .order('name', { ascending: true }),
+          supabase
+            .from('misc_country')
+            .select('id, name, phone_code, iso_code')
+            .not('phone_code', 'is', null)
+            .order('"order"', { ascending: true })
+            .order('name', { ascending: true }),
+        ]);
 
         if (!sourcesError && sourcesData) {
           setSourceOptions(
@@ -76,8 +87,21 @@ const CreateNewLead: React.FC = () => {
               .map(language => ({ id: language.id, name: language.name }))
           );
         }
+
+        if (!countriesError && countriesData) {
+          setCountryOptions(
+            countriesData
+              .filter(country => country?.phone_code && country?.name)
+              .map(country => ({
+                id: country.id,
+                name: country.name,
+                phone_code: country.phone_code.startsWith('+') ? country.phone_code : `+${country.phone_code}`,
+                iso_code: country.iso_code || ''
+              }))
+          );
+        }
       } catch (fetchError) {
-        console.error('Error fetching source/language options:', fetchError);
+        console.error('Error fetching source/language/country options:', fetchError);
       }
     };
 
@@ -93,11 +117,32 @@ const CreateNewLead: React.FC = () => {
     setIsLoading(true);
 
     try {
+      // Combine country code with phone number
+      let fullPhoneNumber = form.phone;
+      if (form.phone && selectedCountryCode && selectedCountryCode !== 'null' && selectedCountryCode !== 'NULL') {
+        // Check if phone already starts with a country code
+        const phoneStartsWithPlus = form.phone.trim().startsWith('+');
+        
+        if (phoneStartsWithPlus) {
+          // Phone already has a country code, use it as is
+          fullPhoneNumber = form.phone.trim();
+        } else {
+          // Remove any leading zeros or spaces, then add the selected country code
+          const cleanedPhone = form.phone.trim().replace(/^0+/, '');
+          // Ensure country code has + prefix
+          const countryCodeWithPlus = selectedCountryCode.startsWith('+') ? selectedCountryCode : `+${selectedCountryCode}`;
+          fullPhoneNumber = `${countryCodeWithPlus}${cleanedPhone}`;
+        }
+      } else if (form.phone) {
+        // If no country code selected but phone provided, use phone as is
+        fullPhoneNumber = form.phone.trim();
+      }
+
       // Call the new database function to create the lead
       const { data, error } = await supabase.rpc('create_new_lead_v3', {
         p_lead_name: form.name,
         p_lead_email: form.email,
-        p_lead_phone: form.phone,
+        p_lead_phone: fullPhoneNumber,
         p_lead_topic: form.topic,
         p_lead_language: form.language,
         p_lead_source: form.source,
@@ -147,13 +192,27 @@ const CreateNewLead: React.FC = () => {
         </div>
         <div>
           <label className="block font-semibold mb-1">Phone:</label>
-          <input
-            type="tel"
-            name="phone"
-            className="input input-bordered w-full"
-            value={form.phone}
-            onChange={handleChange}
-          />
+          <div className="flex gap-2">
+            <select
+              className="select select-bordered w-40"
+              value={selectedCountryCode}
+              onChange={(e) => setSelectedCountryCode(e.target.value)}
+            >
+              {countryOptions.map(country => (
+                <option key={country.id} value={country.phone_code}>
+                  {country.phone_code} {country.name}
+                </option>
+              ))}
+            </select>
+            <input
+              type="tel"
+              name="phone"
+              className="input input-bordered flex-1"
+              value={form.phone}
+              onChange={handleChange}
+              placeholder="Phone number"
+            />
+          </div>
         </div>
         <div>
           <label className="block font-semibold mb-1">Source:</label>

@@ -14,57 +14,39 @@ const TimelineHistoryButtons: React.FC<TimelineHistoryButtonsProps> = ({ client 
   const getLeadIdentifier = () => {
     if (!client) return null;
     
-    console.log('TimelineHistoryButtons: Full client object:', {
-      id: client.id,
-      idType: typeof client.id,
-      idString: client.id?.toString(),
-      lead_type: client.lead_type,
-      lead_number: client.lead_number,
-      manual_id: (client as any).manual_id
-    });
-    
     const isLegacy = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
     if (isLegacy) {
       // For legacy leads, use the actual numeric ID from leads_lead table
       const clientId = client.id?.toString();
-      console.log('TimelineHistoryButtons: Legacy lead detected, client.id:', clientId, 'client.lead_type:', client.lead_type);
       
       // Check if client has a direct numeric ID property (not legacy_ prefixed)
       const directId = (client as any).id;
       if (typeof directId === 'number') {
-        console.log('TimelineHistoryButtons: Found direct numeric ID:', directId);
         return directId.toString();
       }
       
       if (clientId && clientId.startsWith('legacy_')) {
         // Extract the numeric ID from "legacy_<id>"
         const numericId = clientId.replace('legacy_', '');
-        console.log('TimelineHistoryButtons: Extracted numeric ID from legacy_ prefix:', numericId);
         return numericId;
       }
       // If it's already numeric, use it directly
-      console.log('TimelineHistoryButtons: Using client ID directly:', clientId);
       return clientId;
     }
     // For new leads, use lead_number
     const leadNumber = client.lead_number || (client as any).manual_id;
-    console.log('TimelineHistoryButtons: New lead, using lead_number:', leadNumber);
     return leadNumber;
   };
 
   const leadIdentifier = getLeadIdentifier();
-  console.log('TimelineHistoryButtons: Final lead identifier:', leadIdentifier);
 
   const handleTimelineClick = () => {
     if (!leadIdentifier) {
-      console.error('TimelineHistoryButtons: No lead identifier found for timeline navigation', {
-        client: client ? { id: client.id, lead_type: client.lead_type, lead_number: client.lead_number } : null
-      });
+      console.error('TimelineHistoryButtons: No lead identifier found for timeline navigation');
       return;
     }
     // Properly encode the lead identifier for URL (handles sub-leads with /)
     const encodedIdentifier = encodeURIComponent(String(leadIdentifier));
-    console.log('TimelineHistoryButtons: Navigating to timeline with identifier:', leadIdentifier, 'encoded:', encodedIdentifier);
     navigate(`/clients/${encodedIdentifier}/timeline`);
   };
 

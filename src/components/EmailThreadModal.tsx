@@ -12,6 +12,10 @@ import {
   downloadAttachmentFromBackend,
   fetchEmailBodyFromBackend,
 } from '../lib/mailboxApi';
+import { fetchLeadContacts } from '../lib/contactHelpers';
+import type { ContactInfo } from '../lib/contactHelpers';
+import { searchLeads } from '../lib/legacyLeadsApi';
+import type { CombinedLead } from '../lib/legacyLeadsApi';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -252,9 +256,14 @@ const replaceTemplateTokens = (content: string, contact: Contact | null) => {
 interface EmailThreadModalProps {
   isOpen: boolean;
   onClose: () => void;
+  selectedContact?: {
+    contact: ContactInfo;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null;
 }
 
-const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) => {
+const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, selectedContact: propSelectedContact }) => {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [filteredContacts, setFilteredContacts] = useState<Contact[]>([]);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
@@ -290,6 +299,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  
+  // New Email Modal state
+  const [isNewEmailModalOpen, setIsNewEmailModalOpen] = useState(false);
+  const [newEmailSearchTerm, setNewEmailSearchTerm] = useState('');
+  const [newEmailSearchResults, setNewEmailSearchResults] = useState<CombinedLead[]>([]);
+  const [isNewEmailSearching, setIsNewEmailSearching] = useState(false);
+  const newEmailSearchTimeoutRef = useRef<NodeJS.Timeout>();
   const filteredTemplates = useMemo(() => {
     const query = templateSearch.trim().toLowerCase();
     if (!query) return templates;
@@ -305,6 +321,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
   });
   const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
   const [currentUserFullName, setCurrentUserFullName] = useState('');
+  
+  // State for lead contacts (all contacts associated with the selected lead)
+  const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
+  const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -611,67 +631,89 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
 
   // Fetch all contacts
   useEffect(() => {
-    const fetchContacts = async () => {
+    const fetchContactsWithEmailConversations = async () => {
       try {
-        // Fetch new leads from 'leads' table
-        const { data: newLeads, error: newLeadsError } = await supabase
-          .from('leads')
-          .select('id, name, email, lead_number, phone, created_at, topic');
+        setIsLoading(true);
         
-        if (newLeadsError) {
-          console.error('❌ Error fetching new leads:', newLeadsError);
+        // Fetch unique client_id and legacy_id from emails table
+        // Only get emails where client_id or legacy_id is not null
+        const { data: emailsData, error: emailsError } = await supabase
+          .from('emails')
+          .select('client_id, legacy_id')
+          .or('client_id.not.is.null,legacy_id.not.is.null');
+
+        if (emailsError) {
+          console.error('Error fetching emails:', emailsError);
         }
 
-        // Fetch legacy leads from 'leads_lead' table
-        let legacyLeads: any[] = [];
-        let legacyLeadsError: any = null;
+        // Get unique client IDs (new leads) and legacy IDs
+        const uniqueClientIds = new Set<string>();
+        const uniqueLegacyIds = new Set<number>();
         
-        try {
-          const result = await supabase
-            .from('leads_lead')
-            .select('id, name, email, phone, cdate, category_id');
-          legacyLeads = result.data || [];
-          legacyLeadsError = result.error;
-        } catch (error) {
-          console.error('❌ Network error fetching legacy leads:', error);
-          legacyLeadsError = error;
+        (emailsData || []).forEach((email: any) => {
+          if (email.client_id) {
+            uniqueClientIds.add(String(email.client_id));
+          }
+          if (email.legacy_id) {
+            uniqueLegacyIds.add(Number(email.legacy_id));
+          }
+        });
+
+        // Fetch new leads with email conversations
+        const newLeadIds = Array.from(uniqueClientIds);
+        let newLeadsData: any[] = [];
+        
+        if (newLeadIds.length > 0) {
+          const { data: leadsData, error: leadsError } = await supabase
+            .from('leads')
+            .select('id, name, email, lead_number, phone, mobile, created_at, topic')
+            .in('id', newLeadIds);
+
+          if (leadsError) {
+            console.error('Error fetching new leads:', leadsError);
+          } else {
+            newLeadsData = (leadsData || []).map(lead => ({
+              ...lead,
+              lead_type: 'new' as const,
+              client_uuid: lead.id ? String(lead.id) : null,
+            }));
+          }
         }
+
+        // Fetch legacy leads with email conversations
+        const legacyLeadIds = Array.from(uniqueLegacyIds).filter(id => !isNaN(id));
+        let legacyLeadsData: any[] = [];
         
-        if (legacyLeadsError) {
-          console.error('❌ Error fetching legacy leads:', legacyLeadsError);
-          // Continue with empty array
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyLeads, error: legacyLeadsError } = await supabase
+            .from('leads_lead')
+            .select('id, name, email, phone, mobile, cdate, category_id')
+            .in('id', legacyLeadIds);
+
+          if (legacyLeadsError) {
+            console.error('Error fetching legacy leads:', legacyLeadsError);
+          } else {
+            legacyLeadsData = (legacyLeads || []).map(lead => ({
+              ...lead,
+              lead_number: lead.id?.toString(),
+              created_at: lead.cdate,
+              topic: null,
+              lead_type: 'legacy' as const,
+              idstring: null,
+              client_uuid: null
+            }));
+          }
         }
 
         // Combine all contacts
-        const allContacts: Contact[] = [
-          ...(newLeads || []).map(lead => ({
-            ...lead,
-            lead_type: 'new' as const,
-            client_uuid: lead.id ? String(lead.id) : null,
-          })),
-          ...(legacyLeads || []).map(lead => ({
-            ...lead,
-            lead_number: lead.id?.toString(), // Use lead ID as lead_number for legacy leads
-            created_at: lead.cdate, // Use cdate as created_at for legacy leads
-            topic: null, // Legacy leads don't have topic in this table
-            lead_type: 'legacy' as const,
-            idstring: null,
-            client_uuid: null
-          }))
-        ];
-
-        console.log(`👥 Fetched ${allContacts.length} total contacts (${newLeads?.length || 0} new + ${legacyLeads?.length || 0} legacy)`);
+        const allContacts: Contact[] = [...newLeadsData, ...legacyLeadsData];
         
-        const data = allContacts;
+        console.log(`📧 Fetched ${allContacts.length} contacts with email conversations (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
         
         // Fetch last message time and unread status for each contact
-        // Only include contacts that have emails in the emails table
         const contactsWithLastMessage = await Promise.all(
-          (data || []).map(async (contact) => {
-            const isLegacyContact =
-              contact.lead_type === 'legacy' ||
-              (typeof contact.id === 'string' && contact.id.startsWith('legacy_'));
-
+          allContacts.map(async (contact) => {
+            const isLegacyContact = contact.lead_type === 'legacy';
             const legacyId = isLegacyContact
               ? (() => {
                   const raw = contact.lead_number ?? contact.id;
@@ -704,12 +746,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
                 .maybeSingle();
               lastMessage = clientMessage ?? null;
             }
- 
-            // Only include contacts that have at least one email
-            if (!lastMessage) {
-              return null; // Filter out contacts without emails
-            }
- 
+
             // Check for unread incoming messages (last 7 days)
             const sevenDaysAgo = new Date();
             sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
@@ -743,43 +780,40 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
           })
         );
 
-        // Filter out null contacts (those without emails)
+        // Filter out null contacts
         const filtered = contactsWithLastMessage.filter(Boolean) as Contact[];
- 
-         // Filter out null contacts (those without emails)
-        const contactsWithEmails = filtered;
-
-        console.log(`📧 Showing ${contactsWithEmails.length} contacts with emails (filtered from ${allContacts.length} total contacts)`);
         
-        // Store all contacts for contact selector
+        // Store all contacts for contact selector (we'll use searchLeads for this)
         setAllContacts(allContacts);
-        setFilteredAllContacts(allContacts); // Initialize filtered all contacts
-        // Show only contacts with emails in main list
-        const filteredContacts = contactsWithEmails
-           .map(contact => contact as Contact)
-           .sort((a, b) => {
-             if (a.last_message_time && b.last_message_time) {
-               return new Date(b.last_message_time).getTime() - new Date(a.last_message_time).getTime();
-             }
-             if (a.last_message_time) return -1;
-             if (b.last_message_time) return 1;
-             return a.name.localeCompare(b.name);
-           });
+        setFilteredAllContacts(allContacts);
+        
+        // Show only contacts with emails in main list, sorted by last message time
+        const sortedContacts = filtered
+          .sort((a, b) => {
+            if (a.last_message_time && b.last_message_time) {
+              return new Date(b.last_message_time).getTime() - new Date(a.last_message_time).getTime();
+            }
+            if (a.last_message_time) return -1;
+            if (b.last_message_time) return 1;
+            return a.name.localeCompare(b.name);
+          });
  
-         setContacts(filteredContacts);
-         setFilteredContacts(filteredContacts);
+        setContacts(sortedContacts);
+        setFilteredContacts(sortedContacts);
       } catch (error) {
-        console.error('Error fetching contacts:', error);
+        console.error('Error fetching contacts with email conversations:', error);
         toast.error('Failed to load contacts');
+      } finally {
+        setIsLoading(false);
       }
     };
 
     if (isOpen) {
-      fetchContacts();
+      fetchContactsWithEmailConversations();
     }
   }, [isOpen]);
 
-  // Filter contacts based on search
+  // Filter contacts based on search - now only filters through fetched contacts (no API calls)
   useEffect(() => {
     if (!searchQuery.trim()) {
       setFilteredContacts(contacts);
@@ -792,6 +826,116 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
       setFilteredContacts(filtered);
     }
   }, [searchQuery, contacts]);
+
+  // Handle search in New Email Modal
+  useEffect(() => {
+    if (newEmailSearchTimeoutRef.current) {
+      clearTimeout(newEmailSearchTimeoutRef.current);
+    }
+
+    if (!newEmailSearchTerm.trim()) {
+      setNewEmailSearchResults([]);
+      setIsNewEmailSearching(false);
+      return;
+    }
+
+    setIsNewEmailSearching(true);
+
+    newEmailSearchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const results = await searchLeads(newEmailSearchTerm.trim());
+        setNewEmailSearchResults(results);
+      } catch (error) {
+        console.error('Error searching leads:', error);
+        setNewEmailSearchResults([]);
+      } finally {
+        setIsNewEmailSearching(false);
+      }
+    }, 300);
+  }, [newEmailSearchTerm]);
+
+  // Handle clicking on a contact in New Email Modal
+  const handleNewEmailContactClick = async (result: CombinedLead) => {
+    // Check if contact already exists in the list
+    const existingContact = contacts.find(c => {
+      if (result.lead_type === 'legacy') {
+        return c.id === `legacy_${result.id}` || c.lead_number === result.lead_number;
+      } else {
+        return c.id === result.id || c.lead_number === result.lead_number;
+      }
+    });
+
+    let contactToSelect: Contact;
+
+    if (!existingContact) {
+      // Add the contact to the list
+      const newContact: Contact = {
+        id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
+        name: result.name,
+        email: result.email || '',
+        lead_number: result.lead_number,
+        phone: result.phone,
+        created_at: result.created_at || new Date().toISOString(),
+        topic: result.topic,
+        lead_type: result.lead_type,
+        client_uuid: result.lead_type === 'new' ? String(result.id) : null,
+      };
+      
+      setContacts(prev => [newContact, ...prev]);
+      setFilteredContacts(prev => [newContact, ...prev]);
+      contactToSelect = newContact;
+    } else {
+      contactToSelect = existingContact;
+    }
+
+    // Set the selected contact
+    setSelectedContact(contactToSelect);
+    
+    // If this is a contact (not main contact), fetch contacts and select the specific contact
+    if (result.isContact && !result.isMainContact) {
+      const isLegacyLead = result.lead_type === 'legacy';
+      const leadId = isLegacyLead 
+        ? (typeof result.id === 'string' ? result.id.replace('legacy_', '') : String(result.id))
+        : result.id;
+      
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      const selectedContact = contacts.find(c => 
+        (c.phone && result.phone && c.phone === result.phone) ||
+        (c.mobile && result.mobile && c.mobile === result.mobile) ||
+        (c.email && result.email && c.email === result.email) ||
+        (c.name && result.name && c.name === result.name)
+      );
+      
+      if (selectedContact) {
+        setLeadContacts(contacts);
+        setSelectedContactId(selectedContact.id);
+      }
+    } else {
+      // For main contacts, fetch contacts and select the main one
+      const isLegacyLead = contactToSelect.lead_type === 'legacy' || contactToSelect.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof contactToSelect.id === 'string' ? contactToSelect.id.replace('legacy_', '') : String(contactToSelect.id))
+        : contactToSelect.client_uuid || contactToSelect.id;
+      
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      setLeadContacts(contacts);
+      
+      if (contacts.length > 0) {
+        const mainContact = contacts.find(c => c.isMain) || contacts[0];
+        setSelectedContactId(mainContact.id);
+      }
+    }
+
+    // Close modal and clear search
+    setIsNewEmailModalOpen(false);
+    setNewEmailSearchTerm('');
+    setNewEmailSearchResults([]);
+    
+    // Open chat on mobile
+    if (isMobile) {
+      setShowChat(true);
+    }
+  };
 
   // Filter all contacts for contact selector
   const [filteredAllContacts, setFilteredAllContacts] = useState<Contact[]>([]);
@@ -814,6 +958,61 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
     const totalUnread = contacts.reduce((sum, contact) => sum + (contact.unread_count || 0), 0);
     window.dispatchEvent(new CustomEvent('email:unread-count', { detail: { count: totalUnread } }));
   }, [contacts]);
+
+  // If propSelectedContact is provided, use it directly
+  useEffect(() => {
+    if (propSelectedContact) {
+      setSelectedContactId(propSelectedContact.contact.id);
+      setLeadContacts([propSelectedContact.contact]);
+      // Create a Contact object from ContactInfo for selectedContact state
+      const contactObj: Contact = {
+        id: propSelectedContact.contact.id,
+        name: propSelectedContact.contact.name,
+        email: propSelectedContact.contact.email || '',
+        lead_number: propSelectedContact.leadType === 'legacy' 
+          ? String(propSelectedContact.leadId)
+          : (typeof propSelectedContact.leadId === 'string' ? propSelectedContact.leadId : String(propSelectedContact.leadId)),
+        lead_type: propSelectedContact.leadType,
+        client_uuid: propSelectedContact.leadType === 'new' ? String(propSelectedContact.leadId) : null,
+        created_at: new Date().toISOString(), // Required field, using current date as fallback
+      };
+      setSelectedContact(contactObj);
+    }
+  }, [propSelectedContact]);
+
+  // Fetch contacts for the selected lead (only if no propSelectedContact)
+  useEffect(() => {
+    if (propSelectedContact) return; // Skip if we have a prop contact
+    
+    const fetchContactsForLead = async () => {
+      if (!selectedContact) {
+        setLeadContacts([]);
+        setSelectedContactId(null);
+        return;
+      }
+
+      const isLegacyLead = selectedContact.lead_type === 'legacy' || selectedContact.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof selectedContact.id === 'string' ? selectedContact.id.replace('legacy_', '') : String(selectedContact.id))
+        : (selectedContact.client_uuid || selectedContact.id);
+
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      setLeadContacts(contacts);
+      
+      // If there are contacts, select the main contact by default, or the first one
+      if (contacts.length > 0) {
+        const mainContact = contacts.find(c => c.isMain) || contacts[0];
+        setSelectedContactId(mainContact.id);
+      } else {
+        setSelectedContactId(null);
+      }
+    };
+
+    if (selectedContact) {
+      fetchContactsForLead();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContact, propSelectedContact]);
 
   // Fetch email thread for selected contact
   const hydrateEmailThreadBodies = useCallback(
@@ -909,46 +1108,109 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
         }
       }
 
+      // Get contact_id if we have a selected contact from the contact selector
+      const contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+      
       let emailQuery = supabase
         .from('emails')
-        .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id')
+        .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id, contact_id')
         .order('sent_at', { ascending: true });
 
-      if (legacyId !== null) {
-        console.log(`📧 Querying legacy emails by legacy_id=${legacyId}`);
-        emailQuery = emailQuery.eq('legacy_id', legacyId);
-      } else if (clientUuid) {
-        emailQuery = emailQuery.eq('client_id', clientUuid);
+      // If we have a contact_id, filter by it (each contact has their own conversation)
+      if (contactId) {
+        console.log(`📧 Querying emails by contact_id=${contactId}`);
+        // First try exact contact_id match
+        emailQuery = emailQuery.eq('contact_id', contactId);
+        
+        // Fallback: Also include emails that match by email address but don't have contact_id set
+        // This handles cases where contact_id matching failed but email address matches
+        const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
+        if (contactEmail) {
+          // Build fallback query: match by client_id/legacy_id AND email address AND contact_id is null
+          const fallbackConditions: string[] = [];
+          
+          if (legacyId !== null) {
+            fallbackConditions.push(`legacy_id.eq.${legacyId}`);
+          }
+          if (clientUuid) {
+            fallbackConditions.push(`client_id.eq.${clientUuid}`);
+          }
+          
+          if (fallbackConditions.length > 0) {
+            // Use or() to include both contact_id match and fallback email match
+            const emailMatch = `sender_email.ilike.${contactEmail},recipient_list.ilike.%${contactEmail}%`;
+            const fallbackQuery = `${fallbackConditions[0]},${emailMatch}`;
+            // Note: We'll fetch all and filter in memory for complex conditions
+            emailQuery = emailQuery.or(`contact_id.eq.${contactId},${fallbackQuery}`);
+          }
+        }
       } else {
-        console.warn('Skipping email fetch: contact lacks valid client UUID or legacy id', selectedContact);
-        setEmailThread([]);
-        setIsLoading(false);
-        return;
+        // Fallback to old logic if no contact_id
+        // Also include messages where client_id doesn't match but belong to the lead (show in main contact)
+        if (legacyId !== null) {
+          console.log(`📧 Querying legacy emails by legacy_id=${legacyId}`);
+          emailQuery = emailQuery.eq('legacy_id', legacyId);
+        } else if (clientUuid) {
+          // For new leads, show all emails for this client_id, even if contact_id doesn't match
+          // This ensures messages appear in the main contact
+          emailQuery = emailQuery.eq('client_id', clientUuid);
+        } else {
+          console.warn('Skipping email fetch: contact lacks valid client UUID or legacy id', selectedContact);
+          setEmailThread([]);
+          setIsLoading(false);
+          return;
+        }
+
+        const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
+        const filterClauses: string[] = [];
+        if (legacyId !== null) {
+          filterClauses.push(`legacy_id.eq.${legacyId}`);
+        }
+        if (clientUuid) {
+          filterClauses.push(`client_id.eq.${clientUuid}`);
+        }
+        if (contactEmail) {
+          filterClauses.push(`sender_email.ilike.${contactEmail}`);
+          filterClauses.push(`recipient_list.ilike.%${contactEmail}%`);
+        }
+
+        if (filterClauses.length === 0) {
+          console.warn('📧 No valid identifiers for email fetch', selectedContact);
+          setEmailThread([]);
+          setIsLoading(false);
+          return;
+        }
+
+        emailQuery = emailQuery.or(filterClauses.join(','));
       }
 
-    const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
-    const filterClauses: string[] = [];
-    if (legacyId !== null) {
-      filterClauses.push(`legacy_id.eq.${legacyId}`);
+    let { data, error } = await emailQuery;
+    
+    // If we have contactId and contactEmail, apply fallback filtering in memory
+    if (contactId && !error && data) {
+      const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
+      if (contactEmail) {
+        // Filter to include: contact_id match OR (contact_id is null AND email matches AND client_id/legacy_id matches)
+        const normalizedContactEmail = contactEmail.toLowerCase();
+        data = data.filter((email: any) => {
+          if (email.contact_id === contactId) return true;
+          if (!email.contact_id) {
+            // Check if client_id or legacy_id matches first (required)
+            const clientMatch = (clientUuid && email.client_id === clientUuid) || 
+                               (legacyId !== null && email.legacy_id === legacyId);
+            if (clientMatch) {
+              // Then check email match
+              const senderMatch = email.sender_email && 
+                                 normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
+              const recipientMatch = email.recipient_list && 
+                                    email.recipient_list.toLowerCase().includes(normalizedContactEmail);
+              return senderMatch || recipientMatch;
+            }
+          }
+          return false;
+        });
+      }
     }
-    if (clientUuid) {
-      filterClauses.push(`client_id.eq.${clientUuid}`);
-    }
-    if (contactEmail) {
-      filterClauses.push(`sender_email.ilike.${contactEmail}`);
-      filterClauses.push(`recipient_list.ilike.%${contactEmail}%`);
-    }
-
-    if (filterClauses.length === 0) {
-      console.warn('📧 No valid identifiers for email fetch', selectedContact);
-      setEmailThread([]);
-      setIsLoading(false);
-      return;
-    }
-
-    emailQuery = emailQuery.or(filterClauses.join(','));
-
-    const { data, error } = await emailQuery;
 
       if (error) throw error;
       
@@ -1311,6 +1573,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
             })()
           : null;
 
+        // Find the contact_id from the selected contact or the first recipient
+        let contactId: number | null = selectedContactId;
+        if (!contactId && finalToSnapshot.length > 0) {
+          // Try to find contact by email
+          const contactByEmail = leadContacts.find(c => c.email === finalToSnapshot[0]);
+          if (contactByEmail) {
+            contactId = contactByEmail.id;
+          }
+        }
+
+        // Get contact_id from selectedContactId or propSelectedContact
+        const emailContactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+        
         await sendEmailViaBackend({
           userId,
           subject: derivedSubject,
@@ -1325,6 +1600,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
             leadNumber: selectedContact.lead_number || null,
             contactEmail: selectedContact.email || null,
             contactName: selectedContact.name || null,
+            contactId: emailContactId || null,
             senderName,
             userInternalId: selectedContact.user_internal_id || undefined,
           },
@@ -1544,8 +1820,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
               </div>
             </div>
 
-            {/* Contacts List */}
-            <div className="flex-1 overflow-y-auto">
+            {/* Contacts List - Scrollable */}
+            <div className="flex-1 overflow-y-auto min-h-0">
               {filteredContacts.map((contact) => (
                                                   <div
                    key={contact.id}
@@ -1588,16 +1864,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
               ))}
             </div>
 
-            {/* New Email Button */}
-            <div className="p-3 md:p-4 border-t border-gray-200 bg-gray-50">
+            {/* New Email Button - Fixed at bottom */}
+            <div className="flex-none p-3 md:p-4 border-t border-gray-200 bg-gray-50">
               <button
-                onClick={() => setShowContactSelector(true)}
-                className="w-full btn btn-outline btn-primary btn-sm"
+                onClick={() => setIsNewEmailModalOpen(true)}
+                className="w-full btn btn-outline btn-primary btn-sm flex items-center justify-center gap-2"
               >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                </svg>
-                New Email
+                <PlusIcon className="w-4 h-4" />
+                <span>New Email</span>
               </button>
             </div>
           </div>
@@ -1834,7 +2108,35 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
               <div className="space-y-2">
-                <label className="font-semibold text-sm">To</label>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-sm">To</label>
+                  {leadContacts.length > 1 && (
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="select select-bordered select-sm text-xs"
+                        value={selectedContactId || ''}
+                        onChange={(e) => {
+                          const contactId = e.target.value ? parseInt(e.target.value, 10) : null;
+                          setSelectedContactId(contactId);
+                          const contact = leadContacts.find(c => c.id === contactId);
+                          if (contact && contact.email) {
+                            // Add contact email to recipients if not already there
+                            if (!toRecipients.includes(contact.email)) {
+                              setToRecipients([...toRecipients, contact.email]);
+                            }
+                          }
+                        }}
+                      >
+                        <option value="">Select a contact</option>
+                        {leadContacts.map(contact => (
+                          <option key={contact.id} value={contact.id}>
+                            {contact.name} {contact.isMain && '(Main)'} - {contact.email || 'No email'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
                 {renderRecipients('to')}
               </div>
               <div className="space-y-2">
@@ -2165,6 +2467,114 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose }) 
               >
                 Cancel
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* New Email Modal */}
+      {isNewEmailModalOpen && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black bg-opacity-60" onClick={() => setIsNewEmailModalOpen(false)}>
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col m-4" onClick={(e) => e.stopPropagation()}>
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <h2 className="text-xl font-semibold">New Email</h2>
+              <button
+                onClick={() => {
+                  setIsNewEmailModalOpen(false);
+                  setNewEmailSearchTerm('');
+                  setNewEmailSearchResults([]);
+                }}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Search Input */}
+            <div className="p-4 border-b border-gray-200">
+              <div className="relative">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search for a contact or lead..."
+                  value={newEmailSearchTerm}
+                  onChange={(e) => setNewEmailSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  autoFocus
+                />
+                {isNewEmailSearching && (
+                  <div className="absolute right-3 top-1/2 transform -translate-y-1/2">
+                    <div className="loading loading-spinner loading-sm text-gray-400"></div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Search Results */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {!newEmailSearchTerm.trim() ? (
+                <div className="text-center py-8 text-gray-500">
+                  <svg className="w-12 h-12 mx-auto mb-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  <p className="text-lg font-medium">Search for a contact</p>
+                  <p className="text-sm">Type a name, email, phone, or lead number to find a contact</p>
+                </div>
+              ) : isNewEmailSearching ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="loading loading-spinner loading-lg text-blue-600"></div>
+                </div>
+              ) : newEmailSearchResults.length > 0 ? (
+                <div className="space-y-2">
+                  {newEmailSearchResults.map((result, index) => {
+                    const uniqueKey = result.lead_type === 'legacy' 
+                      ? `legacy_${result.id}_${result.contactName || result.name}_${index}`
+                      : `${result.id}_${result.contactName || result.name}_${index}`;
+                    
+                    const displayName = result.contactName || result.name || '';
+                    const displayEmail = result.email || '';
+                    const displayPhone = result.phone || result.mobile || '';
+                    
+                    return (
+                      <button
+                        key={uniqueKey}
+                        onClick={() => handleNewEmailContactClick(result)}
+                        className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors rounded-lg border border-gray-200"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                            <span className="font-semibold text-blue-700">
+                              {displayName.charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="font-semibold text-gray-900 truncate">
+                                {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                              </p>
+                              <span className="text-xs text-gray-500 font-mono">{result.lead_number}</span>
+                            </div>
+                            {displayEmail && (
+                              <p className="text-sm text-gray-600 truncate">{displayEmail}</p>
+                            )}
+                            {displayPhone && (
+                              <p className="text-xs text-gray-500 truncate">{displayPhone}</p>
+                            )}
+                          </div>
+                          <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                          </svg>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  <p className="text-sm">No contacts found</p>
+                </div>
+              )}
             </div>
           </div>
         </div>

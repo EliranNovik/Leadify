@@ -99,6 +99,7 @@ export interface BackendSendEmailPayload {
     leadNumber?: string | null;
     contactEmail?: string | null;
     contactName?: string | null;
+    contactId?: number | null;
     senderName?: string | null;
     userInternalId?: string | number | null;
   };

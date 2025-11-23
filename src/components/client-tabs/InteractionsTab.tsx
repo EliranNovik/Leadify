@@ -34,9 +34,11 @@ import { useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../../lib/api';
-import { fetchLegacyInteractions, testLegacyInteractionsAccess } from '../../lib/legacyInteractionsApi';
+import { fetchLegacyInteractions } from '../../lib/legacyInteractionsApi';
 import { appendEmailSignature } from '../../lib/emailSignature';
 import SchedulerWhatsAppModal from '../SchedulerWhatsAppModal';
+import ContactSelectorModal from '../ContactSelectorModal';
+import EmailThreadModal from '../EmailThreadModal';
 import { stripSignatureAndQuotedTextPreserveHtml } from '../../lib/graphEmailSync';
 import {
   sendEmailViaBackend,
@@ -47,6 +49,8 @@ import {
   getMailboxStatus,
 } from '../../lib/mailboxApi';
 import { useAuthContext } from '../../contexts/AuthContext';
+import { fetchLeadContacts } from '../../lib/contactHelpers';
+import type { ContactInfo } from '../../lib/contactHelpers';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -164,6 +168,10 @@ interface Interaction {
   body_preview?: string | null;
   renderedContent?: string;
   renderedContentFallback?: string;
+  contact_id?: number | null; // Contact ID for email and WhatsApp interactions
+  sender_email?: string | null; // Sender email for email interactions
+  recipient_list?: string | null; // Recipient list for email interactions
+  phone_number?: string | null; // Phone number for WhatsApp interactions
 }
 
 interface EmailTemplate {
@@ -435,6 +443,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [composeToInput, setComposeToInput] = useState('');
   const [composeCcInput, setComposeCcInput] = useState('');
   const [composeRecipientError, setComposeRecipientError] = useState<string | null>(null);
+  
+  // State for lead contacts (all contacts associated with the client)
+  const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
+  const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
   const [showComposeLinkForm, setShowComposeLinkForm] = useState(false);
   const [composeLinkLabel, setComposeLinkLabel] = useState('');
   const [composeLinkUrl, setComposeLinkUrl] = useState('');
@@ -451,6 +463,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [activeInteraction, setActiveInteraction] = useState<Interaction | null>(null);
   const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
+  const [showContactSelector, setShowContactSelector] = useState(false);
+  const [showContactSelectorForEmail, setShowContactSelectorForEmail] = useState(false);
+  const [selectedContactForWhatsApp, setSelectedContactForWhatsApp] = useState<{
+    contact: ContactInfo;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null>(null);
+  const [selectedContactForEmail, setSelectedContactForEmail] = useState<{
+    contact: ContactInfo;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null>(null);
   const [whatsAppInput, setWhatsAppInput] = useState("");
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
   const userFullNameLoadedRef = useRef(false);
@@ -504,6 +528,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const mailboxStatusRequestedRef = useRef(false);
   const isMountedRef = useRef(true);
   useEffect(() => {
+    // Reset to true on mount
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
@@ -932,9 +958,131 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     [sortedInteractions]
   );
 
+  // Debug: Log renderedInteractions to see what's being rendered
+  useEffect(() => {
+    const whatsappCount = renderedInteractions.filter((r: any) => r?.kind === 'whatsapp').length;
+    const totalCount = renderedInteractions.length;
+    console.log(`🔍 Rendered interactions: ${totalCount} total, ${whatsappCount} WhatsApp messages`);
+    if (whatsappCount > 0) {
+      console.log('✅ WhatsApp messages in renderedInteractions:', renderedInteractions.filter((r: any) => r?.kind === 'whatsapp').slice(0, 3));
+    }
+  }, [renderedInteractions]);
+
   // --- Add: handler for clicking an interaction to jump to message in modal ---
-  const handleInteractionClick = (row: Interaction, idx: number) => {
+  const handleInteractionClick = async (row: Interaction, idx: number) => {
     if (row.kind === 'email') {
+      // Ensure contacts are loaded first
+      let contacts = leadContacts;
+      if (contacts.length === 0) {
+        try {
+          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+          const normalizedLeadId = isLegacyLead 
+            ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+            : client.id;
+          
+          contacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
+          setLeadContacts(contacts);
+        } catch (error) {
+          console.error('Error fetching contacts for email click:', error);
+        }
+      }
+      
+      // Find the contact associated with this email
+      let contactToSelect: ContactInfo | null = null;
+      const emailContactId = (row as any).contact_id;
+      const senderEmail = (row as any).sender_email?.toLowerCase().trim();
+      const recipientList = (row as any).recipient_list?.toLowerCase() || '';
+      
+      // First, try to find by contact_id if available (STRICT MATCH)
+      if (emailContactId !== null && emailContactId !== undefined && contacts.length > 0) {
+        contactToSelect = contacts.find(c => c.id === Number(emailContactId)) || null;
+      }
+      
+      // If not found by contact_id, try to match by email address (for old emails without contact_id)
+      if (!contactToSelect && contacts.length > 0) {
+        // Split recipient list to check each recipient individually
+        const recipients = recipientList.split(/[,;]/).map((r: string) => r.trim().toLowerCase()).filter((r: string) => r);
+        
+        const isOutgoing = row.direction === 'out';
+        
+        // For outgoing emails, prioritize matching recipients
+        // For incoming emails, prioritize matching sender
+        if (isOutgoing && recipients.length > 0) {
+          // Outgoing email: match by recipient
+          for (const contact of contacts) {
+            const contactEmail = contact.email?.toLowerCase().trim();
+            if (contactEmail && recipients.includes(contactEmail)) {
+              contactToSelect = contact;
+              break;
+            }
+          }
+        } else if (!isOutgoing && senderEmail) {
+          // Incoming email: match by sender
+          for (const contact of contacts) {
+            const contactEmail = contact.email?.toLowerCase().trim();
+            if (contactEmail && senderEmail === contactEmail) {
+              contactToSelect = contact;
+              break;
+            }
+          }
+        }
+        
+        // Fallback: try reverse matching if primary match didn't work
+        if (!contactToSelect) {
+          for (const contact of contacts) {
+            const contactEmail = contact.email?.toLowerCase().trim();
+            if (contactEmail) {
+              if (isOutgoing && senderEmail === contactEmail) {
+                // Outgoing but sender matches (less likely but possible)
+                contactToSelect = contact;
+                break;
+              } else if (!isOutgoing && recipients.includes(contactEmail)) {
+                // Incoming but recipient matches (less likely but possible)
+                contactToSelect = contact;
+                break;
+              }
+            }
+          }
+        }
+      }
+      
+      // If still no contact found, use the main contact as fallback
+      if (!contactToSelect && contacts.length > 0) {
+        contactToSelect = contacts.find(c => c.isMain) || contacts[0] || null;
+      }
+      
+      // Set the selected contact if found (BEFORE opening modal)
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      
+      if (contactToSelect) {
+        
+        // Set the contact state first
+        setSelectedContactForEmail({
+          contact: contactToSelect,
+          leadId,
+          leadType: isLegacyLead ? 'legacy' : 'new'
+        });
+        
+        // Wait longer for state to update, then open modal
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } else {
+        console.warn('⚠️ No contact found for email, clearing selected contact and opening modal without filter', {
+          emailId: row.id,
+          emailContactId: emailContactId,
+          senderEmail,
+          recipientList,
+          contactsCount: contacts.length,
+          contacts: contacts.map(c => ({ id: c.id, name: c.name, email: c.email }))
+        });
+        // Clear any previously selected contact
+        setSelectedContactForEmail(null);
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      
+      // Now open the modal
       setIsEmailModalOpen(true);
       setActiveEmailId(row.id.toString());
       setTimeout(() => {
@@ -1464,13 +1612,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // In fetchAndCombineInteractions, fetch WhatsApp messages from DB and merge with manual_interactions and emails
   const fetchInteractions = useCallback(
     async (options?: { bypassCache?: boolean }) => {
+      // Don't fetch if no client
+      if (!client?.id) {
+        console.log('⚠️ InteractionsTab: No client ID, skipping fetch');
+        setInteractions([]);
+        setEmails([]);
+        setInteractionsLoading(false);
+        return;
+      }
+
       const cacheForLead: ClientInteractionsCache | null =
         interactionsCache && interactionsCache.leadId === client.id ? interactionsCache : null;
 
       if (!options?.bypassCache && cacheForLead) {
         console.log('✅ InteractionsTab using cached interactions for lead:', cacheForLead.leadId);
+        const cachedInteractions = cacheForLead.interactions || [];
+        const cachedWhatsAppCount = cachedInteractions.filter((i: any) => i.kind === 'whatsapp').length;
+        console.log(`📊 Cached interactions: ${cachedInteractions.length} total, ${cachedWhatsAppCount} WhatsApp messages`);
+        
         if (!isMountedRef.current) return;
-        setInteractions(cacheForLead.interactions || []);
+        setInteractions(cachedInteractions);
         setEmails(cacheForLead.emails || []);
         setInteractionsLoading(false);
         const cachedCount =
@@ -1521,19 +1682,34 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const [whatsAppResult, callLogsResult, legacyResult, emailsResult] = await Promise.all([
           // WhatsApp messages query - only fetch essential fields
           client?.id ? (async () => {
-            let query = supabase
-              .from('whatsapp_messages')
-              .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message')
-              .limit(FETCH_BATCH_SIZE);
-            
-            if (isLegacyLead) {
-              query = query.eq('legacy_id', legacyId);
-            } else {
-              query = query.eq('lead_id', client.id);
+            try {
+              let query = supabase
+                .from('whatsapp_messages')
+                .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number')
+                .limit(FETCH_BATCH_SIZE);
+              
+              if (isLegacyLead) {
+                if (legacyId !== null) {
+                  query = query.eq('legacy_id', legacyId);
+                } else {
+                  console.warn('⚠️ Legacy lead ID is null, skipping WhatsApp query');
+                  return { data: [], error: null };
+                }
+              } else {
+                query = query.eq('lead_id', client.id);
+              }
+              
+              const { data, error } = await query.order('sent_at', { ascending: false });
+              
+              if (error) {
+                console.error('❌ WhatsApp query error:', error);
+              }
+              
+              return { data: data || [], error };
+            } catch (err) {
+              console.error('❌ WhatsApp query exception:', err);
+              return { data: [], error: err };
             }
-            
-            const { data, error } = await query.order('sent_at', { ascending: false });
-            return { data, error };
           })() : Promise.resolve({ data: [], error: null }),
 
           // Call logs query - only fetch essential fields
@@ -1586,7 +1762,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 let emailQuery = supabase
                   .from('emails')
                   .select(
-                    'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments'
+                    'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id'
                   )
                   .limit(EMAIL_MODAL_LIMIT)
                   .order('sent_at', { ascending: false });
@@ -1608,23 +1784,44 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           console.error('❌ Failed to fetch emails for interactions tab:', emailsResult.error);
         }
 
+        // Log WhatsApp query results for debugging
+        if (whatsAppResult.error) {
+          console.error('❌ Failed to fetch WhatsApp messages for interactions tab:', whatsAppResult.error);
+        } else {
+          console.log(`✅ Fetched ${whatsAppResult.data?.length || 0} WhatsApp messages for interactions tab`);
+        }
+
         const [whatsAppDbMessages, callLogInteractions, legacyInteractions] = [
           // Process WhatsApp messages
-          whatsAppResult.data?.map((msg: any) => ({
-            id: msg.id,
-            date: new Date(msg.sent_at).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
-            time: new Date(msg.sent_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
-            raw_date: msg.sent_at,
-            employee: msg.sender_name || 'You',
-            direction: msg.direction,
-            kind: 'whatsapp',
-            length: '',
-            content: msg.message,
-            observation: msg.error_message || '',
-            editable: false,
-            status: msg.whatsapp_status,
-            error_message: msg.error_message,
-          })) || [],
+          (whatsAppResult.data || []).map((msg: any) => {
+            // Ensure sent_at exists and is valid
+            const sentAt = msg.sent_at || msg.created_at || new Date().toISOString();
+            const sentAtDate = new Date(sentAt);
+            
+            // Skip messages with invalid dates
+            if (isNaN(sentAtDate.getTime())) {
+              console.warn('⚠️ WhatsApp message has invalid sent_at:', { id: msg.id, sent_at: msg.sent_at });
+              return null;
+            }
+            
+            return {
+              id: msg.id,
+              date: sentAtDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
+              time: sentAtDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+              raw_date: sentAt,
+              employee: msg.sender_name || 'You',
+              direction: msg.direction || 'in',
+              kind: 'whatsapp',
+              length: '',
+              content: msg.message || '',
+              observation: msg.error_message || '',
+              editable: false,
+              status: msg.whatsapp_status || 'sent',
+              error_message: msg.error_message,
+              contact_id: msg.contact_id || null,
+              phone_number: msg.phone_number || null,
+            };
+          }).filter((msg: any) => msg !== null),
 
           // Process call logs
           callLogsResult.data?.map((callLog: any) => {
@@ -1715,17 +1912,44 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             status: e.status,
             body_html: bodyHtml,
             body_preview: bodyPreview || null,
+            contact_id: e.contact_id || null,
+            sender_email: e.sender_email || null,
+            recipient_list: e.recipient_list || null,
           };
         });
       
         // Combine all interactions
         const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...callLogInteractions, ...legacyInteractions];
         
-        const uniqueInteractions = combined.filter((interaction: any, index: number, self: any[]) => 
+        // Filter out interactions with invalid dates and log for debugging
+        const validInteractions = combined.filter((interaction: any) => {
+          if (!interaction.raw_date) {
+            console.warn('⚠️ Interaction missing raw_date:', { id: interaction.id, kind: interaction.kind });
+            return false;
+          }
+          const date = new Date(interaction.raw_date);
+          if (isNaN(date.getTime())) {
+            console.warn('⚠️ Interaction has invalid raw_date:', { id: interaction.id, kind: interaction.kind, raw_date: interaction.raw_date });
+            return false;
+          }
+          return true;
+        });
+        
+        const uniqueInteractions = validInteractions.filter((interaction: any, index: number, self: any[]) => 
           index === self.findIndex((i: any) => i.id === interaction.id)
         );
         
-        const sorted = uniqueInteractions.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+        const sorted = uniqueInteractions.sort((a, b) => {
+          const dateA = new Date(a.raw_date).getTime();
+          const dateB = new Date(b.raw_date).getTime();
+          return dateB - dateA;
+        });
+        
+        // Log WhatsApp messages count for debugging
+        const whatsappCount = sorted.filter((i: any) => i.kind === 'whatsapp').length;
+        if (whatsappCount > 0) {
+          console.log(`✅ Processed ${whatsappCount} WhatsApp messages in interactions timeline`);
+        }
         
         const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
           const previewSource = e.body_html || e.body_preview || e.subject || '';
@@ -1746,14 +1970,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             attachments: e.attachments,
           };
         });
-        if (isMountedRef.current) {
-          setInteractions(sorted as Interaction[]);
-          
-          const endTime = performance.now();
-          const duration = Math.round(endTime - startTime);
-          console.log(`✅ InteractionsTab loaded in ${duration}ms with ${sorted.length} interactions`);
-          setEmails(formattedEmailsForModal);
+        // Always set interactions - React will handle unmounted components gracefully
+        // If component remounts, we want the data anyway
+        const whatsappInSorted = sorted.filter((i: any) => i.kind === 'whatsapp').length;
+        console.log(`📊 Setting interactions: ${sorted.length} total, ${whatsappInSorted} WhatsApp messages`);
+        console.log(`📊 isMountedRef.current: ${isMountedRef.current}`);
+        
+        if (!isMountedRef.current) {
+          console.warn('⚠️ Component appears unmounted, but setting interactions anyway (component may remount)');
         }
+        
+        setInteractions(sorted as Interaction[]);
+        
+        const endTime = performance.now();
+        const duration = Math.round(endTime - startTime);
+        console.log(`✅ InteractionsTab loaded in ${duration}ms with ${sorted.length} interactions`);
+        setEmails(formattedEmailsForModal);
 
         onInteractionCountUpdate?.(sorted.length);
         onInteractionsCacheUpdate?.({
@@ -1790,13 +2022,90 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     ]
   );
 
+  // Use ref to track last client ID to prevent infinite loops
+  const lastClientIdRef = useRef<string | null>(null);
+  const isFetchingRef = useRef<boolean>(false);
+  
   useEffect(() => {
-    fetchInteractions();
-  }, [fetchInteractions]);
+    const currentClientId = client?.id?.toString() || null;
+    
+    // Only fetch if client ID actually changed and we're not already fetching
+    if (currentClientId && currentClientId !== lastClientIdRef.current && !isFetchingRef.current) {
+      console.log('🔄 Client changed, fetching fresh interactions (bypassing cache)...', {
+        previous: lastClientIdRef.current,
+        current: currentClientId,
+        isFetching: isFetchingRef.current,
+        refAvailable: !!fetchInteractionsRef.current
+      });
+      lastClientIdRef.current = currentClientId;
+      isFetchingRef.current = true;
+      
+      // Use the ref to get the latest fetchInteractions function
+      // The ref is set in a separate useEffect, so it should be available
+      // If ref is not set yet, wait a bit and try again, or use fetchInteractions directly
+      const fetchFn = fetchInteractionsRef.current;
+      if (fetchFn) {
+        console.log('✅ Calling fetchInteractions via ref');
+        fetchFn({ bypassCache: true }).finally(() => {
+          isFetchingRef.current = false;
+        });
+      } else {
+        // Ref not set yet, wait a tick and try again
+        console.warn('⚠️ fetchInteractionsRef.current is null, scheduling retry...');
+        setTimeout(() => {
+          const retryFn = fetchInteractionsRef.current;
+          if (retryFn) {
+            console.log('✅ Retry: Calling fetchInteractions via ref');
+            retryFn({ bypassCache: true }).finally(() => {
+              isFetchingRef.current = false;
+            });
+          } else {
+            console.error('❌ fetchInteractionsRef.current is still null after retry!');
+            isFetchingRef.current = false;
+          }
+        }, 0);
+      }
+    } else if (!currentClientId) {
+      // Clear if no client
+      if (lastClientIdRef.current !== null) {
+        lastClientIdRef.current = null;
+        isFetchingRef.current = false;
+        setInteractions([]);
+        setEmails([]);
+        setInteractionsLoading(false);
+      }
+    }
+  }, [client?.id]); // Only depend on client.id - use ref for fetchInteractions to prevent loops
+
+  // Fetch contacts when client changes
+  useEffect(() => {
+    const loadContacts = async () => {
+      if (!client?.id) {
+        setLeadContacts([]);
+        return;
+      }
+      
+      try {
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const normalizedLeadId = isLegacyLead 
+          ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+          : client.id;
+        
+        const contacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
+        setLeadContacts(contacts);
+      } catch (error) {
+        console.error('Error fetching contacts:', error);
+        setLeadContacts([]);
+      }
+    };
+    
+    loadContacts();
+  }, [client?.id, client?.lead_type]);
 
   const fetchInteractionsRef = useRef<typeof fetchInteractions | null>(null);
   useEffect(() => {
     fetchInteractionsRef.current = fetchInteractions;
+    console.log('✅ fetchInteractionsRef updated');
   }, [fetchInteractions]);
 
 
@@ -1872,7 +2181,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       let emailQuery = supabase
         .from('emails')
         .select(
-          'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments'
+          'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id'
         )
         .order('sent_at', { ascending: true });
 
@@ -1882,13 +2191,54 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         emailQuery = emailQuery.eq('client_id', client.id);
       }
       
+      // Note: We'll filter by contact client-side to handle both contact_id and email matching
+      // This ensures we catch emails that might not have contact_id set yet
+      
       const { data: emailData, error: emailError } = await emailQuery;
       
       if (emailError) {
         console.error('❌ Error fetching emails for InteractionsTab:', emailError);
       } else {
-        const clientEmails = emailData || [];
+        let clientEmails = emailData || [];
         console.log(`📧 InteractionsTab fetched ${clientEmails.length} emails for client ${client.id}`);
+        
+        // Strict client-side filtering if contact is selected
+        if (selectedContactForEmail?.contact.id) {
+          const contactId = Number(selectedContactForEmail.contact.id);
+          const contactEmail = selectedContactForEmail.contact.email?.toLowerCase().trim();
+          
+          console.log(`🔍 Filtering emails for contact ID: ${contactId}, email: ${contactEmail}`);
+          
+          clientEmails = clientEmails.filter((e: any) => {
+            // STRICT RULE: If email has contact_id, it MUST match exactly (no fallback to email matching)
+            if (e.contact_id !== null && e.contact_id !== undefined) {
+              const emailContactId = Number(e.contact_id);
+              return emailContactId === contactId;
+            }
+            
+            // Only if email has NO contact_id, then match by email address
+            // This is a fallback for old emails that don't have contact_id set yet
+            if (contactEmail) {
+              const senderEmail = e.sender_email?.toLowerCase().trim();
+              const recipientList = e.recipient_list?.toLowerCase() || '';
+              
+              // Split recipient_list by comma/semicolon and check for exact match
+              const recipients = recipientList.split(/[,;]/).map((r: string) => r.trim());
+              const matchesEmail = senderEmail === contactEmail || recipients.includes(contactEmail);
+              
+              if (matchesEmail) {
+                console.log(`✅ Including email ${e.id} by email match: ${contactEmail}`);
+              }
+              return matchesEmail;
+            }
+            
+            // No contact email to match, exclude this email
+            console.log(`❌ Excluding email ${e.id}: no contact email to match`);
+            return false;
+          });
+          
+          console.log(`📧 After strict filtering by contact, ${clientEmails.length} emails remain`);
+        }
         
         // Format emails for modal display
         const formattedEmailsForModal = clientEmails.map((e: any) => {
@@ -1906,6 +2256,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             bodyPreview: cleanedHtml ?? (fallbackText ? convertBodyToHtml(fallbackText) : ''),
           direction: e.direction,
           attachments: e.attachments,
+          contact_id: e.contact_id,
           };
         });
         
@@ -1917,7 +2268,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     } finally {
       setEmailsLoading(false);
     }
-  }, [client]);
+  }, [client, selectedContactForEmail]);
 
   const runMailboxSync = useCallback(async () => {
     if (!userId) {
@@ -2101,6 +2452,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         : null;
       const senderName = currentUserFullName || userEmail || 'Your Team';
 
+      // Find the contact_id from the selected contact or the first recipient
+      let contactId: number | null = selectedContactId;
+      if (!contactId && finalToRecipients.length > 0) {
+        // Try to find contact by email
+        const contactByEmail = leadContacts.find(c => c.email === finalToRecipients[0]);
+        if (contactByEmail) {
+          contactId = contactByEmail.id;
+        }
+      }
+
       const sendResult = await sendEmailViaBackend({
         userId,
         subject,
@@ -2115,6 +2476,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           leadNumber: client.lead_number || null,
           contactEmail: client.email || null,
           contactName: client.name || null,
+          contactId: contactId || null,
           senderName,
           userInternalId: client.user_internal_id || undefined,
         },
@@ -2215,18 +2577,37 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Set the subject when the email modal opens (if not already set by user)
   useEffect(() => {
     if (isEmailModalOpen) {
-      const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+      // Use selected contact's name if available, otherwise use client name
+      const nameToUse = selectedContactForEmail?.contact.name || client.name;
+      const defaultSubject = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
       setComposeSubject(prev => prev && prev.trim() ? prev : defaultSubject);
       
-      // Fetch emails when modal opens (like EmailThreadModal)
-      console.log('📧 Email modal opened, fetching emails...');
-      fetchEmailsForModal();
+      // Fetch emails when modal opens - add delay to ensure contact is set if it was just set
+      const fetchDelay = selectedContactForEmail ? 200 : 0;
+      setTimeout(() => {
+        fetchEmailsForModal();
+      }, fetchDelay);
+      
       if (!mailboxStatusRequestedRef.current) {
         mailboxStatusRequestedRef.current = true;
         refreshMailboxStatus();
       }
     }
-  }, [isEmailModalOpen, client, fetchEmailsForModal]);
+  }, [isEmailModalOpen, client, fetchEmailsForModal, selectedContactForEmail]);
+
+  // Separate effect to re-fetch emails when selected contact changes (while modal is open)
+  useEffect(() => {
+    if (isEmailModalOpen && selectedContactForEmail) {
+      fetchEmailsForModal();
+    }
+  }, [selectedContactForEmail?.contact.id, isEmailModalOpen, fetchEmailsForModal]);
+
+  // Clear selected contact when email modal closes
+  useEffect(() => {
+    if (!isEmailModalOpen) {
+      setSelectedContactForEmail(null);
+    }
+  }, [isEmailModalOpen]);
 
   // Update openEditDrawer to return a Promise and always fetch latest data for manual interactions
   const openEditDrawer = async (idx: number) => {
@@ -2545,7 +2926,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   useEffect(() => {
     if (!isEmailModalOpen) return;
-    const initialRecipients = normaliseAddressList(client.email);
+    
+    // Use selected contact's email if available, otherwise fall back to client email
+    const emailToUse = selectedContactForEmail?.contact.email || client.email;
+    const initialRecipients = normaliseAddressList(emailToUse);
     setComposeToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
     setComposeCcRecipients([]);
     setComposeToInput('');
@@ -2556,7 +2940,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     setComposeLinkUrl('');
     setSelectedComposeTemplateId(null);
     setComposeTemplateSearch('');
-  }, [isEmailModalOpen, client.email]);
+  }, [isEmailModalOpen, client.email, selectedContactForEmail]);
 
   useEffect(() => {
     if (!isEmailModalOpen) return;
@@ -2629,12 +3013,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </label>
                 <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
                   <li>
-                    <button className="flex gap-2 items-center" onClick={() => { setIsEmailModalOpen(true); }}>
+                    <button className="flex gap-2 items-center" onClick={() => {
+                      // Show contact selector first
+                      setShowContactSelectorForEmail(true);
+                    }}>
                       <EnvelopeIcon className="w-5 h-5" /> Email
                     </button>
                   </li>
                   <li>
-                    <button className="flex gap-2 items-center" onClick={() => setIsWhatsAppOpen(true)}>
+                    <button className="flex gap-2 items-center" onClick={() => {
+                      // Show contact selector first
+                      setShowContactSelector(true);
+                    }}>
                       <FaWhatsapp className="w-5 h-5" /> WhatsApp
                     </button>
                   </li>
@@ -2672,12 +3062,36 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               <div className="absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-accent to-secondary shadow-lg" style={{ zIndex: 0 }} />
               
               <div className="space-y-8 md:space-y-10 lg:space-y-12">
-              {renderedInteractions.map((row, idx) => {
-              // Date formatting
-              const dateObj = new Date(row.raw_date);
-              const day = dateObj.getDate().toString().padStart(2, '0');
-              const month = dateObj.toLocaleString('en', { month: 'short' });
-              const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+              {renderedInteractions
+                .map((row, idx) => {
+                // Debug: Log first few WhatsApp messages being rendered
+                if (row.kind === 'whatsapp' && idx < 3) {
+                  console.log(`🔍 Rendering WhatsApp message ${idx}:`, {
+                    id: row.id,
+                    kind: row.kind,
+                    content: row.content?.substring(0, 50),
+                    raw_date: row.raw_date,
+                    employee: row.employee,
+                    direction: row.direction
+                  });
+                }
+                
+                // Date formatting with validation and fallback
+                let dateObj: Date;
+                if (!row.raw_date) {
+                  console.warn('⚠️ Interaction missing raw_date in render, using current date:', { id: row.id, kind: row.kind });
+                  dateObj = new Date();
+                } else {
+                  dateObj = new Date(row.raw_date);
+                  if (isNaN(dateObj.getTime())) {
+                    console.warn('⚠️ Interaction has invalid raw_date in render, using current date:', { id: row.id, kind: row.kind, raw_date: row.raw_date });
+                    dateObj = new Date();
+                  }
+                }
+                
+                const day = dateObj.getDate().toString().padStart(2, '0');
+                const month = dateObj.toLocaleString('en', { month: 'short' });
+                const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
               
               // Icon and color
               let icon, iconBg, cardBg, textGradient, avatarBg;
@@ -2793,8 +3207,85 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                               <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold ${avatarBg} text-sm sm:text-base`}>
                                 {initials}
                               </div>
-                              <div className={`font-semibold text-sm sm:text-base md:text-lg ${textGradient}`}>
-                                {row.employee}
+                              <div className="flex flex-col gap-1">
+                                <div className={`font-semibold text-sm sm:text-base md:text-lg ${textGradient}`}>
+                                  {row.employee}
+                                </div>
+                                {/* Show contact name for email and WhatsApp interactions */}
+                                {(row.kind === 'email' || row.kind === 'whatsapp') && (() => {
+                                  const interactionContactId = (row as any).contact_id;
+                                  const senderEmail = (row as any).sender_email?.toLowerCase().trim();
+                                  const recipientList = (row as any).recipient_list?.toLowerCase() || '';
+                                  const phoneNumber = (row as any).phone_number;
+                                  let contactName = null;
+                                  
+                                  // First, try to find by contact_id (most reliable)
+                                  if (interactionContactId !== null && interactionContactId !== undefined) {
+                                    if (leadContacts.length > 0) {
+                                      const contact = leadContacts.find(c => c.id === Number(interactionContactId));
+                                      if (contact) {
+                                        contactName = contact.name;
+                                      }
+                                    }
+                                  }
+                                  
+                                  // If not found by contact_id, try to match by email (for emails) or phone (for WhatsApp)
+                                  if (!contactName && leadContacts.length > 0) {
+                                    if (row.kind === 'email') {
+                                      // Email matching logic
+                                      const recipients = recipientList.split(/[,;]/).map((r: string) => r.trim().toLowerCase()).filter((r: string) => r);
+                                      
+                                      const isOutgoing = row.direction === 'out';
+                                      for (const contact of leadContacts) {
+                                        const contactEmail = contact.email?.toLowerCase().trim();
+                                        if (contactEmail) {
+                                          if (isOutgoing && recipients.includes(contactEmail)) {
+                                            contactName = contact.name;
+                                            break;
+                                          } else if (!isOutgoing && senderEmail === contactEmail) {
+                                            contactName = contact.name;
+                                            break;
+                                          }
+                                        }
+                                      }
+                                    } else if (row.kind === 'whatsapp') {
+                                      // WhatsApp matching logic - match by phone number
+                                      if (phoneNumber) {
+                                        // Normalize phone number (remove spaces, dashes, etc.)
+                                        const normalizePhone = (phone: string) => phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+                                        const normalizedPhone = normalizePhone(phoneNumber);
+                                        
+                                        for (const contact of leadContacts) {
+                                          const contactPhone = contact.phone ? normalizePhone(contact.phone) : null;
+                                          const contactMobile = contact.mobile ? normalizePhone(contact.mobile) : null;
+                                          
+                                          // Try exact match first
+                                          if (contactPhone === normalizedPhone || contactMobile === normalizedPhone) {
+                                            contactName = contact.name;
+                                            break;
+                                          }
+                                          
+                                          // Try last 4 digits match (fallback)
+                                          if (normalizedPhone.length >= 4) {
+                                            const last4 = normalizedPhone.slice(-4);
+                                            if ((contactPhone && contactPhone.slice(-4) === last4) || 
+                                                (contactMobile && contactMobile.slice(-4) === last4)) {
+                                              contactName = contact.name;
+                                              break;
+                                            }
+                                          }
+                                        }
+                                      }
+                                    }
+                                  }
+                                  
+                                  return contactName ? (
+                                    <div className="text-xs text-gray-500 flex items-center gap-1">
+                                      <span>To:</span>
+                                      <span className="font-medium text-gray-700">{contactName}</span>
+                                    </div>
+                                  ) : null;
+                                })()}
                               </div>
                             </div>
                             
@@ -2849,7 +3340,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     className="max-w-none whitespace-pre-wrap overflow-visible"
                                     style={{ lineHeight: '1.6', maxHeight: 'none' }}
                                     dangerouslySetInnerHTML={{ 
-                                      __html: row.renderedContent || row.renderedContentFallback || ''
+                                      __html: row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')
                                     }} 
                                   />
                                 </>
@@ -2858,7 +3349,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   className="max-w-none whitespace-pre-wrap overflow-visible"
                                   style={{ lineHeight: '1.6', maxHeight: 'none' }}
                                   dangerouslySetInnerHTML={{ 
-                                    __html: row.renderedContent || row.renderedContentFallback || ''
+                                    __html: row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')
                                   }} 
                                 />
                               )}
@@ -2926,7 +3417,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </div>
                 </div>
               );
-            })}
+            })
+            .filter(Boolean)}
 
             {hasMoreInteractions && (
               <div className="flex justify-center pt-4">
@@ -2960,7 +3452,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           </div>
         </div>
       )}
-      {/* Email Thread Modal */}
+      {/* Email Thread Modal - Inline modal showing all interactions filtered by selected contact */}
       {isEmailModalOpen && createPortal(
         <div className="fixed inset-0 bg-white z-[9999]">
           {/* CSS to ensure email content displays fully */}
@@ -2994,14 +3486,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             {/* Header */}
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between p-4 md:p-6 border-b border-gray-200">
               <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-                <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
+                <h2 className="text-lg md:text-2xl font-bold text-gray-900">Interactions</h2>
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></div>
                   <span className="text-gray-600 text-sm md:text-base truncate">
-                    {client.name} ({client.lead_number})
+                    {selectedContactForEmail ? selectedContactForEmail.contact.name : client.name} ({client.lead_number})
                   </span>
                 </div>
               </div>
+              {selectedContactForEmail && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-100 rounded-lg border border-purple-200">
+                  <span className="text-xs font-medium text-purple-700">Contact:</span>
+                  <span className="text-sm font-semibold text-purple-900">{selectedContactForEmail.contact.name}</span>
+                  {selectedContactForEmail.contact.isMain && (
+                    <span className="px-2 py-0.5 text-xs font-medium bg-purple-200 text-purple-800 rounded-full">Main</span>
+                  )}
+                </div>
+              )}
               <div className="flex flex-col items-end gap-2">
                 <div className="flex items-center gap-2 text-xs text-gray-500">
                   <span
@@ -3132,6 +3633,40 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 <div className="space-y-6">
                   {[...emails]
                     .filter((message) => {
+                      // STRICT filtering by selected contact if one is selected
+                      if (selectedContactForEmail) {
+                        const contactId = Number(selectedContactForEmail.contact.id);
+                        const contactEmail = selectedContactForEmail.contact.email?.toLowerCase().trim();
+                        
+                        // STRICT RULE: If email has contact_id, it MUST match exactly (no fallback to email matching)
+                        if (message.contact_id !== null && message.contact_id !== undefined) {
+                          const emailContactId = Number(message.contact_id);
+                          if (emailContactId !== contactId) {
+                            return false; // Different contact_id, exclude immediately
+                          }
+                          // contact_id matches, continue to search filter
+                        } else {
+                          // Only if email has NO contact_id, then match by email address (fallback for old emails)
+                          if (contactEmail) {
+                            const messageFrom = message.from?.toLowerCase().trim();
+                            const messageTo = message.to?.toLowerCase().trim() || '';
+                            
+                            // Split recipient_list by comma/semicolon and check for exact match
+                            const recipients = messageTo.split(/[,;]/).map((r: string) => r.trim());
+                            const matchesContact = 
+                              messageFrom === contactEmail || 
+                              recipients.includes(contactEmail);
+                            
+                            if (!matchesContact) {
+                              return false; // Email doesn't match, exclude
+                            }
+                          } else {
+                            // No contact email to match, exclude this message
+                            return false;
+                          }
+                        }
+                      }
+                      
                       if (!emailSearchQuery.trim()) return true;
                       
                       const searchTerm = emailSearchQuery.toLowerCase();
@@ -3285,7 +3820,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     </div>
                     <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 md:px-6 lg:px-10">
                         <div className="space-y-2">
-                          <label className="font-semibold text-sm">To</label>
+                          <div className="flex items-center justify-between">
+                            <label className="font-semibold text-sm">To</label>
+                          </div>
                           {renderComposeRecipients('to')}
                         </div>
                         <div className="space-y-2">
@@ -3343,7 +3880,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 setSelectedComposeTemplateId(null);
                                 setComposeTemplateSearch('');
                                 setComposeBody('');
-                                const defaultSubjectValue = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+                                // Use selected contact's name if available, otherwise use client name
+                                const nameToUse = selectedContactForEmail?.contact.name || client.name;
+                                const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
                                 setComposeSubject(defaultSubjectValue);
                               }}
                             >
@@ -3537,7 +4076,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               {!showCompose && (
                 <button
                   onClick={() => {
-                    const initialRecipients = normaliseAddressList(client.email);
+                    // Use selected contact's email if available, otherwise fall back to client email
+                    const emailToUse = selectedContactForEmail?.contact.email || client.email;
+                    const initialRecipients = normaliseAddressList(emailToUse);
                     setComposeToRecipients(initialRecipients.length > 0 ? initialRecipients : []);
                     setComposeCcRecipients([]);
                     setComposeToInput('');
@@ -3548,7 +4089,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     setComposeLinkUrl('');
                     setSelectedComposeTemplateId(null);
                     setComposeTemplateSearch('');
-                    const defaultSubjectValue = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
+                    // Use selected contact's name if available, otherwise use client name
+                    const nameToUse = selectedContactForEmail?.contact.name || client.name;
+                    const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
                     setComposeSubject(defaultSubjectValue);
                     setComposeBody('');
                     setComposeAttachments([]);
@@ -3644,10 +4187,57 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         </div>,
         document.body
       )}
+      {/* Contact Selector Modal for WhatsApp */}
+      {client && (
+        <ContactSelectorModal
+          isOpen={showContactSelector}
+          onClose={() => {
+            setShowContactSelector(false);
+            setSelectedContactForWhatsApp(null);
+          }}
+          leadId={isLegacyLead 
+            ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+            : client.id}
+          leadType={isLegacyLead ? 'legacy' : 'new'}
+          leadName={client.name}
+          leadNumber={client.lead_number}
+          mode="whatsapp"
+          onContactSelected={(contact, leadId, leadType) => {
+            setSelectedContactForWhatsApp({ contact, leadId, leadType });
+            setShowContactSelector(false);
+            setIsWhatsAppOpen(true);
+          }}
+        />
+      )}
+      {/* Contact Selector Modal for Email */}
+      {client && (
+        <ContactSelectorModal
+          isOpen={showContactSelectorForEmail}
+          onClose={() => {
+            setShowContactSelectorForEmail(false);
+            // Don't clear selectedContactForEmail here - it will be cleared when email modal closes
+          }}
+          leadId={isLegacyLead 
+            ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+            : client.id}
+          leadType={isLegacyLead ? 'legacy' : 'new'}
+          leadName={client.name}
+          leadNumber={client.lead_number}
+          mode="email"
+          onContactSelected={(contact, leadId, leadType) => {
+            setSelectedContactForEmail({ contact, leadId, leadType });
+            setShowContactSelectorForEmail(false);
+            setIsEmailModalOpen(true);
+          }}
+        />
+      )}
       {/* WhatsApp Modal */}
       <SchedulerWhatsAppModal
         isOpen={isWhatsAppOpen}
-        onClose={handleWhatsAppClose}
+        onClose={() => {
+          handleWhatsAppClose();
+          setSelectedContactForWhatsApp(null);
+        }}
         client={client ? {
           id: client.id,
           name: client.name,
@@ -3656,6 +4246,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           mobile: client.mobile,
           lead_type: client.lead_type
         } : undefined}
+        selectedContact={selectedContactForWhatsApp}
+        hideContactSelector={true}
         onClientUpdate={async () => {
           // Refresh interactions when WhatsApp messages are updated
           if (onClientUpdate) {
@@ -3665,6 +4257,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           // The useEffect with client.id dependency will handle the refresh
         }}
       />
+      {/* Email Thread Modal - Removed, using inline modal below instead */}
       {/* Details Drawer for Interactions */}
       {detailsDrawerOpen && activeInteraction && createPortal(
         <div className="fixed inset-0 z-[999] flex">

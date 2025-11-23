@@ -7,6 +7,8 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { buildApiUrl } from '../lib/api';
 import { fetchWhatsAppTemplates, filterTemplates, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import { fetchLeadContacts } from '../lib/contactHelpers';
+import type { ContactInfo } from '../lib/contactHelpers';
 import { format } from 'date-fns';
 
 interface WhatsAppMessage {
@@ -42,10 +44,16 @@ interface SchedulerWhatsAppModalProps {
     mobile?: string;
     lead_type?: string;
   };
+  selectedContact?: {
+    contact: ContactInfo;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null;
   onClientUpdate?: () => Promise<void>;
+  hideContactSelector?: boolean; // Hide contact selector dropdown
 }
 
-const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, onClientUpdate }) => {
+const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, selectedContact: propSelectedContact, onClientUpdate, hideContactSelector = false }) => {
   const [newMessage, setNewMessage] = useState('');
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
@@ -74,6 +82,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // Auto-scroll state
   const [shouldAutoScroll, setShouldAutoScroll] = useState(false);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
+  
+  // State for lead contacts (all contacts associated with the client)
+  const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
+  const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
 
   // Fetch current user
   useEffect(() => {
@@ -103,6 +115,48 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     };
     fetchCurrentUser();
   }, []);
+
+  // If propSelectedContact is provided, use it directly
+  useEffect(() => {
+    if (propSelectedContact) {
+      setSelectedContactId(propSelectedContact.contact.id);
+      setLeadContacts([propSelectedContact.contact]);
+    }
+  }, [propSelectedContact]);
+
+  // Fetch contacts for the client (only if no propSelectedContact)
+  useEffect(() => {
+    if (propSelectedContact) return; // Skip if we have a prop contact
+    
+    const fetchContactsForClient = async () => {
+      if (!client) {
+        setLeadContacts([]);
+        setSelectedContactId(null);
+        return;
+      }
+
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      setLeadContacts(contacts);
+      
+      // If there are contacts, select the main contact by default, or the first one
+      if (contacts.length > 0) {
+        const mainContact = contacts.find(c => c.isMain) || contacts[0];
+        setSelectedContactId(mainContact.id);
+      } else {
+        setSelectedContactId(null);
+      }
+    };
+
+    if (client) {
+      fetchContactsForClient();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, propSelectedContact]);
 
   // Fetch WhatsApp templates
   useEffect(() => {
@@ -294,14 +348,88 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       }
 
       try {
+        // Get contact_id if we have a selected contact from the contact selector
+        const contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+        
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         let query = supabase.from('whatsapp_messages').select('*');
         
-        if (isLegacyLead) {
-          const legacyId = parseInt(client.id.replace('legacy_', ''));
-          query = query.eq('legacy_id', legacyId);
+        // If we have a contact_id, filter by it (each contact has their own conversation)
+        if (contactId) {
+          console.log('🔄 Fetching WhatsApp messages for contact_id:', contactId);
+          // First try exact contact_id match
+          query = query.eq('contact_id', contactId);
+          
+          // Fallback: Also include messages that match by phone number (last 4 digits) but don't have contact_id set
+          // This handles cases where contact_id matching failed but phone number matches
+          const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === contactId);
+          if (selectedContact) {
+            const contactPhone = selectedContact.phone || selectedContact.mobile;
+            if (contactPhone) {
+              // Extract last 4 digits
+              const phoneDigits = contactPhone.replace(/\D/g, '');
+              const last4Digits = phoneDigits.slice(-4);
+              
+              if (last4Digits.length >= 4) {
+                // Fetch all messages for this lead, then filter in memory
+                const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+                let allMessagesQuery = supabase.from('whatsapp_messages').select('*');
+                
+                if (isLegacyLead) {
+                  const legacyId = parseInt(client.id.replace('legacy_', ''));
+                  allMessagesQuery = allMessagesQuery.eq('legacy_id', legacyId);
+                } else {
+                  allMessagesQuery = allMessagesQuery.eq('lead_id', client.id);
+                }
+                
+                const { data: allMessages, error: allError } = await allMessagesQuery.order('sent_at', { ascending: true });
+                
+                if (!allError && allMessages) {
+                  // Filter: contact_id match OR (contact_id is null AND phone ends with last4Digits)
+                  const filteredMessages = allMessages.filter(msg => {
+                    if (msg.contact_id === contactId) return true;
+                    if (!msg.contact_id && msg.phone_number) {
+                      const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
+                      const msgLast4 = msgPhoneDigits.slice(-4);
+                      return msgLast4 === last4Digits;
+                    }
+                    return false;
+                  });
+                  
+                  const processedMessages = filteredMessages.map(processTemplateMessage);
+                  if (!isPolling) {
+                    setMessages(processedMessages);
+                  } else {
+                    setMessages(prevMessages => {
+                      const hasChanges = processedMessages.length !== prevMessages.length ||
+                        processedMessages.some((newMsg, index) => {
+                          const prevMsg = prevMessages[index];
+                          return !prevMsg || 
+                                 newMsg.id !== prevMsg.id || 
+                                 newMsg.message !== prevMsg.message ||
+                                 newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                        });
+                      
+                      if (hasChanges) {
+                        return processedMessages;
+                      }
+                      return prevMessages;
+                    });
+                  }
+                  return;
+                }
+              }
+            }
+          }
         } else {
-          query = query.eq('lead_id', client.id);
+          // Fallback to filtering by lead_id/legacy_id
+          // Also include messages where client_id doesn't match but belong to the lead (show in main contact)
+          if (isLegacyLead) {
+            const legacyId = parseInt(client.id.replace('legacy_', ''));
+            query = query.eq('legacy_id', legacyId);
+          } else {
+            query = query.eq('lead_id', client.id);
+          }
         }
         
         const { data, error } = await query.order('sent_at', { ascending: true });
@@ -373,7 +501,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       const interval = setInterval(() => fetchMessages(true), 5000);
       return () => clearInterval(interval);
     }
-  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates]);
+  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact]);
 
   // Update timer for 24-hour window
   useEffect(() => {
@@ -419,6 +547,31 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     }
   }, [messages, shouldAutoScroll]);
 
+  // Auto-scroll to bottom when modal opens
+  useEffect(() => {
+    if (isOpen && messages.length > 0) {
+      // Use multiple timeouts to ensure the DOM is ready and messages are rendered
+      const scrollToBottom = () => {
+        if (messagesEndRef.current) {
+          messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+        } else {
+          // Fallback: scroll the messages container directly
+          const messagesContainer = document.querySelector('.overflow-y-auto');
+          if (messagesContainer) {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+          }
+        }
+      };
+      
+      // Try immediately
+      setTimeout(scrollToBottom, 100);
+      // Try again after a short delay to ensure rendering is complete
+      setTimeout(scrollToBottom, 300);
+      // Try once more after messages are fully loaded
+      setTimeout(scrollToBottom, 500);
+    }
+  }, [isOpen, messages.length]);
+
   // Handle click outside for emoji picker
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -446,9 +599,28 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
     setSending(true);
     
-    const phoneNumber = client.phone || client.mobile;
+    // Get phone number from selected contact or client
+    let phoneNumber: string | null = null;
+    let contactId: number | null = null;
+    
+    // Use propSelectedContact if available, otherwise use selectedContactId
+    const activeContactId = propSelectedContact?.contact.id || selectedContactId;
+    
+    if (activeContactId) {
+      const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === activeContactId);
+      if (selectedContact) {
+        phoneNumber = selectedContact.phone || selectedContact.mobile || null;
+        contactId = selectedContact.id;
+      }
+    }
+    
+    // Fallback to client's phone number
     if (!phoneNumber) {
-      toast.error('No phone number found for this client');
+      phoneNumber = client.phone || client.mobile || null;
+    }
+    
+    if (!phoneNumber) {
+      toast.error('No phone number found for this contact');
       setSending(false);
       return;
     }
@@ -459,7 +631,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       const messagePayload: any = {
         leadId: client.id,
         phoneNumber: phoneNumber,
-        sender_name: senderName
+        sender_name: senderName,
+        contactId: contactId || null
       };
 
       if (selectedTemplate) {
@@ -732,7 +905,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 )}
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-sm md:text-lg font-semibold text-gray-900 truncate">
-                    {client.name}
+                    {propSelectedContact?.contact.name || client.name}
                   </span>
                   <span className="text-xs md:text-sm text-gray-500 font-mono flex-shrink-0">
                     ({client.lead_number})
@@ -1127,6 +1300,28 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               </div>
             )}
 
+            {/* Contact Selector - Show if multiple contacts, no pre-selected contact, and not hidden */}
+            {!hideContactSelector && !propSelectedContact && leadContacts.length > 1 && (
+              <div className="px-4 py-2 border-b border-gray-200 bg-gray-50">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-semibold text-gray-600">Contact:</label>
+                  <select
+                    className="select select-bordered select-sm text-xs flex-1"
+                    value={selectedContactId || ''}
+                    onChange={(e) => {
+                      const contactId = e.target.value ? parseInt(e.target.value, 10) : null;
+                      setSelectedContactId(contactId);
+                    }}
+                  >
+                    {leadContacts.map(contact => (
+                      <option key={contact.id} value={contact.id}>
+                        {contact.name} {contact.isMain && '(Main)'} - {contact.phone || contact.mobile || 'No phone'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
             {/* Message Input */}
             <textarea
               value={newMessage}

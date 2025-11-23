@@ -5,9 +5,14 @@ import WhatsAppPage from '../pages/WhatsAppPage';
 interface WhatsAppModalProps {
   isOpen: boolean;
   onClose: () => void;
+  selectedContact?: {
+    contact: any;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null;
 }
 
-const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose }) => {
+const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose, selectedContact }) => {
   if (!isOpen) return null;
 
   return (
@@ -23,7 +28,7 @@ const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose }) => {
       </div>
       
       {/* WhatsApp Page */}
-      <WhatsAppPage />
+      <WhatsAppPage selectedContact={selectedContact} />
     </div>
   );
 };

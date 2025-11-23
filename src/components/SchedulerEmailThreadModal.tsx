@@ -10,6 +10,8 @@ import {
   sendEmailViaBackend,
   fetchEmailBodyFromBackend,
 } from '../lib/mailboxApi';
+import { fetchLeadContacts } from '../lib/contactHelpers';
+import type { ContactInfo } from '../lib/contactHelpers';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -257,6 +259,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   });
   const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
   const syncOnOpenRef = useRef(false);
+  
+  // State for lead contacts (all contacts associated with the client)
+  const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
+  const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
 
   const extractHtmlBody = (html: string) => {
     if (!html) return html;
@@ -297,6 +303,38 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     setLinkLabel('');
     setLinkUrl('');
   }, [isOpen, client?.email]);
+
+  // Fetch contacts for the client
+  useEffect(() => {
+    const fetchContactsForClient = async () => {
+      if (!client) {
+        setLeadContacts([]);
+        setSelectedContactId(null);
+        return;
+      }
+
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      setLeadContacts(contacts);
+      
+      // If there are contacts, select the main contact by default, or the first one
+      if (contacts.length > 0) {
+        const mainContact = contacts.find(c => c.isMain) || contacts[0];
+        setSelectedContactId(mainContact.id);
+      } else {
+        setSelectedContactId(null);
+      }
+    };
+
+    if (client) {
+      fetchContactsForClient();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -719,6 +757,16 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
             })()
           : null;
 
+        // Find the contact_id from the selected contact or the first recipient
+        let contactId: number | null = selectedContactId;
+        if (!contactId && toSnapshot.length > 0) {
+          // Try to find contact by email
+          const contactByEmail = leadContacts.find(c => c.email === toSnapshot[0]);
+          if (contactByEmail) {
+            contactId = contactByEmail.id;
+          }
+        }
+
         await sendEmailViaBackend({
           userId,
           subject: subjectSnapshot,
@@ -733,6 +781,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
             leadNumber: client?.lead_number || null,
             contactEmail: client?.email || null,
             contactName: client?.name || null,
+            contactId: contactId || null,
             senderName: currentUserFullName || userEmail || 'Team',
             userInternalId: client?.user_internal_id || undefined,
           },
@@ -1093,7 +1142,35 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
             </div>
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
               <div className="space-y-2">
-                <label className="font-semibold text-sm">To</label>
+                <div className="flex items-center justify-between">
+                  <label className="font-semibold text-sm">To</label>
+                  {leadContacts.length > 1 && (
+                    <div className="flex items-center gap-2">
+                      <select
+                        className="select select-bordered select-sm text-xs"
+                        value={selectedContactId || ''}
+                        onChange={(e) => {
+                          const contactId = e.target.value ? parseInt(e.target.value, 10) : null;
+                          setSelectedContactId(contactId);
+                          const contact = leadContacts.find(c => c.id === contactId);
+                          if (contact && contact.email) {
+                            // Add contact email to recipients if not already there
+                            if (!toRecipients.includes(contact.email)) {
+                              setToRecipients([...toRecipients, contact.email]);
+                            }
+                          }
+                        }}
+                      >
+                        <option value="">Select a contact</option>
+                        {leadContacts.map(contact => (
+                          <option key={contact.id} value={contact.id}>
+                            {contact.name} {contact.isMain && '(Main)'} - {contact.email || 'No email'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
                 {renderRecipients('to')}
               </div>
               <div className="space-y-2">
