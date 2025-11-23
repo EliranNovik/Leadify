@@ -54,6 +54,18 @@ interface SchedulerWhatsAppModalProps {
 }
 
 const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, selectedContact: propSelectedContact, onClientUpdate, hideContactSelector = false }) => {
+  // Debug: Log when propSelectedContact changes
+  useEffect(() => {
+    if (isOpen) {
+      console.log('🔍 SchedulerWhatsAppModal - propSelectedContact received:', {
+        hasProp: !!propSelectedContact,
+        contactId: propSelectedContact?.contact.id,
+        contactName: propSelectedContact?.contact.name,
+        contactPhone: propSelectedContact?.contact.phone || propSelectedContact?.contact.mobile,
+        hideContactSelector
+      });
+    }
+  }, [isOpen, propSelectedContact, hideContactSelector]);
   const [newMessage, setNewMessage] = useState('');
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
@@ -118,11 +130,35 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
   // If propSelectedContact is provided, use it directly
   useEffect(() => {
+    console.log('🔍 propSelectedContact useEffect triggered:', {
+      hasPropSelectedContact: !!propSelectedContact,
+      contactId: propSelectedContact?.contact.id,
+      contactName: propSelectedContact?.contact.name,
+      isOpen
+    });
+    
     if (propSelectedContact) {
+      console.log('📞 propSelectedContact set:', {
+        contactId: propSelectedContact.contact.id,
+        contactName: propSelectedContact.contact.name,
+        contactPhone: propSelectedContact.contact.phone || propSelectedContact.contact.mobile,
+        leadId: propSelectedContact.leadId,
+        leadType: propSelectedContact.leadType
+      });
+      // IMPORTANT: Always use propSelectedContact when it's available, clear any previous selection
       setSelectedContactId(propSelectedContact.contact.id);
       setLeadContacts([propSelectedContact.contact]);
+      // Clear messages when contact changes to force refetch
+      setMessages([]);
+    } else if (isOpen && hideContactSelector) {
+      // If modal is open with hideContactSelector but no propSelectedContact, 
+      // it means we're waiting for it - don't clear selectedContactId yet
+      console.log('⏳ Waiting for propSelectedContact to be set...');
+    } else if (!isOpen) {
+      // Only clear if modal is closed
+      setSelectedContactId(null);
     }
-  }, [propSelectedContact]);
+  }, [propSelectedContact, isOpen, hideContactSelector]);
 
   // Fetch contacts for the client (only if no propSelectedContact)
   useEffect(() => {
@@ -347,89 +383,155 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         return;
       }
 
+      // If hideContactSelector is true and we're expecting a propSelectedContact but don't have it yet, wait
+      // This prevents fetching messages with client's phone when a contact should be selected
+      if (hideContactSelector && !propSelectedContact && !selectedContactId && !isPolling) {
+        console.log('⏳ Waiting for propSelectedContact to be set...', {
+          hideContactSelector,
+          hasPropSelectedContact: !!propSelectedContact,
+          selectedContactId
+        });
+        return;
+      }
+
       try {
-        // Get contact_id if we have a selected contact from the contact selector
-        const contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+        // CRITICAL: If hideContactSelector is true, we MUST use propSelectedContact
+        // Don't fall back to selectedContactId or leadContacts if propSelectedContact is not available yet
+        if (hideContactSelector && !propSelectedContact && !isPolling) {
+          console.log('⏳ Waiting for propSelectedContact (hideContactSelector=true)...');
+          return;
+        }
+        
+        // ALWAYS prioritize propSelectedContact if it's provided (from contact selector)
+        // This ensures we use the correct contact even if state hasn't updated yet
+        const selectedContact = propSelectedContact?.contact || (selectedContactId ? leadContacts.find(c => c.id === selectedContactId) : null);
+        const contactId = propSelectedContact?.contact.id || selectedContactId || null;
+        
+        console.log('🔍 fetchMessages called:', {
+          isOpen,
+          clientId: client?.id,
+          contactId,
+          hasPropSelectedContact: !!propSelectedContact,
+          propSelectedContactId: propSelectedContact?.contact.id,
+          propSelectedContactName: propSelectedContact?.contact.name,
+          propSelectedContactPhone: propSelectedContact?.contact.phone || propSelectedContact?.contact.mobile,
+          selectedContactId,
+          hasSelectedContact: !!selectedContact,
+          selectedContactName: selectedContact?.name,
+          selectedContactPhone: selectedContact?.phone || selectedContact?.mobile,
+          leadContactsCount: leadContacts.length
+        });
         
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         let query = supabase.from('whatsapp_messages').select('*');
         
-        // If we have a contact_id, filter by it (each contact has their own conversation)
-        if (contactId) {
-          console.log('🔄 Fetching WhatsApp messages for contact_id:', contactId);
-          // First try exact contact_id match
-          query = query.eq('contact_id', contactId);
+        // If we have a selected contact (from propSelectedContact or selectedContactId), filter by contact's phone number
+        // IMPORTANT: If propSelectedContact is provided, we MUST use it and not fall back to client
+        if (selectedContact) {
+          const contactPhone = selectedContact.phone || selectedContact.mobile;
+          console.log('🔄 Fetching WhatsApp messages for contact:', {
+            contactId: selectedContact.id,
+            contactName: selectedContact.name,
+            contactPhone: contactPhone,
+            clientPhone: client?.phone || client?.mobile,
+            isFromProp: !!propSelectedContact,
+            hideContactSelector
+          });
           
-          // Fallback: Also include messages that match by phone number (last 4 digits) but don't have contact_id set
-          // This handles cases where contact_id matching failed but phone number matches
-          const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === contactId);
-          if (selectedContact) {
-            const contactPhone = selectedContact.phone || selectedContact.mobile;
-            if (contactPhone) {
-              // Extract last 4 digits
-              const phoneDigits = contactPhone.replace(/\D/g, '');
-              const last4Digits = phoneDigits.slice(-4);
-              
-              if (last4Digits.length >= 4) {
-                // Fetch all messages for this lead, then filter in memory
-                const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-                let allMessagesQuery = supabase.from('whatsapp_messages').select('*');
-                
-                if (isLegacyLead) {
-                  const legacyId = parseInt(client.id.replace('legacy_', ''));
-                  allMessagesQuery = allMessagesQuery.eq('legacy_id', legacyId);
-                } else {
-                  allMessagesQuery = allMessagesQuery.eq('lead_id', client.id);
-                }
-                
-                const { data: allMessages, error: allError } = await allMessagesQuery.order('sent_at', { ascending: true });
-                
-                if (!allError && allMessages) {
-                  // Filter: contact_id match OR (contact_id is null AND phone ends with last4Digits)
-                  const filteredMessages = allMessages.filter(msg => {
-                    if (msg.contact_id === contactId) return true;
-                    if (!msg.contact_id && msg.phone_number) {
-                      const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
-                      const msgLast4 = msgPhoneDigits.slice(-4);
-                      return msgLast4 === last4Digits;
-                    }
-                    return false;
-                  });
-                  
-                  const processedMessages = filteredMessages.map(processTemplateMessage);
-                  if (!isPolling) {
-                    setMessages(processedMessages);
-                  } else {
-                    setMessages(prevMessages => {
-                      const hasChanges = processedMessages.length !== prevMessages.length ||
-                        processedMessages.some((newMsg, index) => {
-                          const prevMsg = prevMessages[index];
-                          return !prevMsg || 
-                                 newMsg.id !== prevMsg.id || 
-                                 newMsg.message !== prevMsg.message ||
-                                 newMsg.whatsapp_status !== prevMsg.whatsapp_status;
-                        });
-                      
-                      if (hasChanges) {
-                        return processedMessages;
-                      }
-                      return prevMessages;
-                    });
-                  }
-                  return;
-                }
-              }
+          if (!contactPhone) {
+            console.error('❌ Selected contact has no phone number!', selectedContact);
+            toast.error(`Contact ${selectedContact.name} has no phone number. Cannot load WhatsApp conversation.`);
+            setMessages([]);
+            return;
+          }
+          
+          if (contactPhone) {
+            // Normalize phone numbers for comparison (remove spaces, dashes, etc.)
+            const normalizePhone = (phone: string) => phone.replace(/\D/g, '');
+            const normalizedContactPhone = normalizePhone(contactPhone);
+            
+            // Fetch all messages for this lead, then filter by phone number
+            if (isLegacyLead) {
+              const legacyId = parseInt(client.id.replace('legacy_', ''));
+              query = query.eq('legacy_id', legacyId);
+            } else {
+              query = query.eq('lead_id', client.id);
             }
-          }
-        } else {
-          // Fallback to filtering by lead_id/legacy_id
-          // Also include messages where client_id doesn't match but belong to the lead (show in main contact)
-          if (isLegacyLead) {
-            const legacyId = parseInt(client.id.replace('legacy_', ''));
-            query = query.eq('legacy_id', legacyId);
+            
+            const { data: allMessages, error: allError } = await query.order('sent_at', { ascending: true });
+            
+            if (!allError && allMessages) {
+              // Filter messages by:
+              // 1. contact_id matches (if set)
+              // 2. phone_number matches (normalized comparison)
+              const filteredMessages = allMessages.filter(msg => {
+                // First priority: exact contact_id match
+                if (contactId && msg.contact_id === contactId) {
+                  return true;
+                }
+                
+                // Second priority: phone number match (normalized)
+                if (msg.phone_number) {
+                  const normalizedMsgPhone = normalizePhone(msg.phone_number);
+                  // Try full match first
+                  if (normalizedMsgPhone === normalizedContactPhone) {
+                    return true;
+                  }
+                  // Fallback: last 4 digits match (for cases with country codes)
+                  if (normalizedContactPhone.length >= 4 && normalizedMsgPhone.length >= 4) {
+                    const contactLast4 = normalizedContactPhone.slice(-4);
+                    const msgLast4 = normalizedMsgPhone.slice(-4);
+                    if (contactLast4 === msgLast4) {
+                      return true;
+                    }
+                  }
+                }
+                
+                return false;
+              });
+              
+              console.log(`📱 Filtered ${filteredMessages.length} messages from ${allMessages.length} total for contact ${selectedContact.name} (phone: ${contactPhone})`);
+              
+              const processedMessages = filteredMessages.map(processTemplateMessage);
+              if (!isPolling) {
+                setMessages(processedMessages);
+              } else {
+                setMessages(prevMessages => {
+                  const hasChanges = processedMessages.length !== prevMessages.length ||
+                    processedMessages.some((newMsg, index) => {
+                      const prevMsg = prevMessages[index];
+                      return !prevMsg || 
+                             newMsg.id !== prevMsg.id || 
+                             newMsg.message !== prevMsg.message ||
+                             newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                    });
+                  
+                  if (hasChanges) {
+                    return processedMessages;
+                  }
+                  return prevMessages;
+                });
+              }
+              return;
+            }
           } else {
-            query = query.eq('lead_id', client.id);
+            console.warn('⚠️ Selected contact has no phone number:', selectedContact);
           }
+        }
+        
+        // Fallback: if no contact selected or contact has no phone, filter by lead_id/legacy_id only
+        // This shows all messages for the lead (client's phone number)
+        console.warn('⚠️ No selected contact or contact has no phone, falling back to lead messages', {
+          hasSelectedContact: !!selectedContact,
+          hasPropSelectedContact: !!propSelectedContact,
+          selectedContactId,
+          contactId
+        });
+        if (isLegacyLead) {
+          const legacyId = parseInt(client.id.replace('legacy_', ''));
+          query = query.eq('legacy_id', legacyId);
+        } else {
+          query = query.eq('lead_id', client.id);
         }
         
         const { data, error } = await query.order('sent_at', { ascending: true });
@@ -497,11 +599,36 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     };
 
     if (isOpen) {
-      fetchMessages(false);
+      // If hideContactSelector is true, we expect propSelectedContact to be set
+      // Wait a bit longer to ensure it's available before fetching
+      const delay = hideContactSelector ? 200 : 100;
+      const timeoutId = setTimeout(() => {
+        fetchMessages(false);
+      }, delay);
       const interval = setInterval(() => fetchMessages(true), 5000);
-      return () => clearInterval(interval);
+      return () => {
+        clearTimeout(timeoutId);
+        clearInterval(interval);
+      };
     }
-  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact]);
+  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact, hideContactSelector]);
+
+  // Refetch messages when propSelectedContact changes (especially when it goes from null to a value)
+  useEffect(() => {
+    if (isOpen && propSelectedContact && client?.id) {
+      console.log('🔄 propSelectedContact changed, refetching messages for contact:', propSelectedContact.contact.name);
+      // Clear messages first to show loading state
+      setMessages([]);
+      // Refetch after a short delay to ensure state is updated
+      const timeoutId = setTimeout(() => {
+        // Trigger refetch by calling fetchMessages
+        // We'll use a flag to force a fresh fetch
+        setShouldAutoScroll(true);
+        setIsFirstLoad(true);
+      }, 100);
+      return () => clearTimeout(timeoutId);
+    }
+  }, [propSelectedContact?.contact.id, isOpen, client?.id]);
 
   // Update timer for 24-hour window
   useEffect(() => {
@@ -882,6 +1009,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
   if (!isOpen) return null;
 
+  // Get the active contact (prioritize propSelectedContact, then use selectedContactId + leadContacts)
+  const activeContact = propSelectedContact?.contact || (selectedContactId ? leadContacts.find(c => c.id === selectedContactId) : null);
+  const displayName = activeContact?.name || client?.name || 'Unknown';
+  const displayPhone = activeContact?.phone || activeContact?.mobile || client?.phone || client?.mobile || '';
+
   const lastIncomingMessage = messages
     .filter(msg => msg.direction === 'in')
     .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
@@ -905,8 +1037,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 )}
                 <div className="flex items-center gap-2 min-w-0">
                   <span className="text-sm md:text-lg font-semibold text-gray-900 truncate">
-                    {propSelectedContact?.contact.name || client.name}
+                    {displayName}
                   </span>
+                  {activeContact && (
+                    <span className="text-xs text-gray-500 px-2 py-0.5 bg-blue-100 rounded-full">
+                      Contact
+                    </span>
+                  )}
                   <span className="text-xs md:text-sm text-gray-500 font-mono flex-shrink-0">
                     ({client.lead_number})
                   </span>
@@ -1233,7 +1370,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 className="hidden"
                 accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
                 onChange={handleFileSelect}
-                disabled={uploadingMedia || isLocked}
+                disabled={uploadingMedia || (isLocked && !selectedTemplate)}
               />
             </label>
 
@@ -1243,12 +1380,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 type="button" 
                 onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
                 className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100"
-                disabled={isLocked}
+                disabled={isLocked && !selectedTemplate}
               >
                 <FaceSmileIcon className="w-5 h-5" />
               </button>
               
-              {isEmojiPickerOpen && !isLocked && (
+              {isEmojiPickerOpen && (!isLocked || selectedTemplate) && (
                 <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
                   <EmojiPicker
                     onEmojiClick={handleEmojiClick}
@@ -1271,12 +1408,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             <button
               type="button"
               onClick={handleAISuggestions}
-              disabled={isLoadingAI || isLocked || !client}
+              disabled={isLoadingAI || (isLocked && !selectedTemplate) || !client}
               className={`flex-shrink-0 px-3 py-2 rounded-full flex items-center justify-center transition-all text-sm font-medium ${
                 isLoadingAI
                   ? 'bg-blue-500 text-white'
                   : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-              } ${isLocked || !client ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+              } ${(isLocked && !selectedTemplate) || !client ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
               title={newMessage.trim() ? "Improve message with AI" : "Get AI suggestions"}
             >
               {isLoadingAI ? (
@@ -1344,9 +1481,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       : "Type a message..."
               }
               className={`flex-1 resize-none rounded-2xl textarea textarea-bordered ${
-                isLocked ? 'bg-gray-100 cursor-not-allowed' : ''
+                (isLocked && !selectedTemplate) ? 'bg-gray-100 cursor-not-allowed' : ''
               }`}
-              disabled={sending || uploadingMedia || isLocked}
+              disabled={sending || uploadingMedia || (isLocked && !selectedTemplate)}
               rows={1}
               style={{ 
                 maxHeight: '200px', 
@@ -1366,7 +1503,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               <button
                 type="button"
                 onClick={handleSendMedia}
-                disabled={uploadingMedia || isLocked}
+                disabled={uploadingMedia || (isLocked && !selectedTemplate)}
                 className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
               >
                 {uploadingMedia ? (
@@ -1378,7 +1515,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             ) : (
               <button
                 type="submit"
-                disabled={(!newMessage.trim() && !selectedTemplate) || sending || isLocked}
+                disabled={(!newMessage.trim() && !selectedTemplate) || sending || (isLocked && !selectedTemplate)}
                 className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
               >
                 {sending ? (

@@ -470,6 +470,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     leadId: string | number;
     leadType: 'legacy' | 'new';
   } | null>(null);
+  // Use a ref to store the contact immediately (before state updates)
+  const selectedContactForWhatsAppRef = useRef<{
+    contact: ContactInfo;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null>(null);
   const [selectedContactForEmail, setSelectedContactForEmail] = useState<{
     contact: ContactInfo;
     leadId: string | number;
@@ -1094,8 +1100,95 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
       }, 300);
     } else if (row.kind === 'whatsapp') {
-      setIsWhatsAppOpen(true);
-      setActiveWhatsAppId(row.id.toString());
+      // Ensure contacts are loaded first
+      let contacts = leadContacts;
+      if (contacts.length === 0) {
+        try {
+          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+          const normalizedLeadId = isLegacyLead 
+            ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+            : client.id;
+          
+          contacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
+          setLeadContacts(contacts);
+        } catch (error) {
+          console.error('Error fetching contacts for WhatsApp click:', error);
+        }
+      }
+      
+      // Find the contact associated with this WhatsApp message
+      let contactToSelect: ContactInfo | null = null;
+      const whatsappContactId = (row as any).contact_id;
+      const phoneNumber = (row as any).phone_number;
+      
+      // First, try to find by contact_id if available (STRICT MATCH)
+      if (whatsappContactId !== null && whatsappContactId !== undefined && contacts.length > 0) {
+        contactToSelect = contacts.find(c => c.id === Number(whatsappContactId)) || null;
+      }
+      
+      // If not found by contact_id, try to match by phone number
+      if (!contactToSelect && phoneNumber && contacts.length > 0) {
+        // Normalize phone number (remove spaces, dashes, etc.)
+        const normalizePhone = (phone: string) => phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+        const normalizedPhone = normalizePhone(phoneNumber);
+        
+        for (const contact of contacts) {
+          const contactPhone = contact.phone ? normalizePhone(contact.phone) : null;
+          const contactMobile = contact.mobile ? normalizePhone(contact.mobile) : null;
+          
+          // Try exact match first
+          if (contactPhone === normalizedPhone || contactMobile === normalizedPhone) {
+            contactToSelect = contact;
+            break;
+          }
+          
+          // Try last 4 digits match (fallback)
+          if (normalizedPhone.length >= 4) {
+            const last4 = normalizedPhone.slice(-4);
+            if ((contactPhone && contactPhone.slice(-4) === last4) || 
+                (contactMobile && contactMobile.slice(-4) === last4)) {
+              contactToSelect = contact;
+              break;
+            }
+          }
+        }
+      }
+      
+      // If still no contact found, use the main contact as fallback
+      if (!contactToSelect && contacts.length > 0) {
+        contactToSelect = contacts.find(c => c.isMain) || contacts[0] || null;
+      }
+      
+      // Set the contact if found
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      
+      if (contactToSelect) {
+        console.log('📞 Setting contact for WhatsApp click:', contactToSelect.name);
+        const contactData = {
+          contact: contactToSelect,
+          leadId,
+          leadType: isLegacyLead ? 'legacy' : 'new' as 'legacy' | 'new'
+        };
+        selectedContactForWhatsAppRef.current = contactData;
+        setSelectedContactForWhatsApp(contactData);
+        // Wait a bit for state to update, then open modal
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            setIsWhatsAppOpen(true);
+            setActiveWhatsAppId(row.id.toString());
+          });
+        });
+      } else {
+        console.warn('⚠️ No contact found for WhatsApp message, opening without contact filter');
+        // Clear any previously selected contact
+        setSelectedContactForWhatsApp(null);
+        selectedContactForWhatsAppRef.current = null;
+        setIsWhatsAppOpen(true);
+        setActiveWhatsAppId(row.id.toString());
+      }
     } else {
       openEditDrawer(idx);
     }
@@ -1172,6 +1265,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
 
 
+
   // Close WhatsApp modal when client changes
   useEffect(() => {
     setIsWhatsAppOpen(false);
@@ -1205,6 +1299,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     setSelectedMedia(null);
     setActiveWhatsAppId(null);
     setWhatsAppError(null); // Clear any error messages when closing
+    selectedContactForWhatsAppRef.current = null; // Clear the ref
     
     // Check if WhatsApp was opened from Calendar
     if (localStorage.getItem('whatsAppFromCalendar') === 'true') {
@@ -4203,9 +4298,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           leadNumber={client.lead_number}
           mode="whatsapp"
           onContactSelected={(contact, leadId, leadType) => {
-            setSelectedContactForWhatsApp({ contact, leadId, leadType });
+            console.log('📞 Contact selected for WhatsApp:', { contact, leadId, leadType });
+            // Set the contact in both state and ref (ref is immediate, state is async)
+            const contactData = { contact, leadId, leadType };
+            selectedContactForWhatsAppRef.current = contactData;
+            setSelectedContactForWhatsApp(contactData);
             setShowContactSelector(false);
-            setIsWhatsAppOpen(true);
+            // Use requestAnimationFrame to ensure state update is flushed, then open modal
+            requestAnimationFrame(() => {
+              requestAnimationFrame(() => {
+                console.log('🚀 Opening WhatsApp modal with contact:', contactData.contact.name);
+                setIsWhatsAppOpen(true);
+              });
+            });
           }}
         />
       )}
@@ -4237,6 +4342,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         onClose={() => {
           handleWhatsAppClose();
           setSelectedContactForWhatsApp(null);
+          selectedContactForWhatsAppRef.current = null;
         }}
         client={client ? {
           id: client.id,
@@ -4246,7 +4352,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           mobile: client.mobile,
           lead_type: client.lead_type
         } : undefined}
-        selectedContact={selectedContactForWhatsApp}
+        selectedContact={selectedContactForWhatsApp || selectedContactForWhatsAppRef.current}
         hideContactSelector={true}
         onClientUpdate={async () => {
           // Refresh interactions when WhatsApp messages are updated
