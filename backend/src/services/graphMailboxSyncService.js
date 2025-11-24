@@ -138,6 +138,7 @@ const toGraphRecipients = (list = []) =>
 
 class GraphMailboxSyncService {
   async syncMailboxForUser(userId, options = {}) {
+    const { reset = false, trigger = 'manual' } = options;
     const tokenRecord = await mailboxTokenService.getTokenByUserId(userId);
     if (!tokenRecord) {
       throw new Error('Mailbox is not connected for this user');
@@ -174,8 +175,14 @@ class GraphMailboxSyncService {
     }
 
     const state = await mailboxStateService.getState(resolvedUserId);
-    const deltaLink = options.reset ? null : state?.delta_link || null;
+    const deltaLink = reset ? null : state?.delta_link || null;
     const mailboxAddress = tokenRecord.mailbox_address;
+
+    console.log(
+      `📥 Initiating Graph sync for user=${resolvedUserId} mailbox=${mailboxAddress} trigger=${trigger}${
+        reset ? ' (full resync)' : ''
+      }`
+    );
 
     let { messages, nextDeltaLink } = await this.fetchDeltaMessages({
       accessToken: tokenResponse.accessToken,
@@ -244,7 +251,10 @@ class GraphMailboxSyncService {
         }
 
         try {
-          const summary = await this.syncMailboxForUser(token.user_id, options);
+          const summary = await this.syncMailboxForUser(token.user_id, {
+            ...options,
+            trigger: options.trigger || 'scheduler',
+          });
           acc.successful += 1;
           acc.details.push({
             userId: token.user_id,

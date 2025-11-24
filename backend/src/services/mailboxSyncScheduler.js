@@ -1,6 +1,6 @@
 const graphMailboxSyncService = require('./graphMailboxSyncService');
 
-const DEFAULT_INTERVAL_MINUTES = Number(process.env.MAILBOX_SYNC_INTERVAL_MINUTES || '5');
+const DEFAULT_INTERVAL_MINUTES = Number(process.env.MAILBOX_SYNC_INTERVAL_MINUTES || '10');
 const SCHEDULER_ENABLED = (process.env.ENABLE_MAILBOX_SCHEDULER || 'true').toLowerCase() !== 'false';
 
 let schedulerHandle = null;
@@ -13,7 +13,7 @@ const runSyncCycle = async (trigger = 'scheduled') => {
 
   isRunning = true;
   try {
-    const summary = await graphMailboxSyncService.syncAllMailboxes();
+    const summary = await graphMailboxSyncService.syncAllMailboxes({ trigger });
     if (summary) {
       console.log(
         `📬 Mailbox scheduler run (${trigger}) completed: processed=${summary.processed} success=${summary.successful} failed=${summary.failed}`

@@ -1,4 +1,5 @@
 const graphMailboxSyncService = require('../services/graphMailboxSyncService');
+const graphNotificationService = require('../services/graphNotificationService');
 
 const graphEmailController = {
   async syncEmails(req, res) {
@@ -7,7 +8,10 @@ const graphEmailController = {
       if (!userId) {
         return res.status(400).json({ success: false, error: 'userId is required' });
       }
-      const summary = await graphMailboxSyncService.syncMailboxForUser(userId, { reset: Boolean(reset) });
+      const summary = await graphMailboxSyncService.syncMailboxForUser(userId, {
+        reset: Boolean(reset),
+        trigger: 'api',
+      });
       res.status(200).json({
         success: true,
         message: 'Mailbox synced successfully',
@@ -30,28 +34,43 @@ const graphEmailController = {
   },
 
   async webhookValidation(req, res) {
-    const token = req.query && req.query.validationtoken;
-    if (token) {
-      res.set('Content-Type', 'text/plain');
-      return res.status(200).send(token);
+    const token = req.query && (req.query.validationtoken || req.query['validationtoken']);
+    if (!token) {
+      console.warn('⚠️  Graph webhook validation attempt without token');
+      return res.status(400).send('Missing validation token');
     }
-    return res.status(400).send('Missing validation token');
+
+    res.set('Content-Type', 'text/plain');
+    console.log('✅ Responding to Microsoft Graph webhook validation request');
+    return res.status(200).send(token);
   },
 
   async webhookNotification(req, res) {
+    // Graph requires an immediate 202 even if we perform async work later
+    res.sendStatus(202);
+
     try {
-      const notifications = req.body?.value || [];
-      res.sendStatus(202);
+      const notifications = Array.isArray(req.body?.value) ? req.body.value : [];
+      if (!notifications.length) {
+        console.warn('⚠️  Received Graph webhook with empty payload');
+        return;
+      }
+
       for (const notification of notifications) {
-        const userId = notification.clientState;
-        if (!userId) continue;
-        graphMailboxSyncService
-          .syncMailboxForUser(userId)
-          .catch((error) => console.error('❌ Failed to sync mailbox from webhook:', error));
+        const userId = notification?.clientState;
+        if (!userId) {
+          console.warn('⚠️  Graph notification missing clientState. Notification ignored.');
+          continue;
+        }
+
+        graphNotificationService.enqueueUserSync(userId, {
+          subscriptionId: notification?.subscriptionId,
+          resource: notification?.resource,
+          changeType: notification?.changeType,
+        });
       }
     } catch (error) {
-      console.error('❌ Webhook notification error:', error);
-      res.sendStatus(202);
+      console.error('❌ Webhook notification processing error:', error);
     }
   },
 };

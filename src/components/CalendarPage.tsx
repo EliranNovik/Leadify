@@ -269,6 +269,8 @@ const CalendarPage: React.FC = () => {
   const [appliedToDate, setAppliedToDate] = useState(new Date().toISOString().split('T')[0]);
   const [datesManuallySet, setDatesManuallySet] = useState(false);
   const [selectedStaff, setSelectedStaff] = useState('');
+  const [staffSearchTerm, setStaffSearchTerm] = useState('');
+  const [showStaffDropdown, setShowStaffDropdown] = useState(false);
   const [totalAmount, setTotalAmount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isBackgroundLoading, setIsBackgroundLoading] = useState(false);
@@ -336,6 +338,53 @@ const CalendarPage: React.FC = () => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  useEffect(() => {
+    const fetchCurrentEmployeeMetadata = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user?.id) {
+          return;
+        }
+        const { data, error } = await supabase
+          .from('users')
+          .select('employee_id, full_name, email')
+          .eq('auth_id', user.id)
+          .single();
+        if (error || !data) {
+          return;
+        }
+        if (data.employee_id !== null && data.employee_id !== undefined && !Number.isNaN(Number(data.employee_id))) {
+          setCurrentEmployeeId(Number(data.employee_id));
+        }
+        setCurrentEmployeeName(data.full_name || user.email || '');
+      } catch (error) {
+        console.error('Failed to load current employee info for meeting confirmation toggle:', error);
+      }
+    };
+
+    fetchCurrentEmployeeMetadata();
+  }, []);
+
+  useEffect(() => {
+    setStaffSearchTerm(selectedStaff);
+  }, [selectedStaff]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        staffDropdownRef.current &&
+        !staffDropdownRef.current.contains(event.target as Node)
+      ) {
+        setShowStaffDropdown(false);
+      }
+    };
+
+    if (showStaffDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showStaffDropdown]);
+
   // Email functionality
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [selectedLeadForEmail, setSelectedLeadForEmail] = useState<any>(null);
@@ -355,6 +404,7 @@ const CalendarPage: React.FC = () => {
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const quillRef = useRef<ReactQuill>(null);
+  const staffDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Assign Staff Modal State
   const [isAssignStaffModalOpen, setIsAssignStaffModalOpen] = useState(false);
@@ -391,6 +441,9 @@ const CalendarPage: React.FC = () => {
   // State to store all employees and categories for name lookup
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [currentEmployeeId, setCurrentEmployeeId] = useState<number | null>(null);
+  const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
+  const [meetingConfirmationLoadingId, setMeetingConfirmationLoadingId] = useState<string | number | null>(null);
   
   // State to track legacy loading failures
   const [legacyLoadingDisabled, setLegacyLoadingDisabled] = useState(false);
@@ -422,6 +475,163 @@ const CalendarPage: React.FC = () => {
     // Convert both to string for comparison since employeeId might be bigint
     const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
     return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
+  };
+
+  const handleStaffSelect = (name: string) => {
+    setSelectedStaff(name);
+    setStaffSearchTerm(name);
+    setShowStaffDropdown(false);
+  };
+
+  const filteredStaffOptions = staff.filter(option =>
+    option.toLowerCase().includes((staffSearchTerm || '').toLowerCase())
+  );
+
+  const parseMeetingConfirmationValue = (value: any): boolean | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      const trimmed = value.toLowerCase().trim();
+      if (trimmed === 'true') return true;
+      if (trimmed === 'false') return false;
+      const parsedDate = Date.parse(value);
+      if (!Number.isNaN(parsedDate)) return true;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    return null;
+  };
+
+  const getMeetingConfirmationState = (meeting: any): boolean => {
+    if (!meeting) return false;
+    if (meeting.legacy_lead) {
+      const legacyValue = parseMeetingConfirmationValue(meeting.legacy_lead.meeting_confirmation);
+      if (legacyValue !== null) return legacyValue;
+    }
+    if (meeting.lead) {
+      const leadValue = parseMeetingConfirmationValue(meeting.lead.meeting_confirmation);
+      if (leadValue !== null) return leadValue;
+    }
+    if (meeting.meeting_confirmation !== undefined) {
+      const directValue = parseMeetingConfirmationValue(meeting.meeting_confirmation);
+      if (directValue !== null) return directValue;
+    }
+    return false;
+  };
+
+  const handleMeetingConfirmationToggle = async (meeting: any) => {
+    if (!meeting || meeting.calendar_type === 'staff') return;
+    const meetingId = meeting.id;
+    const currentValue = getMeetingConfirmationState(meeting);
+    const newValue = !currentValue;
+    setMeetingConfirmationLoadingId(meetingId);
+
+    let employeeIdToUse = currentEmployeeId;
+
+    try {
+      if (employeeIdToUse === null || !currentEmployeeName) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user?.id) {
+          const { data: userRecord, error: userError } = await supabase
+            .from('users')
+            .select('employee_id, full_name, email')
+            .eq('auth_id', user.id)
+            .single();
+          if (!userError && userRecord) {
+            if (employeeIdToUse === null && userRecord.employee_id !== null && userRecord.employee_id !== undefined) {
+              const parsedId = Number(userRecord.employee_id);
+              if (!Number.isNaN(parsedId)) {
+                employeeIdToUse = parsedId;
+                setCurrentEmployeeId(parsedId);
+              }
+            }
+            if (!currentEmployeeName) {
+              const resolvedName = userRecord.full_name || user.email || '';
+              setCurrentEmployeeName(resolvedName);
+            }
+          }
+        }
+      }
+
+      const isLegacyMeeting = !!meeting.legacy_lead;
+      const targetTable = isLegacyMeeting ? 'leads_lead' : 'leads';
+      const targetId = isLegacyMeeting
+        ? (meeting.legacy_lead?.id ??
+          (typeof meeting.id === 'string' && meeting.id.startsWith('legacy_')
+            ? meeting.id.replace('legacy_', '')
+            : meeting.legacy_lead_id))
+        : meeting.lead?.id || meeting.client_id;
+
+      if (!targetId) {
+        throw new Error('Missing lead ID for meeting confirmation update');
+      }
+
+      const updatePayload = {
+        meeting_confirmation: newValue,
+        meeting_confirmation_by: newValue ? employeeIdToUse : null,
+      };
+      const fallbackPayload = {
+        meeting_confirmation: newValue ? new Date().toISOString() : null,
+        meeting_confirmation_by: newValue ? employeeIdToUse : null,
+      };
+
+      const { error } = await supabase
+        .from(targetTable)
+        .update(updatePayload)
+        .eq('id', targetId);
+
+      if (error) {
+        if (error.code === '22007') {
+          const { error: fallbackError } = await supabase
+            .from(targetTable)
+            .update(fallbackPayload)
+            .eq('id', targetId);
+          if (fallbackError) {
+            throw fallbackError;
+          }
+        } else {
+          throw error;
+        }
+      }
+
+      setMeetings(prev =>
+        prev.map(m => {
+          if (m.id !== meetingId) return m;
+          if (isLegacyMeeting) {
+            return {
+              ...m,
+              meeting_confirmation: newValue,
+              legacy_lead: m.legacy_lead
+                ? {
+                    ...m.legacy_lead,
+                    meeting_confirmation: newValue,
+                    meeting_confirmation_by: newValue ? employeeIdToUse : null,
+                  }
+                : m.legacy_lead,
+            };
+          }
+          return {
+            ...m,
+            meeting_confirmation: newValue,
+            lead: m.lead
+              ? {
+                  ...m.lead,
+                  meeting_confirmation: newValue,
+                  meeting_confirmation_by: newValue ? employeeIdToUse : null,
+                }
+              : m.lead,
+          };
+        })
+      );
+
+      toast.success(newValue ? 'Meeting confirmed' : 'Meeting confirmation cleared');
+    } catch (error) {
+      console.error('Failed to update meeting confirmation from calendar:', error);
+      toast.error('Failed to update meeting confirmation');
+    } finally {
+      setMeetingConfirmationLoadingId(null);
+    }
   };
 
   // Helper function to get category name from ID or name with main category
@@ -910,6 +1120,7 @@ const CalendarPage: React.FC = () => {
             lead:leads!client_id(
               id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
               expert, probability, phone, email, number_of_applicants_meeting,
+              meeting_confirmation, meeting_confirmation_by,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -921,7 +1132,7 @@ const CalendarPage: React.FC = () => {
             legacy_lead:leads_lead!legacy_lead_id(
               id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
               total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-              meeting_location_id,
+              meeting_location_id, meeting_confirmation, meeting_confirmation_by,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -967,6 +1178,7 @@ const CalendarPage: React.FC = () => {
           // Quick processing for today's meetings with department data
           const todayProcessedMeetings = (todayMeetingsData || []).map((meeting: any) => ({
             ...meeting,
+            meeting_confirmation: getMeetingConfirmationState(meeting),
             // Map location ID to location name using universal function
             meeting_location: getMeetingLocationName(meeting.meeting_location),
             lead: meeting.legacy_lead ? {
@@ -1024,6 +1236,7 @@ const CalendarPage: React.FC = () => {
             lead:leads!client_id(
               id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
               balance, balance_currency, expert_notes, expert, probability, phone, email, 
+              meeting_confirmation, meeting_confirmation_by,
               manual_interactions, number_of_applicants_meeting, meeting_collection_id,
               misc_category!category_id(
                 id, name, parent_id,
@@ -1036,7 +1249,7 @@ const CalendarPage: React.FC = () => {
             legacy_lead:leads_lead!legacy_lead_id(
               id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
               total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-              meeting_location_id, meeting_collection_id,
+              meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -1108,6 +1321,7 @@ const CalendarPage: React.FC = () => {
               
               return {
                 ...meeting,
+                meeting_confirmation: getMeetingConfirmationState(meeting),
                 // Map location ID to location name using universal function
                 meeting_location: getMeetingLocationName(meeting.meeting_location),
                 lead: leadData
@@ -2479,6 +2693,32 @@ const CalendarPage: React.FC = () => {
     return fallbackMap[numericId] || `Location ${numericId}`;
   };
 
+  const getCalendarTypeBadgeStyles = (calendarType?: string) => {
+    if (!calendarType) return null;
+    if (calendarType === 'staff') {
+      return {
+        label: 'Staff',
+        backgroundColor: '#fdf5d9',
+        textColor: '#a16207',
+        borderColor: '#facc15'
+      };
+    }
+    if (calendarType === 'active_client') {
+      return {
+        label: 'A',
+        backgroundColor: '#ffffff',
+        textColor: '#15803d',
+        borderColor: '#15803d'
+      };
+    }
+    return {
+      label: 'P',
+      backgroundColor: '#ffffff',
+      textColor: '#1d4ed8',
+      borderColor: '#1d4ed8'
+    };
+  };
+
   // Helper function to check if location is online/teams/zoom
   const isOnlineLocation = (location: string | undefined): boolean => {
     if (!location) return false;
@@ -2785,18 +3025,22 @@ const CalendarPage: React.FC = () => {
             <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
             <h3 className="text-lg md:text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name || meeting.name}</h3>
             {/* Calendar type badge */}
-            {meeting.calendar_type && (
-              <span className={`badge badge-sm font-bold ${
-                meeting.calendar_type === 'active_client' 
-                  ? 'bg-green-500 text-white border-green-600' 
-                  : meeting.calendar_type === 'staff'
-                  ? 'badge-warning'
-                  : 'bg-blue-500 text-white border-blue-600'
-              }`}>
-                {meeting.calendar_type === 'active_client' ? 'A' : 
-                 meeting.calendar_type === 'staff' ? 'Staff' : 'P'}
-              </span>
-            )}
+            {(() => {
+              const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
+              if (!badge) return null;
+              return (
+                <span
+                  className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold border"
+                  style={{
+                    backgroundColor: badge.backgroundColor,
+                    color: badge.textColor,
+                    borderColor: badge.borderColor
+                  }}
+                >
+                  {badge.label}
+                </span>
+              );
+            })()}
             {/* Expert status indicator */}
             {hasExpertNotes ? (
               <AcademicCapIcon className="w-6 h-6 md:w-7 md:h-7 text-green-400 ml-4" title="Expert opinion exists" />
@@ -2962,7 +3206,26 @@ const CalendarPage: React.FC = () => {
         </div>
 
         {/* Action Buttons */}
-        <div className="mt-4 flex flex-row gap-2 justify-end">
+        <div className="mt-4 flex flex-row gap-2 justify-end items-center">
+          {meeting.calendar_type !== 'staff' && (
+            <label
+              className="cursor-pointer"
+              onClick={e => e.stopPropagation()}
+              title="Toggle meeting confirmation"
+            >
+              <input
+                type="checkbox"
+                className={`toggle toggle-primary toggle-sm ${meetingConfirmationLoadingId === meeting.id ? 'opacity-60' : ''}`}
+                checked={getMeetingConfirmationState(meeting)}
+                onChange={e => {
+                  e.stopPropagation();
+                  handleMeetingConfirmationToggle(meeting);
+                }}
+                disabled={meetingConfirmationLoadingId === meeting.id}
+                aria-label="Meeting confirmed"
+              />
+            </label>
+          )}
             {/* Only show join button if there is a valid link and either:
                 - the location is online/Teams, or
                 - the location has a default_link configured,
@@ -3033,16 +3296,6 @@ const CalendarPage: React.FC = () => {
                 <EnvelopeIcon className="w-4 h-4" />
               </button>
             )}
-            <button
-              className="btn btn-outline btn-warning btn-sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
-              }}
-            >
-              {isExpanded ? 'Show Less' : 'Show More'}
-              <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-            </button>
         </div>
 
         {/* Expanded Details */}
@@ -3167,18 +3420,22 @@ const CalendarPage: React.FC = () => {
                   {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
                 </Link>
               )}
-              {meeting.calendar_type && (
-                <span className={`badge badge-xs sm:badge-sm font-bold ${
-                  meeting.calendar_type === 'active_client' 
-                    ? 'bg-green-500 text-white border-green-600' 
-                    : meeting.calendar_type === 'staff'
-                    ? 'badge-warning'
-                    : 'bg-blue-500 text-white border-blue-600'
-                }`}>
-                  {meeting.calendar_type === 'active_client' ? 'A' : 
-                   meeting.calendar_type === 'staff' ? 'Staff' : 'P'}
-                </span>
-              )}
+              {(() => {
+                const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
+                if (!badge) return null;
+                return (
+                  <span
+                    className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-bold border"
+                    style={{
+                      backgroundColor: badge.backgroundColor,
+                      color: badge.textColor,
+                      borderColor: badge.borderColor
+                    }}
+                  >
+                    {badge.label}
+                  </span>
+                );
+              })()}
             </div>
           </td>
           <td className="text-xs sm:text-sm">{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
@@ -3279,6 +3536,25 @@ const CalendarPage: React.FC = () => {
           <td className="hidden sm:table-cell">{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
             <div className="flex flex-row items-center gap-1 sm:gap-2">
+              {meeting.calendar_type !== 'staff' && (
+                <label
+                  className="cursor-pointer"
+                  onClick={e => e.stopPropagation()}
+                  title="Toggle meeting confirmation"
+                >
+                  <input
+                    type="checkbox"
+                    className={`toggle toggle-primary toggle-xs sm:toggle-sm ${meetingConfirmationLoadingId === meeting.id ? 'opacity-60' : ''}`}
+                    checked={getMeetingConfirmationState(meeting)}
+                    onChange={e => {
+                      e.stopPropagation();
+                      handleMeetingConfirmationToggle(meeting);
+                    }}
+                    disabled={meetingConfirmationLoadingId === meeting.id}
+                    aria-label="Meeting confirmed"
+                  />
+                </label>
+              )}
               {/* Only show join button if there is a valid link and either:
                   - the location is online/Teams, or
                   - the location has a default_link configured,
@@ -3470,7 +3746,7 @@ const CalendarPage: React.FC = () => {
         </button>
         
         <div className="flex items-center gap-3">
-          <span className="text-lg font-semibold">
+          <span className="text-sm font-semibold text-center sm:text-lg sm:text-left">
             {appliedFromDate === appliedToDate ? (
               new Date(appliedFromDate).toLocaleDateString('en-US', { 
                 weekday: 'long', 
@@ -3541,19 +3817,57 @@ const CalendarPage: React.FC = () => {
               </button>
             </div>
           </div>
-          <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
-            <UserIcon className="w-5 h-5 text-gray-500" />
-            <select 
-              className="select select-bordered flex-1"
-              value={selectedStaff}
-              onChange={(e) => setSelectedStaff(e.target.value)}
-            >
-              <option value="">All Staff</option>
-              {staff.map((s, index) => (
-                <option key={`${s}-${index}`} value={s}>{s}</option>
-              ))}
-            </select>
+        <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
+          <UserIcon className="w-5 h-5 text-gray-500" />
+          <div className="relative flex-1" ref={staffDropdownRef}>
+            <input
+              type="text"
+              className="input input-bordered w-full"
+              placeholder="All staff"
+              value={staffSearchTerm}
+              onFocus={() => setShowStaffDropdown(true)}
+              onChange={(e) => {
+                const value = e.target.value;
+                setStaffSearchTerm(value);
+                setShowStaffDropdown(true);
+                if (!value.trim()) {
+                  setSelectedStaff('');
+                }
+              }}
+            />
+            {showStaffDropdown && (
+              <div className="absolute z-30 mt-2 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-auto">
+                <button
+                  type="button"
+                  className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
+                  onClick={() => {
+                    setSelectedStaff('');
+                    setStaffSearchTerm('');
+                    setShowStaffDropdown(false);
+                  }}
+                >
+                  All Staff
+                </button>
+                {filteredStaffOptions.length > 0 ? (
+                  filteredStaffOptions.map((staffName, index) => (
+                    <button
+                      key={`${staffName}-${index}`}
+                      type="button"
+                      className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
+                      onClick={() => handleStaffSelect(staffName)}
+                    >
+                      {staffName}
+                    </button>
+                  ))
+                ) : (
+                  <div className="px-4 py-3 text-sm text-gray-500">
+                    No matches
+                  </div>
+                )}
+              </div>
+            )}
           </div>
+        </div>
           <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
             <CalendarIcon className="w-5 h-5 text-gray-500" />
             <select 

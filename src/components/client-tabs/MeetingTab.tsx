@@ -35,6 +35,28 @@ const getLocationOptions = (meetingLocations: any[]) => {
   return meetingLocations.map(loc => loc.name).filter(Boolean);
 };
 
+const parseMeetingConfirmationValue = (value: any): boolean | null => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lower = value.toLowerCase().trim();
+    if (lower === 'true') return true;
+    if (lower === 'false') return false;
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return true;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  return null;
+};
+
+const normalizeMeetingConfirmationBy = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : null;
+};
+
 const currencyOptions = [
   { value: 'NIS', symbol: '₪' },
   { value: 'USD', symbol: '$' },
@@ -104,6 +126,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     meeting_scheduling_notes?: string;
     next_followup?: string;
     followup?: string;
+    meeting_confirmation?: boolean | null;
+    meeting_confirmation_by?: number | null;
   }>({});
 
   // Scheduling information history
@@ -124,10 +148,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [allMeetingLocations, setAllMeetingLocations] = useState<any[]>([]);
 
   // Helper function to get employee display name from ID
-  const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
-    if (!employeeId || employeeId === '---') return '---';
+  const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
+    if (employeeId === null || employeeId === undefined || employeeId === '---') return 'Unknown';
     const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
-    return employee ? employee.display_name : employeeId; // Fallback to ID if not found
+    return employee ? employee.display_name : employeeId.toString();
   };
 
   // Helper function to get meeting location name from ID
@@ -385,7 +409,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           const legacyId = client.id.toString().replace('legacy_', '');
           const { data: legacyData, error: legacyError } = await supabase
             .from('leads_lead')
-            .select('meeting_scheduler_id, meeting_scheduling_notes, next_followup, followup_log')
+            .select('meeting_scheduler_id, meeting_scheduling_notes, next_followup, followup_log, meeting_confirmation, meeting_confirmation_by')
             .eq('id', legacyId)
             .single();
           
@@ -398,6 +422,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               meeting_scheduling_notes: data.meeting_scheduling_notes || '',
               next_followup: data.next_followup || '',
               followup: data.followup_log || '',
+              meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
+              meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
             });
           } else {
             setLeadSchedulingInfo({});
@@ -406,7 +432,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           // For new leads, fetch from leads table
           const { data: newData, error: newError } = await supabase
             .from('leads')
-            .select('scheduler, meeting_scheduling_notes, next_followup, followup')
+            .select('scheduler, meeting_scheduling_notes, next_followup, followup, meeting_confirmation, meeting_confirmation_by')
             .eq('id', client.id)
             .single();
           
@@ -414,7 +440,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           error = newError;
           
           if (data) {
-            setLeadSchedulingInfo(data);
+            setLeadSchedulingInfo({
+              scheduler: data.scheduler || '',
+              meeting_scheduling_notes: data.meeting_scheduling_notes || '',
+              next_followup: data.next_followup || '',
+              followup: data.followup || '',
+              meeting_confirmation: parseMeetingConfirmationValue(data.meeting_confirmation),
+              meeting_confirmation_by: normalizeMeetingConfirmationBy(data?.meeting_confirmation_by),
+            });
           } else {
             setLeadSchedulingInfo({});
           }
@@ -802,6 +835,92 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const upcomingMeetings = meetings.filter(m => !isPastMeeting(m));
   const pastMeetings = meetings.filter(m => isPastMeeting(m));
 
+  const handleToggleMeetingConfirmation = async () => {
+    if (!client.id) return;
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    const currentValue = leadSchedulingInfo.meeting_confirmation ?? false;
+    const newValue = !currentValue;
+    const { data: { user } } = await supabase.auth.getUser();
+    let confirmerEmployeeId: number | null = null;
+    let confirmerDisplayName = user?.email || 'Unknown';
+
+    if (user?.id) {
+      try {
+        const { data: userRow, error: userRowError } = await supabase
+          .from('users')
+          .select('employee_id, full_name')
+          .eq('auth_id', user.id)
+          .single();
+
+        if (!userRowError) {
+          if (userRow?.employee_id !== null && userRow?.employee_id !== undefined) {
+            const parsedEmployeeId = Number(userRow.employee_id);
+            if (Number.isFinite(parsedEmployeeId)) {
+              confirmerEmployeeId = parsedEmployeeId;
+              const matchedEmployee = allEmployees.find(emp => emp.id.toString() === parsedEmployeeId.toString());
+              confirmerDisplayName = matchedEmployee?.display_name || userRow.full_name || confirmerDisplayName;
+            } else {
+              confirmerDisplayName = userRow?.full_name || confirmerDisplayName;
+            }
+          } else {
+            confirmerDisplayName = userRow?.full_name || confirmerDisplayName;
+          }
+        }
+      } catch (lookupError) {
+        console.warn('Unable to resolve employee_id for meeting confirmation toggle:', lookupError);
+      }
+    }
+
+    const updatePayload = {
+      meeting_confirmation: newValue,
+      meeting_confirmation_by: newValue ? confirmerEmployeeId : null,
+    };
+    const fallbackPayload = {
+      meeting_confirmation: newValue ? new Date().toISOString() : null,
+      meeting_confirmation_by: newValue ? confirmerEmployeeId : null,
+    };
+    const applyUpdate = async (table: 'leads' | 'leads_lead', filterKey: string, filterValue: any) => {
+      const { error } = await supabase
+        .from(table)
+        .update(updatePayload)
+        .eq(filterKey, filterValue);
+      if (error) {
+        if (error.code === '22007') {
+          const { error: fallbackError } = await supabase
+            .from(table)
+            .update(fallbackPayload)
+            .eq(filterKey, filterValue);
+          if (fallbackError) {
+            throw fallbackError;
+          }
+        } else {
+          throw error;
+        }
+      }
+    };
+    try {
+      if (isLegacyLead) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        await applyUpdate('leads_lead', 'id', legacyId);
+      } else {
+        await applyUpdate('leads', 'id', client.id);
+      }
+      setLeadSchedulingInfo(prev => ({
+        ...prev,
+        meeting_confirmation: newValue,
+        meeting_confirmation_by: newValue ? confirmerEmployeeId : null,
+      }));
+      toast.success(
+        newValue
+          ? `Meeting marked as confirmed${confirmerDisplayName ? ` by ${confirmerDisplayName}` : ''}`
+          : 'Meeting confirmation removed'
+      );
+    } catch (error) {
+      console.error('Error updating meeting confirmation:', error);
+      toast.error('Failed to update meeting confirmation');
+    }
+  };
+
   const renderMeetingCard = (meeting: Meeting) => {
     const formattedDate = new Date(meeting.date).toLocaleDateString('en-GB');
 
@@ -837,10 +956,17 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       locationId = location ? location.id : meeting.location;
     }
     
+    const normalizedLocation =
+      typeof locationId === 'number'
+        ? String(locationId)
+        : typeof locationId === 'string'
+          ? locationId
+          : '';
+
     setEditedMeeting({
       date: meeting.date,
       time: meeting.time ? meeting.time.substring(0, 5) : meeting.time, // Remove seconds if present
-      location: locationId,
+      location: normalizedLocation,
       manager: meeting.manager,
       currency: meeting.currency,
       amount: meeting.amount,
@@ -927,7 +1053,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           teamsMeetingUrl = teamsData.joinUrl;
           console.log('🔧 Teams meeting URL:', teamsMeetingUrl);
           toast.success('Teams meeting created automatically!');
-        } catch (teamsError) {
+        } catch (teamsError: any) {
           console.error('❌ Failed to create Teams meeting:', teamsError);
           console.error('❌ Error details:', {
             message: teamsError.message,
@@ -950,10 +1076,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (isLegacyMeeting) {
         // For legacy meetings, update the leads_lead table
         const legacyId = client.id.toString().replace('legacy_', '');
+        const locationIdValue =
+          editedMeeting.location && /^\d+$/.test(String(editedMeeting.location))
+            ? Number(editedMeeting.location)
+            : null;
         const updateData: any = {
           meeting_date: editedMeeting.date,
           meeting_time: editedMeeting.time,
-          meeting_location_id: editedMeeting.location,
+          meeting_location_id: locationIdValue,
           meeting_manager_id: editedMeeting.manager,
           meeting_total_currency_id: editedMeeting.currency === 'NIS' ? 1 : editedMeeting.currency === 'USD' ? 2 : 3,
           meeting_total: editedMeeting.amount,
@@ -1264,8 +1394,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
                     <select
                       className="select select-bordered w-full"
-                      value={editedMeeting.location || ''}
-                      onChange={(e) => setEditedMeeting(prev => ({ ...prev, location: parseInt(e.target.value) || e.target.value }))}
+                      value={editedMeeting.location ?? ''}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        setEditedMeeting(prev => ({ ...prev, location: value }));
+                      }}
                     >
                       <option value="">{getMeetingLocationName(meeting.location) || 'Select location'}</option>
                       {allMeetingLocations.map((location: any) => (
@@ -1700,6 +1833,27 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="px-6 py-4 bg-white">
             <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
+            {upcomingMeetings.length > 0 && (
+              <div className="mt-3 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-600">Client confirmed the next meeting?</span>
+                  <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                    <span>{(leadSchedulingInfo.meeting_confirmation ?? false) ? 'Confirmed' : 'Not confirmed'}</span>
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-primary"
+                      checked={leadSchedulingInfo.meeting_confirmation ?? false}
+                      onChange={handleToggleMeetingConfirmation}
+                    />
+                  </label>
+                </div>
+                {leadSchedulingInfo.meeting_confirmation && (
+                  <p className="text-sm text-gray-600">
+                    Confirmed by: {getEmployeeDisplayName(leadSchedulingInfo.meeting_confirmation_by)}
+                  </p>
+                )}
+              </div>
+            )}
             <div className="border-b border-gray-200 mt-3"></div>
           </div>
           <div className="p-6">
