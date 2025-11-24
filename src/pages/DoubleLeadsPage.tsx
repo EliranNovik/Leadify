@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
+import { fetchStageNames, getStageName, getStageColour } from '../lib/stageUtils';
 import {
   CheckCircleIcon,
   XCircleIcon,
@@ -24,10 +25,152 @@ interface DoubleLead {
   existing_lead?: any;
 }
 
+const getContrastingTextColor = (hexColor?: string | null) => {
+  if (!hexColor) return '#111827';
+  const color = hexColor.replace('#', '');
+  const r = parseInt(color.substring(0, 2), 16);
+  const g = parseInt(color.substring(2, 4), 16);
+  const b = parseInt(color.substring(4, 6), 16);
+  const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+  return brightness > 128 ? '#0f172a' : '#ffffff';
+};
+
+const stageColourFallbacks: Record<string, string> = {
+  '0': '#9CA3AF',
+  '10': '#0EA5E9',
+  '11': '#F59E0B',
+  '15': '#6366F1',
+  '20': '#14B8A6',
+  '21': '#0F766E',
+  '30': '#4ADE80',
+  '35': '#F97316',
+  '40': '#FB7185',
+  '50': '#E879F9',
+  '55': '#FCD34D',
+  '60': '#22D3EE',
+  '70': '#A855F7',
+  '91': '#52525B',
+  '100': '#34D399',
+  '105': '#818CF8',
+  '110': '#2563EB',
+  '150': '#9333EA',
+  '200': '#38BDF8',
+};
+
+const renderStageBadge = (stageValue: string | number | null | undefined) => {
+  if (stageValue === null || stageValue === undefined || stageValue === '') {
+    return <span className="text-sm text-gray-900 font-medium">---</span>;
+  }
+
+  const stageId = String(stageValue);
+  const stageName = getStageName(stageId);
+  const stageColour = getStageColour(stageId) || stageColourFallbacks[stageId] || '#1f2937';
+  const badgeTextColour = getContrastingTextColor(stageColour);
+
+  return (
+    <span
+      className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-semibold shadow-sm"
+      style={{ backgroundColor: stageColour, color: badgeTextColour }}
+    >
+      {stageName}
+    </span>
+  );
+};
+
 const DoubleLeadsPage: React.FC = () => {
   const [doubleLeads, setDoubleLeads] = useState<DoubleLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [processing, setProcessing] = useState<number | null>(null);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [allSources, setAllSources] = useState<any[]>([]);
+
+  // Fetch categories from database
+  const fetchCategories = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id (
+            id,
+            name
+          )
+        `)
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching categories:', error);
+        return;
+      }
+
+      if (data) {
+        setAllCategories(data);
+      }
+    } catch (error) {
+      console.error('Exception while fetching categories:', error);
+    }
+  };
+
+  // Fetch sources from database
+  const fetchSources = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('misc_leadsource')
+        .select(`
+          id,
+          code,
+          name,
+          default_category_id,
+          active
+        `)
+        .eq('active', true)
+        .order('name', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching sources:', error);
+        return;
+      }
+
+      if (data) {
+        setAllSources(data);
+      }
+    } catch (error) {
+      console.error('Exception while fetching sources:', error);
+    }
+  };
+
+  // Get source info from source_code
+  const getSourceInfo = (sourceCode: string | number | null | undefined) => {
+    if (!sourceCode) return null;
+
+    const source = allSources.find((src: any) => src.code.toString() === sourceCode.toString());
+    return source;
+  };
+
+  // Get category name from ID
+  const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
+    if (!categoryId || categoryId === '---') {
+      if (fallbackCategory && fallbackCategory.trim() !== '') {
+        return fallbackCategory;
+      }
+      return '';
+    }
+
+    const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (category) {
+      // Return category name with main category in parentheses if available
+      if (category.misc_maincategory?.name) {
+        return `${category.name} (${category.misc_maincategory.name})`;
+      } else {
+        return category.name;
+      }
+    }
+
+    // Fallback to category ID if not found
+    return fallbackCategory || String(categoryId);
+  };
 
   const fetchDoubleLeads = async () => {
     try {
@@ -54,6 +197,12 @@ const DoubleLeadsPage: React.FC = () => {
   };
 
   useEffect(() => {
+    const initializeData = async () => {
+      await fetchStageNames();
+      await fetchCategories();
+      await fetchSources();
+    };
+    initializeData();
     fetchDoubleLeads();
   }, []);
 
@@ -67,16 +216,32 @@ const DoubleLeadsPage: React.FC = () => {
         return;
       }
 
-      // Create the new lead
-      const { data: newLead, error: createError } = await supabase
-        .from('leads')
-        .insert(doubleLead.new_lead_data)
-        .select()
-        .single();
+      // Create the new lead using the same function as webhook
+      const newLeadData = doubleLead.new_lead_data;
+      const { data: newLead, error: createError } = await supabase.rpc('create_lead_with_source_validation', {
+        p_lead_name: newLeadData.name,
+        p_lead_email: newLeadData.email || null,
+        p_lead_phone: newLeadData.phone || null,
+        p_lead_topic: newLeadData.topic || null,
+        p_lead_language: newLeadData.language || 'English',
+        p_lead_source: newLeadData.source || 'Manual Review',
+        p_created_by: user.email,
+        p_source_code: null, // Can be extracted from newLeadData if available
+        p_balance_currency: 'NIS',
+        p_proposal_currency: 'NIS'
+      });
 
       if (createError) {
         console.error('Error creating lead:', createError);
         throw createError;
+      }
+
+      // Update the lead with facts if provided
+      if (newLeadData.facts && newLead && newLead.length > 0) {
+        await supabase
+          .from('leads')
+          .update({ facts: newLeadData.facts })
+          .eq('id', newLead[0].id);
       }
 
       // Update double lead status
@@ -226,20 +391,75 @@ const DoubleLeadsPage: React.FC = () => {
   const getRelevantFields = (data: any, isNewLead: boolean = false) => {
     const fieldOrder = [
       'lead_number', 'name', 'email', 'phone', 'mobile', 'topic', 'stage', 'source', 
-      'category', 'comments', 'facts'
+      'category', 'category_id', 'comments', 'facts'
     ];
     
+    // For new leads, add potential_source and potential_category if source_code exists
+    const fieldsToProcess = [...fieldOrder];
+    if (isNewLead && data?.source_code) {
+      const sourceInfo = getSourceInfo(data.source_code);
+      if (sourceInfo) {
+        // Insert potential_source and potential_category after source
+        const sourceIndex = fieldsToProcess.indexOf('source');
+        if (sourceIndex !== -1) {
+          fieldsToProcess.splice(sourceIndex + 1, 0, 'potential_source', 'potential_category');
+        } else {
+          fieldsToProcess.push('potential_source', 'potential_category');
+        }
+      }
+    }
+    
     // Create entries for all fields, even if they don't exist in the data
-    return fieldOrder.map(field => {
-      let value = data?.[field] || null;
+    return fieldsToProcess.map(field => {
+      let value = data?.[field];
+      
+      // Handle stage - 0 is a valid stage value, so check for null/undefined specifically
+      if (field === 'stage') {
+        value = (value === null || value === undefined) ? null : value;
+      } else {
+        value = value || null;
+      }
       
       // For new leads, show "---" for lead_number since it's not yet assigned
       if (isNewLead && field === 'lead_number') {
         value = '---';
       }
       
+      // Handle category - use getCategoryName to display category name from ID
+      if (field === 'category') {
+        // If we have category_id, get the category name
+        if (data?.category_id) {
+          value = getCategoryName(data.category_id, data?.category);
+        } else if (value) {
+          // If we have category name but no ID, use it as is
+          value = value;
+        } else {
+          value = null;
+        }
+      }
+      
+      // Skip category_id field - we'll show category name instead
+      if (field === 'category_id') {
+        return null;
+      }
+      
+      // Handle potential_source and potential_category for new leads
+      if (isNewLead && field === 'potential_source' && data?.source_code) {
+        const sourceInfo = getSourceInfo(data.source_code);
+        value = sourceInfo ? sourceInfo.name : null;
+      }
+      
+      if (isNewLead && field === 'potential_category' && data?.source_code) {
+        const sourceInfo = getSourceInfo(data.source_code);
+        if (sourceInfo?.default_category_id) {
+          value = getCategoryName(sourceInfo.default_category_id);
+        } else {
+          value = null;
+        }
+      }
+      
       return [field, value];
-    });
+    }).filter((item): item is [string, any] => item !== null);
   };
 
   // Format facts field for user-friendly display
@@ -336,25 +556,75 @@ const DoubleLeadsPage: React.FC = () => {
                       </div>
                       <h3 className="text-lg font-semibold text-gray-900">New Lead</h3>
                     </div>
-                    <div className="space-y-3">
-                      {getRelevantFields(doubleLead.new_lead_data, true).map(([key, value]) => (
-                        <div key={key} className="py-2 border-b border-gray-100 last:border-b-0">
-                          <span className="text-sm font-medium text-gray-600 capitalize block mb-1">
-                            {key.replace(/_/g, ' ')}:
-                          </span>
-                          {key === 'facts' ? (
-                            <div className="text-sm text-gray-900 bg-gray-50 p-3 rounded border max-h-32 overflow-y-auto">
-                              <div className="whitespace-pre-line">
-                                {formatFacts(value)}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-sm text-gray-900 font-medium">
-                              {value === null || value === undefined || value === '' ? '---' : String(value)}
+                    <div className="grid grid-cols-2 gap-4">
+                      {getRelevantFields(doubleLead.new_lead_data, true).map(([key, value]) => {
+                        // Check if this field is a duplicate (handle field name variations)
+                        const isDuplicate = doubleLead.duplicate_fields.some(field => {
+                          // Direct match
+                          if (field === key) return true;
+                          // Handle category_id vs category
+                          if ((field === 'category' && key === 'category_id') || 
+                              (field === 'category_id' && key === 'category')) return true;
+                          return false;
+                        });
+                        
+                        // Check if this is a potential field (derived from source_code)
+                        const isPotentialField = key === 'potential_source' || key === 'potential_category';
+                        
+                        // Fields that should span full width
+                        const fullWidthFields = ['facts', 'comments', 'stage'];
+                        const shouldSpanFullWidth = fullWidthFields.includes(key);
+                        
+                        return (
+                          <div 
+                            key={key} 
+                            className={`py-2 border-b border-gray-100 ${
+                              shouldSpanFullWidth ? 'col-span-2' : ''
+                            } ${
+                              isDuplicate ? 'bg-yellow-50 border-yellow-200 rounded-lg px-3 -mx-3' : ''
+                            } ${
+                              isPotentialField ? 'bg-blue-50 border-blue-200 rounded-lg px-3 -mx-3' : ''
+                            }`}
+                          >
+                            <span className={`text-sm font-medium capitalize block mb-1 ${
+                              isDuplicate ? 'text-yellow-800 font-semibold' : 
+                              isPotentialField ? 'text-blue-800 font-semibold' : 
+                              'text-gray-600'
+                            }`}>
+                              {key.replace(/_/g, ' ')}:
+                              {isDuplicate && (
+                                <span className="ml-2 text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded-full">
+                                  Duplicate
+                                </span>
+                              )}
+                              {isPotentialField && (
+                                <span className="ml-2 text-xs bg-blue-200 text-blue-800 px-2 py-0.5 rounded-full">
+                                  Potential
+                                </span>
+                              )}
                             </span>
-                          )}
-                        </div>
-                      ))}
+                            {key === 'facts' ? (
+                              <div className={`text-sm text-gray-900 p-3 rounded border max-h-32 overflow-y-auto ${
+                                isDuplicate ? 'bg-yellow-100 border-yellow-300' : 'bg-gray-50'
+                              }`}>
+                                <div className="whitespace-pre-line">
+                                  {formatFacts(value)}
+                                </div>
+                              </div>
+                            ) : key === 'stage' ? (
+                              renderStageBadge(value)
+                            ) : (
+                              <span className={`text-sm font-medium ${
+                                isDuplicate ? 'text-yellow-900 font-semibold' : 
+                                isPotentialField ? 'text-blue-900 font-semibold' : 
+                                'text-gray-900'
+                              }`}>
+                                {value === null || value === undefined || value === '' ? '---' : String(value)}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -366,25 +636,61 @@ const DoubleLeadsPage: React.FC = () => {
                       </div>
                       <h3 className="text-lg font-semibold text-gray-900">Existing Lead</h3>
                     </div>
-                    <div className="space-y-3">
-                      {getRelevantFields(doubleLead.existing_lead, false).map(([key, value]) => (
-                        <div key={key} className="py-2 border-b border-gray-100 last:border-b-0">
-                          <span className="text-sm font-medium text-gray-600 capitalize block mb-1">
-                            {key.replace(/_/g, ' ')}:
-                          </span>
-                          {key === 'facts' ? (
-                            <div className="text-sm text-gray-900 bg-gray-50 p-3 rounded border max-h-32 overflow-y-auto">
-                              <div className="whitespace-pre-line">
-                                {formatFacts(value)}
-                              </div>
-                            </div>
-                          ) : (
-                            <span className="text-sm text-gray-900 font-medium">
-                              {value === null || value === undefined || value === '' ? '---' : String(value)}
+                    <div className="grid grid-cols-2 gap-4">
+                      {getRelevantFields(doubleLead.existing_lead, false).map(([key, value]) => {
+                        // Check if this field is a duplicate (handle field name variations)
+                        const isDuplicate = doubleLead.duplicate_fields.some(field => {
+                          // Direct match
+                          if (field === key) return true;
+                          // Handle category_id vs category
+                          if ((field === 'category' && key === 'category_id') || 
+                              (field === 'category_id' && key === 'category')) return true;
+                          return false;
+                        });
+                        
+                        // Fields that should span full width
+                        const fullWidthFields = ['facts', 'comments', 'stage'];
+                        const shouldSpanFullWidth = fullWidthFields.includes(key);
+                        
+                        return (
+                          <div 
+                            key={key} 
+                            className={`py-2 border-b border-gray-100 ${
+                              shouldSpanFullWidth ? 'col-span-2' : ''
+                            } ${
+                              isDuplicate ? 'bg-yellow-50 border-yellow-200 rounded-lg px-3 -mx-3' : ''
+                            }`}
+                          >
+                            <span className={`text-sm font-medium capitalize block mb-1 ${
+                              isDuplicate ? 'text-yellow-800 font-semibold' : 'text-gray-600'
+                            }`}>
+                              {key.replace(/_/g, ' ')}:
+                              {isDuplicate && (
+                                <span className="ml-2 text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded-full">
+                                  Duplicate
+                                </span>
+                              )}
                             </span>
-                          )}
-                        </div>
-                      ))}
+                            {key === 'facts' ? (
+                              <div className={`text-sm text-gray-900 p-3 rounded border max-h-32 overflow-y-auto ${
+                                isDuplicate ? 'bg-yellow-100 border-yellow-300' : 'bg-gray-50'
+                              }`}>
+                                <div className="whitespace-pre-line">
+                                  {formatFacts(value)}
+                                </div>
+                              </div>
+                            ) : key === 'stage' ? (
+                              renderStageBadge(value)
+                            ) : (
+                              <span className={`text-sm font-medium ${
+                                isDuplicate ? 'text-yellow-900 font-semibold' : 'text-gray-900'
+                              }`}>
+                                {value === null || value === undefined || value === '' ? '---' : String(value)}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
@@ -426,3 +732,4 @@ const DoubleLeadsPage: React.FC = () => {
 };
 
 export default DoubleLeadsPage;
+

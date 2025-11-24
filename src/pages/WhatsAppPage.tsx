@@ -48,6 +48,9 @@ interface Client {
   balance?: number;
   potential_applicants?: number;
   lead_type?: 'legacy' | 'new';
+  isContact?: boolean;
+  lead_id?: string | null; // For contacts, this is the associated lead_id
+  contact_id?: number; // For contacts, this is the contact_id
 }
 
 interface WhatsAppMessage {
@@ -441,25 +444,26 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       try {
         setLoading(true);
         
-        // Fetch unique lead_ids from whatsapp_messages (new leads)
-        // Only get messages where lead_id is not null (meaning they're associated with a lead)
+        // Fetch all WhatsApp messages to get both lead_ids and contact_ids
         const { data: whatsappMessages, error: whatsappError } = await supabase
           .from('whatsapp_messages')
-          .select('lead_id, contact_id')
-          .not('lead_id', 'is', null);
+          .select('lead_id, contact_id');
 
         if (whatsappError) {
           console.error('Error fetching WhatsApp messages:', whatsappError);
         }
 
-        // Get unique lead IDs from WhatsApp messages
-        // lead_id can be UUID (string) for new leads
+        // Get unique lead IDs from WhatsApp messages (where lead_id is not null)
         const uniqueLeadIds = new Set<string>();
+        // Get unique contact IDs from WhatsApp messages (where contact_id is not null)
+        const uniqueContactIds = new Set<number>();
         
         (whatsappMessages || []).forEach((msg: any) => {
           if (msg.lead_id) {
-            // Handle both UUID strings and numeric IDs
             uniqueLeadIds.add(String(msg.lead_id));
+          }
+          if (msg.contact_id) {
+            uniqueContactIds.add(Number(msg.contact_id));
           }
         });
 
@@ -497,7 +501,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           } else {
             newLeadsData = (leadsData || []).map(lead => ({
               ...lead,
-              lead_type: 'new' as const
+              lead_type: 'new' as const,
+              isContact: false
             }));
           }
         }
@@ -531,13 +536,106 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               probability: lead.probability ? Number(lead.probability) : undefined,
               balance: lead.total ? Number(lead.total) : undefined,
               potential_applicants: lead.potential_applicants || '',
-              lead_type: 'legacy' as const
+              lead_type: 'legacy' as const,
+              isContact: false
             }));
           }
         }
 
-        // Combine and set clients
-        const allClients = [...newLeadsData, ...legacyLeadsData];
+        // Fetch contacts with WhatsApp conversations that are connected to leads
+        const contactIdsArray = Array.from(uniqueContactIds);
+        let contactClientsData: any[] = [];
+        
+        if (contactIdsArray.length > 0) {
+          // First, fetch relationships to ensure contacts are connected to leads
+          const { data: relationships, error: relationshipsError } = await supabase
+            .from('lead_leadcontact')
+            .select('contact_id, newlead_id, lead_id')
+            .in('contact_id', contactIdsArray)
+            .not('newlead_id', 'is', null);
+
+          if (relationshipsError) {
+            console.error('Error fetching contact relationships:', relationshipsError);
+          } else if (relationships && relationships.length > 0) {
+            // Get unique contact IDs that are actually connected to leads
+            const connectedContactIds = new Set<number>();
+            const contactToLeadMap = new Map<number, string>();
+            
+            relationships.forEach((rel: any) => {
+              if (rel.contact_id && rel.newlead_id) {
+                connectedContactIds.add(Number(rel.contact_id));
+                contactToLeadMap.set(Number(rel.contact_id), String(rel.newlead_id));
+              }
+            });
+
+            if (connectedContactIds.size > 0) {
+              // Fetch contact details only for contacts connected to leads
+              const { data: contactsData, error: contactsError } = await supabase
+                .from('leads_contact')
+                .select('id, name, email, phone, mobile')
+                .in('id', Array.from(connectedContactIds));
+
+              if (contactsError) {
+                console.error('Error fetching contacts:', contactsError);
+              } else if (contactsData && contactsData.length > 0) {
+                // Get unique lead IDs for these contacts
+                const leadIdsForContacts = new Set<string>();
+                contactsData.forEach((contact: any) => {
+                  const leadId = contactToLeadMap.get(contact.id);
+                  if (leadId) {
+                    leadIdsForContacts.add(leadId);
+                  }
+                });
+
+                // Fetch lead information for these contacts
+                let leadsForContacts: any[] = [];
+                if (leadIdsForContacts.size > 0) {
+                  const { data: leadsForContactsData, error: leadsForContactsError } = await supabase
+                    .from('leads')
+                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, next_followup, probability, balance, potential_applicants')
+                    .in('id', Array.from(leadIdsForContacts));
+
+                  if (!leadsForContactsError && leadsForContactsData) {
+                    leadsForContacts = leadsForContactsData;
+                  }
+                }
+
+                // Create Client objects for contacts that are connected to leads
+                contactClientsData = contactsData
+                  .filter((contact: any) => contactToLeadMap.has(contact.id)) // Only include connected contacts
+                  .map((contact: any) => {
+                    const leadId = contactToLeadMap.get(contact.id);
+                    const associatedLead = leadsForContacts.find(lead => lead.id === leadId);
+                    
+                    return {
+                      id: `contact_${contact.id}`,
+                      lead_id: leadId || null, // Store the actual lead_id from relationship
+                      contact_id: contact.id, // Store the contact_id
+                      lead_number: associatedLead?.lead_number || `Contact ${contact.id}`,
+                      name: contact.name || '',
+                      email: contact.email || '',
+                      phone: contact.phone || '',
+                      mobile: contact.mobile || '',
+                      topic: associatedLead?.topic || '',
+                      status: associatedLead?.status || '',
+                      stage: associatedLead?.stage || '',
+                      closer: associatedLead?.closer || '',
+                      scheduler: associatedLead?.scheduler || '',
+                      next_followup: associatedLead?.next_followup || '',
+                      probability: associatedLead?.probability || undefined,
+                      balance: associatedLead?.balance || undefined,
+                      potential_applicants: associatedLead?.potential_applicants || '',
+                      lead_type: 'new' as const,
+                      isContact: true // Mark as contact
+                    };
+                  });
+              }
+            }
+          }
+        }
+
+        // Combine all clients: leads and contacts
+        const allClients = [...newLeadsData, ...legacyLeadsData, ...contactClientsData];
         setClients(allClients);
       } catch (error) {
         console.error('Error fetching clients with conversations:', error);
@@ -747,24 +845,47 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
         
         // For new leads, use whatsapp_messages table
-        // Always fetch by lead_id first, then filter by contact_id or phone number
-        const { data: allMessagesForLead, error: leadError } = await supabase
-          .from('whatsapp_messages')
-          .select('*')
-          .eq('lead_id', selectedClient.id)
-          .order('sent_at', { ascending: true });
+        // If this is a contact (not a main lead), fetch messages by contact_id
+        let allMessagesForLead: any[] = [];
         
-        if (leadError) {
-          console.error('Error fetching messages:', leadError);
-          toast.error('Failed to load messages');
-          setLoadingMessages(false);
-          return;
+        if (selectedClient.isContact && selectedClient.contact_id) {
+          // This is a contact - fetch messages by contact_id
+          const { data: contactMessages, error: contactError } = await supabase
+            .from('whatsapp_messages')
+            .select('*')
+            .eq('contact_id', selectedClient.contact_id)
+            .order('sent_at', { ascending: true });
+          
+          if (contactError) {
+            console.error('Error fetching contact messages:', contactError);
+            toast.error('Failed to load messages');
+            setLoadingMessages(false);
+            return;
+          }
+          
+          allMessagesForLead = contactMessages || [];
+        } else {
+          // This is a main lead - fetch by lead_id first, then filter by contact_id or phone number
+          const { data: leadMessages, error: leadError } = await supabase
+            .from('whatsapp_messages')
+            .select('*')
+            .eq('lead_id', selectedClient.id)
+            .order('sent_at', { ascending: true });
+          
+          if (leadError) {
+            console.error('Error fetching messages:', leadError);
+            toast.error('Failed to load messages');
+            setLoadingMessages(false);
+            return;
+          }
+          
+          allMessagesForLead = leadMessages || [];
         }
 
-        // Filter messages based on contact_id or phone number
+        // Filter messages based on contact_id or phone number (only for main leads, not contacts)
         let filteredMessages = allMessagesForLead || [];
         
-        if (contactId) {
+        if (!selectedClient.isContact && contactId) {
           // Get the selected contact details
           const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === contactId);
           
@@ -802,10 +923,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             // If contact not found, show all messages for the lead (fallback)
             filteredMessages = allMessagesForLead || [];
           }
-        } else {
-          // No contact_id selected, show all messages for the lead
-          filteredMessages = allMessagesForLead || [];
         }
+        // For contacts, we already have the filtered messages (fetched by contact_id)
         
         const data = filteredMessages;
 
@@ -1080,68 +1199,134 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
   // Handle clicking on a contact in New Message Modal
   const handleNewMessageContactClick = async (result: CombinedLead) => {
-    // Check if client already exists in the list
-    const existingClient = clients.find(c => {
-      if (result.lead_type === 'legacy') {
-        return c.id === `legacy_${result.id}`;
-      } else {
-        return c.id === result.id;
-      }
-    });
-
-    let clientToSelect: Client;
-
-    if (!existingClient) {
-      // Add the client to the list
-      const newClient: Client = {
-        id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
-        lead_number: result.lead_number,
-        name: result.name,
-        email: result.email,
-        phone: result.phone,
-        mobile: result.mobile,
-        topic: result.topic,
-        status: result.status,
-        stage: result.stage,
-        closer: result.closer,
-        scheduler: result.scheduler,
-        next_followup: result.next_followup,
-        probability: result.probability,
-        balance: result.balance,
-        potential_applicants: result.potential_applicants,
-        lead_type: result.lead_type
-      };
-      
-      setClients(prev => [newClient, ...prev]);
-      clientToSelect = newClient;
-    } else {
-      clientToSelect = existingClient;
-    }
-
-    // Set the selected client
-    setSelectedClient(clientToSelect);
-    
-    // If this is a contact (not main contact), fetch contacts and select the specific contact
+    // If this is a contact (not main contact), create a contact client
     if (result.isContact && !result.isMainContact) {
       const isLegacyLead = result.lead_type === 'legacy';
       const leadId = isLegacyLead 
         ? (typeof result.id === 'string' ? result.id.replace('legacy_', '') : String(result.id))
         : result.id;
       
+      // Fetch contacts to get the contact ID
       const contacts = await fetchLeadContacts(leadId, isLegacyLead);
       const selectedContact = contacts.find(c => 
         (c.phone && result.phone && c.phone === result.phone) ||
         (c.mobile && result.mobile && c.mobile === result.mobile) ||
         (c.email && result.email && c.email === result.email) ||
-        (c.name && result.name && c.name === result.name)
+        (c.name && result.name && c.name === result.name) ||
+        (result.contactName && c.name && c.name === result.contactName)
       );
       
-      if (selectedContact) {
-        setLeadContacts(contacts);
-        setSelectedContactId(selectedContact.id);
+      if (!selectedContact) {
+        toast.error('Contact not found');
+        return;
       }
+      
+      // Fetch lead information for the contact
+      let leadData: any = null;
+      if (isLegacyLead) {
+        const { data: legacyLead, error } = await supabase
+          .from('leads_lead')
+          .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, next_followup, probability, total, potential_applicants')
+          .eq('id', Number(leadId))
+          .single();
+        
+        if (!error && legacyLead) {
+          leadData = legacyLead;
+        }
+      } else {
+        const { data: newLead, error } = await supabase
+          .from('leads')
+          .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, next_followup, probability, balance, potential_applicants')
+          .eq('id', leadId)
+          .single();
+        
+        if (!error && newLead) {
+          leadData = newLead;
+        }
+      }
+      
+      // Create a contact client
+      const contactClient: Client = {
+        id: `contact_${selectedContact.id}`,
+        lead_id: leadId, // Store the associated lead_id
+        contact_id: selectedContact.id, // Store the contact_id
+        lead_number: leadData?.lead_number || result.lead_number || `Contact ${selectedContact.id}`,
+        name: selectedContact.name || result.contactName || result.name || '',
+        email: selectedContact.email || result.email || '',
+        phone: selectedContact.phone || result.phone || '',
+        mobile: selectedContact.mobile || result.mobile || '',
+        topic: leadData?.topic || result.topic || '',
+        status: leadData?.status || result.status || '',
+        stage: leadData?.stage || result.stage || '',
+        closer: isLegacyLead ? (leadData?.closer_id ? String(leadData.closer_id) : '') : (leadData?.closer || ''),
+        scheduler: isLegacyLead ? (leadData?.meeting_scheduler_id ? String(leadData.meeting_scheduler_id) : '') : (leadData?.scheduler || ''),
+        next_followup: leadData?.next_followup || result.next_followup || '',
+        probability: leadData?.probability ? Number(leadData.probability) : undefined,
+        balance: isLegacyLead ? (leadData?.total ? Number(leadData.total) : undefined) : (leadData?.balance || undefined),
+        potential_applicants: leadData?.potential_applicants || result.potential_applicants || '',
+        lead_type: result.lead_type,
+        isContact: true // Mark as contact
+      };
+      
+      // Check if contact client already exists
+      const existingContactClient = clients.find(c => 
+        c.isContact && c.contact_id === selectedContact.id
+      );
+      
+      if (!existingContactClient) {
+        setClients(prev => [contactClient, ...prev]);
+      }
+      
+      // Set the selected client and contact
+      setSelectedClient(existingContactClient || contactClient);
+      setSelectedContactId(selectedContact.id);
+      setLeadContacts([]); // Contacts don't have sub-contacts
+      
+      console.log(`✅ Selected contact: ${selectedContact.name} (Contact ID: ${selectedContact.id}, Lead ID: ${leadId})`);
     } else {
-      // For main contacts, fetch contacts and select the main one
+      // This is a main lead - create a regular lead client
+      const existingClient = clients.find(c => {
+        if (result.lead_type === 'legacy') {
+          return c.id === `legacy_${result.id}`;
+        } else {
+          return c.id === result.id;
+        }
+      });
+
+      let clientToSelect: Client;
+
+      if (!existingClient) {
+        // Add the client to the list
+        const newClient: Client = {
+          id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
+          lead_number: result.lead_number,
+          name: result.name,
+          email: result.email,
+          phone: result.phone,
+          mobile: result.mobile,
+          topic: result.topic,
+          status: result.status,
+          stage: result.stage,
+          closer: result.closer,
+          scheduler: result.scheduler,
+          next_followup: result.next_followup,
+          probability: result.probability,
+          balance: result.balance,
+          potential_applicants: result.potential_applicants,
+          lead_type: result.lead_type,
+          isContact: false
+        };
+        
+        setClients(prev => [newClient, ...prev]);
+        clientToSelect = newClient;
+      } else {
+        clientToSelect = existingClient;
+      }
+
+      // Set the selected client
+      setSelectedClient(clientToSelect);
+      
+      // For main leads, fetch contacts and select the main one
       const isLegacyLead = clientToSelect.lead_type === 'legacy' || clientToSelect.id.toString().startsWith('legacy_');
       const leadId = isLegacyLead 
         ? (typeof clientToSelect.id === 'string' ? clientToSelect.id.replace('legacy_', '') : String(clientToSelect.id))
@@ -1176,8 +1361,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     (client.mobile && client.mobile.includes(searchTerm))
   ).sort((a, b) => {
     // Get last message for each client
-    const lastMessageA = allMessages.filter(m => m.lead_id === a.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
-    const lastMessageB = allMessages.filter(m => m.lead_id === b.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
+    let lastMessageA: any = null;
+    let lastMessageB: any = null;
+    
+    if (a.isContact && a.contact_id) {
+      lastMessageA = allMessages.filter(m => m.contact_id === a.contact_id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
+    } else {
+      lastMessageA = allMessages.filter(m => m.lead_id === a.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
+    }
+    
+    if (b.isContact && b.contact_id) {
+      lastMessageB = allMessages.filter(m => m.contact_id === b.contact_id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
+    } else {
+      lastMessageB = allMessages.filter(m => m.lead_id === b.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
+    }
     
     // If both have messages, sort by latest message time (descending)
     if (lastMessageA && lastMessageB) {
@@ -1242,11 +1439,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     try {
 
       // Prepare message payload
+      // For contacts, use the associated lead_id; for main leads, use the client id
+      const leadIdForMessage = selectedClient.isContact && selectedClient.lead_id 
+        ? selectedClient.lead_id 
+        : selectedClient.id;
+      
       const messagePayload: any = {
-        leadId: selectedClient.id,
+        leadId: leadIdForMessage,
         phoneNumber: phoneNumber,
         sender_name: senderName,
-        contactId: contactId || null
+        contactId: selectedClient.isContact && selectedClient.contact_id 
+          ? selectedClient.contact_id 
+          : (contactId || null)
       };
 
       // Check if we should send as template message
@@ -1457,13 +1661,28 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   }, []);
 
   // Get last message for client preview from all messages
-  const getLastMessageForClient = (clientId: string) => {
-    return allMessages.find(msg => msg.lead_id === clientId);
+  const getLastMessageForClient = (client: Client) => {
+    if (client.isContact && client.contact_id) {
+      // For contacts, find by contact_id
+      return allMessages.find(msg => msg.contact_id === client.contact_id);
+    } else {
+      // For main leads, find by lead_id
+      return allMessages.find(msg => msg.lead_id === client.id);
+    }
   };
 
   // Get unread count for client from all messages
-  const getUnreadCountForClient = (clientId: string) => {
-    const clientMessages = allMessages.filter(msg => msg.lead_id === clientId);
+  const getUnreadCountForClient = (client: Client) => {
+    let clientMessages: any[] = [];
+    
+    if (client.isContact && client.contact_id) {
+      // For contacts, filter by contact_id
+      clientMessages = allMessages.filter(msg => msg.contact_id === client.contact_id);
+    } else {
+      // For main leads, filter by lead_id
+      clientMessages = allMessages.filter(msg => msg.lead_id === client.id);
+    }
+    
     // Use the same simple logic as WhatsApp Leads Page
     return clientMessages.filter(msg => {
       if (msg.direction !== 'in') return false;
@@ -2002,12 +2221,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   </div>
                 ) : (
                   filteredClients.map((client) => {
-                    const lastMessage = getLastMessageForClient(client.id);
-                    const unreadCount = getUnreadCountForClient(client.id);
+                    const lastMessage = getLastMessageForClient(client);
+                    const unreadCount = getUnreadCountForClient(client);
                     const isSelected = selectedClient?.id === client.id;
                     
                     // Check if client has any messages
-                    const clientMessages = allMessages.filter(m => m.lead_id === client.id);
+                    let clientMessages: any[] = [];
+                    if (client.isContact && client.contact_id) {
+                      // For contacts, filter by contact_id
+                      clientMessages = allMessages.filter(m => m.contact_id === client.contact_id);
+                    } else {
+                      // For main leads, filter by lead_id
+                      clientMessages = allMessages.filter(m => m.lead_id === client.id);
+                    }
                     const hasNoMessages = clientMessages.length === 0;
                     
                     // Check if client has any incoming messages
@@ -2037,45 +2263,52 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           setShouldAutoScroll(true); // Trigger auto-scroll when chat is selected
                           setIsFirstLoad(true); // Mark as first load
                           
-                          // Fetch contacts for this client and set selectedContactId immediately
-                          try {
-                            const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-                            const leadId = isLegacyLead 
-                              ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
-                              : client.id;
-                            
-                            const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
-                            
-                            // Deduplicate contacts by ID to prevent duplicate key warnings
-                            const uniqueContacts = fetchedContacts.filter((contact, index, self) => 
-                              index === self.findIndex(c => c.id === contact.id)
-                            );
-                            
-                            setLeadContacts(uniqueContacts);
-                            
-                            // Find the matching contact from the fetched contacts
-                            // Try to match by email, phone, or name
-                            const matchingContact = uniqueContacts.find(c => 
-                              (c.email && client.email && c.email === client.email) ||
-                              (c.phone && client.phone && c.phone === client.phone) ||
-                              (c.mobile && (client.mobile || client.phone) && c.mobile === (client.mobile || client.phone)) ||
-                              (c.name && client.name && c.name === client.name)
-                            );
-                            
-                            if (matchingContact) {
-                              console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
-                              setSelectedContactId(matchingContact.id);
-                            } else if (uniqueContacts.length > 0) {
-                              // Fallback to main contact if no match found
-                              const mainContact = uniqueContacts.find(c => c.isMain) || uniqueContacts[0];
-                              console.log(`⚠️ No exact match, using main contact: ${mainContact.name} (ID: ${mainContact.id})`);
-                              setSelectedContactId(mainContact.id);
-                            } else {
+                          // If this is a contact, set the contact ID directly
+                          if (client.isContact && client.contact_id) {
+                            setSelectedContactId(client.contact_id);
+                            setLeadContacts([]); // Contacts don't have sub-contacts
+                            console.log(`✅ Selected contact: ${client.name} (Contact ID: ${client.contact_id})`);
+                          } else {
+                            // For main leads, fetch contacts
+                            try {
+                              const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+                              const leadId = isLegacyLead 
+                                ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+                                : client.id;
+                              
+                              const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
+                              
+                              // Deduplicate contacts by ID to prevent duplicate key warnings
+                              const uniqueContacts = fetchedContacts.filter((contact, index, self) => 
+                                index === self.findIndex(c => c.id === contact.id)
+                              );
+                              
+                              setLeadContacts(uniqueContacts);
+                              
+                              // Find the matching contact from the fetched contacts
+                              // Try to match by email, phone, or name
+                              const matchingContact = uniqueContacts.find(c => 
+                                (c.email && client.email && c.email === client.email) ||
+                                (c.phone && client.phone && c.phone === client.phone) ||
+                                (c.mobile && (client.mobile || client.phone) && c.mobile === (client.mobile || client.phone)) ||
+                                (c.name && client.name && c.name === client.name)
+                              );
+                              
+                              if (matchingContact) {
+                                console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
+                                setSelectedContactId(matchingContact.id);
+                              } else if (uniqueContacts.length > 0) {
+                                // Fallback to main contact if no match found
+                                const mainContact = uniqueContacts.find(c => c.isMain) || uniqueContacts[0];
+                                console.log(`⚠️ No exact match, using main contact: ${mainContact.name} (ID: ${mainContact.id})`);
+                                setSelectedContactId(mainContact.id);
+                              } else {
+                                setSelectedContactId(null);
+                              }
+                            } catch (error) {
+                              console.error('Error fetching contacts for selected client:', error);
                               setSelectedContactId(null);
                             }
-                          } catch (error) {
-                            console.error('Error fetching contacts for selected client:', error);
-                            setSelectedContactId(null);
                           }
                           
                           if (isMobile) {
@@ -2103,9 +2336,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           {/* Client Info */}
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between">
-                              <h3 className="font-semibold text-gray-900 truncate text-base md:text-base">
-                                {client.name}
-                              </h3>
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <h3 className="font-semibold text-gray-900 truncate text-base md:text-base">
+                                  {client.name}
+                                </h3>
+                                {client.isContact && (
+                                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full flex-shrink-0">
+                                    Contact
+                                  </span>
+                                )}
+                              </div>
                               <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
                                 {lastMessage && (
                                   <span className="text-xs text-gray-500">
@@ -2120,7 +2360,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               </div>
                             </div>
                             <p className="text-sm md:text-sm text-gray-500 truncate">
-                              {client.lead_number}
+                              {client.isContact ? `Contact • ${client.lead_number}` : client.lead_number}
                             </p>
                             {lastMessage && (
                               <p className="text-sm md:text-sm text-gray-600 truncate mt-1">

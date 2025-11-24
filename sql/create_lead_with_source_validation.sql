@@ -19,10 +19,10 @@ RETURNS TABLE(
   lead_number text,
   name text,
   email text,
-  source_id integer,
+  source_id bigint,
   source_name text,
   final_topic text,
-  final_category_id integer
+  final_category_id bigint
 ) AS $$
 DECLARE
   v_new_lead_number text;
@@ -32,8 +32,8 @@ DECLARE
   v_next_number bigint;
   v_source_record record;
   v_final_topic text;
-  v_final_category_id integer;
-  v_source_id integer;
+  v_final_category_id bigint;
+  v_source_id bigint;
   v_source_name text;
   v_last_leads_lead_id bigint;
   v_last_leads_number text;
@@ -80,15 +80,15 @@ BEGIN
   END IF;
   
   -- Get the last lead number from both tables to avoid conflicts
-  -- Get the last ID from leads_lead table
-  SELECT COALESCE(MAX(ll.id), 0) INTO v_last_leads_lead_id
+  -- Get the last ID from leads_lead table (cast to bigint to avoid overflow)
+  SELECT COALESCE(MAX(ll.id)::bigint, 0) INTO v_last_leads_lead_id
   FROM leads_lead ll;
   
   -- Get the last L-prefixed number from leads table
   SELECT l.lead_number INTO v_last_leads_number
   FROM leads l
   WHERE l.lead_number ~ '^L[0-9]+$'
-  ORDER BY CAST(SUBSTRING(l.lead_number FROM 2) AS integer) DESC
+  ORDER BY CAST(SUBSTRING(l.lead_number FROM 2) AS bigint) DESC
   LIMIT 1;
   
   -- Calculate the maximum number from both sources
@@ -158,11 +158,12 @@ BEGIN
   v_contact_cdate := CURRENT_DATE;
   v_contact_udate := CURRENT_DATE;
   
-  -- Get the next available contact ID
+  -- Get the next available contact ID (manually calculate like create_new_lead_v3 does)
   SELECT COALESCE(MAX(lc.id), 0) + 1 INTO v_new_contact_id
   FROM leads_contact lc;
   
   -- Insert the first contact into leads_contact table
+  -- Manually set the ID to match how create_new_lead_v3 works (which works successfully)
   INSERT INTO leads_contact (
     id,
     name,
@@ -183,11 +184,12 @@ BEGIN
     v_contact_udate
   );
   
-  -- Get the next available relationship ID
+  -- Get the next available relationship ID (manually calculate like create_new_lead_v3 does)
   SELECT COALESCE(MAX(llc.id), 0) + 1 INTO v_new_relationship_id
   FROM lead_leadcontact llc;
   
   -- Create the relationship in lead_leadcontact table, marking it as main
+  -- Manually set the ID to match how create_new_lead_v3 works (which works successfully)
   INSERT INTO lead_leadcontact (
     id,
     contact_id,

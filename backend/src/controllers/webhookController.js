@@ -134,45 +134,237 @@ const webhookController = {
         });
       }
 
-      // Check for duplicate leads
-      const { data: existingLeads, error: checkError } = await supabase
-        .from('leads')
-        .select('id, name, email, phone, created_at')
-        .or(`email.eq.${formData.email},phone.eq.${formData.phone}`)
-        .order('created_at', { ascending: false })
-        .limit(5);
+      // Check for duplicate leads - check both leads table and leads_contact table
+      const duplicateFields = [];
+      let existingLead = null;
 
-      if (checkError) {
-        console.error('Error checking for duplicates:', checkError);
-        return res.status(500).json({ error: 'Database error' });
+      // Normalize name for comparison (trim and lowercase)
+      const normalizeName = (name) => {
+        if (!name) return '';
+        return name.trim().toLowerCase();
+      };
+      const normalizedNewName = normalizeName(formData.name);
+
+      // Check leads table for email, phone, or name matches
+      if (formData.email || formData.phone || formData.name) {
+        let leadsQuery = supabase
+          .from('leads')
+          .select('id, name, email, phone, created_at');
+        
+        const conditions = [];
+        if (formData.email) conditions.push(`email.eq.${formData.email}`);
+        if (formData.phone) conditions.push(`phone.eq.${formData.phone}`);
+        if (formData.name) conditions.push(`name.ilike.%${formData.name}%`);
+        
+        if (conditions.length > 0) {
+          leadsQuery = leadsQuery.or(conditions.join(','));
+        }
+        
+        const { data: leadsMatches, error: leadsError } = await leadsQuery
+          .order('created_at', { ascending: false })
+          .limit(5); // Get more results to check name matches
+
+        if (leadsError) {
+          console.error('Error checking leads for duplicates:', leadsError);
+        } else if (leadsMatches && leadsMatches.length > 0) {
+          // Check each match to find exact duplicates
+          for (const lead of leadsMatches) {
+            let isMatch = false;
+            
+            // Check email match
+            if (formData.email && lead.email && lead.email.toLowerCase() === formData.email.toLowerCase()) {
+              duplicateFields.push('email');
+              isMatch = true;
+            }
+            
+            // Check phone match
+            if (formData.phone && lead.phone && lead.phone === formData.phone) {
+              duplicateFields.push('phone');
+              isMatch = true;
+            }
+            
+            // Check name match (normalized comparison)
+            if (formData.name && lead.name && normalizeName(lead.name) === normalizedNewName) {
+              duplicateFields.push('name');
+              isMatch = true;
+            }
+            
+            // If we found a match and don't have an existing lead yet, use this one
+            if (isMatch && !existingLead) {
+              existingLead = lead;
+              break; // Use the first match
+            }
+          }
+        }
       }
 
-      // Check for recent duplicates (within last 24 hours)
-      const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const recentDuplicates = existingLeads?.filter(lead => 
-        new Date(lead.created_at) > oneDayAgo
-      ) || [];
+      // Check leads_contact table for email, phone, mobile, or name matches
+      if (formData.email || formData.phone || formData.name) {
+        let contactsQuery = supabase
+          .from('leads_contact')
+          .select('newlead_id, name, email, phone, mobile');
+        
+        const contactConditions = [];
+        if (formData.email) contactConditions.push(`email.eq.${formData.email}`);
+        if (formData.phone) {
+          contactConditions.push(`phone.eq.${formData.phone}`);
+          contactConditions.push(`mobile.eq.${formData.phone}`);
+        }
+        if (formData.name) {
+          contactConditions.push(`name.ilike.%${formData.name}%`);
+        }
+        
+        if (contactConditions.length > 0) {
+          contactsQuery = contactsQuery.or(contactConditions.join(','));
+        }
+        
+        const { data: contactsMatches, error: contactsError } = await contactsQuery.limit(5);
 
-      if (recentDuplicates.length > 0) {
-        // Store duplicate for review
-        const duplicateData = {
-          original_lead_id: recentDuplicates[0].id,
-          duplicate_data: formData,
-          created_at: new Date().toISOString()
-        };
+        if (contactsError) {
+          console.error('Error checking contacts for duplicates:', contactsError);
+        } else if (contactsMatches && contactsMatches.length > 0) {
+          // Check each contact match
+          for (const contact of contactsMatches) {
+            let foundMatch = false;
+            
+            // If we don't have an existing lead yet, fetch it
+            if (!existingLead && contact.newlead_id) {
+              const { data: leadData } = await supabase
+                .from('leads')
+                .select('id, name, email, phone, created_at')
+                .eq('id', contact.newlead_id)
+                .single();
+              
+              if (leadData) {
+                existingLead = leadData;
+                foundMatch = true;
+              }
+            }
+            
+            // Add matching fields
+            if (formData.email && contact.email && contact.email.toLowerCase() === formData.email.toLowerCase() && !duplicateFields.includes('email')) {
+              duplicateFields.push('email');
+              foundMatch = true;
+            }
+            if (formData.phone && contact.phone && contact.phone === formData.phone && !duplicateFields.includes('phone')) {
+              duplicateFields.push('phone');
+              foundMatch = true;
+            }
+            if (formData.phone && contact.mobile && contact.mobile === formData.phone && !duplicateFields.includes('mobile')) {
+              duplicateFields.push('mobile');
+              foundMatch = true;
+            }
+            // Check name match in contact
+            if (formData.name && contact.name && normalizeName(contact.name) === normalizedNewName && !duplicateFields.includes('name')) {
+              duplicateFields.push('name');
+              foundMatch = true;
+            }
+            
+            // If we found a match, break after first one
+            if (foundMatch) {
+              break;
+            }
+          }
+        }
+      }
 
-        const { error: duplicateError } = await supabase
-          .from('duplicate_leads')
-          .insert([duplicateData]);
+      // If we have an existing lead, also check if names match
+      if (existingLead && formData.name && existingLead.name) {
+        if (normalizeName(existingLead.name) === normalizedNewName && !duplicateFields.includes('name')) {
+          duplicateFields.push('name');
+        }
+      }
 
-        if (duplicateError) {
-          console.error('Error storing duplicate:', duplicateError);
+      // If we haven't found a lead yet but have a name, do a name-only search
+      if (!existingLead && formData.name) {
+        const { data: nameMatches, error: nameError } = await supabase
+          .from('leads')
+          .select('id, name, email, phone, created_at')
+          .ilike('name', `%${formData.name}%`)
+          .order('created_at', { ascending: false })
+          .limit(5);
+
+        if (!nameError && nameMatches && nameMatches.length > 0) {
+          // Find exact name match
+          for (const lead of nameMatches) {
+            if (lead.name && normalizeName(lead.name) === normalizedNewName) {
+              existingLead = lead;
+              duplicateFields.push('name');
+              break;
+            }
+          }
         }
 
-        return res.status(409).json({ 
-          error: 'Duplicate lead detected',
-          message: 'A lead with this email or phone already exists'
+        // Also check leads_contact table for name matches
+        if (!existingLead) {
+          const { data: contactNameMatches, error: contactNameError } = await supabase
+            .from('leads_contact')
+            .select('newlead_id, name')
+            .ilike('name', `%${formData.name}%`)
+            .limit(5);
+
+          if (!contactNameError && contactNameMatches && contactNameMatches.length > 0) {
+            for (const contact of contactNameMatches) {
+              if (contact.name && normalizeName(contact.name) === normalizedNewName && contact.newlead_id) {
+                const { data: leadData } = await supabase
+                  .from('leads')
+                  .select('id, name, email, phone, created_at')
+                  .eq('id', contact.newlead_id)
+                  .single();
+                
+                if (leadData) {
+                  existingLead = leadData;
+                  duplicateFields.push('name');
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // If we found a duplicate, store it in double_leads table
+      if (existingLead && duplicateFields.length > 0) {
+        console.log('⚠️ Duplicate lead detected:', {
+          existingLeadId: existingLead.id,
+          duplicateFields,
+          newLeadData: formData
         });
+
+        // Prepare the new lead data with all form fields
+        const newLeadData = {
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          topic: formData.topic,
+          source: formData.source || 'Webhook',
+          language: formData.language || 'English',
+          facts: formData.facts || null,
+          comments: formData.comments || null
+        };
+
+        const { error: doubleLeadError } = await supabase
+          .from('double_leads')
+          .insert([{
+            new_lead_data: newLeadData,
+            existing_lead_id: existingLead.id,
+            duplicate_fields: duplicateFields,
+            status: 'pending'
+          }]);
+
+        if (doubleLeadError) {
+          console.error('Error storing double lead:', doubleLeadError);
+          // Continue to create the lead anyway if storing fails
+        } else {
+          console.log('✅ Duplicate lead stored in double_leads table for review');
+          return res.status(200).json({ 
+            success: true,
+            duplicate: true,
+            message: 'Potential duplicate detected. Lead stored for review.',
+            existing_lead_id: existingLead.id,
+            duplicate_fields: duplicateFields
+          });
+        }
       }
 
       // Create new lead using the source validation function
