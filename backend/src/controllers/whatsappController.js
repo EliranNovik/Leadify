@@ -26,6 +26,183 @@ console.log('PHONE_NUMBER_ID:', PHONE_NUMBER_ID ? 'SET' : 'NOT SET');
 console.log('ACCESS_TOKEN:', ACCESS_TOKEN ? 'SET' : 'NOT SET');
 console.log('isDevelopmentMode:', isDevelopmentMode);
 
+// Helper utilities
+const normalizePhone = (phone) => {
+  if (!phone || phone === null || phone === '') return '';
+  return phone.replace(/\D/g, '');
+};
+
+const parseAdditionalPhones = (value) => {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(Boolean);
+    }
+    if (typeof parsed === 'string') {
+      return parsed.split(/[,;|\s]+/).map(item => item.trim()).filter(Boolean);
+    }
+  } catch (error) {
+    // Not JSON, fall back to string parsing
+  }
+  return value.split(/[,;|\s]+/).map(item => item.trim()).filter(Boolean);
+};
+
+const pickPreferredLeadLink = (links = []) => {
+  if (!links || links.length === 0) return null;
+  return [...links].sort((a, b) => {
+    const mainScore = (link) => {
+      if (link.main === true || link.main === 'true' || link.main === 't' || link.main === '1') {
+        return 0;
+      }
+      return 1;
+    };
+    const typeScore = (link) => (link.newlead_id ? 0 : 1);
+    const aMain = mainScore(a);
+    const bMain = mainScore(b);
+    if (aMain !== bMain) return aMain - bMain;
+    const aType = typeScore(a);
+    const bType = typeScore(b);
+    if (aType !== bType) return aType - bType;
+    return 0;
+  })[0];
+};
+
+const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomingNormalized) => {
+  try {
+    const normalizedSet = new Set(
+      incomingVariations
+        .map(normalizePhone)
+        .filter(Boolean)
+    );
+    if (incomingNormalized) {
+      normalizedSet.add(incomingNormalized);
+    }
+
+    const rawSearchValues = Array.from(new Set(
+      incomingVariations
+        .concat([phoneNumber])
+        .filter(Boolean)
+    ));
+
+    const contactSelectColumns = `
+      id,
+      name,
+      phone,
+      mobile,
+      additional_phones,
+      newlead_id,
+      lead_leadcontact (
+        lead_id,
+        newlead_id,
+        main
+      )
+    `;
+
+    const contactCandidatesMap = new Map();
+    const addContacts = (rows) => {
+      (rows || []).forEach(row => {
+        if (!contactCandidatesMap.has(row.id)) {
+          contactCandidatesMap.set(row.id, row);
+        }
+      });
+    };
+
+    if (rawSearchValues.length > 0) {
+      const { data: phoneMatches } = await supabase
+        .from('leads_contact')
+        .select(contactSelectColumns)
+        .in('phone', rawSearchValues);
+      if (phoneMatches) addContacts(phoneMatches);
+
+      const { data: mobileMatches } = await supabase
+        .from('leads_contact')
+        .select(contactSelectColumns)
+        .in('mobile', rawSearchValues);
+      if (mobileMatches) addContacts(mobileMatches);
+    }
+
+    if (!contactCandidatesMap.size && incomingNormalized) {
+      const suffix = incomingNormalized.slice(-7);
+      if (suffix.length >= 4) {
+        const { data: partialMatches } = await supabase
+          .from('leads_contact')
+          .select(contactSelectColumns)
+          .or(`phone.ilike.%${suffix}%,mobile.ilike.%${suffix}%,additional_phones.ilike.%${suffix}%`);
+        if (partialMatches) addContacts(partialMatches);
+      }
+    }
+
+    const candidates = Array.from(contactCandidatesMap.values());
+    for (const contact of candidates) {
+      const contactPhones = [
+        contact.phone,
+        contact.mobile,
+        ...parseAdditionalPhones(contact.additional_phones || '')
+      ].filter(Boolean);
+
+      const contactNormalizedPhones = contactPhones
+        .map(normalizePhone)
+        .filter(Boolean);
+
+      const hasMatch = contactNormalizedPhones.some(number => normalizedSet.has(number));
+      if (!hasMatch) continue;
+
+      const preferredLink = pickPreferredLeadLink(contact.lead_leadcontact || []);
+      let leadData = null;
+      let leadType = null;
+
+      if (preferredLink && preferredLink.newlead_id) {
+        const { data: newLead } = await supabase
+          .from('leads')
+          .select('id, name, lead_number, phone, mobile')
+          .eq('id', preferredLink.newlead_id)
+          .maybeSingle();
+        if (newLead) {
+          leadData = newLead;
+          leadType = 'new';
+        }
+      }
+
+      if (!leadData && preferredLink && preferredLink.lead_id) {
+        const { data: legacyLead } = await supabase
+          .from('leads_lead')
+          .select('id, name')
+          .eq('id', preferredLink.lead_id)
+          .maybeSingle();
+        if (legacyLead) {
+          leadData = legacyLead;
+          leadType = 'legacy';
+        }
+      }
+
+      if (!leadData && contact.newlead_id) {
+        const { data: fallbackLead } = await supabase
+          .from('leads')
+          .select('id, name, lead_number, phone, mobile')
+          .eq('id', contact.newlead_id)
+          .maybeSingle();
+        if (fallbackLead) {
+          leadData = fallbackLead;
+          leadType = 'new';
+        }
+      }
+
+      return {
+        contact,
+        contactId: contact.id,
+        leadData,
+        leadType
+      };
+    }
+
+    return null;
+  } catch (error) {
+    console.error('❌ Error matching contact by phone:', error);
+    return null;
+  }
+};
+
 // WhatsApp Controller initialized
 
 // Verify webhook endpoint
@@ -122,13 +299,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     const phoneWithCountry = phoneNumber.startsWith('972') ? phoneNumber : `972${phoneNumber}`;
     const phoneWithPlus = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
     const phoneWithoutPlus = phoneNumber.replace(/^\+/, '');
-    
-    // Normalize phone numbers for comparison (handle all variations)
-    const normalizePhone = (phone) => {
-      if (!phone || phone === null || phone === '') return '';
-      return phone.replace(/\D/g, '');
-    };
-    
+
     // Create multiple variations of the incoming phone number
     const incomingNormalized = normalizePhone(phoneNumber);
     const incomingVariations = [
@@ -158,6 +329,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     
     // Find lead by normalized phone number comparison
     let lead = null;
+    let legacyLead = null;
     for (const potentialLead of allLeads) {
       const leadPhoneNormalized = normalizePhone(potentialLead.phone);
       const leadMobileNormalized = normalizePhone(potentialLead.mobile);
@@ -180,6 +352,20 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     }
 
+    // Attempt to match contact/lead relationship by contact phone if direct lead lookup failed
+    let contactId = null;
+    if (!lead) {
+      const contactMatch = await findLeadAndContactByPhone(phoneNumber, incomingVariations, incomingNormalized);
+      if (contactMatch) {
+        contactId = contactMatch.contactId;
+        if (contactMatch.leadType === 'new' && contactMatch.leadData) {
+          lead = contactMatch.leadData;
+        } else if (contactMatch.leadType === 'legacy' && contactMatch.leadData) {
+          legacyLead = contactMatch.leadData;
+        }
+      }
+    }
+
     // Find the contact profile for this phone number from webhook contacts
     const contactProfile = webhookContacts.find(contact => contact.wa_id === phoneNumber);
     const profileName = contactProfile?.profile?.name;
@@ -197,8 +383,9 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     // Determine the best sender name to use
     let senderName;
     if (lead) {
-      // For known leads, prefer the lead's name from database
       senderName = lead.name || 'Unknown Client';
+    } else if (legacyLead) {
+      senderName = legacyLead.name || 'Unknown Client';
     } else {
       // For unknown leads, try to get the WhatsApp profile name from webhook
       if (profileName) {
@@ -212,12 +399,11 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     }
 
-    // Find contact by phone number
-    let contactId = null;
-    if (lead) {
-      const isLegacyLead = lead.id && typeof lead.id === 'number';
-      const leadIdForQuery = isLegacyLead ? lead.id : lead.id;
-      
+    // Find contact by phone number if not already determined
+    if ((lead || legacyLead) && !contactId) {
+      const isLegacyLead = !!legacyLead && !lead;
+      const leadIdForQuery = isLegacyLead ? legacyLead.id : lead.id;
+
       // First, get all contacts for this lead
       let leadContactsQuery = supabase
         .from('lead_leadcontact')
@@ -291,6 +477,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     // Prepare message data - handle both known and unknown leads
     let messageData = {
       lead_id: lead ? lead.id : null, // null for unknown leads
+      legacy_id: legacyLead ? legacyLead.id : null,
       contact_id: contactId, // Add contact_id
       sender_name: senderName,
       phone_number: phoneNumber, // Store the original phone number from WhatsApp
@@ -317,6 +504,12 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         .eq('id', lead.id);
     }
 
+    const mediaOwnerIdentifier = lead
+      ? lead.id
+      : legacyLead
+        ? `legacy_${legacyLead.id}`
+        : phoneNumber;
+
     // Handle different message types
     switch (type) {
       case 'text':
@@ -331,7 +524,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         messageData.media_size = image.file_size;
         messageData.caption = image.caption;
         // Download and store image (use phone number as fallback for unknown leads)
-        await downloadAndStoreMedia(image.id, 'image', lead ? lead.id : phoneNumber);
+        await downloadAndStoreMedia(image.id, 'image', mediaOwnerIdentifier);
         break;
       
       case 'document':
@@ -342,7 +535,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         messageData.media_mime_type = document.mime_type;
         messageData.media_size = document.file_size;
         // Download and store document (use phone number as fallback for unknown leads)
-        await downloadAndStoreMedia(document.id, 'document', lead ? lead.id : phoneNumber);
+        await downloadAndStoreMedia(document.id, 'document', mediaOwnerIdentifier);
         break;
       
       case 'audio':
@@ -351,7 +544,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         messageData.media_url = audio.id; // Set media_url to WhatsApp media ID
         messageData.media_mime_type = audio.mime_type;
         messageData.media_size = audio.file_size;
-        await downloadAndStoreMedia(audio.id, 'audio', lead ? lead.id : phoneNumber);
+        await downloadAndStoreMedia(audio.id, 'audio', mediaOwnerIdentifier);
         break;
       
       case 'video':
@@ -361,7 +554,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         messageData.media_mime_type = video.mime_type;
         messageData.media_size = video.file_size;
         messageData.caption = video.caption;
-        await downloadAndStoreMedia(video.id, 'video', lead ? lead.id : phoneNumber);
+        await downloadAndStoreMedia(video.id, 'video', mediaOwnerIdentifier);
         break;
       
       case 'location':
@@ -431,6 +624,8 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     } else {
       if (lead) {
         console.log(`✅ Saved message from known lead: ${lead.name} (${phoneNumber})`);
+      } else if (legacyLead) {
+        console.log(`✅ Saved message from legacy lead: ${legacyLead.name || legacyLead.id} (${phoneNumber})`);
       } else {
         console.log(`🆕 Saved message from NEW LEAD: ${senderName} (${phoneNumber}) - This will appear on WhatsApp Leads page!`);
       }
