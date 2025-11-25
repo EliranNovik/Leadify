@@ -745,15 +745,26 @@ const updateMessageStatus = async (status) => {
 // Send WhatsApp message
 const sendMessage = async (req, res) => {
   try {
+    // Log the FULL request body first, especially templateId
+    console.log('📨 ===== SEND MESSAGE REQUEST RECEIVED =====');
+    console.log('📨 Full request body:', JSON.stringify(req.body, null, 2));
+    console.log('📨 Template ID in request:', req.body.templateId, '(type:', typeof req.body.templateId, ')');
+    console.log('📨 Is Template:', req.body.isTemplate);
+    
     console.log('📨 Received send message request:', { 
       leadId: req.body.leadId, 
       phoneNumber: req.body.phoneNumber, 
       messageLength: req.body.message?.length, 
       isTemplate: req.body.isTemplate,
       templateName: req.body.templateName,
+      templateId: req.body.templateId,
+      templateIdType: typeof req.body.templateId,
       templateParameters: req.body.templateParameters
     });
-    const { leadId, message, phoneNumber, isTemplate, templateName, templateLanguage, templateParameters, contactId } = req.body;
+    const { leadId, message, phoneNumber, isTemplate, templateName, templateLanguage, templateParameters, templateId, contactId } = req.body;
+    
+    // Log immediately after destructuring
+    console.log('🔍 After destructuring - templateId:', templateId, '(type:', typeof templateId, ')');
 
     // Validate inputs: for templates, message is optional (only required if template has parameters)
     if (!phoneNumber) {
@@ -855,10 +866,30 @@ const sendMessage = async (req, res) => {
       let messagePayload;
       
       if (isTemplate) {
+        // If templateId is provided, fetch template details from database
+        let finalTemplateName = templateName;
+        let finalTemplateLanguage = templateLanguage;
+        
+        if (templateId) {
+          const { data: template, error: templateError } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('name360, language')
+            .eq('id', templateId)
+            .single();
+          
+          if (!templateError && template) {
+            finalTemplateName = template.name360 || templateName;
+            finalTemplateLanguage = template.language || templateLanguage || 'en_US';
+            console.log(`📱 Found template by ID ${templateId}: ${finalTemplateName} (${finalTemplateLanguage})`);
+          } else {
+            console.warn(`⚠️ Template with ID ${templateId} not found, using provided templateName`);
+          }
+        }
+        
         console.log('📱 Sending TEMPLATE message');
-        console.log('📱 Template Name:', templateName);
-        console.log('📱 Template Language:', templateLanguage);
-        console.log('📱 Template Language Code:', templateLanguage || 'en_US');
+        console.log('📱 Template ID:', templateId);
+        console.log('📱 Template Name:', finalTemplateName);
+        console.log('📱 Template Language:', finalTemplateLanguage);
         console.log('📱 Template Parameters:', templateParameters);
         
         // Send template message
@@ -867,9 +898,9 @@ const sendMessage = async (req, res) => {
           to: phoneNumber,
           type: 'template',
           template: {
-            name: templateName || 'second_test',
+            name: finalTemplateName || 'second_test',
             language: {
-              code: templateLanguage || 'en_US'
+              code: finalTemplateLanguage || 'en_US'
             }
           }
         };
@@ -887,7 +918,7 @@ const sendMessage = async (req, res) => {
         } else {
           // No parameters provided - check if this template needs parameters based on template name
           // If template is "missed_appointment", it needs 2 parameters
-          if (templateName === 'missed_appointment') {
+          if (finalTemplateName === 'missed_appointment') {
             console.log('📱 No params provided for missed_appointment - sending 2 default parameters');
             messagePayload.template.components = [
               {
@@ -934,6 +965,18 @@ const sendMessage = async (req, res) => {
       };
     }
 
+    // Convert templateId to number if provided (ensure correct data type for database)
+    let finalTemplateId = null;
+    if (isTemplate && templateId !== undefined && templateId !== null) {
+      finalTemplateId = Number(templateId);
+      if (isNaN(finalTemplateId)) {
+        console.warn(`⚠️ Invalid templateId provided: ${templateId}, saving as null`);
+        finalTemplateId = null;
+      } else {
+        console.log(`✅ Template ID converted to number: ${finalTemplateId} (original: ${templateId})`);
+      }
+    }
+
     // Save message to database
     const messageData = {
       lead_id: leadId === null ? null : (isLegacyLead ? null : leadId), // Set to null for new WhatsApp leads and legacy leads
@@ -943,6 +986,7 @@ const sendMessage = async (req, res) => {
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
       message: isTemplate ? `[Template: ${templateName}] ${templateParameters?.[0]?.text || ''}` : message,
+      template_id: finalTemplateId, // Store template ID for proper matching (converted to number)
       sent_at: new Date().toISOString(),
       whatsapp_message_id: whatsappMessageId,
       whatsapp_status: 'pending', // Start as pending, will be updated by webhook
@@ -950,17 +994,53 @@ const sendMessage = async (req, res) => {
       whatsapp_timestamp: new Date().toISOString()
     };
 
-    // Log the message data being saved
+    // Log the message data being saved (with special emphasis on template_id)
     console.log('💾 Saving message to database:', JSON.stringify(messageData, null, 2));
+    console.log(`📌 Template ID being saved: ${finalTemplateId} (isTemplate: ${isTemplate}, templateId from request: ${templateId})`);
     
-    const { error: insertError } = await supabase
+    // CRITICAL: Log exactly what we're about to insert
+    console.log('💾 ===== ABOUT TO INSERT MESSAGE =====');
+    console.log('💾 Message data object:', JSON.stringify(messageData, null, 2));
+    console.log('💾 Template ID value:', messageData.template_id, '(type:', typeof messageData.template_id, ')');
+    console.log('💾 Final Template ID variable:', finalTemplateId, '(type:', typeof finalTemplateId, ')');
+    
+    const { data: insertedData, error: insertError } = await supabase
       .from('whatsapp_messages')
-      .insert([messageData]);
+      .insert([messageData])
+      .select('id, template_id, whatsapp_message_id'); // Select back the inserted data to verify template_id was saved
 
     if (insertError) {
+      console.error('❌ ===== INSERT ERROR =====');
       console.error('❌ Error saving outgoing message:', insertError);
       console.error('❌ Error details:', JSON.stringify(insertError, null, 2));
+      console.error('❌ Message data that failed:', JSON.stringify(messageData, null, 2));
       return res.status(500).json({ error: 'Failed to save message', details: insertError.message });
+    }
+
+    // Verify template_id was saved correctly
+    console.log('✅ ===== INSERT RESULT =====');
+    console.log('✅ Inserted data returned:', JSON.stringify(insertedData, null, 2));
+    
+    if (insertedData && insertedData.length > 0) {
+      const savedMessage = insertedData[0];
+      console.log(`✅ Message saved successfully. ID: ${savedMessage.id}, WhatsApp Message ID: ${savedMessage.whatsapp_message_id}`);
+      console.log(`✅ Template ID saved in database: ${savedMessage.template_id} (expected: ${finalTemplateId})`);
+      
+      if (isTemplate && finalTemplateId !== null) {
+        if (savedMessage.template_id === null || savedMessage.template_id === undefined) {
+          console.error(`❌ CRITICAL ERROR: Template ID is NULL in database but should be ${finalTemplateId}!`);
+          console.error(`❌ This indicates the insert failed to save template_id. Check database constraints.`);
+        } else if (savedMessage.template_id !== finalTemplateId) {
+          console.error(`⚠️ WARNING: Template ID mismatch! Expected: ${finalTemplateId}, Saved: ${savedMessage.template_id}`);
+        } else {
+          console.log(`✅ SUCCESS: Template ID correctly saved as ${savedMessage.template_id}`);
+        }
+      } else if (isTemplate && finalTemplateId === null) {
+        console.warn(`⚠️ Template message but templateId is null - this might be expected if templateId was not provided`);
+      }
+    } else {
+      console.error('❌ CRITICAL: Message inserted but no data returned from insert operation!');
+      console.error('❌ This means we cannot verify if template_id was saved.');
     }
 
     console.log('✅ Message sent successfully:', responseData);

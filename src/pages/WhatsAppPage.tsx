@@ -73,6 +73,7 @@ interface WhatsAppMessage {
   whatsapp_status?: 'sent' | 'delivered' | 'read' | 'failed';
   whatsapp_timestamp?: string;
   error_message?: string;
+  template_id?: number; // Database template ID for proper matching
 }
 
 interface WhatsAppPageProps {
@@ -200,13 +201,56 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       return message;
     }
 
+    // PRIORITY 1: Match by template_id if available (most reliable)
+    if (message.template_id) {
+      // Convert both to numbers for comparison (handle string/number mismatch)
+      const templateId = Number(message.template_id);
+      const template = templates.find(t => Number(t.id) === templateId);
+      if (template) {
+        // Check if message already has the correct template content (avoid unnecessary processing)
+        if (template.content && message.message === template.content) {
+          return message; // Already correct, no need to process
+        }
+        
+        console.log(`✅ Matched template by ID ${templateId}: ${template.title} (${template.language || 'N/A'})`);
+        if (template.params === '0' && template.content) {
+          return { ...message, message: template.content };
+        } else if (template.params === '1') {
+          // For templates with params, try to extract parameter from message or show template name
+          const paramMatch = message.message.match(/\[Template:.*?\]\s*(.+)/);
+          if (paramMatch && paramMatch[1].trim()) {
+            return { ...message, message: paramMatch[1].trim() };
+          }
+          return { ...message, message: template.content || `Template: ${template.title}` };
+        }
+      } else {
+        console.warn(`⚠️ Template with ID ${templateId} not found in templates list. Available IDs:`, templates.map(t => t.id));
+      }
+    }
+
     // Quick check: if message already matches a template content, no processing needed
-    const isAlreadyProperlyFormatted = templates.some(template => 
-      template.content && message.message === template.content
-    );
+    // This prevents reprocessing messages that are already correctly formatted
+    const isAlreadyProperlyFormatted = templates.some(template => {
+      if (!template.content) return false;
+      // Exact match
+      if (message.message === template.content) return true;
+      // Also check if message contains the template content (for messages with extra formatting)
+      if (message.message.includes(template.content) && template.content.length > 20) return true;
+      return false;
+    });
     
     if (isAlreadyProperlyFormatted) {
-      return message;
+      // If it has template_id, make sure it matches the template we found
+      if (message.template_id) {
+        const matchingTemplate = templates.find(t => 
+          t.content && (message.message === t.content || message.message.includes(t.content))
+        );
+        if (matchingTemplate && Number(matchingTemplate.id) === Number(message.template_id)) {
+          return message; // Correct template, no processing needed
+        }
+      } else {
+        return message; // Already formatted correctly, no template_id needed
+      }
     }
     
     // Quick check for template patterns (most messages won't match, so check early)
@@ -223,6 +267,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       return message; // Early return for non-template messages
     }
 
+    // PRIORITY 2: Fallback to name matching for backward compatibility (legacy messages without template_id)
     // Process template message (only if we get here)
     // Try to find the template by looking for template info in the message
     const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 
@@ -934,6 +979,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
         
         // Process template messages for display (batch process for better performance)
+        // Log template_id presence for debugging
+        if (!isPolling && data && data.length > 0) {
+          const messagesWithTemplateId = data.filter((m: any) => m.template_id);
+          if (messagesWithTemplateId.length > 0) {
+            console.log(`📋 Found ${messagesWithTemplateId.length} messages with template_id:`, 
+              messagesWithTemplateId.map((m: any) => ({ id: m.id, template_id: m.template_id, message: m.message?.substring(0, 50) }))
+            );
+          }
+        }
         const processedMessages = (data || []).map(processTemplateMessage);
         
         // Always update messages immediately on initial load
@@ -952,7 +1006,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           setMessages(prevMessages => {
             // Quick length check first
             if (processedMessages.length !== prevMessages.length) {
-              return processedMessages;
+              // Merge template_id from previous messages if missing in new messages
+              return processedMessages.map(newMsg => {
+                const prevMsg = prevMessages.find(p => p.id === newMsg.id || p.whatsapp_message_id === newMsg.whatsapp_message_id);
+                if (prevMsg && prevMsg.template_id && !newMsg.template_id) {
+                  return { ...newMsg, template_id: prevMsg.template_id };
+                }
+                return newMsg;
+              });
             }
             
             // Deep comparison only if lengths match
@@ -964,7 +1025,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                      newMsg.whatsapp_status !== prevMsg.whatsapp_status;
             });
             
-            return hasChanges ? processedMessages : prevMessages;
+            if (hasChanges) {
+              // Merge template_id from previous messages if missing in new messages
+              return processedMessages.map(newMsg => {
+                const prevMsg = prevMessages.find(p => p.id === newMsg.id || p.whatsapp_message_id === newMsg.whatsapp_message_id);
+                if (prevMsg && prevMsg.template_id && !newMsg.template_id) {
+                  // Re-process with the preserved template_id
+                  return processTemplateMessage({ ...newMsg, template_id: prevMsg.template_id });
+                }
+                return newMsg;
+              });
+            }
+            
+            return prevMessages;
           });
         }
         
@@ -1480,8 +1553,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       // Check if we should send as template message
       if (selectedTemplate) {
         messagePayload.isTemplate = true;
+        // Ensure templateId is sent as a number (not string) for proper database storage
+        messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
         messagePayload.templateLanguage = selectedTemplate.language || 'en_US'; // Use template's language
+        
+        // Debug log to verify templateId is being sent
+        console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
         
         // Only add parameters if the template requires them
         if (selectedTemplate.params === '1') {
@@ -1512,7 +1590,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       console.log('📤 Sending message payload:', messagePayload);
       
       // Send message via WhatsApp API
-      const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
+      const apiUrl = buildApiUrl('/api/whatsapp/send-message');
+      console.log('🌐 API URL:', apiUrl);
+      console.log('📤 Request payload:', JSON.stringify(messagePayload, null, 2));
+      
+      const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1520,9 +1602,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         body: JSON.stringify(messagePayload),
       });
 
+      console.log('📥 Response status:', response.status, response.statusText);
+      console.log('📥 Response headers:', Object.fromEntries(response.headers.entries()));
+      
       const result = await response.json();
+      console.log('📥 Response body:', JSON.stringify(result, null, 2));
 
       if (!response.ok) {
+        console.error('❌ API request failed:', {
+          status: response.status,
+          statusText: response.statusText,
+          result: result
+        });
         if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
           throw new Error('⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity. The customer needs to reply first to reset the timer.');
         }
@@ -1531,7 +1622,42 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
         throw new Error(result.error || 'Failed to send message');
       }
-
+      
+      console.log('✅ API request successful. Message ID:', result.messageId);
+      
+      // Immediately after sending, fetch the message from database to verify template_id was saved
+      if (result.messageId) {
+        console.log('🔍 Verifying template_id was saved in database...');
+        setTimeout(async () => {
+          try {
+            const { data: savedMessage, error: fetchError } = await supabase
+              .from('whatsapp_messages')
+              .select('id, template_id, whatsapp_message_id, message')
+              .eq('whatsapp_message_id', result.messageId)
+              .single();
+            
+            if (fetchError) {
+              console.error('❌ Error fetching saved message:', fetchError);
+            } else if (savedMessage) {
+              console.log('🔍 Message fetched from database:', {
+                id: savedMessage.id,
+                whatsapp_message_id: savedMessage.whatsapp_message_id,
+                template_id: savedMessage.template_id,
+                message: savedMessage.message?.substring(0, 50)
+              });
+              if (selectedTemplate && savedMessage.template_id === null) {
+                console.error('❌ CRITICAL: template_id is NULL in database! Expected:', selectedTemplate.id);
+                console.error('❌ This means the backend did not save template_id. Check backend logs on Render.com');
+              } else if (selectedTemplate && savedMessage.template_id == selectedTemplate.id) {
+                console.log('✅ SUCCESS: template_id was saved correctly:', savedMessage.template_id);
+              }
+            }
+          } catch (error) {
+            console.error('❌ Error verifying message:', error);
+          }
+        }, 2000); // Wait 2 seconds for database to be updated
+      }
+      
       // Add message to local state
       console.log('📤 Sending message with sender:', senderName, 'from user:', currentUser);
       
@@ -1561,8 +1687,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         status: 'sent',
         message_type: 'text',
         whatsapp_status: 'sent',
-        whatsapp_message_id: result.messageId
+        whatsapp_message_id: result.messageId,
+        template_id: selectedTemplate?.id || undefined // Include template_id for proper matching
       };
+      
+      console.log('💾 Creating local message object:', {
+        id: newMsg.id,
+        whatsapp_message_id: newMsg.whatsapp_message_id,
+        template_id: newMsg.template_id,
+        message: newMsg.message?.substring(0, 50)
+      });
 
       setMessages(prev => [...prev, newMsg]);
       setShouldAutoScroll(true); // Trigger auto-scroll when new message is sent

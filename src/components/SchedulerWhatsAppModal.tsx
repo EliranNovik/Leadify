@@ -263,6 +263,23 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // Process template messages for display
   const processTemplateMessage = (message: WhatsAppMessage): WhatsAppMessage => {
     if (message.direction === 'out' && message.message) {
+      // PRIORITY 1: Match by template_id if available (most reliable)
+      if ((message as any).template_id) {
+        const template = templates.find(t => t.id === (message as any).template_id);
+        if (template) {
+          if (template.params === '0' && template.content) {
+            return { ...message, message: template.content };
+          } else if (template.params === '1') {
+            // For templates with params, try to extract parameter from message or show template name
+            const paramMatch = message.message.match(/\[Template:.*?\]\s*(.+)/);
+            if (paramMatch && paramMatch[1].trim()) {
+              return { ...message, message: paramMatch[1].trim() };
+            }
+            return { ...message, message: template.content || `Template: ${template.title}` };
+          }
+        }
+      }
+
       const isAlreadyProperlyFormatted = templates.some(template => 
         template.content && message.message === template.content
       );
@@ -281,6 +298,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         message.message === 'Template sent';
 
       if (needsProcessing) {
+        // PRIORITY 2: Fallback to name matching for backward compatibility (legacy messages without template_id)
         const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 
                               message.message.match(/Template:\s*(.+)/);
         if (templateMatch) {
@@ -811,8 +829,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
       if (selectedTemplate) {
         messagePayload.isTemplate = true;
+        // Ensure templateId is sent as a number (not string) for proper database storage
+        messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
         messagePayload.templateLanguage = selectedTemplate.language || 'en_US';
+        
+        // Debug log to verify templateId is being sent
+        console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
         
         if (selectedTemplate.params === '1') {
           messagePayload.templateParameters = [

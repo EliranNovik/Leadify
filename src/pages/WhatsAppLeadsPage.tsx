@@ -685,8 +685,13 @@ const WhatsAppLeadsPage: React.FC = () => {
       // Check if we should send as template message
       if (selectedTemplate) {
         messagePayload.isTemplate = true;
+        // Ensure templateId is sent as a number (not string) for proper database storage
+        messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
         messagePayload.templateLanguage = selectedTemplate.language || 'en_US'; // Use template's language
+        
+        // Debug log to verify templateId is being sent
+        console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
         
         // Only add parameters if the template requires them
         if (selectedTemplate.params === '1' && newMessage.trim()) {
@@ -1644,12 +1649,31 @@ const WhatsAppLeadsPage: React.FC = () => {
       id: message.id,
       direction: message.direction,
       message: message.message,
+      template_id: message.template_id,
       messageType: message.message_type,
       whatsappMessageId: message.whatsapp_message_id
     });
 
     // Check if this is a template message that needs processing
     if (message.direction === 'out' && message.message) {
+      // PRIORITY 1: Match by template_id if available (most reliable)
+      if (message.template_id) {
+        const template = templates.find(t => t.id === message.template_id);
+        if (template) {
+          console.log('✅ Found template by ID (Leads):', template.id, template.title);
+          if (template.params === '0' && template.content) {
+            return { ...message, message: template.content };
+          } else if (template.params === '1') {
+            // For templates with params, try to extract parameter from message or show template name
+            const paramMatch = message.message.match(/\[Template:.*?\]\s*(.+)/);
+            if (paramMatch && paramMatch[1].trim()) {
+              return { ...message, message: paramMatch[1].trim() };
+            }
+            return { ...message, message: template.content || `Template: ${template.title}` };
+          }
+        }
+      }
+
       // First, check if the message is already properly formatted (contains actual template content)
       const isAlreadyProperlyFormatted = templates.some(template => 
         template.content && message.message === template.content
@@ -1673,6 +1697,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       if (needsProcessing) {
         console.log('📋 Found template message that needs processing (Leads)...');
         
+        // PRIORITY 2: Fallback to name matching for backward compatibility (legacy messages without template_id)
         // Try to find the template by looking for template info in the message
         // First try bracket format, then regular format
         const templateMatch = message.message.match(/\[Template:\s*([^\]]+)\]/) || 

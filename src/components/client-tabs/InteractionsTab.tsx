@@ -51,12 +51,19 @@ import {
 import { useAuthContext } from '../../contexts/AuthContext';
 import { fetchLeadContacts } from '../../lib/contactHelpers';
 import type { ContactInfo } from '../../lib/contactHelpers';
+import { fetchWhatsAppTemplates, type WhatsAppTemplate } from '../../lib/whatsappTemplates';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
 
 const sanitizeEmailForFilter = (value: string) =>
   value.replace(/[^a-z0-9@._+!~-]/g, '');
+
+// Helper function to detect Hebrew/RTL characters
+const containsRTL = (text?: string | null) => !!text && /[\u0590-\u05FF]/.test(text);
+
+// Helper function to get text direction based on content
+const getTextDirection = (text?: string | null) => containsRTL(text) ? 'rtl' : 'ltr';
 
 const collectClientEmails = (client: any): string[] => {
   const emails: string[] = [];
@@ -749,6 +756,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // 1. Add state for WhatsApp messages from DB
   const [whatsAppMessages, setWhatsAppMessages] = useState<any[]>([]);
   
+  // WhatsApp templates state
+  const [whatsAppTemplates, setWhatsAppTemplates] = useState<WhatsAppTemplate[]>([]);
+  
   // Emoji picker state
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   
@@ -926,6 +936,60 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const renderedInteractions = useMemo(
     () =>
       visibleInteractions.map((row) => {
+        // Process WhatsApp messages with templates
+        if (row.kind === 'whatsapp' && row.direction === 'out' && whatsAppTemplates.length > 0) {
+          let processedContent = row.content || '';
+          
+          // PRIORITY 1: Match by template_id if available (most reliable)
+          const templateId = (row as any).template_id;
+          if (templateId) {
+            const templateIdNum = Number(templateId);
+            const template = whatsAppTemplates.find(t => Number(t.id) === templateIdNum);
+            if (template) {
+              if (template.params === '0' && template.content) {
+                processedContent = template.content;
+              } else if (template.params === '1') {
+                const paramMatch = row.content?.match(/\[Template:.*?\]\s*(.+)/);
+                if (paramMatch && paramMatch[1].trim()) {
+                  processedContent = paramMatch[1].trim();
+                } else {
+                  processedContent = template.content || processedContent;
+                }
+              }
+              return { ...row, content: processedContent };
+            }
+          }
+          
+          // PRIORITY 2: Fallback to name matching for backward compatibility
+          if (processedContent.includes('[Template:') || processedContent.includes('Template:') || processedContent.includes('TEMPLATE_MARKER:')) {
+            const templateMatch = processedContent.match(/\[Template:\s*([^\]]+)\]/) || 
+                                  processedContent.match(/Template:\s*(.+)/) ||
+                                  processedContent.match(/TEMPLATE_MARKER:(.+)/);
+            
+            if (templateMatch) {
+              const templateTitle = templateMatch[1].trim().replace(/\]$/, '');
+              const template = whatsAppTemplates.find(t => 
+                t.title.toLowerCase() === templateTitle.toLowerCase() ||
+                (t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase())
+              );
+              
+              if (template) {
+                if (template.params === '0' && template.content) {
+                  processedContent = template.content;
+                } else if (template.params === '1') {
+                  const paramMatch = row.content?.match(/\[Template:.*?\]\s*(.+)/);
+                  if (paramMatch && paramMatch[1].trim()) {
+                    processedContent = paramMatch[1].trim();
+                  } else {
+                    processedContent = template.content || processedContent;
+                  }
+                }
+                return { ...row, content: processedContent };
+              }
+            }
+          }
+        }
+        
         if (row.kind !== 'email') {
           return row;
         }
@@ -957,7 +1021,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           renderedContentFallback: sanitizedBase,
         };
       }),
-    [visibleInteractions]
+    [visibleInteractions, whatsAppTemplates] // Include templates in dependencies
   );
   const lastEmailIdx = useMemo(() => 
     sortedInteractions.map(row => row.kind).lastIndexOf('email'),
@@ -1721,9 +1785,61 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
       if (!options?.bypassCache && cacheForLead) {
         console.log('✅ InteractionsTab using cached interactions for lead:', cacheForLead.leadId);
-        const cachedInteractions = cacheForLead.interactions || [];
+        let cachedInteractions = cacheForLead.interactions || [];
         const cachedWhatsAppCount = cachedInteractions.filter((i: any) => i.kind === 'whatsapp').length;
         console.log(`📊 Cached interactions: ${cachedInteractions.length} total, ${cachedWhatsAppCount} WhatsApp messages`);
+        
+        // Process cached WhatsApp messages with templates if templates are available
+        if (whatsAppTemplates.length > 0 && cachedWhatsAppCount > 0) {
+          console.log('🔄 Processing cached WhatsApp messages with templates...');
+          cachedInteractions = cachedInteractions.map((interaction: any) => {
+            if (interaction.kind === 'whatsapp' && interaction.direction === 'out') {
+              // Process template messages from cache
+              const templateId = interaction.template_id;
+              if (templateId) {
+                const templateIdNum = Number(templateId);
+                const template = whatsAppTemplates.find(t => Number(t.id) === templateIdNum);
+                if (template && template.content) {
+                  if (template.params === '0') {
+                    return { ...interaction, content: template.content };
+                  } else if (template.params === '1') {
+                    const paramMatch = interaction.content?.match(/\[Template:.*?\]\s*(.+)/);
+                    if (paramMatch && paramMatch[1].trim()) {
+                      return { ...interaction, content: paramMatch[1].trim() };
+                    }
+                    return { ...interaction, content: template.content };
+                  }
+                }
+              }
+              
+              // Fallback to name matching
+              const templateMatch = interaction.content?.match(/\[Template:\s*([^\]]+)\]/) || 
+                                    interaction.content?.match(/Template:\s*(.+)/) ||
+                                    interaction.content?.match(/TEMPLATE_MARKER:(.+)/);
+              
+              if (templateMatch) {
+                const templateTitle = templateMatch[1].trim().replace(/\]$/, '');
+                const template = whatsAppTemplates.find(t => 
+                  t.title.toLowerCase() === templateTitle.toLowerCase() ||
+                  (t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase())
+                );
+                if (template && template.content) {
+                  if (template.params === '0') {
+                    return { ...interaction, content: template.content };
+                  } else if (template.params === '1') {
+                    const paramMatch = interaction.content?.match(/\[Template:.*?\]\s*(.+)/);
+                    if (paramMatch && paramMatch[1].trim()) {
+                      return { ...interaction, content: paramMatch[1].trim() };
+                    }
+                    return { ...interaction, content: template.content };
+                  }
+                }
+              }
+            }
+            return interaction;
+          });
+          console.log('✅ Processed cached WhatsApp messages with templates');
+        }
         
         if (!isMountedRef.current) return;
         setInteractions(cachedInteractions);
@@ -1780,7 +1896,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             try {
               let query = supabase
                 .from('whatsapp_messages')
-                .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number')
+                .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id')
                 .limit(FETCH_BATCH_SIZE);
               
               if (isLegacyLead) {
@@ -1886,6 +2002,87 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           console.log(`✅ Fetched ${whatsAppResult.data?.length || 0} WhatsApp messages for interactions tab`);
         }
 
+        // Process WhatsApp messages with template content
+        const processTemplateMessage = (msg: any): string => {
+          let processedMessage = msg.message || '';
+          
+          // If templates aren't loaded yet, return original message
+          if (whatsAppTemplates.length === 0) {
+            console.log('⚠️ Templates not loaded yet, skipping template processing for message:', msg.id);
+            return processedMessage;
+          }
+          
+          // PRIORITY 1: Match by template_id if available (most reliable)
+          if (msg.template_id) {
+            const templateId = Number(msg.template_id);
+            const template = whatsAppTemplates.find(t => Number(t.id) === templateId);
+            if (template) {
+              console.log(`✅ Matched template by ID ${templateId}: ${template.title} (${template.language || 'N/A'})`);
+              if (template.params === '0' && template.content) {
+                processedMessage = template.content;
+              } else if (template.params === '1') {
+                // For templates with params, try to extract parameter from message
+                const paramMatch = msg.message?.match(/\[Template:.*?\]\s*(.+)/);
+                if (paramMatch && paramMatch[1].trim()) {
+                  processedMessage = paramMatch[1].trim();
+                } else {
+                  processedMessage = template.content || processedMessage;
+                }
+              }
+              return processedMessage;
+            } else {
+              console.warn(`⚠️ Template with ID ${templateId} not found. Available IDs:`, whatsAppTemplates.map(t => t.id));
+            }
+          }
+          
+          // PRIORITY 2: Fallback to name matching for backward compatibility (legacy messages without template_id)
+          if (msg.direction === 'out' && msg.message) {
+            // Check if message already matches a template content
+            const isAlreadyProperlyFormatted = whatsAppTemplates.some(template => 
+              template.content && msg.message === template.content
+            );
+            
+            if (isAlreadyProperlyFormatted) {
+              return processedMessage;
+            }
+            
+            // Try to find template by name in the message
+            const templateMatch = msg.message.match(/\[Template:\s*([^\]]+)\]/) || 
+                                  msg.message.match(/Template:\s*(.+)/) ||
+                                  msg.message.match(/TEMPLATE_MARKER:(.+)/);
+            
+            if (templateMatch) {
+              const templateTitle = templateMatch[1].trim().replace(/\]$/, '');
+              console.log(`🔍 Looking for template by name: "${templateTitle}"`);
+              
+              // Try case-insensitive matching on title and name360
+              const template = whatsAppTemplates.find(t => 
+                t.title.toLowerCase() === templateTitle.toLowerCase() ||
+                (t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase())
+              );
+              
+              if (template) {
+                console.log(`✅ Matched template by name "${templateTitle}": ${template.title} (${template.language || 'N/A'})`);
+                if (template.params === '0' && template.content) {
+                  processedMessage = template.content;
+                } else if (template.params === '1') {
+                  // For templates with params, try to extract parameter from message
+                  const paramMatch = msg.message.match(/\[Template:.*?\]\s*(.+)/);
+                  if (paramMatch && paramMatch[1].trim()) {
+                    processedMessage = paramMatch[1].trim();
+                  } else {
+                    processedMessage = template.content || processedMessage;
+                  }
+                }
+              } else {
+                console.warn(`⚠️ Template with name "${templateTitle}" not found. Available names:`, whatsAppTemplates.map(t => t.title || t.name360));
+              }
+            }
+          }
+          
+          return processedMessage;
+        };
+
         const [whatsAppDbMessages, callLogInteractions, legacyInteractions] = [
           // Process WhatsApp messages
           (whatsAppResult.data || []).map((msg: any) => {
@@ -1899,6 +2096,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               return null;
             }
             
+            // Process template message to get actual content
+            const processedContent = processTemplateMessage(msg);
+            
+            // Log if template processing occurred
+            if (msg.message !== processedContent && msg.direction === 'out') {
+              console.log(`✅ Template processed for message ${msg.id}:`, {
+                original: msg.message?.substring(0, 50),
+                processed: processedContent?.substring(0, 50),
+                template_id: msg.template_id
+              });
+            }
+            
             return {
               id: msg.id,
               date: sentAtDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
@@ -1908,13 +2117,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               direction: msg.direction || 'in',
               kind: 'whatsapp',
               length: '',
-              content: msg.message || '',
+              content: processedContent,
               observation: msg.error_message || '',
               editable: false,
               status: msg.whatsapp_status || 'sent',
               error_message: msg.error_message,
               contact_id: msg.contact_id || null,
               phone_number: msg.phone_number || null,
+              template_id: msg.template_id || null,
             };
           }).filter((msg: any) => msg !== null),
 
@@ -2114,6 +2324,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       currentUserFullName,
       onInteractionCountUpdate,
       onInteractionsCacheUpdate,
+      whatsAppTemplates, // Include templates so messages are reprocessed when templates load
     ]
   );
 
@@ -2197,11 +2408,62 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     loadContacts();
   }, [client?.id, client?.lead_type]);
 
+  // Fetch WhatsApp templates on component mount
+  useEffect(() => {
+    const loadTemplates = async () => {
+      try {
+        const templates = await fetchWhatsAppTemplates();
+        setWhatsAppTemplates(templates);
+        console.log(`✅ Loaded ${templates.length} WhatsApp templates for interactions tab:`, templates.map(t => ({ id: t.id, name: t.title || t.name360, language: t.language })));
+        
+        // If interactions are already loaded, trigger a re-fetch to process templates
+        // Use setTimeout to ensure state is updated and ref is available
+        setTimeout(() => {
+          if (interactions.length > 0) {
+            console.log('🔄 Templates loaded, reprocessing interactions to apply template content...');
+            if (fetchInteractionsRef.current) {
+              fetchInteractionsRef.current({ bypassCache: true });
+            }
+          }
+        }, 200);
+      } catch (error) {
+        console.error('Error fetching WhatsApp templates:', error);
+        setWhatsAppTemplates([]);
+      }
+    };
+    
+    loadTemplates();
+  }, []);
+
   const fetchInteractionsRef = useRef<typeof fetchInteractions | null>(null);
   useEffect(() => {
     fetchInteractionsRef.current = fetchInteractions;
     console.log('✅ fetchInteractionsRef updated');
   }, [fetchInteractions]);
+
+  // Reprocess interactions when templates become available
+  useEffect(() => {
+    if (whatsAppTemplates.length > 0 && interactions.length > 0) {
+      // Check if any WhatsApp interactions need template processing
+      const whatsappInteractions = interactions.filter((i: any) => i.kind === 'whatsapp' && i.direction === 'out');
+      const needsProcessing = whatsappInteractions.some((interaction: any) => 
+        interaction.content?.includes('[Template:') || 
+        interaction.content?.includes('Template:') || 
+        interaction.content?.includes('TEMPLATE_MARKER:')
+      );
+      
+      if (needsProcessing) {
+        console.log('🔄 Templates are available, reprocessing WhatsApp interactions to apply template content...');
+        // Use a delay to avoid infinite loops and ensure everything is ready
+        const timeoutId = setTimeout(() => {
+          if (fetchInteractionsRef.current) {
+            fetchInteractionsRef.current({ bypassCache: true });
+          }
+        }, 300);
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [whatsAppTemplates.length]); // Only depend on templates length, not interactions to avoid loops
 
 
   const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview: string }[]) => {
@@ -3426,14 +3688,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                         
                           {/* Content section - hide content for calls since status is shown in badge */}
                           {row.content && row.kind !== 'call' && (
-                            <div className="text-sm sm:text-base text-gray-700 break-words mb-4">
+                            <div 
+                              className="text-sm sm:text-base text-gray-700 break-words mb-4"
+                              dir={getTextDirection(row.content)}
+                              style={{ 
+                                textAlign: containsRTL(row.content) ? 'right' : 'left',
+                                lineHeight: '1.6'
+                              }}
+                            >
                               {/* Subject in bold with colon, then body with spacing */}
                               {row.subject ? (
                                 <>
-                                  <div className="font-bold text-base sm:text-lg mb-2 text-gray-900">{row.subject}</div>
+                                  <div 
+                                    className="font-bold text-base sm:text-lg mb-2 text-gray-900"
+                                    dir={getTextDirection(row.subject)}
+                                    style={{ textAlign: containsRTL(row.subject) ? 'right' : 'left' }}
+                                  >
+                                    {row.subject}
+                                  </div>
                                   <div 
                                     className="max-w-none whitespace-pre-wrap overflow-visible"
                                     style={{ lineHeight: '1.6', maxHeight: 'none' }}
+                                    dir={getTextDirection(row.content)}
                                     dangerouslySetInnerHTML={{ 
                                       __html: row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')
                                     }} 
@@ -3443,6 +3719,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 <div 
                                   className="max-w-none whitespace-pre-wrap overflow-visible"
                                   style={{ lineHeight: '1.6', maxHeight: 'none' }}
+                                  dir={getTextDirection(row.content)}
                                   dangerouslySetInnerHTML={{ 
                                     __html: row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')
                                   }} 
