@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { appendEmailSignature } from '../lib/emailSignature';
 import sanitizeHtml from 'sanitize-html';
@@ -315,6 +315,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isManuallySettingContactIdRef = useRef(false);
+  const currentLoadingContactIdRef = useRef<string | number | null>(null);
+  const isFetchingRef = useRef(false);
+  const isSettingUpContactRef = useRef(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>('');
   const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; lastSync?: string | null; error?: string | null }>({
@@ -1168,13 +1171,28 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   const fetchEmailThread = useCallback(async () => {
     if (!selectedContact) {
+      currentLoadingContactIdRef.current = null;
+      isFetchingRef.current = false;
       setEmailThread([]);
       setIsLoading(false);
       return;
     }
 
+    // Prevent duplicate fetches
+    if (isFetchingRef.current) {
+      console.log(`⏭️ Skipping duplicate fetch for contact: ${selectedContact.name} (ID: ${selectedContact.id})`);
+      return;
+    }
+
+    // Track which contact we're loading for
+    const loadingContactId = selectedContact.id;
+    const loadingContactIdKey = `${loadingContactId}-${selectedContactId}`;
+    currentLoadingContactIdRef.current = loadingContactId;
+    isFetchingRef.current = true;
+
     console.log(`🔄 Fetching email thread for contact: ${selectedContact.name} (ID: ${selectedContact.id}), contactId: ${selectedContactId}`);
     
+    // Clear thread immediately to prevent showing old emails
     setEmailThread([]);
     setIsLoading(true);
     
@@ -1347,6 +1365,43 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           ? sanitizeEmailHtml(cleanedPreview)
           : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(convertBodyToHtml(fallbackText)) : null);
 
+        // Parse attachments from JSONB - it might be a string or already an array
+        let parsedAttachments: any[] = [];
+        if (row.attachments) {
+          try {
+            // If it's a string, parse it
+            if (typeof row.attachments === 'string') {
+              parsedAttachments = JSON.parse(row.attachments);
+            } 
+            // If it's already an array, use it directly
+            else if (Array.isArray(row.attachments)) {
+              parsedAttachments = row.attachments;
+            }
+            // If it's an object with a value property (Graph API format), extract the array
+            else if (row.attachments.value && Array.isArray(row.attachments.value)) {
+              parsedAttachments = row.attachments.value;
+            }
+            // If it's a single object, wrap it in an array
+            else if (typeof row.attachments === 'object') {
+              parsedAttachments = [row.attachments];
+            }
+          } catch (e) {
+            console.error('Error parsing attachments:', e, row.attachments);
+            parsedAttachments = [];
+          }
+        }
+        
+        // Filter out inline attachments that shouldn't be displayed as separate attachments
+        parsedAttachments = parsedAttachments.filter((att: any) => {
+          // Only show non-inline attachments or if isInline is false/undefined
+          return att && !att.isInline && att.name;
+        });
+        
+        // Debug log for attachments
+        if (parsedAttachments.length > 0) {
+          console.log(`📎 Parsed ${parsedAttachments.length} attachments for email ${row.id}:`, parsedAttachments.map((a: any) => ({ name: a.name, size: a.size, hasId: !!a.id, hasContentBytes: !!a.contentBytes })));
+        }
+
         return {
           id: row.message_id || row.id?.toString?.() || `email_${row.id}`,
           subject: row.subject || 'No Subject',
@@ -1357,26 +1412,75 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           recipient_list: row.recipient_list || '',
           sent_at: row.sent_at,
           direction: row.direction === 'outgoing' ? 'outgoing' : 'incoming',
-          attachments: row.attachments || []
+          attachments: parsedAttachments
         } as EmailMessage;
       });
 
-      setEmailThread(formattedThread);
-      hydrateEmailThreadBodies(formattedThread);
+      // Only set emails if this is still the contact we're loading for
+      if (currentLoadingContactIdRef.current === loadingContactId) {
+        setEmailThread(formattedThread);
+        hydrateEmailThreadBodies(formattedThread);
+      } else {
+        console.log(`⚠️ Skipping email thread update - contact changed during fetch`);
+        setEmailThread([]);
+      }
     } catch (error) {
       console.error(`❌ Error fetching email thread for ${selectedContact?.name}:`, error);
-      if (error && typeof error === 'object' && 'message' in error) {
-        toast.error(`Failed to load emails for ${selectedContact?.name}`);
+      // Only show error and clear thread if this is still the contact we're loading for
+      if (currentLoadingContactIdRef.current === loadingContactId) {
+        if (error && typeof error === 'object' && 'message' in error) {
+          toast.error(`Failed to load emails for ${selectedContact?.name}`);
+        }
+        setEmailThread([]);
       }
-      setEmailThread([]);
     } finally {
-      setIsLoading(false);
+      // Only clear loading state if this is still the contact we're loading for
+      if (currentLoadingContactIdRef.current === loadingContactId) {
+        setIsLoading(false);
+        currentLoadingContactIdRef.current = null;
+      }
+      // Always clear fetching flag
+      isFetchingRef.current = false;
+      // Clear last fetched key if fetch failed or was skipped
+      if (currentLoadingContactIdRef.current !== loadingContactId) {
+        lastFetchedKeyRef.current = null;
+      }
     }
-  }, [selectedContact, selectedContactId, leadContacts, hydrateEmailThreadBodies, propSelectedContact]);
+  }, [selectedContact?.id, selectedContactId, leadContacts.length, hydrateEmailThreadBodies, propSelectedContact?.leadId]);
 
+  // Track last fetched key to prevent duplicate fetches
+  const lastFetchedKeyRef = useRef<string | null>(null);
+  
   useEffect(() => {
+    if (!selectedContact) {
+      lastFetchedKeyRef.current = null;
+      isSettingUpContactRef.current = false;
+      return;
+    }
+    
+    // If we're still setting up the contact (finding the contactId), don't fetch yet
+    if (isSettingUpContactRef.current) {
+      console.log(`⏸️ Waiting for contact setup to complete before fetching...`);
+      return;
+    }
+    
+    // Create a unique key for this fetch request
+    const fetchKey = `${selectedContact.id}-${selectedContactId || 'null'}`;
+    
+    // Skip if we're already fetching the same contact/contactId combination
+    if (isFetchingRef.current || lastFetchedKeyRef.current === fetchKey) {
+      console.log(`⏭️ Skipping duplicate fetch: ${fetchKey}, isFetching: ${isFetchingRef.current}, lastKey: ${lastFetchedKeyRef.current}`);
+      return;
+    }
+    
+    // Mark this as the last fetched key BEFORE fetching to prevent race conditions
+    lastFetchedKeyRef.current = fetchKey;
+    console.log(`🔄 Triggering fetch for key: ${fetchKey}`);
+    
+    // Fetch emails when selectedContact or selectedContactId changes
     fetchEmailThread();
-  }, [fetchEmailThread]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedContact?.id, selectedContactId]); // Removed fetchEmailThread to prevent recreations from triggering useEffect
 
   const runMailboxSync = useCallback(async () => {
     if (!userId) {
@@ -1407,10 +1511,22 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const handleContactSelect = async (contact: Contact) => {
     console.log(`👤 Selecting contact: ${contact.name} (ID: ${contact.id})`);
     
-    // Clear previous contact's data immediately
+    // Set flag to prevent fetches while we're setting up the contact
+    isSettingUpContactRef.current = true;
+    console.log(`🔄 Setup flag set to true for contact: ${contact.name}`);
+    
+    // Clear previous contact's data immediately and set loading state FIRST
+    // Set the current loading contact ID to prevent showing old emails
+    currentLoadingContactIdRef.current = contact.id;
     setEmailThread([]);
     setIsLoading(true);
+    // Clear selectedContactId FIRST to prevent fetching with old contactId
+    setSelectedContactId(null);
+    // Clear the last fetched key so we can fetch for the new contact
+    lastFetchedKeyRef.current = null;
+    // Set selected contact AFTER clearing thread, loading, and contactId
     setSelectedContact(contact);
+    console.log(`✅ Contact state cleared and set for: ${contact.name}`);
     setShowCompose(false);
     setNewMessage('');
     
@@ -1431,41 +1547,101 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setLinkUrl('');
     
     // Fetch contacts for this lead and find the matching contact to set selectedContactId
+    // Set a safety timeout to always clear the setup flag even if something goes wrong
+    const safetyTimeout = setTimeout(() => {
+      if (isSettingUpContactRef.current) {
+        console.error('⚠️ Safety timeout: Contact setup taking too long, forcing clear of setup flag');
+        isSettingUpContactRef.current = false;
+        lastFetchedKeyRef.current = null;
+      }
+    }, 15000); // 15 second safety timeout
+    
     try {
       const isLegacyLead = contact.lead_type === 'legacy' || contact.id.toString().startsWith('legacy_');
       const leadId = isLegacyLead 
         ? (typeof contact.id === 'string' ? contact.id.replace('legacy_', '') : String(contact.id))
         : (contact.client_uuid || contact.id);
       
-      const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
-      setLeadContacts(fetchedContacts);
+      console.log(`🔍 Fetching contacts for lead: ${leadId}, isLegacy: ${isLegacyLead}`);
+      
+      // Add a timeout to prevent hanging forever
+      const contactsPromise = fetchLeadContacts(leadId, isLegacyLead);
+      const timeoutPromise = new Promise<any>((_, reject) => 
+        setTimeout(() => reject(new Error('Contact fetch timeout after 10 seconds')), 10000)
+      );
+      
+      const fetchedContacts = await Promise.race([contactsPromise, timeoutPromise]);
+      clearTimeout(safetyTimeout); // Clear safety timeout if we succeed
+      console.log(`📋 Fetched ${fetchedContacts?.length || 0} contacts for lead`);
+      setLeadContacts(fetchedContacts || []);
       
       // Find the matching contact from the fetched contacts
-      const matchingContact = fetchedContacts.find(c => 
+      const matchingContact = fetchedContacts.find((c: any) => 
         (c.email && contact.email && c.email === contact.email) ||
         (c.phone && contact.phone && c.phone === contact.phone) ||
         (c.mobile && contact.phone && c.mobile === contact.phone) ||
         (c.name && contact.name && c.name === contact.name)
       );
       
+      let finalContactId: number | null = null;
+      
       if (matchingContact) {
         console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
-        // Set flag to prevent useEffect from overriding
-        isManuallySettingContactIdRef.current = true;
-        setSelectedContactId(matchingContact.id);
+        finalContactId = matchingContact.id;
       } else if (fetchedContacts.length > 0) {
         // Fallback to main contact if no match found
-        const mainContact = fetchedContacts.find(c => c.isMain) || fetchedContacts[0];
+        const mainContact = fetchedContacts.find((c: any) => c.isMain) || fetchedContacts[0];
         console.log(`⚠️ No exact match, using main contact: ${mainContact.name} (ID: ${mainContact.id})`);
-        // Set flag to prevent useEffect from overriding
+        finalContactId = mainContact.id;
+      } else {
+        // No contacts found, keep it as null and fetch all emails for this lead
+        console.log(`⚠️ No contacts found for lead, will fetch all emails for this lead`);
+        finalContactId = null;
+      }
+      
+      // Set the contactId if we found one
+      if (finalContactId !== null) {
         isManuallySettingContactIdRef.current = true;
-        setSelectedContactId(mainContact.id);
+        setSelectedContactId(finalContactId);
       } else {
         setSelectedContactId(null);
       }
+      
+      // Always clear the setup flag - we're ready to fetch now (even if contactId is null)
+      console.log(`✅ Contact setup complete, selectedContactId: ${finalContactId || 'null'}`);
+      isSettingUpContactRef.current = false;
+      clearTimeout(safetyTimeout); // Make sure to clear safety timeout
+      
+      // Clear all fetching flags and keys to allow fresh fetch
+      isFetchingRef.current = false;
+      lastFetchedKeyRef.current = null;
+      
+      // Manually trigger fetch since useEffect might not fire if dependencies haven't changed
+      // Use setTimeout to ensure state updates have processed
+      console.log(`🚀 Manually triggering fetch after setup completion, selectedContact: ${selectedContact?.name || 'null'}`);
+      setTimeout(() => {
+        console.log(`🚀 Executing fetchEmailThread() now...`);
+        fetchEmailThread().catch(err => {
+          console.error('❌ Error in manual fetchEmailThread call:', err);
+        });
+      }, 100);
     } catch (error) {
-      console.error('Error fetching contacts for selected contact:', error);
+      console.error('❌ Error fetching contacts for selected contact:', error);
+      clearTimeout(safetyTimeout); // Clear safety timeout on error
+      // On error, clear everything and allow fetch with null contactId
       setSelectedContactId(null);
+      lastFetchedKeyRef.current = null;
+      // CRITICAL: Always clear the setup flag even on error so we can still try to fetch
+      isSettingUpContactRef.current = false;
+      console.log(`⚠️ Setup flag cleared after error, will attempt to fetch emails anyway`);
+      
+      // Manually trigger fetch even on error so user can see emails
+      // Clear the fetching flag first to allow the fetch
+      isFetchingRef.current = false;
+      lastFetchedKeyRef.current = null;
+      setTimeout(() => {
+        fetchEmailThread();
+      }, 100);
     }
     
     if (isMobile) {
@@ -1781,6 +1957,52 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     });
   };
 
+  // Format time - matches EmailThreadLeadPage
+  const formatTime = (timestamp: string) => {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffTime = now.getTime() - date.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) {
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } else if (diffDays <= 7) {
+      return date.toLocaleDateString([], { weekday: 'short' });
+    } else {
+      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    }
+  };
+
+  // Format date separator - matches EmailThreadLeadPage
+  const formatDateSeparator = (timestamp: string) => {
+    const date = new Date(timestamp);
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+
+    if (date.toDateString() === today.toDateString()) {
+      return 'Today';
+    }
+    if (date.toDateString() === yesterday.toDateString()) {
+      return 'Yesterday';
+    }
+    const diffTime = today.getTime() - date.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays <= 7) {
+      return date.toLocaleDateString('en-US', { weekday: 'long' });
+    }
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+  };
+
+  const containsRTL = (text?: string | null) => !!text && /[\u0590-\u05FF]/.test(text);
+  const getMessageDirection = (message: EmailMessage) => {
+    if (containsRTL(message.body_html) || containsRTL(message.body_preview) || containsRTL(message.subject)) {
+      return 'rtl';
+    }
+    return 'ltr';
+  };
+
   const formatLastMessageTime = (dateString: string) => {
     const now = new Date();
     const messageDate = new Date(dateString);
@@ -2078,8 +2300,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 {/* Email Thread */}
                 <div className={`flex-1 overflow-y-auto p-4 md:p-6 min-h-0 overscroll-contain ${isMobile ? '' : ''}`} style={isMobile ? { WebkitOverflowScrolling: 'touch' } : {}}>
                   {isLoading ? (
-                    <div className="flex items-center justify-center h-full">
+                    <div className="flex flex-col items-center justify-center h-full gap-4">
                       <div className="loading loading-spinner loading-lg text-blue-500"></div>
+                      <div className="text-center">
+                        <p className="text-lg font-medium text-gray-700">Loading emails...</p>
+                        {selectedContact && (
+                          <p className="text-sm text-gray-500 mt-1">Fetching emails for {selectedContact.name}</p>
+                        )}
+                      </div>
                     </div>
                   ) : emailThread.length === 0 ? (
                     <div className="flex items-center justify-center h-full text-gray-500">
@@ -2094,104 +2322,122 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       </div>
                     </div>
                   ) : (
-                    <div className="space-y-8">
-                      {emailThread.map((message, index) => (
-                        <div key={message.id} className="border-b border-gray-200 pb-6 last:border-b-0">
-                          {/* Email Header with Label */}
-                          <div className="flex items-center justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                              <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                                message.direction === 'outgoing'
-                                  ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                                  : 'bg-pink-100 text-pink-700 border border-pink-200'
-                              }`}>
-                                {message.direction === 'outgoing' ? 'Team' : 'Client'}
-                              </div>
-                              <div>
-                                <div className="font-semibold text-gray-900 text-sm">
-                                  {message.direction === 'outgoing' ? message.sender_name : selectedContact.name}
-                                </div>
-                                <div className="text-xs text-gray-500">
-                                  {formatDate(message.sent_at)}
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                          
-                          {/* Complete Email Content */}
-                          <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-sm">
-                            {/* Email Header */}
-                            <div className="mb-4 pb-4 border-b border-gray-200">
-                              <div className="text-sm text-gray-600 space-y-1">
-                                <div><strong>From:</strong> {message.sender_name} &lt;{message.sender_email}&gt;</div>
-                                <div><strong>To:</strong> {message.recipient_list || (message.direction === 'outgoing' ? `${selectedContact.name} <${selectedContact.email}>` : `eliran@lawoffice.org.il`)}</div>
-                                <div><strong>Date:</strong> {formatDate(message.sent_at)}</div>
-                                {message.subject && (
-                                  <div><strong>Subject:</strong> {message.subject}</div>
-                                )}
-                              </div>
-                            </div>
-                            
-                            {/* Complete Email Body - Full Content */}
-                            <div className="email-content">
-                              {message.body_html ? (
-                                <div 
-                                  dangerouslySetInnerHTML={{ __html: message.body_html }}
-                                  className="prose prose-sm max-w-none email-body"
-                                  style={{
-                                    fontFamily: 'inherit',
-                                    lineHeight: '1.6',
-                                    color: '#374151'
-                                  }}
-                                />
-                              ) : (
-                                <div className="text-gray-500 italic p-4 bg-gray-50 rounded">
-                                  No email content available
-                                </div>
-                              )}
-                            </div>
-                            
-                            {/* Attachments */}
-                            {message.attachments && message.attachments.length > 0 && (
-                              <div className="mt-6 pt-4 border-t border-gray-200">
-                                <div className="text-sm font-medium text-gray-700 mb-3">Attachments:</div>
-                                <div className="space-y-2">
-                                  {message.attachments.map((attachment, idx) => (
-                                    <div key={idx} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                                      <PaperClipIcon className="w-5 h-5 text-gray-400" />
-                                      <div className="flex-1">
-                                        <div className="font-medium text-gray-900">{attachment.name}</div>
-                                        {attachment.size && (
-                                          <div className="text-sm text-gray-500">
-                                            {(attachment.size / 1024).toFixed(1)} KB
-                                          </div>
-                                        )}
-                                        {attachment.contentType && (
-                                          <div className="text-xs text-gray-400">
-                                            {attachment.contentType}
-                                          </div>
-                                        )}
-                                      </div>
-                                      {attachment.contentBytes && (
-                                        <button
-                                          onClick={() => downloadAttachment(message.id, attachment)}
-                                          className="btn btn-sm btn-outline btn-primary"
-                                          title="Download attachment"
-                                        >
-                                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                          </svg>
-                                          Download
-                                        </button>
-                                      )}
-                                    </div>
-                                  ))}
+                    <div className="space-y-4">
+                      {emailThread.map((message, index) => {
+                        const showDateSeparator = index === 0 || 
+                          new Date(message.sent_at).toDateString() !== new Date(emailThread[index - 1].sent_at).toDateString();
+                        const isOutgoing = message.direction === 'outgoing';
+                        const senderDisplayName = isOutgoing 
+                          ? (currentUserFullName || message.sender_name || userEmail || 'You')
+                          : (message.sender_name || selectedContact.name || 'Sender');
+                        const messageDirection = getMessageDirection(message);
+                        const isRTLMessage = messageDirection === 'rtl';
+                        
+                        return (
+                          <React.Fragment key={message.id || index}>
+                            {showDateSeparator && (
+                              <div className="flex justify-center my-4">
+                                <div className="bg-white border border-gray-200 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full shadow-sm">
+                                  {formatDateSeparator(message.sent_at)}
                                 </div>
                               </div>
                             )}
-                          </div>
-                        </div>
-                      ))}
+                            
+                            <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
+                              <div className="flex items-center gap-2 mb-1">
+                                <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                                  isOutgoing
+                                    ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                                    : 'bg-pink-100 text-pink-700 border border-pink-200'
+                                }`}>
+                                  {isOutgoing ? 'Team' : 'Client'}
+                                </div>
+                                <div
+                                  className={`text-xs font-semibold ${
+                                    isOutgoing ? 'text-blue-600' : 'text-gray-600'
+                                  }`}
+                                  dir={messageDirection}
+                                >
+                                  {senderDisplayName}
+                                </div>
+                              </div>
+                              <div
+                                className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
+                                style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                                dir={messageDirection}
+                              >
+                                <div className="mb-2">
+                                  <div className="text-sm font-semibold text-gray-900" dir={messageDirection}>{message.subject}</div>
+                                  <div className="text-xs text-gray-500 mt-1" dir={messageDirection}>{formatTime(message.sent_at)}</div>
+                                </div>
+                                
+                                {message.body_html ? (
+                                  <div
+                                    dangerouslySetInnerHTML={{ __html: message.body_html }}
+                                    className="prose prose-sm max-w-none text-gray-700 break-words"
+                                    style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                                    dir={messageDirection}
+                                  />
+                                ) : message.body_preview ? (
+                                  <div
+                                    className="text-gray-700 whitespace-pre-wrap break-words"
+                                    style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                                    dir={messageDirection}
+                                  >
+                                    {message.body_preview}
+                                  </div>
+                                ) : (
+                                  <div className="text-gray-500 italic">No content available</div>
+                                )}
+
+                                {message.attachments && Array.isArray(message.attachments) && message.attachments.length > 0 && (
+                                  <div className="mt-3 pt-3 border-t border-gray-200">
+                                    <div className="text-xs font-medium text-gray-600 mb-2">
+                                      Attachments ({message.attachments.length}):
+                                    </div>
+                                    <div className="space-y-1">
+                                      {message.attachments.map((attachment: any, idx: number) => {
+                                        if (!attachment || (!attachment.id && !attachment.name)) {
+                                          return null; // Skip invalid attachments
+                                        }
+                                        
+                                        const attachmentKey = attachment.id || attachment.name || `${message.id}-${idx}`;
+                                        const attachmentName = attachment.name || `Attachment ${idx + 1}`;
+                                        const isDownloading =
+                                          attachment.id && downloadingAttachments[attachment.id];
+                                        
+                                        return (
+                                          <button
+                                            key={attachmentKey}
+                                            type="button"
+                                            className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors w-full text-left"
+                                            onClick={() => downloadAttachment(message.id, attachment)}
+                                            disabled={Boolean(isDownloading)}
+                                          >
+                                            {isDownloading ? (
+                                              <span className="loading loading-spinner loading-xs text-blue-500" />
+                                            ) : (
+                                              <DocumentTextIcon className="w-4 h-4 flex-shrink-0" />
+                                            )}
+                                            <span className="truncate flex-1">
+                                              {attachmentName}
+                                            </span>
+                                            {attachment.size && (
+                                              <span className="text-xs text-gray-500 flex-shrink-0">
+                                                ({(attachment.size / 1024).toFixed(1)} KB)
+                                              </span>
+                                            )}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </React.Fragment>
+                        );
+                      })}
                       <div ref={messagesEndRef} />
                     </div>
                   )}
