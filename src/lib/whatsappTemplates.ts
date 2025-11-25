@@ -87,6 +87,25 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
   try {
     console.log('🔍 Fetching WhatsApp templates from API...');
     
+    // First, fetch templates from database to get real IDs for matching
+    const { data: dbTemplates, error: dbError } = await supabase
+      .from('whatsapp_whatsapptemplate')
+      .select('id, name360, title, language, content, params, active')
+      .order('id', { ascending: true });
+    
+    // Create a map of database templates by name360+language for fast lookup
+    const dbTemplateMap = new Map<string, any>();
+    if (dbTemplates && !dbError) {
+      dbTemplates.forEach((template: any) => {
+        // Use name360+language as the key for matching
+        const key = `${template.name360 || template.title || ''}_${template.language || ''}`.toLowerCase();
+        dbTemplateMap.set(key, template);
+      });
+      console.log(`📋 Loaded ${dbTemplates.length} templates from database for ID mapping`);
+    } else if (dbError) {
+      console.warn('⚠️ Could not fetch templates from database for ID mapping:', dbError);
+    }
+    
     const response = await fetch(buildApiUrl('/api/whatsapp/templates'), {
       method: 'GET',
       headers: {
@@ -104,7 +123,7 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
     console.log('✅ Templates fetched from API:', data.templates?.length || 0, 'templates');
 
     if (data.success && data.templates) {
-      // Map API templates to our format
+      // Map API templates to our format, matching with database IDs
       const mappedTemplates = data.templates.map((template: WhatsAppAPITemplate, index: number) => {
         // Find the BODY component and count variables
         const bodyComponent = template.components?.find(c => c.type === 'BODY');
@@ -116,8 +135,24 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
         
         console.log(`📋 Template: ${template.name}, Variables found: ${variableCount}`, variableMatches);
         
+        // Try to find matching database template by name360+language
+        const lookupKey = `${template.name}_${template.language || ''}`.toLowerCase();
+        const dbTemplate = dbTemplateMap.get(lookupKey);
+        
+        // Use database ID if found, otherwise use a negative index to indicate it's not in DB yet
+        let templateId: number;
+        if (dbTemplate && dbTemplate.id) {
+          templateId = Number(dbTemplate.id);
+          console.log(`✅ Matched API template "${template.name}" (${template.language}) to database ID: ${templateId}`);
+        } else {
+          // Template not found in database - use negative ID as placeholder
+          // This will cause template_id to be NULL when saving (which is okay, foreign key allows NULL)
+          templateId = -(index + 1);
+          console.warn(`⚠️ API template "${template.name}" (${template.language}) not found in database, using placeholder ID: ${templateId}`);
+        }
+        
         return {
-          id: index + 1,
+          id: templateId, // Use real database ID if found, otherwise negative placeholder
           title: template.name,
           name360: template.name,
           language: template.language,

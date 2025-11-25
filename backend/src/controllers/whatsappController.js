@@ -965,15 +965,58 @@ const sendMessage = async (req, res) => {
       };
     }
 
-    // Convert templateId to number if provided (ensure correct data type for database)
+    // Resolve template_id: try by ID first, then by name+language
+    // This handles cases where frontend sends fake IDs or templates not yet in database
     let finalTemplateId = null;
-    if (isTemplate && templateId !== undefined && templateId !== null) {
-      finalTemplateId = Number(templateId);
-      if (isNaN(finalTemplateId)) {
-        console.warn(`⚠️ Invalid templateId provided: ${templateId}, saving as null`);
-        finalTemplateId = null;
-      } else {
-        console.log(`✅ Template ID converted to number: ${finalTemplateId} (original: ${templateId})`);
+    if (isTemplate && templateName) {
+      // First, try to find by provided templateId (if it's a valid positive number)
+      if (templateId !== undefined && templateId !== null) {
+        const templateIdNum = Number(templateId);
+        if (!isNaN(templateIdNum) && templateIdNum > 0) {
+          const { data: templateById, error: errorById } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('id')
+            .eq('id', templateIdNum)
+            .single();
+          
+          if (!errorById && templateById) {
+            finalTemplateId = templateIdNum;
+            console.log(`✅ Template ID ${finalTemplateId} verified in database`);
+          } else {
+            console.warn(`⚠️ Template ID ${templateIdNum} not found in database, will try to find by name+language`);
+          }
+        }
+      }
+      
+      // If templateId lookup failed (or wasn't provided), try to find by name+language
+      if (finalTemplateId === null) {
+        console.log(`🔍 Looking up template by name: "${templateName}", language: "${templateLanguage || 'en_US'}"`);
+        const { data: templateByName, error: errorByName } = await supabase
+          .from('whatsapp_whatsapptemplate')
+          .select('id')
+          .eq('name360', templateName)
+          .eq('language', templateLanguage || 'en_US')
+          .maybeSingle(); // Use maybeSingle to allow null result
+        
+        if (!errorByName && templateByName && templateByName.id) {
+          finalTemplateId = Number(templateByName.id);
+          console.log(`✅ Found template by name+language: ID ${finalTemplateId}`);
+        } else {
+          // Try without language (some templates might not have language set)
+          const { data: templateByNameOnly, error: errorByNameOnly } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('id')
+            .eq('name360', templateName)
+            .maybeSingle();
+          
+          if (!errorByNameOnly && templateByNameOnly && templateByNameOnly.id) {
+            finalTemplateId = Number(templateByNameOnly.id);
+            console.log(`✅ Found template by name only: ID ${finalTemplateId}`);
+          } else {
+            console.warn(`⚠️ Template "${templateName}" (${templateLanguage || 'en_US'}) not found in database, saving template_id as NULL`);
+            finalTemplateId = null;
+          }
+        }
       }
     }
 
