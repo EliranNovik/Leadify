@@ -866,23 +866,23 @@ const sendMessage = async (req, res) => {
       let messagePayload;
       
       if (isTemplate) {
-        // If templateId is provided, fetch template details from database
+        // Fetch template details from database using the template_id (database id)
         let finalTemplateName = templateName;
         let finalTemplateLanguage = templateLanguage;
         
         if (templateId) {
           const { data: template, error: templateError } = await supabase
             .from('whatsapp_whatsapptemplate')
-            .select('name360, language')
+            .select('id, name360, title, language, number_id')
             .eq('id', templateId)
             .single();
           
           if (!templateError && template) {
-            finalTemplateName = template.name360 || templateName;
+            finalTemplateName = template.name360 || template.title || templateName;
             finalTemplateLanguage = template.language || templateLanguage || 'en_US';
-            console.log(`📱 Found template by ID ${templateId}: ${finalTemplateName} (${finalTemplateLanguage})`);
+            console.log(`✅ Found template by database ID ${templateId}: ${finalTemplateName} (${finalTemplateLanguage}), WhatsApp ID: ${template.number_id}`);
           } else {
-            console.warn(`⚠️ Template with ID ${templateId} not found, using provided templateName`);
+            console.warn(`⚠️ Template with database ID ${templateId} not found, using provided templateName: ${templateName}`);
           }
         }
         
@@ -965,57 +965,114 @@ const sendMessage = async (req, res) => {
       };
     }
 
-    // Resolve template_id: try by ID first, then by name+language
-    // This handles cases where frontend sends fake IDs or templates not yet in database
+    // Resolve template_id: Use the database ID directly from frontend
+    // Since we're now fetching templates directly from database, the templateId should be the database id
     let finalTemplateId = null;
     if (isTemplate && templateName) {
-      // First, try to find by provided templateId (if it's a valid positive number)
+      // The templateId from frontend should be the database primary key (id column)
       if (templateId !== undefined && templateId !== null) {
         const templateIdNum = Number(templateId);
         if (!isNaN(templateIdNum) && templateIdNum > 0) {
+          // Verify the template exists in database
           const { data: templateById, error: errorById } = await supabase
             .from('whatsapp_whatsapptemplate')
-            .select('id')
+            .select('id, name360, title, language, number_id')
             .eq('id', templateIdNum)
             .single();
           
           if (!errorById && templateById) {
             finalTemplateId = templateIdNum;
-            console.log(`✅ Template ID ${finalTemplateId} verified in database`);
+            console.log(`✅ Template ID ${finalTemplateId} verified in database (name: ${templateById.name360 || templateById.title}, language: ${templateById.language})`);
           } else {
-            console.warn(`⚠️ Template ID ${templateIdNum} not found in database, will try to find by name+language`);
+            console.warn(`⚠️ Template ID ${templateIdNum} not found in database, will try to find by name+language as fallback`);
           }
+        } else {
+          console.warn(`⚠️ Invalid template ID provided: ${templateId}, will try to find by name+language`);
         }
       }
       
-      // If templateId lookup failed (or wasn't provided), try to find by name+language
+      // If templateId lookup failed (or wasn't provided), try multiple lookup strategies
       if (finalTemplateId === null) {
         console.log(`🔍 Looking up template by name: "${templateName}", language: "${templateLanguage || 'en_US'}"`);
-        const { data: templateByName, error: errorByName } = await supabase
+        
+        // PRIORITY 2: Look up by name360 + language (exact match first)
+        let { data: templateByName, error: errorByName } = await supabase
           .from('whatsapp_whatsapptemplate')
-          .select('id')
+          .select('id, name360, title, language')
           .eq('name360', templateName)
           .eq('language', templateLanguage || 'en_US')
-          .maybeSingle(); // Use maybeSingle to allow null result
+          .maybeSingle();
         
-        if (!errorByName && templateByName && templateByName.id) {
-          finalTemplateId = Number(templateByName.id);
-          console.log(`✅ Found template by name+language: ID ${finalTemplateId}`);
-        } else {
-          // Try without language (some templates might not have language set)
-          const { data: templateByNameOnly, error: errorByNameOnly } = await supabase
+        if (!templateByName) {
+          // 2. Try case-insensitive match: name360 + language
+          const { data: templateByNameCI } = await supabase
             .from('whatsapp_whatsapptemplate')
-            .select('id')
+            .select('id, name360, title, language')
+            .ilike('name360', templateName)
+            .ilike('language', templateLanguage || 'en_US')
+            .maybeSingle();
+          templateByName = templateByNameCI;
+        }
+        
+        if (!templateByName) {
+          // 3. Try matching by title instead of name360
+          const { data: templateByTitle } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('id, name360, title, language')
+            .eq('title', templateName)
+            .eq('language', templateLanguage || 'en_US')
+            .maybeSingle();
+          templateByName = templateByTitle;
+        }
+        
+        if (!templateByName) {
+          // 4. Try by name360 only (ignore language)
+          const { data: templateByNameOnly } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('id, name360, title, language')
             .eq('name360', templateName)
             .maybeSingle();
+          templateByName = templateByNameOnly;
+        }
+        
+        if (!templateByName) {
+          // 5. Try by title only (ignore language)
+          const { data: templateByTitleOnly } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('id, name360, title, language')
+            .eq('title', templateName)
+            .maybeSingle();
+          templateByName = templateByTitleOnly;
+        }
+        
+        if (!templateByName) {
+          // 6. Try case-insensitive by name360 only
+          const { data: templateByNameCIONly } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('id, name360, title, language')
+            .ilike('name360', templateName)
+            .maybeSingle();
+          templateByName = templateByNameCIONly;
+        }
+        
+        if (templateByName && templateByName.id) {
+          finalTemplateId = Number(templateByName.id);
+          console.log(`✅ Found template by name/language: ID ${finalTemplateId} (name360: ${templateByName.name360}, title: ${templateByName.title}, language: ${templateByName.language})`);
+        } else {
+          // Last resort: List all templates with similar names for debugging
+          const { data: similarTemplates } = await supabase
+            .from('whatsapp_whatsapptemplate')
+            .select('id, name360, title, language, number_id')
+            .ilike('name360', `%${templateName}%`)
+            .limit(5);
           
-          if (!errorByNameOnly && templateByNameOnly && templateByNameOnly.id) {
-            finalTemplateId = Number(templateByNameOnly.id);
-            console.log(`✅ Found template by name only: ID ${finalTemplateId}`);
+          if (similarTemplates && similarTemplates.length > 0) {
+            console.log(`🔍 Found ${similarTemplates.length} similar templates:`, similarTemplates);
+            console.warn(`⚠️ Template "${templateName}" (${templateLanguage || 'en_US'}) not found with exact match. Similar templates found but not matched. Saving template_id as NULL`);
           } else {
-            console.warn(`⚠️ Template "${templateName}" (${templateLanguage || 'en_US'}) not found in database, saving template_id as NULL`);
-            finalTemplateId = null;
+            console.warn(`⚠️ Template "${templateName}" (${templateLanguage || 'en_US'}) not found in database at all. Saving template_id as NULL`);
           }
+          finalTemplateId = null;
         }
       }
     }

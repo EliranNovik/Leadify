@@ -2,14 +2,14 @@ import { supabase } from './supabase';
 import { buildApiUrl } from './api';
 
 export interface WhatsAppTemplate {
-  id: number;
+  id: number; // Database primary key (id column)
   title: string;
   name360: string;
   params: string;
   active: string;
   category_id: string;
   firm_id: number;
-  number_id: number;
+  number_id: number; // WhatsApp template ID (from API template.id, stored in number_id column)
   content: string;
   language?: string; // Language code from WhatsApp API
 }
@@ -20,7 +20,7 @@ export interface WhatsAppAPITemplate {
   language: string;
   status: string;
   category: string;
-  id: string;
+  id: string; // This is the WhatsApp template ID (stored in number_id in DB)
   components?: Array<{
     type: string;
     text?: string;
@@ -35,14 +35,12 @@ export interface WhatsAppAPITemplate {
 
 export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
   try {
-    // TEMPORARILY: Always fetch directly from WhatsApp API instead of database
-    console.log('🔍 TEMPORARILY: Fetching WhatsApp templates directly from API (skipping database)...');
-    return await fetchTemplatesFromAPI();
+    // Fetch templates directly from database - simpler and more reliable
+    console.log('🔍 Fetching WhatsApp templates from database...');
+    return await fetchTemplatesFromDatabase();
   } catch (error) {
     console.error('❌ Error fetching WhatsApp templates:', error);
-    // Fallback to database if API fails
-    console.log('⚠️ API failed, falling back to database...');
-    return await fetchTemplatesFromDatabase();
+    return [];
   }
 }
 
@@ -51,9 +49,11 @@ async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
   try {
     console.log('🔍 Fetching WhatsApp templates from database...');
     
+    // Fetch only active templates and order by title
     const { data, error } = await supabase
       .from('whatsapp_whatsapptemplate')
-      .select('*')
+      .select('id, title, name360, params, active, category_id, firm_id, number_id, content, language')
+      .eq('active', 't') // Only fetch active templates
       .order('title', { ascending: true });
 
     if (error) {
@@ -63,18 +63,23 @@ async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
 
     console.log('✅ Templates fetched from database:', data?.length || 0);
     
-    // Map database templates to our format, get language from API templates or use default
+    // Map database templates to our format
     const mappedTemplates = (data || []).map((template: any) => {
-      // Get language from database field if exists, otherwise use 'en_US' as default
-      const language = template.language || 'en_US';
-      
       return {
-        ...template,
-        language: language,
-        active: template.active || template.is_active ? 't' : 'f' // Handle both active and is_active fields
+        id: template.id, // This is the database primary key - use this as template_id
+        title: template.title || template.name360 || '',
+        name360: template.name360 || template.title || '',
+        params: template.params || '0',
+        active: template.active || 't',
+        category_id: template.category_id || '',
+        firm_id: template.firm_id || 0,
+        number_id: template.number_id || 0, // WhatsApp template ID from API
+        content: template.content || '',
+        language: template.language || 'en_US',
       };
     });
     
+    console.log('✅ Mapped templates with IDs:', mappedTemplates.map(t => ({ id: t.id, name360: t.name360, language: t.language })));
     return mappedTemplates || [];
   } catch (error) {
     console.error('❌ Error fetching from database:', error);
@@ -90,18 +95,27 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
     // First, fetch templates from database to get real IDs for matching
     const { data: dbTemplates, error: dbError } = await supabase
       .from('whatsapp_whatsapptemplate')
-      .select('id, name360, title, language, content, params, active')
+      .select('id, name360, title, language, content, params, active, number_id')
       .order('id', { ascending: true });
     
-    // Create a map of database templates by name360+language for fast lookup
-    const dbTemplateMap = new Map<string, any>();
+    // Create a map of database templates by WhatsApp template ID (number_id) for fast lookup
+    // This is the correct way to match: WhatsApp API returns templates with an 'id' field
+    // which is stored in the database 'number_id' column
+    const dbTemplateMapByWhatsAppId = new Map<string, any>();
+    // Also create a fallback map by name+language for templates without number_id
+    const dbTemplateMapByNameLang = new Map<string, any>();
+    
     if (dbTemplates && !dbError) {
       dbTemplates.forEach((template: any) => {
-        // Use name360+language as the key for matching
+        // Primary matching: by WhatsApp template ID (number_id)
+        if (template.number_id) {
+          dbTemplateMapByWhatsAppId.set(String(template.number_id), template);
+        }
+        // Fallback matching: by name360+language
         const key = `${template.name360 || template.title || ''}_${template.language || ''}`.toLowerCase();
-        dbTemplateMap.set(key, template);
+        dbTemplateMapByNameLang.set(key, template);
       });
-      console.log(`📋 Loaded ${dbTemplates.length} templates from database for ID mapping`);
+      console.log(`📋 Loaded ${dbTemplates.length} templates from database for ID mapping (${dbTemplateMapByWhatsAppId.size} with WhatsApp IDs)`);
     } else if (dbError) {
       console.warn('⚠️ Could not fetch templates from database for ID mapping:', dbError);
     }
@@ -135,20 +149,25 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
         
         console.log(`📋 Template: ${template.name}, Variables found: ${variableCount}`, variableMatches);
         
-        // Try to find matching database template by name360+language
-        const lookupKey = `${template.name}_${template.language || ''}`.toLowerCase();
-        const dbTemplate = dbTemplateMap.get(lookupKey);
+        // PRIMARY MATCH: Match by WhatsApp template ID (template.id from API = number_id in DB)
+        let dbTemplate = template.id ? dbTemplateMapByWhatsAppId.get(String(template.id)) : null;
+        
+        // FALLBACK MATCH: If not found by WhatsApp ID, try name+language
+        if (!dbTemplate) {
+          const lookupKey = `${template.name}_${template.language || ''}`.toLowerCase();
+          dbTemplate = dbTemplateMapByNameLang.get(lookupKey);
+        }
         
         // Use database ID if found, otherwise use a negative index to indicate it's not in DB yet
         let templateId: number;
         if (dbTemplate && dbTemplate.id) {
           templateId = Number(dbTemplate.id);
-          console.log(`✅ Matched API template "${template.name}" (${template.language}) to database ID: ${templateId}`);
+          console.log(`✅ Matched API template "${template.name}" (${template.language}, WhatsApp ID: ${template.id}) to database ID: ${templateId}`);
         } else {
           // Template not found in database - use negative ID as placeholder
           // This will cause template_id to be NULL when saving (which is okay, foreign key allows NULL)
           templateId = -(index + 1);
-          console.warn(`⚠️ API template "${template.name}" (${template.language}) not found in database, using placeholder ID: ${templateId}`);
+          console.warn(`⚠️ API template "${template.name}" (${template.language}, WhatsApp ID: ${template.id}) not found in database, using placeholder ID: ${templateId}`);
         }
         
         return {
@@ -160,7 +179,7 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
           active: template.status === 'APPROVED' ? 't' : 'f',
           category_id: template.category || '',
           firm_id: 0,
-          number_id: 0,
+          number_id: template.id ? Number(template.id) : 0, // Store WhatsApp template ID
           content: textContent,
         };
       });
