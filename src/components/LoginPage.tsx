@@ -130,8 +130,8 @@ const LoginPage: React.FC = () => {
       {/* Only render login UI if not showing welcome animation */}
       {!showSuccessAnim && (
         <>
-          {/* Left: Login box */}
-          <div className="w-full md:w-1/2 flex flex-col justify-center items-center min-h-screen relative z-10 bg-white">
+          {/* Full width login box */}
+          <div className="w-full flex flex-col justify-center items-center min-h-screen relative z-10 bg-white">
       {/* Header bar - Mobile */}
       <div className="md:hidden absolute top-0 left-0 right-0 z-30 bg-white">
         <div className="flex items-center justify-between py-4 px-6">
@@ -147,9 +147,8 @@ const LoginPage: React.FC = () => {
             )}
           </button>
           
-          {/* Centered Logo and Text */}
+          {/* Centered Text */}
           <div className="flex items-center gap-3">
-            <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-14 h-14 object-contain" />
             <span className="text-lg font-bold text-primary tracking-tight" style={{ letterSpacing: '-0.02em' }}>
               Rainmaker Queen 2.0
             </span>
@@ -196,9 +195,8 @@ const LoginPage: React.FC = () => {
       {/* Desktop Header */}
       <div className="hidden md:block absolute top-0 left-0 right-0 z-30 bg-white">
         <div className="flex items-center justify-between py-4 px-8">
-          {/* Logo and Brand */}
+          {/* Brand */}
           <div className="flex items-center gap-3">
-            <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-16 h-16 object-contain" />
             <span className="text-xl font-extrabold text-primary tracking-tight" style={{ letterSpacing: '-0.03em' }}>
               Rainmaker Queen 2.0
             </span>
@@ -227,17 +225,17 @@ const LoginPage: React.FC = () => {
           </div>
         </div>
       </div>
+            {/* Logo above login form */}
+            <div className="mb-2 flex flex-col items-center">
+              <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-56 h-56 md:w-64 md:h-64 object-contain" />
+              <p className="text-gray-600 mt-2 text-center">Please sign in.</p>
+            </div>
+            
             {/* Login box */}
-            <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] py-12 px-6 md:px-0 mt-16 md:mt-20">
-            <form className="w-full flex flex-col items-start gap-6" onSubmit={handleSignIn}>
-              <div>
-                  <h2 className="text-3xl font-extrabold mb-2 text-primary text-left w-full">
-                  Welcome to RMQ 2.0
-                </h2>
-                  <p className="text-base text-gray-700 mb-6 text-left w-full">Please sign in.</p>
-              </div>
+            <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] py-12 px-6 md:px-0">
+            <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
               <div className="w-full mt-2">
-                  <label className="block font-semibold mb-1 text-gray-800">Email</label>
+                  <label className="block font-semibold mb-1 text-gray-800 text-left">Email</label>
                 <div className="relative">
                   <input
                     type="email"
@@ -252,7 +250,7 @@ const LoginPage: React.FC = () => {
                 </div>
               </div>
               <div className="w-full">
-                  <label className="block font-semibold mb-1 text-gray-800">Password</label>
+                  <label className="block font-semibold mb-1 text-gray-800 text-left">Password</label>
                 <input
                   type="password"
                     className="input input-bordered w-full bg-white text-gray-900 placeholder-gray-400 border-gray-300 focus:border-primary"
@@ -347,7 +345,7 @@ const LoginPage: React.FC = () => {
             
             {/* Success and Error Messages */}
             {success && (
-              <div className="w-full max-w-md mt-4">
+              <div className="w-full mt-4">
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4 shadow-sm">
                   <div className="flex items-start gap-3">
                     <div className="flex-shrink-0">
@@ -383,7 +381,7 @@ const LoginPage: React.FC = () => {
             )}
             
             {error && (
-              <div className="w-full max-w-md mt-4">
+              <div className="w-full mt-4">
                 <div className="bg-red-50 border border-red-200 rounded-lg p-4 shadow-sm">
                   <div className="flex items-start gap-3">
                     <div className="flex-shrink-0">
@@ -417,16 +415,12 @@ const LoginPage: React.FC = () => {
                 </div>
               </div>
             )}
-          </div>
+            </div>
             {/* Copyright at bottom left */}
             <div className="absolute left-0 right-0 bottom-0 z-20 pb-6 flex justify-center w-full">
               <span className="text-gray-500 text-lg font-semibold drop-shadow-lg text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
             </div>
           </div>
-          {/* Right: Image background */}
-          <div className="hidden md:block md:w-1/2 h-full min-h-screen fixed right-0 top-0 z-0">
-            <img src="/DATA_IMAGE.jpg" alt="Leadify Illustration" className="w-full h-full object-cover" style={{ objectFit: 'cover', objectPosition: 'center', minHeight: '100vh', minWidth: '50vw' }} onError={e => { e.currentTarget.style.display = 'none'; }} />
-        </div>
         </>
       )}
       

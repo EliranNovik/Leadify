@@ -3,6 +3,7 @@ import Meetings from './Meetings';
 import AISuggestions from './AISuggestions';
 import AISuggestionsModal from './AISuggestionsModal';
 import OverdueFollowups from './OverdueFollowups';
+import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
@@ -1623,9 +1624,6 @@ const Dashboard: React.FC = () => {
   const [departmentPerformanceLoading, setDepartmentPerformanceLoading] = useState<boolean>(true);
   const [invoicedDataLoading, setInvoicedDataLoading] = useState<boolean>(true);
   
-  // Mobile card period selector
-  const [mobileCardPeriod, setMobileCardPeriod] = useState<'today' | 'last30d' | 'currentMonth' | 'target'>('today');
-  
   // State for real chart data (daily department performance)
   const [departmentChartData, setDepartmentChartData] = useState<{
     [category: string]: { date: string; contracts: number; amount: number }[];
@@ -1982,10 +1980,12 @@ const Dashboard: React.FC = () => {
         // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
         // Fetch data for Today and Last 30d (always current date range)
         console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for Today and Last 30d...');
+        // Fetch legacy leads stage records
         const { data: stageRecords, error: stageError } = await supabase
           .from('leads_leadstage')
-          .select('id, date, lead_id')
+          .select('id, date, cdate, lead_id')
           .eq('stage', 60)
+          .not('lead_id', 'is', null) // Legacy leads only
           .gte('date', thirtyDaysAgoStr)
           .lte('date', todayStr);
         
@@ -1994,34 +1994,105 @@ const Dashboard: React.FC = () => {
           throw stageError;
         }
         
-        console.log('✅ Stage records fetched:', stageRecords?.length || 0, 'records');
+        console.log('✅ Legacy stage records fetched:', stageRecords?.length || 0, 'records');
         
-        // Debug: Check if there are any stage records at all (without date filter)
-        if (stageRecords?.length === 0) {
-          console.log('🔍 No stage records found for date range. Checking all stage 60 records...');
-          const { data: allStageRecords, error: allStageError } = await supabase
-            .from('leads_leadstage')
-            .select('id, date, lead_id')
-            .eq('stage', 60)
-            .order('date', { ascending: false })
-            .limit(10);
+        // Fetch new leads signed agreements from multiple sources
+        // 1. Fetch contracts with signed_at
+        const { data: contractsData, error: contractsError } = await supabase
+          .from('contracts')
+          .select('id, client_id, signed_at, total_amount')
+          .not('client_id', 'is', null)
+          .not('signed_at', 'is', null)
+          .eq('status', 'signed')
+          .gte('signed_at', thirtyDaysAgoStr)
+          .lt('signed_at', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0]); // Add one day for inclusive range
+        
+        if (contractsError) {
+          console.error('❌ Error fetching contracts:', contractsError);
+          // Don't throw, continue without contracts
+        }
+        
+        console.log('✅ Contracts fetched:', contractsData?.length || 0, 'records');
+        
+        // 2. Fetch new leads stage records (newlead_id)
+        const { data: newLeadStageRecords, error: newLeadStageError } = await supabase
+          .from('leads_leadstage')
+          .select('id, date, cdate, newlead_id')
+          .eq('stage', 60)
+          .not('newlead_id', 'is', null) // New leads only
+          .gte('cdate', thirtyDaysAgoStr)
+          .lte('cdate', todayStr);
+        
+        if (newLeadStageError) {
+          console.error('❌ Error fetching new lead stage records:', newLeadStageError);
+          // Don't throw, continue without new lead stages
+        }
+        
+        console.log('✅ New lead stage records fetched:', newLeadStageRecords?.length || 0, 'records');
+        
+        // 3. Fetch leads with date_signed
+        const { data: leadsWithDateSigned, error: dateSignedError } = await supabase
+          .from('leads')
+          .select('id, date_signed')
+          .not('date_signed', 'is', null)
+          .gte('date_signed', thirtyDaysAgoStr)
+          .lte('date_signed', todayStr);
+        
+        if (dateSignedError) {
+          console.error('❌ Error fetching leads with date_signed:', dateSignedError);
+          // Don't throw, continue without date_signed leads
+        }
+        
+        console.log('✅ Leads with date_signed fetched:', leadsWithDateSigned?.length || 0, 'records');
+        
+        // Combine all new lead IDs from different sources
+        const newLeadIdsSet = new Set<string>();
+        (contractsData || []).forEach(contract => {
+          if (contract.client_id) newLeadIdsSet.add(String(contract.client_id));
+        });
+        (newLeadStageRecords || []).forEach(record => {
+          if (record.newlead_id) newLeadIdsSet.add(String(record.newlead_id));
+        });
+        (leadsWithDateSigned || []).forEach(lead => {
+          if (lead.id) newLeadIdsSet.add(String(lead.id));
+        });
+        
+        const newLeadIds = Array.from(newLeadIdsSet);
+        console.log('✅ Combined new lead IDs:', newLeadIds.length, 'unique leads');
+        
+        // Fetch new leads data
+        let newLeadsData: any[] = [];
+        if (newLeadIds.length > 0) {
+          const { data: newLeads, error: newLeadsError } = await supabase
+            .from('leads')
+            .select(`
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, date_signed,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+            .in('id', newLeadIds);
           
-          if (allStageError) {
-            console.error('❌ Error fetching all stage records:', allStageError);
+          if (newLeadsError) {
+            console.error('❌ Error fetching new leads data:', newLeadsError);
+            // Don't throw, continue without new leads
           } else {
-            console.log('📊 Recent stage 60 records (last 10):', allStageRecords?.map(record => ({
-              id: record.id,
-              date: record.date,
-              lead_id: record.lead_id
-            })));
+            newLeadsData = newLeads || [];
+            console.log('✅ New leads data fetched:', newLeadsData.length, 'records');
           }
         }
         
         // Fetch leads data separately if we have stage records
         let agreementRecords: any[] = [];
+        
+        // Process legacy leads
         if (stageRecords && stageRecords.length > 0) {
           const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
-          console.log('📋 Fetching leads data for', leadIds.length, 'unique leads...');
+          console.log('📋 Fetching legacy leads data for', leadIds.length, 'unique leads...');
           
           const { data: leadsData, error: leadsError } = await supabase
             .from('leads_lead')
@@ -2038,24 +2109,93 @@ const Dashboard: React.FC = () => {
             .in('id', leadIds);
           
           if (leadsError) {
-            console.error('❌ Error fetching leads data:', leadsError);
+            console.error('❌ Error fetching legacy leads data:', leadsError);
             throw leadsError;
           }
           
-          console.log('✅ Leads data fetched:', leadsData?.length || 0, 'records');
+          console.log('✅ Legacy leads data fetched:', leadsData?.length || 0, 'records');
           
-          // Join the data
+          // Join the legacy data
           const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
-          agreementRecords = stageRecords.map(stageRecord => {
+          const legacyRecords = stageRecords.map(stageRecord => {
             const lead = leadsMap.get(stageRecord.lead_id);
+            const recordDate = stageRecord.date || stageRecord.cdate || stageRecord.date;
             return {
               ...stageRecord,
-              leads_lead: lead || null
+              date: recordDate,
+              leads_lead: lead || null,
+              isNewLead: false
             };
           }).filter(record => record.leads_lead !== null);
           
-          console.log('✅ Joined agreement records created:', agreementRecords.length, 'records');
+          agreementRecords.push(...legacyRecords);
         }
+        
+        // Process new leads - create records from contracts, stage records, and date_signed
+        const newLeadsMap = new Map(newLeadsData.map(lead => [String(lead.id), lead]));
+        
+        // Create records from contracts
+        (contractsData || []).forEach(contract => {
+          if (!contract.client_id || !contract.signed_at) return;
+          const lead = newLeadsMap.get(String(contract.client_id));
+          if (!lead) return;
+          const recordDate = contract.signed_at.split('T')[0];
+          agreementRecords.push({
+            id: `contract-${contract.id}`,
+            date: recordDate,
+            cdate: contract.signed_at,
+            lead_id: null,
+            newlead_id: String(contract.client_id),
+            leads_lead: {
+              ...lead,
+              total: contract.total_amount || lead.balance || lead.proposal_total || 0,
+              currency_id: lead.currency_id
+            },
+            isNewLead: true
+          });
+        });
+        
+        // Create records from new lead stage records
+        (newLeadStageRecords || []).forEach(record => {
+          if (!record.newlead_id) return;
+          const lead = newLeadsMap.get(String(record.newlead_id));
+          if (!lead) return;
+          const recordDate = (record.date || record.cdate || '').split('T')[0];
+          agreementRecords.push({
+            id: `newstage-${record.id}`,
+            date: recordDate,
+            cdate: record.cdate || record.date,
+            lead_id: null,
+            newlead_id: String(record.newlead_id),
+            leads_lead: lead,
+            isNewLead: true
+          });
+        });
+        
+        // Create records from leads with date_signed
+        (leadsWithDateSigned || []).forEach(lead => {
+          if (!lead.id || !lead.date_signed) return;
+          const leadData = newLeadsMap.get(String(lead.id));
+          if (!leadData) return;
+          const recordDate = lead.date_signed.split('T')[0];
+          // Check if we already have a record for this lead (from contracts or stages)
+          const existing = agreementRecords.find(r => 
+            r.newlead_id === String(lead.id) && r.date === recordDate
+          );
+          if (!existing) {
+            agreementRecords.push({
+              id: `datesigned-${lead.id}`,
+              date: recordDate,
+              cdate: lead.date_signed,
+              lead_id: null,
+              newlead_id: String(lead.id),
+              leads_lead: leadData,
+              isNewLead: true
+            });
+          }
+        });
+        
+        console.log('✅ Joined agreement records created:', agreementRecords.length, 'records (legacy + new)');
         
         console.log('✅ Agreement records processed:', agreementRecords?.length || 0, 'records');
         if (agreementRecords && agreementRecords.length > 0) {
@@ -2064,25 +2204,114 @@ const Dashboard: React.FC = () => {
         
         // Fetch data for selected month (separate query)
         console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for selected month:', selectedMonthName, selectedYear);
+        const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
+        
+        // Fetch legacy leads stage records for month
         const { data: monthStageRecords, error: monthStageError } = await supabase
           .from('leads_leadstage')
-          .select('id, date, lead_id')
+          .select('id, date, cdate, lead_id')
           .eq('stage', 60)
+          .not('lead_id', 'is', null) // Legacy leads only
           .gte('date', startOfMonthStr)
-          .lte('date', new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0]);
+          .lte('date', endOfMonthStr);
         
         if (monthStageError) {
           console.error('❌ Error fetching month stage records:', monthStageError);
           throw monthStageError;
         }
         
-        console.log('✅ Month stage records fetched:', monthStageRecords?.length || 0, 'records');
+        console.log('✅ Month legacy stage records fetched:', monthStageRecords?.length || 0, 'records');
+        
+        // Fetch new leads signed agreements for month from multiple sources
+        const { data: monthContractsData, error: monthContractsError } = await supabase
+          .from('contracts')
+          .select('id, client_id, signed_at, total_amount')
+          .not('client_id', 'is', null)
+          .not('signed_at', 'is', null)
+          .eq('status', 'signed')
+          .gte('signed_at', startOfMonthStr)
+          .lte('signed_at', new Date(new Date(endOfMonthStr).getTime() + 86400000).toISOString().split('T')[0]);
+        
+        if (monthContractsError) {
+          console.error('❌ Error fetching month contracts:', monthContractsError);
+        }
+        
+        console.log('✅ Month contracts fetched:', monthContractsData?.length || 0, 'records');
+        
+        const { data: monthNewLeadStageRecords, error: monthNewLeadStageError } = await supabase
+          .from('leads_leadstage')
+          .select('id, date, cdate, newlead_id')
+          .eq('stage', 60)
+          .not('newlead_id', 'is', null) // New leads only
+          .gte('cdate', startOfMonthStr)
+          .lte('cdate', endOfMonthStr);
+        
+        if (monthNewLeadStageError) {
+          console.error('❌ Error fetching month new lead stage records:', monthNewLeadStageError);
+        }
+        
+        console.log('✅ Month new lead stage records fetched:', monthNewLeadStageRecords?.length || 0, 'records');
+        
+        const { data: monthLeadsWithDateSigned, error: monthDateSignedError } = await supabase
+          .from('leads')
+          .select('id, date_signed')
+          .not('date_signed', 'is', null)
+          .gte('date_signed', startOfMonthStr)
+          .lte('date_signed', endOfMonthStr);
+        
+        if (monthDateSignedError) {
+          console.error('❌ Error fetching month leads with date_signed:', monthDateSignedError);
+        }
+        
+        console.log('✅ Month leads with date_signed fetched:', monthLeadsWithDateSigned?.length || 0, 'records');
+        
+        // Combine all new lead IDs for month
+        const monthNewLeadIdsSet = new Set<string>();
+        (monthContractsData || []).forEach(contract => {
+          if (contract.client_id) monthNewLeadIdsSet.add(String(contract.client_id));
+        });
+        (monthNewLeadStageRecords || []).forEach(record => {
+          if (record.newlead_id) monthNewLeadIdsSet.add(String(record.newlead_id));
+        });
+        (monthLeadsWithDateSigned || []).forEach(lead => {
+          if (lead.id) monthNewLeadIdsSet.add(String(lead.id));
+        });
+        
+        const monthNewLeadIds = Array.from(monthNewLeadIdsSet);
+        console.log('✅ Combined month new lead IDs:', monthNewLeadIds.length, 'unique leads');
+        
+        // Fetch month new leads data
+        let monthNewLeadsData: any[] = [];
+        if (monthNewLeadIds.length > 0) {
+          const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
+            .from('leads')
+            .select(`
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, date_signed,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+            .in('id', monthNewLeadIds);
+          
+          if (monthNewLeadsError) {
+            console.error('❌ Error fetching month new leads data:', monthNewLeadsError);
+          } else {
+            monthNewLeadsData = monthNewLeads || [];
+            console.log('✅ Month new leads data fetched:', monthNewLeadsData.length, 'records');
+          }
+        }
         
         // Fetch leads data separately for month if we have stage records
         let monthAgreementRecords: any[] = [];
+        
+        // Process legacy leads for month
         if (monthStageRecords && monthStageRecords.length > 0) {
           const monthLeadIds = [...new Set(monthStageRecords.map(record => record.lead_id).filter(id => id !== null))];
-          console.log('📋 Fetching month leads data for', monthLeadIds.length, 'unique leads...');
+          console.log('📋 Fetching month legacy leads data for', monthLeadIds.length, 'unique leads...');
           
           const { data: monthLeadsData, error: monthLeadsError } = await supabase
             .from('leads_lead')
@@ -2099,24 +2328,89 @@ const Dashboard: React.FC = () => {
             .in('id', monthLeadIds);
           
           if (monthLeadsError) {
-            console.error('❌ Error fetching month leads data:', monthLeadsError);
+            console.error('❌ Error fetching month legacy leads data:', monthLeadsError);
             throw monthLeadsError;
           }
           
-          console.log('✅ Month leads data fetched:', monthLeadsData?.length || 0, 'records');
+          console.log('✅ Month legacy leads data fetched:', monthLeadsData?.length || 0, 'records');
           
-          // Join the data
+          // Join the legacy data
           const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
-          monthAgreementRecords = monthStageRecords.map(stageRecord => {
+          const monthLegacyRecords = monthStageRecords.map(stageRecord => {
             const lead = monthLeadsMap.get(stageRecord.lead_id);
+            const recordDate = (stageRecord.date || stageRecord.cdate || '').split('T')[0];
             return {
               ...stageRecord,
-              leads_lead: lead || null
+              date: recordDate,
+              leads_lead: lead || null,
+              isNewLead: false
             };
           }).filter(record => record.leads_lead !== null);
           
-          console.log('✅ Joined month agreement records created:', monthAgreementRecords.length, 'records');
+          monthAgreementRecords.push(...monthLegacyRecords);
         }
+        
+        // Process new leads for month
+        const monthNewLeadsMap = new Map(monthNewLeadsData.map(lead => [String(lead.id), lead]));
+        
+        (monthContractsData || []).forEach(contract => {
+          if (!contract.client_id || !contract.signed_at) return;
+          const lead = monthNewLeadsMap.get(String(contract.client_id));
+          if (!lead) return;
+          const recordDate = contract.signed_at.split('T')[0];
+          monthAgreementRecords.push({
+            id: `month-contract-${contract.id}`,
+            date: recordDate,
+            cdate: contract.signed_at,
+            lead_id: null,
+            newlead_id: String(contract.client_id),
+            leads_lead: {
+              ...lead,
+              total: contract.total_amount || lead.balance || lead.proposal_total || 0,
+              currency_id: lead.currency_id
+            },
+            isNewLead: true
+          });
+        });
+        
+        (monthNewLeadStageRecords || []).forEach(record => {
+          if (!record.newlead_id) return;
+          const lead = monthNewLeadsMap.get(String(record.newlead_id));
+          if (!lead) return;
+          const recordDate = (record.date || record.cdate || '').split('T')[0];
+          monthAgreementRecords.push({
+            id: `month-newstage-${record.id}`,
+            date: recordDate,
+            cdate: record.cdate || record.date,
+            lead_id: null,
+            newlead_id: String(record.newlead_id),
+            leads_lead: lead,
+            isNewLead: true
+          });
+        });
+        
+        (monthLeadsWithDateSigned || []).forEach(lead => {
+          if (!lead.id || !lead.date_signed) return;
+          const leadData = monthNewLeadsMap.get(String(lead.id));
+          if (!leadData) return;
+          const recordDate = lead.date_signed.split('T')[0];
+          const existing = monthAgreementRecords.find(r => 
+            r.newlead_id === String(lead.id) && r.date === recordDate
+          );
+          if (!existing) {
+            monthAgreementRecords.push({
+              id: `month-datesigned-${lead.id}`,
+              date: recordDate,
+              cdate: lead.date_signed,
+              lead_id: null,
+              newlead_id: String(lead.id),
+              leads_lead: leadData,
+              isNewLead: true
+            });
+          }
+        });
+        
+        console.log('✅ Joined month agreement records created:', monthAgreementRecords.length, 'records (legacy + new)');
         
         console.log('✅ Month agreement records processed:', monthAgreementRecords?.length || 0, 'records');
         if (monthAgreementRecords && monthAgreementRecords.length > 0) {
@@ -2141,11 +2435,18 @@ const Dashboard: React.FC = () => {
             
             const lead = record.leads_lead as any;
             if (!lead) {
-              console.log(`⚠️ No lead data for record: leadId=${record.lead_id}`);
+              console.log(`⚠️ No lead data for record: leadId=${record.lead_id || record.newlead_id}`);
               return;
             }
             
-            const amount = parseFloat(lead.total) || 0;
+            // For new leads, amount might be in balance, proposal_total, or total (from contracts)
+            // For legacy leads, amount is in total
+            let amount = 0;
+            if (record.isNewLead) {
+              amount = parseFloat(lead.total) || parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+            } else {
+              amount = parseFloat(lead.total) || 0;
+            }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
             
@@ -2245,11 +2546,18 @@ const Dashboard: React.FC = () => {
             
             const lead = record.leads_lead as any;
             if (!lead) {
-              console.log(`⚠️ No lead data for month record: leadId=${record.lead_id}`);
+              console.log(`⚠️ No lead data for month record: leadId=${record.lead_id || record.newlead_id}`);
               return;
             }
             
-            const amount = parseFloat(lead.total) || 0;
+            // For new leads, amount might be in balance, proposal_total, or total (from contracts)
+            // For legacy leads, amount is in total
+            let amount = 0;
+            if (record.isNewLead) {
+              amount = parseFloat(lead.total) || parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+            } else {
+              amount = parseFloat(lead.total) || 0;
+            }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
             
@@ -2670,6 +2978,7 @@ const Dashboard: React.FC = () => {
       console.log('🔧 Using expanded date range to fetch all invoice data:', expandedStartDate, 'to', todayStr);
       console.log('📝 Note: Today=actual today, Last 30d=actual last 30 days, Month=selected month');
       
+      // Fetch legacy invoice records from proformainvoice table (only legacy leads)
       const { data: invoiceRecords, error: invoiceError } = await supabase
         .from('proformainvoice')
         .select('id, lead_id, sub_total, cdate, currency_id')
@@ -2681,7 +2990,75 @@ const Dashboard: React.FC = () => {
         throw invoiceError;
       }
       
-      console.log('✅ Invoice records fetched:', invoiceRecords?.length || 0, 'records');
+      console.log('✅ Legacy invoice records fetched:', invoiceRecords?.length || 0, 'records');
+      
+      // Fetch new leads invoiced data from payment_plans table (payment plans with proforma data)
+      console.log('📋 Fetching new leads invoiced data from payment_plans table...');
+      const { data: newLeadsPaymentPlans, error: paymentPlansError } = await supabase
+        .from('payment_plans')
+        .select('id, lead_id, value, value_vat, currency, date, proforma, cdate, updated_at')
+        .not('proforma', 'is', null)
+        .not('proforma', 'eq', '')
+        .not('proforma', 'eq', '{}');
+      
+      if (paymentPlansError) {
+        console.error('❌ Error fetching payment plans with proforma:', paymentPlansError);
+        // Don't throw - continue without new leads invoiced data
+      } else {
+        console.log('✅ Payment plans with proforma fetched:', newLeadsPaymentPlans?.length || 0, 'records');
+        
+        // Filter payment plans by date range and extract invoice date from proforma JSON
+        if (newLeadsPaymentPlans && newLeadsPaymentPlans.length > 0) {
+          const filteredNewLeadInvoices = newLeadsPaymentPlans
+            .map(plan => {
+              let invoiceDate: string | null = null;
+              
+              // Try to extract date from proforma JSON
+              try {
+                if (plan.proforma && typeof plan.proforma === 'string') {
+                  const proformaData = JSON.parse(plan.proforma);
+                  if (proformaData.createdAt) {
+                    invoiceDate = proformaData.createdAt.split('T')[0]; // Extract date part
+                  }
+                }
+              } catch (e) {
+                // Ignore parse errors
+              }
+              
+              // Fallback to payment plan date, cdate (creation date), or updated_at
+              if (!invoiceDate) {
+                invoiceDate = plan.date || plan.cdate || (plan.updated_at ? plan.updated_at.split('T')[0] : null);
+              }
+              
+              if (!invoiceDate) return null;
+              
+              const invoiceDateStr = invoiceDate.split('T')[0];
+              const invoiceDateTime = new Date(invoiceDateStr).getTime();
+              const expandedStartTime = new Date(expandedStartDate).getTime();
+              const todayTime = new Date(todayStr).getTime();
+              
+              // Only include if within date range
+              if (invoiceDateTime >= expandedStartTime && invoiceDateTime <= todayTime) {
+                return {
+                  id: `payment-plan-${plan.id}`,
+                  lead_id: plan.lead_id,
+                  sub_total: plan.value || 0,
+                  cdate: invoiceDateStr,
+                  currency_id: plan.currency === '₪' || plan.currency === 'NIS' || plan.currency === 'ILS' ? 1 : null, // Map currency to ID
+                  isNewLead: true,
+                };
+              }
+              return null;
+            })
+            .filter(record => record !== null);
+          
+          console.log('✅ Filtered new leads invoice records:', filteredNewLeadInvoices.length, 'records');
+          
+          // Combine legacy and new invoice records
+          invoiceRecords.push(...filteredNewLeadInvoices as any[]);
+          console.log('✅ Combined invoice records (legacy + new):', invoiceRecords.length, 'records');
+        }
+      }
       if (invoiceRecords && invoiceRecords.length > 0) {
         const dates = invoiceRecords.map(r => r.cdate).sort();
         console.log('📅 Invoice record date range:', dates[0], 'to', dates[dates.length - 1]);
@@ -2717,6 +3094,12 @@ const Dashboard: React.FC = () => {
         }
       }
       
+      // Helper function to check if a string is a UUID (used for separating new vs legacy leads)
+      const isUUID = (str: string): boolean => {
+        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        return uuidRegex.test(str);
+      };
+      
       // Fetch leads data separately if we have invoice records
       let processedInvoiceRecords: any[] = [];
       if (invoiceRecords && invoiceRecords.length > 0) {
@@ -2724,38 +3107,109 @@ const Dashboard: React.FC = () => {
         const leadIds = [...new Set(invoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
         console.log('📋 Fetching leads data for', leadIds.length, 'unique leads...');
         
-        const { data: leadsData, error: leadsError } = await supabase
-          .from('leads_lead')
-          .select(`
-            id,
-            misc_category(
-              id, name, parent_id,
-              misc_maincategory(
-                id, name, department_id,
-                tenant_departement(id, name)
-              )
-            )
-          `)
-          .in('id', leadIds);
+        // Separate UUIDs (new leads) from numeric IDs (legacy leads)
+        const uuidIds: string[] = [];
+        const numericIds: number[] = [];
         
-        if (leadsError) {
-          console.error('❌ Error fetching leads data for invoices:', leadsError);
-          throw leadsError;
+        leadIds.forEach(id => {
+          const idStr = String(id);
+          if (isUUID(idStr)) {
+            uuidIds.push(idStr);
+          } else {
+            const numericId = Number(idStr);
+            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
+              numericIds.push(numericId);
+            }
+          }
+        });
+        
+        console.log(`📋 Separated lead IDs: ${uuidIds.length} UUIDs (new leads), ${numericIds.length} numeric IDs (legacy leads)`);
+        
+        // Fetch legacy leads from leads_lead table (only numeric IDs)
+        let legacyLeadsData: any[] = [];
+        if (numericIds.length > 0) {
+          const { data, error: legacyLeadsError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              misc_category(
+                id, name, parent_id,
+                misc_maincategory(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+            .in('id', numericIds);
+          
+          if (legacyLeadsError) {
+            console.error('❌ Error fetching legacy leads data for invoices:', legacyLeadsError);
+            throw legacyLeadsError;
+          }
+          
+          legacyLeadsData = data || [];
+          console.log('✅ Legacy leads data fetched for invoices:', legacyLeadsData.length, 'records');
         }
         
-        console.log('✅ Leads data fetched for invoices:', leadsData?.length || 0, 'records');
+        // Fetch new leads from leads table (only UUIDs)
+        let newLeadsData: any[] = [];
+        if (uuidIds.length > 0) {
+          const { data, error: newLeadsError } = await supabase
+            .from('leads')
+            .select(`
+              id,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+            .in('id', uuidIds);
+          
+          if (newLeadsError) {
+            console.error('❌ Error fetching new leads data for invoices:', newLeadsError);
+            throw newLeadsError;
+          }
+          
+          newLeadsData = data || [];
+          console.log('✅ New leads data fetched for invoices:', newLeadsData.length, 'records');
+        }
         
-        // Join the data
-        const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
-        const allJoinedRecords = invoiceRecords.map(invoiceRecord => {
-          const lead = leadsMap.get(invoiceRecord.lead_id);
+        // Join the data - combine both legacy and new leads
+        // Map legacy leads by numeric ID (convert to number for matching)
+        const legacyLeadsMap = new Map(legacyLeadsData?.map(lead => {
+          const id = typeof lead.id === 'number' ? lead.id : Number(lead.id);
+          return [id, lead];
+        }) || []);
+        // Map new leads by UUID string
+        const newLeadsMap = new Map(newLeadsData?.map(lead => [String(lead.id), lead]) || []);
+        
+        const allJoinedRecords = invoiceRecords.map((invoiceRecord: any) => {
+          const leadIdStr = String(invoiceRecord.lead_id);
+          let lead = null;
+          // Use the isNewLead flag if it's already set (from new lead invoice records), otherwise detect
+          const recordIsNewLead = invoiceRecord.isNewLead !== undefined ? invoiceRecord.isNewLead : false;
+          
+          // Check if it's a UUID (new lead) or numeric (legacy lead)
+          if (recordIsNewLead || isUUID(leadIdStr)) {
+            lead = newLeadsMap.get(leadIdStr) || null;
+          } else {
+            const numericId = Number(leadIdStr);
+            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
+              lead = legacyLeadsMap.get(numericId) || null;
+            }
+          }
+          
           return {
             ...invoiceRecord,
-            leads_lead: lead || null
+            leads_lead: lead || null,
+            isNewLead: recordIsNewLead || (!!lead && isUUID(leadIdStr))
           };
         }).filter(record => record.leads_lead !== null);
         
-        console.log('✅ All joined invoice records created:', allJoinedRecords.length, 'records');
+        console.log('✅ All joined invoice records created:', allJoinedRecords.length, 'records (legacy + new)');
         
         // Debug: Check the variables we're using for filtering
         console.log('🔍 Debug variables for filtering:');
@@ -2905,18 +3359,102 @@ const Dashboard: React.FC = () => {
       console.log('📋 Fetching invoice records for selected month:', selectedMonthName, selectedYear);
       const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
       console.log('🔍 Month query date range:', startOfMonthStr, 'to', endOfMonthStr);
-      const { data: monthInvoiceRecords, error: monthInvoiceError } = await supabase
+      
+      // Fetch legacy invoice records for month
+      const { data: monthLegacyInvoiceRecords, error: monthInvoiceError } = await supabase
         .from('proformainvoice')
         .select('id, lead_id, sub_total, cdate, currency_id')
         .gte('cdate', startOfMonthStr)
         .lte('cdate', endOfMonthStr);
       
       if (monthInvoiceError) {
-        console.error('❌ Error fetching month invoice records:', monthInvoiceError);
+        console.error('❌ Error fetching month legacy invoice records:', monthInvoiceError);
         throw monthInvoiceError;
       }
       
-      console.log('✅ Month invoice records fetched:', monthInvoiceRecords?.length || 0, 'records');
+      console.log('✅ Month legacy invoice records fetched:', monthLegacyInvoiceRecords?.length || 0, 'records');
+      
+      // Fetch new leads invoiced data for month from payment_plans
+      const { data: monthNewLeadsPaymentPlans, error: monthPaymentPlansError } = await supabase
+        .from('payment_plans')
+        .select('id, lead_id, value, value_vat, currency, date, proforma, cdate, updated_at')
+        .not('proforma', 'is', null)
+        .not('proforma', 'eq', '')
+        .not('proforma', 'eq', '{}');
+      
+      if (monthPaymentPlansError) {
+        console.error('❌ Error fetching month payment plans with proforma:', monthPaymentPlansError);
+        // Don't throw - continue without new leads invoiced data
+      }
+      
+      // Convert payment plans to invoice records format for month
+      const monthNewLeadInvoiceRecords: any[] = [];
+      if (monthNewLeadsPaymentPlans && monthNewLeadsPaymentPlans.length > 0) {
+        monthNewLeadsPaymentPlans.forEach(plan => {
+          if (!plan.lead_id) return;
+          
+          let invoiceDate: string | null = null;
+          
+          // Try to extract date from proforma JSON's createdAt field
+          try {
+            if (plan.proforma && typeof plan.proforma === 'string') {
+              const proformaData = JSON.parse(plan.proforma);
+              if (proformaData.createdAt) {
+                invoiceDate = proformaData.createdAt.split('T')[0];
+              }
+            }
+          } catch (e) {
+            // Ignore parse errors
+          }
+          
+          // Fallback to payment plan date, cdate (creation date), or updated_at
+          if (!invoiceDate) {
+            invoiceDate = plan.date || plan.cdate || (plan.updated_at ? plan.updated_at.split('T')[0] : null);
+          }
+          
+          if (!invoiceDate) return;
+          
+          const invoiceDateStr = invoiceDate.split('T')[0];
+          const invoiceDateTime = new Date(invoiceDateStr).getTime();
+          const startOfMonthTime = new Date(startOfMonthStr).getTime();
+          const endOfMonthTime = new Date(endOfMonthStr).getTime();
+          
+          // Only include if within month date range
+          if (invoiceDateTime >= startOfMonthTime && invoiceDateTime <= endOfMonthTime) {
+            // Map currency to currency_id format
+            let currencyId: number | null = null;
+            const currency = plan.currency || '';
+            if (currency === '₪' || currency === 'NIS' || currency === 'ILS') {
+              currencyId = 1;
+            } else if (currency === '$' || currency === 'USD') {
+              currencyId = 2;
+            } else if (currency === '€' || currency === 'EUR') {
+              currencyId = 3;
+            } else if (currency === '£' || currency === 'GBP') {
+              currencyId = 4;
+            }
+            
+            monthNewLeadInvoiceRecords.push({
+              id: `month-payment-plan-${plan.id}`,
+              lead_id: plan.lead_id,
+              sub_total: plan.value || 0,
+              cdate: invoiceDateStr,
+              currency_id: currencyId,
+              isNewLead: true,
+            });
+          }
+        });
+        
+        console.log('✅ Month new leads invoice records created:', monthNewLeadInvoiceRecords.length, 'records');
+      }
+      
+      // Combine legacy and new month invoice records
+      const monthInvoiceRecords: any[] = [
+        ...(monthLegacyInvoiceRecords || []).map(record => ({ ...record, isNewLead: false })),
+        ...monthNewLeadInvoiceRecords,
+      ];
+      
+      console.log('✅ Combined month invoice records (legacy + new):', monthInvoiceRecords.length, 'records');
       
       // Fetch leads data separately for month if we have invoice records
       let processedMonthInvoiceRecords: any[] = [];
@@ -2924,38 +3462,109 @@ const Dashboard: React.FC = () => {
         const monthLeadIds = [...new Set(monthInvoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
         console.log('📋 Fetching month leads data for', monthLeadIds.length, 'unique leads...');
         
-        const { data: monthLeadsData, error: monthLeadsError } = await supabase
-          .from('leads_lead')
-          .select(`
-            id,
-            misc_category(
-              id, name, parent_id,
-              misc_maincategory(
-                id, name, department_id,
-                tenant_departement(id, name)
-              )
-            )
-          `)
-          .in('id', monthLeadIds);
+        // Separate UUIDs (new leads) from numeric IDs (legacy leads)
+        const monthUuidIds: string[] = [];
+        const monthNumericIds: number[] = [];
         
-        if (monthLeadsError) {
-          console.error('❌ Error fetching month leads data for invoices:', monthLeadsError);
-          throw monthLeadsError;
+        monthLeadIds.forEach(id => {
+          const idStr = String(id);
+          if (isUUID(idStr)) {
+            monthUuidIds.push(idStr);
+          } else {
+            const numericId = Number(idStr);
+            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
+              monthNumericIds.push(numericId);
+            }
+          }
+        });
+        
+        console.log(`📋 Separated month lead IDs: ${monthUuidIds.length} UUIDs (new leads), ${monthNumericIds.length} numeric IDs (legacy leads)`);
+        
+        // Fetch legacy leads from leads_lead table (only numeric IDs)
+        let monthLegacyLeadsData: any[] = [];
+        if (monthNumericIds.length > 0) {
+          const { data, error: monthLegacyLeadsError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              misc_category(
+                id, name, parent_id,
+                misc_maincategory(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+            .in('id', monthNumericIds);
+          
+          if (monthLegacyLeadsError) {
+            console.error('❌ Error fetching month legacy leads data for invoices:', monthLegacyLeadsError);
+            throw monthLegacyLeadsError;
+          }
+          
+          monthLegacyLeadsData = data || [];
+          console.log('✅ Month legacy leads data fetched for invoices:', monthLegacyLeadsData.length, 'records');
         }
         
-        console.log('✅ Month leads data fetched for invoices:', monthLeadsData?.length || 0, 'records');
+        // Fetch new leads from leads table (only UUIDs)
+        let monthNewLeadsData: any[] = [];
+        if (monthUuidIds.length > 0) {
+          const { data, error: monthNewLeadsError } = await supabase
+            .from('leads')
+            .select(`
+              id,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+            .in('id', monthUuidIds);
+          
+          if (monthNewLeadsError) {
+            console.error('❌ Error fetching month new leads data for invoices:', monthNewLeadsError);
+            throw monthNewLeadsError;
+          }
+          
+          monthNewLeadsData = data || [];
+          console.log('✅ Month new leads data fetched for invoices:', monthNewLeadsData.length, 'records');
+        }
         
-        // Join the data
-        const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
+        // Join the data - combine both legacy and new leads
+        // Map legacy leads by numeric ID (convert to number for matching)
+        const monthLegacyLeadsMap = new Map(monthLegacyLeadsData?.map(lead => {
+          const id = typeof lead.id === 'number' ? lead.id : Number(lead.id);
+          return [id, lead];
+        }) || []);
+        // Map new leads by UUID string
+        const monthNewLeadsMap = new Map(monthNewLeadsData?.map(lead => [String(lead.id), lead]) || []);
+        
         processedMonthInvoiceRecords = monthInvoiceRecords.map(invoiceRecord => {
-          const lead = monthLeadsMap.get(invoiceRecord.lead_id);
+          const leadIdStr = String(invoiceRecord.lead_id);
+          let lead = null;
+          let isNewLead = false;
+          
+          // Check if it's a UUID (new lead) or numeric (legacy lead)
+          if (isUUID(leadIdStr)) {
+            lead = monthNewLeadsMap.get(leadIdStr) || null;
+            isNewLead = !!lead;
+          } else {
+            const numericId = Number(leadIdStr);
+            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
+              lead = monthLegacyLeadsMap.get(numericId) || null;
+            }
+          }
+          
           return {
             ...invoiceRecord,
-            leads_lead: lead || null
+            leads_lead: lead || null,
+            isNewLead
           };
         }).filter(record => record.leads_lead !== null);
         
-        console.log('✅ Joined month invoice records created:', processedMonthInvoiceRecords.length, 'records');
+        console.log('✅ Joined month invoice records created:', processedMonthInvoiceRecords.length, 'records (legacy + new)');
       }
       
       console.log('🔍 Checking main processing condition:', {
@@ -2990,14 +3599,20 @@ const Dashboard: React.FC = () => {
             return;
           }
           
+          // For new leads, amount calculation might be different (already in sub_total from payment plan)
+          // For legacy leads, amount is in sub_total from proformainvoice
           const amount = Math.ceil(parseFloat(record.sub_total) || 0); // Round up to nearest whole number
           const amountInNIS = convertToNIS(amount, record.currency_id);
           const recordDate = record.cdate;
           
-          // Get department ID from the JOIN
+          // Get department ID from the JOIN (works for both legacy and new leads)
           let departmentId = null;
           if (lead.misc_category?.misc_maincategory?.department_id) {
             departmentId = lead.misc_category.misc_maincategory.department_id;
+          }
+          
+          if (index < 5 && record.isNewLead) {
+            console.log(`  🔍 New lead invoice record: leadId=${record.lead_id}, amount=${amount}, departmentId=${departmentId}`);
           }
           
           if (index < 5) { // Only log first 5 records
@@ -3085,8 +3700,10 @@ const Dashboard: React.FC = () => {
             const amountInNIS = convertToNIS(amount, record.currency_id);
             const recordDate = record.cdate;
             
-            // Get department ID from the JOIN
+            // Get department ID from the JOIN (works for both legacy and new leads)
             let departmentId = null;
+            // For legacy leads: lead.misc_category.misc_maincategory.department_id
+            // For new leads: lead.misc_category.misc_maincategory.department_id (same structure)
             if (lead.misc_category?.misc_maincategory?.department_id) {
               departmentId = lead.misc_category.misc_maincategory.department_id;
             }
@@ -3096,9 +3713,10 @@ const Dashboard: React.FC = () => {
                 id: record.id,
                 lead_id: record.lead_id,
                 sub_total: record.sub_total,
-                cdate: record.cdate
+                cdate: record.cdate,
+                isNewLead: record.isNewLead
               });
-              console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId}`);
+              console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId} (${record.isNewLead ? 'NEW' : 'LEGACY'})`);
               console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
             }
             
@@ -3359,6 +3977,91 @@ const Dashboard: React.FC = () => {
     .map((cat, idx) => ({ cat, idx }))
     .filter(({ cat }) => cat !== 'General' && cat !== 'Total')
     .map(({ idx }) => idx);
+  const departmentCategories = includedDeptIndexes.map(idx => scoreboardCategories[idx]);
+  const mobileCategories = scoreboardCategories.filter(cat => cat !== 'General');
+
+  type MobilePeriodType = 'today' | 'last30d' | 'currentMonth' | 'target';
+  const [mobilePeriodRows, setMobilePeriodRows] = useState<{ id: string; period: MobilePeriodType }[]>([
+    { id: 'row-today', period: 'today' },
+  ]);
+
+  const mobilePeriodOptions: { period: MobilePeriodType; label: string }[] = [
+    { period: 'today', label: 'Today' },
+    { period: 'last30d', label: 'Last 30d' },
+    { period: 'currentMonth', label: selectedMonth },
+    { period: 'target', label: 'Target' },
+  ];
+
+  const addMobilePeriodRow = (period: MobilePeriodType) => {
+    setMobilePeriodRows((prev) => [
+      ...prev,
+      { id: `${period}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, period },
+    ]);
+  };
+
+  const toggleMobilePeriodRow = (period: MobilePeriodType) => {
+    setMobilePeriodRows((prev) => {
+      const existingIndex = prev.findIndex((row) => row.period === period);
+      if (existingIndex !== -1) {
+        if (prev.length <= 1) {
+          return prev;
+        }
+        const next = [...prev];
+        next.splice(existingIndex, 1);
+        return next;
+      }
+      return [
+        ...prev,
+        { id: `${period}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, period },
+      ];
+    });
+  };
+
+  const getMobilePeriodInfo = (period: MobilePeriodType) => {
+    switch (period) {
+      case 'today':
+        return { label: 'Today', gradient: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
+      case 'last30d':
+        return { label: 'Last 30d', gradient: 'from-purple-500 to-indigo-600', dotColor: 'bg-purple-500' };
+      case 'currentMonth':
+        return { label: selectedMonth, gradient: 'from-blue-500 to-cyan-600', dotColor: 'bg-blue-500' };
+      case 'target':
+        return { label: 'Target', gradient: 'from-emerald-500 to-teal-600', dotColor: 'bg-emerald-500' };
+      default:
+        return { label: 'Today', gradient: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
+    }
+  };
+
+  const getMobilePeriodData = (period: MobilePeriodType, category: string) => {
+    const defaultValue = { count: 0, amount: 0, expected: 0 };
+    const categoryIndex = scoreboardCategories.indexOf(category);
+    const todayData = agreementData['Today']?.[categoryIndex] || defaultValue;
+    const last30Data = agreementData['Last 30d']?.[categoryIndex] || defaultValue;
+    const monthArray = agreementData[selectedMonth] || [];
+    const monthIndex =
+      category === 'Total'
+        ? departmentNames.length
+        : Math.max(0, departmentNames.indexOf(category));
+    const monthData = monthArray[monthIndex] || defaultValue;
+    const targetData = {
+      count: 0,
+      amount: 0,
+      expected: monthData.expected || last30Data.expected || todayData.expected || 0,
+    };
+
+    switch (period) {
+      case 'today':
+        return todayData;
+      case 'last30d':
+        return last30Data;
+      case 'currentMonth':
+        return monthData;
+      case 'target':
+        return targetData;
+      default:
+        return todayData;
+    }
+  };
 
   // Stable targets for Today where not provided
   const randomTodayTargetsRef = useRef<number[]>([]);
@@ -3426,13 +4129,13 @@ const Dashboard: React.FC = () => {
   };
 
   // Handle card flip
-  const handleCardFlip = (category: string) => {
+  const handleCardFlip = (cardKey: string) => {
     setFlippedCards(prev => {
       const newSet = new Set(prev);
-      if (newSet.has(category)) {
-        newSet.delete(category);
+      if (newSet.has(cardKey)) {
+        newSet.delete(cardKey);
       } else {
-        newSet.add(category);
+        newSet.add(cardKey);
       }
       return newSet;
     });
@@ -4946,255 +5649,197 @@ const Dashboard: React.FC = () => {
                     </div>
                                   </div>
                                   
-                  {/* Mobile: keep card grid */}
+                  {/* Mobile comparison blocks */}
                   {departmentPerformanceLoading ? (
                     <div className="flex justify-center items-center py-12 md:hidden">
                       <span className="loading loading-spinner loading-lg text-primary"></span>
                     </div>
                   ) : (
                     <div className="md:hidden space-y-4">
-                      {/* Period Selector */}
                       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3">
-                        <div className="grid grid-cols-4 gap-2">
-                          <button
-                            onClick={() => setMobileCardPeriod('today')}
-                            className={`px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
-                              mobileCardPeriod === 'today'
-                                ? 'bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-md'
-                                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
-                            }`}
-                          >
-                            Today
-                          </button>
-                          <button
-                            onClick={() => setMobileCardPeriod('last30d')}
-                            className={`px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
-                              mobileCardPeriod === 'last30d'
-                                ? 'bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-md'
-                                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
-                            }`}
-                          >
-                            Last 30d
-                          </button>
-                          <div className="relative">
+                        <div className="flex items-center justify-between mb-3">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-800">Compare periods</div>
+                            <p className="text-xs text-gray-500">Add or remove rows to compare each department</p>
+                          </div>
+                          {mobilePeriodRows.length > 1 && (
                             <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const dropdown = document.getElementById('month-dropdown-mobile');
-                                if (dropdown) {
-                                  dropdown.classList.toggle('hidden');
-                                }
-                              }}
-                              className={`w-full px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
-                                mobileCardPeriod === 'currentMonth'
-                                  ? 'bg-gradient-to-r from-blue-500 to-cyan-600 text-white shadow-md'
-                                  : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
-                              }`}
+                              className="btn btn-ghost btn-xs"
+                              onClick={() => setMobilePeriodRows([{ id: 'row-today', period: 'today' }])}
                             >
-                              {selectedMonth}
+                              Reset
                             </button>
-                            <div
-                              id="month-dropdown-mobile"
-                              className="hidden absolute z-50 mt-1 w-full bg-white rounded-lg shadow-lg border border-gray-200 max-h-60 overflow-y-auto"
-                              onClick={(e) => e.stopPropagation()}
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {mobilePeriodOptions.map((option) => {
+                            const isActive = mobilePeriodRows.some((row) => row.period === option.period);
+                            return (
+                              <button
+                                key={option.period}
+                                className={`btn btn-xs ${isActive ? 'btn-primary' : 'btn-outline'}`}
+                                onClick={() => toggleMobilePeriodRow(option.period)}
+                              >
+                                {isActive ? `Remove ${option.label}` : `Add ${option.label}`}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {mobilePeriodRows.some((row) => row.period === 'currentMonth') && (
+                          <div className="flex items-center gap-2 mt-3 text-xs text-gray-600">
+                            <span className="font-semibold text-gray-700">Month:</span>
+                            <select
+                              className="select select-xs select-bordered w-auto"
+                              value={selectedMonth}
+                              onChange={(e) => setSelectedMonth(e.target.value)}
                             >
                               {months.map((month) => (
-                                <button
-                                  key={month}
-                                  onClick={() => {
-                                    setSelectedMonth(month);
-                                    setMobileCardPeriod('currentMonth');
-                                    const dropdown = document.getElementById('month-dropdown-mobile');
-                                    if (dropdown) {
-                                      dropdown.classList.add('hidden');
-                                    }
-                                  }}
-                                  className={`w-full text-left px-3 py-2 text-xs hover:bg-gray-100 transition-colors ${
-                                    selectedMonth === month ? 'bg-blue-50 text-blue-600 font-medium' : 'text-gray-700'
-                                  }`}
-                                >
-                                  {month}
-                                </button>
+                                <option key={month} value={month}>{month}</option>
                               ))}
-                            </div>
+                            </select>
                           </div>
-                          <button
-                            onClick={() => setMobileCardPeriod('target')}
-                            className={`px-3 py-2 rounded-lg text-xs font-medium transition-all duration-200 ${
-                              mobileCardPeriod === 'target'
-                                ? 'bg-gradient-to-r from-emerald-500 to-teal-600 text-white shadow-md'
-                                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
-                            }`}
-                          >
-                            Target
-                          </button>
+                        )}
+
+                        <div className="-mx-2 overflow-x-auto pb-2 mt-2">
+                          <div className="flex flex-col gap-3 px-2 min-w-max">
+                            {mobilePeriodRows.map((row) => {
+                              const periodInfo = getMobilePeriodInfo(row.period);
+                              return (
+                                <div key={row.id} className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+                                  <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
+                                    <div className="flex items-center gap-2">
+                                      <div className={`w-2 h-2 rounded-full ${periodInfo.dotColor}`}></div>
+                                      <span className="font-semibold text-slate-800 uppercase tracking-wide">{periodInfo.label}</span>
+                                    </div>
+                                    {mobilePeriodRows.length > 1 && (
+                                      <button
+                                        className="btn btn-ghost btn-xs"
+                                        onClick={() => toggleMobilePeriodRow(row.period)}
+                                      >
+                                        Remove
+                                      </button>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-3 px-4 py-3 flex-nowrap">
+                                    {mobileCategories.map((category) => {
+                                      const periodData = getMobilePeriodData(row.period, category);
+                                      const cardKey = `${row.id}-${category}`;
+                                      const isFlipped = flippedCards.has(cardKey);
+                                      const percentage = periodData.expected > 0
+                                        ? Math.min(100, Math.round((periodData.amount / periodData.expected) * 100))
+                                        : 0;
+                                      const chartData = departmentChartData[category] || [];
+
+                                      return (
+                                        <div
+                                          key={cardKey}
+                                          className="relative h-64 min-w-[260px] flex-shrink-0"
+                                          style={{ perspective: '1000px' }}
+                                        >
+                                          <div
+                                            className="relative w-full h-full transition-transform duration-700 cursor-pointer"
+                                            style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
+                                            onClick={() => handleCardFlip(cardKey)}
+                                          >
+                                            <div
+                                              className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
+                                              style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
+                                            >
+                                              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                                                <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
+                                                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{periodInfo.label}</span>
+                                              </div>
+                                              <div className="p-4">
+                                                <div className={`bg-gradient-to-br ${periodInfo.gradient} rounded-lg p-4 border border-opacity-20 shadow-md`}>
+                                                  <div className="flex items-center gap-2 mb-3">
+                                                    <div className={`w-2.5 h-2.5 ${periodInfo.dotColor} rounded-full shadow-sm`}></div>
+                                                    <span className="text-xs font-semibold text-white uppercase tracking-wide">{periodInfo.label}</span>
+                                                  </div>
+                                                  <div className="space-y-2">
+                                                    <div>
+                                                      <div className="text-2xl font-bold text-white mb-1">{periodData.count}</div>
+                                                      <div className="text-xs font-medium text-white/90">Contracts</div>
+                                                    </div>
+                                                    <div className="pt-2 border-t border-white/20">
+                                                      <div className="text-lg font-bold text-white mb-1">₪{periodData.amount ? Math.ceil(periodData.amount).toLocaleString() : '0'}</div>
+                                                      <div className="text-xs font-medium text-white/90">Amount</div>
+                                                    </div>
+                                                    {row.period === 'target' ? (
+                                                      <div className="pt-2 border-t border-white/20">
+                                                        <div className="flex items-center justify-between mb-1">
+                                                          <span className="text-xs font-medium text-white/90">Progress</span>
+                                                          <span className="text-xs font-bold text-white">{percentage}%</span>
+                                                        </div>
+                                                        <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden">
+                                                          <div className="h-full bg-white rounded-full transition-all duration-500" style={{ width: `${percentage}%` }}></div>
+                                                        </div>
+                                                        <div className="text-xs font-medium text-white/80 mt-1">Target: ₪{periodData.expected ? Math.ceil(periodData.expected).toLocaleString() : '0'}</div>
+                                                      </div>
+                                                    ) : (
+                                                      periodData.expected > 0 && (
+                                                        <div className="pt-2 border-t border-white/20">
+                                                          <div className="flex items-center justify-between mb-1">
+                                                            <span className="text-xs font-medium text-white/90">Target</span>
+                                                            <span className="text-xs font-bold text-white">₪{Math.ceil(periodData.expected).toLocaleString()}</span>
+                                                          </div>
+                                                          <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden mt-1">
+                                                            <div className="h-full bg-white rounded-full transition-all duration-500" style={{ width: `${percentage}%` }}></div>
+                                                          </div>
+                                                        </div>
+                                                      )
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                            <div
+                                              className={`absolute inset-0 bg-gradient-to-br ${periodInfo.gradient} rounded-xl border border-opacity-30 shadow-lg overflow-hidden`}
+                                              style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+                                            >
+                                              <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
+                                                <h4 className="text-sm font-semibold text-white">{category}</h4>
+                                                <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">{periodInfo.label}</span>
+                                              </div>
+                                              <div className="p-4 h-full">
+                                                <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
+                                                  {chartData && chartData.length > 0 ? (
+                                                    <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
+                                                      <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                                        <XAxis
+                                                          dataKey="date"
+                                                          tick={{ fontSize: 10, fill: 'white' }}
+                                                          axisLine={{ stroke: 'white' }}
+                                                          tickLine={{ stroke: 'white' }}
+                                                          interval={Math.floor(chartData.length / 6)}
+                                                        />
+                                                        <YAxis
+                                                          tick={{ fontSize: 10, fill: 'white' }}
+                                                          axisLine={{ stroke: 'white' }}
+                                                          tickLine={{ stroke: 'white' }}
+                                                          width={40}
+                                                        />
+                                                        <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
+                                                        <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
+                                                      </LineChart>
+                                                    </ResponsiveContainer>
+                                                  ) : (
+                                                    <div className="flex items-center justify-center h-full text-white/70 text-xs">
+                                                      No trend data yet
+                                                    </div>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
-                      
-                      {/* Cards Grid */}
-                      <div className="grid grid-cols-1 gap-4">
-                        {scoreboardCategories.map((category, index) => {
-                          const todayData = agreementData["Today"]?.[index] || { count: 0, amount: 0, expected: 0 };
-                          const last30Data = agreementData["Last 30d"]?.[index] || { count: 0, amount: 0, expected: 0 };
-                          const monthData = agreementData[selectedMonth]?.[index] || { count: 0, amount: 0, expected: 0 };
-                          const targetData = { count: 0, amount: 0, expected: todayData.expected || last30Data.expected || monthData.expected };
-                          
-                          // Get data based on selected period
-                          const getPeriodData = () => {
-                            switch (mobileCardPeriod) {
-                              case 'today':
-                                return todayData;
-                              case 'last30d':
-                                return last30Data;
-                              case 'currentMonth':
-                                return monthData;
-                              case 'target':
-                                return targetData;
-                              default:
-                                return todayData;
-                            }
-                          };
-                          
-                          const periodData = getPeriodData();
-                          const isFlipped = flippedCards.has(category);
-                          
-                          // Calculate percentage for target
-                          const percentage = periodData.expected > 0 
-                            ? Math.min(100, Math.round((periodData.amount / periodData.expected) * 100))
-                            : 0;
-                          
-                          // Get period label and color
-                          const getPeriodInfo = () => {
-                            switch (mobileCardPeriod) {
-                              case 'today':
-                                return { label: 'Today', color: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
-                              case 'last30d':
-                                return { label: 'Last 30d', color: 'from-purple-500 to-indigo-600', dotColor: 'bg-purple-500' };
-                              case 'currentMonth':
-                                return { label: selectedMonth, color: 'from-blue-500 to-cyan-600', dotColor: 'bg-blue-500' };
-                              case 'target':
-                                return { label: 'Target', color: 'from-emerald-500 to-teal-600', dotColor: 'bg-emerald-500' };
-                              default:
-                                return { label: 'Today', color: 'from-indigo-500 to-purple-600', dotColor: 'bg-indigo-500' };
-                            }
-                          };
-                          
-                          const periodInfo = getPeriodInfo();
-                          
-                          return (
-                            <div key={category} className="relative h-64" style={{ perspective: '1000px' }}>
-                              <div className="relative w-full h-full transition-transform duration-700 cursor-pointer" style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }} onClick={() => handleCardFlip(category)}>
-                                {/* Front of card */}
-                                <div className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden group" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}>
-                                  <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
-                                    <h4 className="text-sm font-semibold text-slate-800 text-center">{category}</h4>
-                                  </div>
-                                  <div className="p-4">
-                                    <div className={`bg-gradient-to-br ${periodInfo.color} rounded-lg p-4 border border-opacity-20 shadow-md`}>
-                                      <div className="flex items-center gap-2 mb-3">
-                                        <div className={`w-2.5 h-2.5 ${periodInfo.dotColor} rounded-full shadow-sm`}></div>
-                                        <span className="text-xs font-semibold text-white uppercase tracking-wide">{periodInfo.label}</span>
-                                      </div>
-                                      <div className="space-y-2">
-                                        <div>
-                                          <div className="text-2xl font-bold text-white mb-1">{periodData.count}</div>
-                                          <div className="text-xs font-medium text-white/90">Contracts</div>
-                                        </div>
-                                        <div className="pt-2 border-t border-white/20">
-                                          <div className="text-lg font-bold text-white mb-1">₪{periodData.amount ? Math.ceil(periodData.amount).toLocaleString() : '0'}</div>
-                                          <div className="text-xs font-medium text-white/90">Amount</div>
-                                        </div>
-                                        {mobileCardPeriod === 'target' && (
-                                          <div className="pt-2 border-t border-white/20">
-                                            <div className="flex items-center justify-between mb-1">
-                                              <span className="text-xs font-medium text-white/90">Progress</span>
-                                              <span className="text-xs font-bold text-white">{percentage}%</span>
-                                            </div>
-                                            <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden">
-                                              <div 
-                                                className={`h-full bg-white rounded-full transition-all duration-500 ${periodInfo.color}`}
-                                                style={{ width: `${percentage}%` }}
-                                              ></div>
-                                            </div>
-                                            <div className="text-xs font-medium text-white/80 mt-1">Target: ₪{periodData.expected ? Math.ceil(periodData.expected).toLocaleString() : '0'}</div>
-                                          </div>
-                                        )}
-                                        {mobileCardPeriod !== 'target' && periodData.expected > 0 && (
-                                          <div className="pt-2 border-t border-white/20">
-                                            <div className="flex items-center justify-between mb-1">
-                                              <span className="text-xs font-medium text-white/90">Target</span>
-                                              <span className="text-xs font-bold text-white">₪{Math.ceil(periodData.expected).toLocaleString()}</span>
-                                            </div>
-                                            <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden mt-1">
-                                              <div 
-                                                className={`h-full bg-white rounded-full transition-all duration-500`}
-                                                style={{ width: `${percentage}%` }}
-                                              ></div>
-                                            </div>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                                
-                                {/* Back of card - Chart */}
-                                <div className={`absolute inset-0 bg-gradient-to-br ${periodInfo.color} rounded-xl border border-opacity-30 shadow-lg overflow-hidden`} style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
-                                  <div className="px-4 py-3 bg-white/10 border-b border-white/20">
-                                    <h4 className="text-sm font-semibold text-white text-center">{category} - {periodInfo.label} Trend</h4>
-                                  </div>
-                                  <div className="p-4 h-full">
-                                    <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
-                                      {(() => {
-                                        // Use real chart data if available, otherwise fallback to empty
-                                        const realChartData = departmentChartData[category];
-                                        const chartData = realChartData && realChartData.length > 0 
-                                          ? realChartData 
-                                          : [];
-                                        
-                                        return chartData && chartData.length > 0 ? (
-                                          <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
-                                            <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                              <XAxis 
-                                                dataKey="date" 
-                                                tick={{ fontSize: 10, fill: 'white' }} 
-                                                axisLine={{ stroke: 'white' }} 
-                                                tickLine={{ stroke: 'white' }} 
-                                                interval={Math.floor(chartData.length / 6)} 
-                                              />
-                                              <YAxis 
-                                                tick={{ fontSize: 10, fill: 'white' }} 
-                                                axisLine={{ stroke: 'white' }} 
-                                                tickLine={{ stroke: 'white' }} 
-                                                width={25} 
-                                              />
-                                              <Tooltip 
-                                                contentStyle={{ background: 'rgba(255,255,255,0.98)', borderRadius: 12, border: '1px solid #e5e7eb' }} 
-                                                itemStyle={{ color: '#6366f1', fontWeight: 600 }}
-                                                formatter={(value: number) => [value, 'Contracts']}
-                                              />
-                                              <Line 
-                                                type="monotone" 
-                                                dataKey="contracts" 
-                                                stroke="#ffffff" 
-                                                strokeWidth={3} 
-                                                dot={{ r: 3, fill: '#fff' }} 
-                                              />
-                                            </LineChart>
-                                          </ResponsiveContainer>
-                                        ) : (
-                                          <div className="flex items-center justify-center h-full text-white/70 text-sm">
-                                            No data available
-                                          </div>
-                                        );
-                                      })()}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
                       </div>
                     </div>
                   )}
@@ -5689,17 +6334,4 @@ const Dashboard: React.FC = () => {
   );
 };
 
-// Glassy card style
-// Add this style globally or in the component
-<style>{`
-  .glass-card {
-    background: rgba(255,255,255,0.60);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border-radius: 1rem;
-    box-shadow: 0 4px 24px 0 rgba(0,0,0,0.08), 0 1.5px 8px 0 rgba(0,0,0,0.04);
-    padding: 1.5rem;
-  }
-`}</style>
-
-export default Dashboard; 
+export default Dashboard;

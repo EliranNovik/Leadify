@@ -212,7 +212,7 @@ class GraphMailboxSyncService {
 
     console.log(`📬 Graph sync: fetched ${messages.length} messages for ${mailboxAddress}${deltaLink ? ' (delta)' : ''}`);
 
-    const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages);
+    const stored = await this.persistMessages(resolvedUserId, mailboxAddress, messages, tokenResponse.accessToken);
 
     await mailboxStateService.upsertState(resolvedUserId, {
       delta_link: nextDeltaLink || deltaLink || null,
@@ -360,7 +360,7 @@ class GraphMailboxSyncService {
     return { messages, nextDeltaLink: nextLink };
   }
 
-  async persistMessages(userId, mailboxAddress, messages = []) {
+  async persistMessages(userId, mailboxAddress, messages = [], accessToken = null) {
     if (!messages.length) {
       return { processed: 0, inserted: 0, skipped: 0, trackedCount: 0 };
     }
@@ -386,6 +386,9 @@ class GraphMailboxSyncService {
       const direction = senderEmail === normalizedMailbox ? 'outgoing' : 'incoming';
       const sentAt = msg.sentDateTime || msg.receivedDateTime || new Date().toISOString();
 
+      // Note: bodyPreview from Graph API is truncated (usually ~255 chars)
+      // We'll fetch the full body separately and update it
+      // For now, store the preview but mark that we need to fetch the full body
       return {
         message_id: msg.id,
         user_id: userId,
@@ -393,13 +396,14 @@ class GraphMailboxSyncService {
         sender_email: senderEmail || normalizedMailbox || null,
         recipient_list: recipientList,
         subject: msg.subject || '(no subject)',
-        body_html: '',
-        body_preview: msg.bodyPreview || '',
+        body_html: '', // Will be populated when full body is fetched
+        body_preview: msg.bodyPreview || '', // Truncated preview from Graph API
         sent_at: sentAt,
         direction,
         attachments: msg.hasAttachments ? [] : null,
         client_id: null,
         legacy_id: null,
+        body_cached: false, // Flag to indicate full body needs to be fetched
       };
     });
 
@@ -569,6 +573,15 @@ class GraphMailboxSyncService {
       throw new Error('Unable to store email headers');
     }
 
+    // After storing headers, fetch full bodies for messages that need them
+    // This runs asynchronously so it doesn't block the sync
+    if (accessToken) {
+      this.fetchFullBodiesForMessages(userId, mailboxAddress, rows, accessToken).catch(err => {
+        console.error('⚠️  Error fetching full email bodies:', err.message || err);
+        // Don't throw - this is a background operation
+      });
+    }
+
     console.log(`📥 Stored ${rows.length} emails (processed ${messages.length})`);
 
     return {
@@ -577,6 +590,81 @@ class GraphMailboxSyncService {
       skipped: 0,
       trackedCount: 0,
     };
+  }
+
+  // Fetch full email bodies for messages that only have truncated previews
+  async fetchFullBodiesForMessages(userId, mailboxAddress, emailRows, accessToken) {
+    if (!emailRows || emailRows.length === 0 || !accessToken) return;
+
+    console.log(`📧 Fetching full bodies for ${emailRows.length} email(s)...`);
+
+    // Fetch full bodies in parallel (but limit concurrency to avoid rate limits)
+    const BATCH_SIZE = 5;
+    for (let i = 0; i < emailRows.length; i += BATCH_SIZE) {
+      const batch = emailRows.slice(i, i + BATCH_SIZE);
+      
+      await Promise.all(
+        batch.map(async (row) => {
+          try {
+            // Fetch full body from Graph API
+            const message = await fetchJson(
+              `${GRAPH_BASE_URL}/users/${mailboxAddress}/messages/${row.message_id}?$select=body`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                },
+              }
+            );
+
+            const fullBody = message.body?.content || '';
+            
+            if (!fullBody || fullBody.trim().length === 0) {
+              // If no body content, keep the preview
+              return;
+            }
+
+            // Update both body_html and body_preview with full content
+            const { error: updateError } = await supabase
+              .from(EMAIL_HEADERS_TABLE)
+              .update({
+                body_html: fullBody,
+                body_preview: fullBody, // Store full content in preview too
+                body_cached: true,
+              })
+              .eq('message_id', row.message_id);
+
+            if (updateError) {
+              console.error(`⚠️  Failed to update body for ${row.message_id}:`, updateError.message);
+            } else {
+              // Also store in email_bodies table for consistency
+              const { data: headerData } = await supabase
+                .from(EMAIL_HEADERS_TABLE)
+                .select('id')
+                .eq('message_id', row.message_id)
+                .single();
+
+              if (headerData?.id) {
+                await supabase.from(EMAIL_BODIES_TABLE).upsert({
+                  email_id: headerData.id,
+                  body_html: fullBody,
+                  updated_at: new Date().toISOString(),
+                });
+              }
+            }
+          } catch (err) {
+            console.error(`⚠️  Error fetching body for ${row.message_id}:`, err.message || err);
+            // Continue with other messages even if one fails
+          }
+        })
+      );
+
+      // Small delay between batches to avoid rate limiting
+      if (i + BATCH_SIZE < emailRows.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
+
+    console.log(`✅ Finished fetching full bodies for ${emailRows.length} email(s)`);
   }
 
   matchesAllowList(addresses, allowList) {

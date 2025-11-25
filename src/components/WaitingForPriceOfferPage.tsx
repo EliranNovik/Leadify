@@ -6,20 +6,12 @@ import {
   MagnifyingGlassIcon
 } from '@heroicons/react/24/outline';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
-
-interface LeadRow {
-  id: string;
-  lead_number: string;
-  client_name: string;
-  category: string;
-  topic: string;
-  manager: string;
-  helper: string;
-  meeting_date: string | null;
-  lead_type: 'new' | 'legacy';
-  applicants: number | null;
-  value: string | null;
-}
+import {
+  formatCategoryDisplayName,
+  getCurrencySymbol,
+  WAITING_STAGE_TARGET,
+  WaitingLeadRow as LeadRow,
+} from '../lib/waitingForPriceOffer';
 
 const WaitingForPriceOfferPage: React.FC = () => {
   const navigate = useNavigate();
@@ -37,39 +29,6 @@ const WaitingForPriceOfferPage: React.FC = () => {
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [filteredCategoryOptions, setFilteredCategoryOptions] = useState<string[]>([]);
   const [waitingStageIds, setWaitingStageIds] = useState<number[]>([]);
-  const WAITING_STAGE_TARGET = 'Waiting for Mtng sum';
-
-  // Helper function to get category display name with main category (like Calendar)
-  const getCategoryDisplayName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
-    if (!categoryId || categoryId === '---' || categoryId === '--') {
-      if (fallbackCategory && fallbackCategory.trim() !== '') {
-        const foundCategory = allCategories.find((cat: any) => 
-          cat.name.toLowerCase().trim() === fallbackCategory.toLowerCase().trim()
-        );
-        if (foundCategory) {
-          if (foundCategory.misc_maincategory?.name) {
-            return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
-          } else {
-            return foundCategory.name;
-          }
-        } else {
-          return fallbackCategory;
-        }
-      }
-      return 'Not specified';
-    }
-    
-    const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
-    if (category) {
-      if (category.misc_maincategory?.name) {
-        return `${category.name} (${category.misc_maincategory.name})`;
-      } else {
-        return category.name;
-      }
-    }
-    
-    return fallbackCategory || 'Not specified';
-  };
 
   // Fetch user's employee ID and display name
   useEffect(() => {
@@ -246,15 +205,6 @@ const WaitingForPriceOfferPage: React.FC = () => {
     fetchCurrencies();
   }, []);
 
-  // Helper function to get currency symbol
-  const getCurrencySymbol = (currencyId: number | null | undefined, currencyCode?: string) => {
-    if (currencyCode) return currencyCode;
-    if (currencyId && currencyMap.has(currencyId)) {
-      return currencyMap.get(currencyId) || '₪';
-    }
-    return '₪';
-  };
-
   // Fetch leads
   useEffect(() => {
     const fetchLeads = async () => {
@@ -357,7 +307,7 @@ const WaitingForPriceOfferPage: React.FC = () => {
 
             // Format value
             const balance = lead.balance ? parseFloat(String(lead.balance)) : null;
-            const currency = getCurrencySymbol(null, lead.balance_currency);
+            const currency = getCurrencySymbol(currencyMap, null, lead.balance_currency);
             const valueStr = balance !== null && !isNaN(balance) 
               ? `${balance.toLocaleString()} ${currency}`
               : null;
@@ -366,7 +316,7 @@ const WaitingForPriceOfferPage: React.FC = () => {
               id: lead.id,
               lead_number: lead.lead_number || '',
               client_name: lead.name || '',
-              category: getCategoryDisplayName(lead.category_id, lead.category),
+              category: formatCategoryDisplayName(allCategories, lead.category_id, lead.category),
               topic: lead.topic || 'Not specified',
               manager: typeof lead.manager === 'string' 
                 ? lead.manager 
@@ -434,7 +384,7 @@ const WaitingForPriceOfferPage: React.FC = () => {
 
             // Format value
             const total = lead.total ? parseFloat(String(lead.total)) : null;
-            const currency = getCurrencySymbol(lead.currency_id);
+            const currency = getCurrencySymbol(currencyMap, lead.currency_id);
             const valueStr = total !== null && !isNaN(total) 
               ? `${total.toLocaleString()} ${currency}`
               : null;
@@ -443,7 +393,7 @@ const WaitingForPriceOfferPage: React.FC = () => {
               id: `legacy_${lead.id}`,
               lead_number: lead.id?.toString() || '',
               client_name: lead.name || '',
-              category: getCategoryDisplayName(lead.category_id, lead.category),
+              category: formatCategoryDisplayName(allCategories, lead.category_id, lead.category),
               topic: lead.topic || 'Not specified',
               manager: lead.meeting_manager_id 
                 ? (employeeNameMap.get(lead.meeting_manager_id) || 'Unknown')
@@ -582,8 +532,8 @@ const WaitingForPriceOfferPage: React.FC = () => {
       </div>
       <div className="overflow-x-auto">
         <table className="table w-full">
-          <thead>
-            <tr className="bg-gray-50">
+            <thead>
+            <tr className="bg-white border-b border-gray-200">
               <th className="font-semibold text-gray-700">Lead</th>
               <th className="font-semibold text-gray-700">Category</th>
               <th className="font-semibold text-gray-700">Topic</th>

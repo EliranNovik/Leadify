@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { appendEmailSignature } from '../lib/emailSignature';
-import { sendEmailViaBackend, downloadAttachmentFromBackend } from '../lib/mailboxApi';
+import { sendEmailViaBackend, downloadAttachmentFromBackend, fetchEmailBodyFromBackend } from '../lib/mailboxApi';
 import {
   MagnifyingGlassIcon,
   XMarkIcon,
@@ -334,32 +334,165 @@ const EmailThreadLeadPage: React.FC = () => {
 
       const outgoingData = outgoingRaw || [];
 
-      const formatMessage = (email: any): EmailMessage => ({
-        id: email.message_id || email.id,
-        message_id: email.message_id || email.id,
-        subject: email.subject || 'No Subject',
-        body_html: email.body_html,
-        body_preview: email.body_preview || email.body_html,
-        sender_name: email.sender_name || selectedLead.sender_name,
-        sender_email: email.sender_email || selectedLead.sender_email,
-        recipient_list: email.recipient_list || '',
-        sent_at: email.sent_at,
-        direction: email.direction === 'outgoing' ? 'outgoing' : 'incoming',
-        attachments: email.attachments || [],
-      });
+      const formatMessage = (email: any): EmailMessage => {
+        // Parse attachments from JSONB - it might be a string or already an array
+        let parsedAttachments: any[] = [];
+        if (email.attachments) {
+          try {
+            // If it's a string, parse it
+            if (typeof email.attachments === 'string') {
+              parsedAttachments = JSON.parse(email.attachments);
+            } 
+            // If it's already an array, use it directly
+            else if (Array.isArray(email.attachments)) {
+              parsedAttachments = email.attachments;
+            }
+            // If it's an object with a value property (Graph API format), extract the array
+            else if (email.attachments.value && Array.isArray(email.attachments.value)) {
+              parsedAttachments = email.attachments.value;
+            }
+            // If it's a single object, wrap it in an array
+            else if (typeof email.attachments === 'object') {
+              parsedAttachments = [email.attachments];
+            }
+          } catch (e) {
+            console.error('Error parsing attachments:', e, email.attachments);
+            parsedAttachments = [];
+          }
+        }
+        
+        // Filter out inline attachments that shouldn't be displayed as separate attachments
+        parsedAttachments = parsedAttachments.filter((att: any) => {
+          // Only show non-inline attachments or if isInline is false/undefined
+          return att && !att.isInline && att.name;
+        });
+
+        return {
+          id: email.message_id || email.id,
+          message_id: email.message_id || email.id,
+          subject: email.subject || 'No Subject',
+          body_html: email.body_html,
+          body_preview: email.body_preview || email.body_html,
+          sender_name: email.sender_name || selectedLead.sender_name,
+          sender_email: email.sender_email || selectedLead.sender_email,
+          recipient_list: email.recipient_list || '',
+          sent_at: email.sent_at,
+          direction: email.direction === 'outgoing' ? 'outgoing' : 'incoming',
+          attachments: parsedAttachments,
+        };
+      };
 
       const combinedMessages = [...(incomingData || []), ...outgoingData]
         .map(formatMessage)
         .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
 
+      // Debug: Log messages with attachments
+      const messagesWithAttachments = combinedMessages.filter(msg => msg.attachments && msg.attachments.length > 0);
+      if (messagesWithAttachments.length > 0) {
+        console.log('📎 Messages with attachments found:', messagesWithAttachments.length);
+        messagesWithAttachments.forEach((msg, idx) => {
+          if (idx < 3) { // Only log first 3
+            console.log(`  Message ${idx + 1}:`, {
+              subject: msg.subject,
+              attachments: msg.attachments,
+              attachmentCount: msg.attachments.length
+            });
+          }
+        });
+      } else {
+        console.log('📎 No messages with attachments found. Sample email data:', incomingData?.[0]);
+      }
+
       setMessages(combinedMessages);
       await markEmailsAsRead(selectedLead.sender_email);
+      
+      // Hydrate email bodies if they're missing or truncated
+      if (userId && combinedMessages.length > 0) {
+        hydrateEmailBodies(combinedMessages);
+      }
     } catch (error) {
       console.error('Error fetching messages:', error);
     } finally {
       setChatLoading(false);
     }
-  }, [selectedLead, markEmailsAsRead, userEmail]);
+  }, [selectedLead, markEmailsAsRead, userEmail, userId]);
+
+  // Hydrate email bodies that are missing or truncated
+  const hydrateEmailBodies = useCallback(async (messages: EmailMessage[]) => {
+    if (!messages || messages.length === 0) return;
+    if (!userId) return;
+
+    // Check which messages need hydration (empty body_html or truncated body_preview)
+    const requiresHydration = messages.filter(message => {
+      const body = (message.body_html || '').trim();
+      const preview = (message.body_preview || '').trim();
+      
+      // If both are empty or very short, need hydration
+      if (!body && !preview) return true;
+      
+      // If body_html is empty and preview is short or matches subject, need hydration
+      if (!body && preview) {
+        const normalised = preview.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim();
+        // If preview is too short or just the subject, fetch full body
+        if (normalised.length < 50 || normalised === message.subject || preview.endsWith('...') || preview.endsWith('…')) {
+          return true;
+        }
+      }
+      
+      return false;
+    });
+
+    if (requiresHydration.length === 0) return;
+
+    console.log(`📧 Hydrating ${requiresHydration.length} email body(ies)...`);
+
+    const updates: Record<string, { html: string; preview: string }> = {};
+
+    await Promise.all(
+      requiresHydration.map(async message => {
+        const messageId = message.message_id || message.id;
+        if (!messageId) return;
+        
+        try {
+          const rawContent = await fetchEmailBodyFromBackend(userId, messageId);
+          if (!rawContent || typeof rawContent !== 'string') return;
+
+          // Store the raw content as both html and preview
+          updates[messageId] = {
+            html: rawContent,
+            preview: rawContent,
+          };
+
+          // Update the database
+          await supabase
+            .from('emails')
+            .update({ body_html: rawContent, body_preview: rawContent })
+            .eq('message_id', messageId);
+
+          console.log(`✅ Hydrated body for message: ${message.subject?.substring(0, 50)}...`);
+        } catch (err) {
+          console.warn('⚠️ Failed to hydrate email body from backend:', err);
+        }
+      })
+    );
+
+    // Update the messages state with hydrated bodies
+    if (Object.keys(updates).length > 0) {
+      setMessages(prev =>
+        prev.map(message => {
+          const messageId = message.message_id || message.id;
+          const update = updates[messageId];
+          if (!update) return message;
+          
+          return {
+            ...message,
+            body_html: update.html,
+            body_preview: update.preview,
+          };
+        })
+      );
+    }
+  }, [userId]);
 
   useEffect(() => {
     fetchMessages();
@@ -1468,7 +1601,7 @@ const EmailThreadLeadPage: React.FC = () => {
                         <React.Fragment key={message.id || index}>
                           {showDateSeparator && (
                             <div className="flex justify-center my-4">
-                              <div className="bg-gray-100 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full">
+                              <div className="bg-white border border-gray-200 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full shadow-sm">
                                 {formatDateSeparator(message.sent_at)}
                               </div>
                             </div>
@@ -1479,7 +1612,7 @@ const EmailThreadLeadPage: React.FC = () => {
                               {isOutgoing ? (currentUserFullName || userEmail || 'You') : (message.sender_name || selectedLead?.sender_name || 'Sender')}
                             </div>
                             <div
-                              className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900 overflow-hidden"
+                              className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
                               style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                             >
                               <div className="mb-2">
@@ -1509,30 +1642,43 @@ const EmailThreadLeadPage: React.FC = () => {
                                 <div className="text-gray-500 italic">No content available</div>
                               )}
 
-                              {message.attachments && message.attachments.length > 0 && (
+                              {message.attachments && Array.isArray(message.attachments) && message.attachments.length > 0 && (
                                 <div className="mt-3 pt-3 border-t border-gray-200">
-                                  <div className="text-xs font-medium text-gray-600 mb-2">Attachments:</div>
+                                  <div className="text-xs font-medium text-gray-600 mb-2">
+                                    Attachments ({message.attachments.length}):
+                                  </div>
                                   <div className="space-y-1">
-                                    {message.attachments.map((attachment, idx) => {
-                                      const attachmentKey = attachment.id || `${message.id}-${idx}`;
+                                    {message.attachments.map((attachment: any, idx: number) => {
+                                      if (!attachment || (!attachment.id && !attachment.name)) {
+                                        return null; // Skip invalid attachments
+                                      }
+                                      
+                                      const attachmentKey = attachment.id || attachment.name || `${message.id}-${idx}`;
+                                      const attachmentName = attachment.name || `Attachment ${idx + 1}`;
                                       const isDownloading =
                                         attachment.id && downloadingAttachments[attachment.id];
+                                      
                                       return (
                                         <button
                                           key={attachmentKey}
                                           type="button"
-                                          className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors"
+                                          className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors w-full text-left"
                                           onClick={() => handleAttachmentDownload(message, attachment)}
                                           disabled={Boolean(isDownloading)}
                                         >
                                           {isDownloading ? (
                                             <span className="loading loading-spinner loading-xs text-blue-500" />
                                           ) : (
-                                            <DocumentTextIcon className="w-4 h-4" />
+                                            <DocumentTextIcon className="w-4 h-4 flex-shrink-0" />
                                           )}
-                                          <span className="truncate">
-                                            {attachment.name || 'Attachment'}
+                                          <span className="truncate flex-1">
+                                            {attachmentName}
                                           </span>
+                                          {attachment.size && (
+                                            <span className="text-xs text-gray-500 flex-shrink-0">
+                                              ({(attachment.size / 1024).toFixed(1)} KB)
+                                            </span>
+                                          )}
                                         </button>
                                       );
                                     })}

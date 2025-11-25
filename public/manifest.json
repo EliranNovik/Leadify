@@ -1,7 +1,7 @@
 {
-  "name": "RMQ 2.0",
+  "name": "Rainmaker Queen 2.0",
   "short_name": "RMQ 2.0",
-  "description": "RMQ 2.0 - Customer Relationship Management System",
+  "description": "RMQ 2.0 - CRM System",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",
@@ -10,49 +10,49 @@
   "scope": "/",
   "icons": [
     {
-      "src": "/icon-72x72.png",
+      "src": "/rmq-logo.png",
       "sizes": "72x72",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-96x96.png",
+      "src": "/rmq-logo.png",
       "sizes": "96x96",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-128x128.png",
+      "src": "/rmq-logo.png",
       "sizes": "128x128",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-144x144.png",
+      "src": "/rmq-logo.png",
       "sizes": "144x144",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-152x152.png",
+      "src": "/rmq-logo.png",
       "sizes": "152x152",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-192x192.png",
+      "src": "/rmq-logo.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-384x384.png",
+      "src": "/rmq-logo.png",
       "sizes": "384x384",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/icon-512x512.png",
+      "src": "/rmq-logo.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
@@ -66,28 +66,28 @@
       "short_name": "Dashboard",
       "description": "View your dashboard",
       "url": "/dashboard",
-      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
     },
     {
       "name": "New Lead",
       "short_name": "New Lead",
       "description": "Create a new lead",
       "url": "/create",
-      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
     },
     {
       "name": "Calendar",
       "short_name": "Calendar",
       "description": "View your calendar",
       "url": "/calendar",
-      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
     },
     {
       "name": "Clients",
       "short_name": "Clients",
       "description": "View all clients",
       "url": "/clients",
-      "icons": [{ "src": "/icon-96x96.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
     }
   ],
   "share_target": {
