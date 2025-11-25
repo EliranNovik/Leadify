@@ -1112,6 +1112,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
   
+  // Mobile input focus state
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  
   // Mobile dropdown state
   const [showMobileDropdown, setShowMobileDropdown] = useState(false);
   
@@ -1125,7 +1129,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   }, [messages, shouldAutoScroll]);
 
-  // Handle click outside to close emoji picker and mobile dropdown
+  // Expand textarea on mobile when template or AI content is added
+  useEffect(() => {
+    if (isMobile && textareaRef.current && (selectedTemplate || aiSuggestions.length > 0 || newMessage.length > 100)) {
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+        }
+      }, 0);
+    }
+  }, [newMessage, selectedTemplate, aiSuggestions, isMobile]);
+
+  // Handle click outside to close emoji picker and mobile dropdown, and reset input focus
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
@@ -1141,13 +1157,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           setShowMobileDropdown(false);
         }
       }
+      
+      // Reset input focus on mobile when clicking outside the input area
+      if (isMobile && isInputFocused && textareaRef.current) {
+        if (!target.closest('textarea') && !target.closest('form')) {
+          setIsInputFocused(false);
+          textareaRef.current.blur();
+        }
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEmojiPickerOpen, showMobileDropdown]);
+  }, [isEmojiPickerOpen, showMobileDropdown, isMobile, isInputFocused]);
 
   // Handle search input changes - now only filters fetched clients (no API calls)
   // Removed the searchLeads API call - search now only filters through existing clients
@@ -1544,6 +1568,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       setShouldAutoScroll(true); // Trigger auto-scroll when new message is sent
       setNewMessage('');
       setSelectedTemplate(null); // Clear template selection after sending
+      // Reset mobile input focus state
+      if (isMobile) {
+        setIsInputFocused(false);
+        textareaRef.current?.blur();
+      }
       toast.success('Message sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending message:', error);
@@ -1783,6 +1812,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     setNewMessage(suggestion);
     setShowAISuggestions(false);
     setAiSuggestions([]);
+    // Expand textarea on mobile when AI suggestion is applied
+    if (isMobile && textareaRef.current) {
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+        }
+      }, 0);
+    }
   };
 
   // Handle edit message
@@ -2898,6 +2936,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             setTemplateSearchTerm('');
                             if (template.params === '0') {
                               setNewMessage(template.content || '');
+                              // Expand textarea on mobile when template is applied
+                              if (isMobile && textareaRef.current) {
+                                setTimeout(() => {
+                                  if (textareaRef.current) {
+                                    textareaRef.current.style.height = 'auto';
+                                    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+                                  }
+                                }, 0);
+                              }
                             } else {
                               setNewMessage('');
                             }
@@ -3074,20 +3121,22 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
               {/* Input Area */}
               <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
-                {/* Template Icon Button */}
-                <button
-                  type="button"
-                  onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                  className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                    selectedTemplate 
-                      ? 'bg-green-500 text-white' 
-                      : isMobile 
-                        ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
-                        : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  <DocumentTextIcon className="w-5 h-5" />
-                </button>
+                {/* Template Icon Button - Hidden on mobile when input is focused */}
+                {(!isMobile || !isInputFocused) && (
+                  <button
+                    type="button"
+                    onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                    className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
+                      selectedTemplate 
+                        ? 'bg-green-500 text-white' 
+                        : isMobile 
+                          ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
+                          : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
+                    } ${isMobile && isInputFocused ? 'opacity-0 pointer-events-none w-0' : 'opacity-100'}`}
+                  >
+                    <DocumentTextIcon className="w-5 h-5" />
+                  </button>
+                )}
                 
                     {/* Mobile Dropdown Button */}
                     {isMobile ? (
@@ -3258,11 +3307,34 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                 {/* Message Input */}
                 <textarea
+                  ref={textareaRef}
                   value={newMessage}
                   onChange={(e) => {
                     setNewMessage(e.target.value);
-                    e.target.style.height = 'auto';
-                    e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                    const textarea = e.target;
+                    textarea.style.height = 'auto';
+                    // On mobile, when focused or when template/AI content is added, expand to max height
+                    if (isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0)) {
+                      textarea.style.height = `${Math.min(textarea.scrollHeight, 300)}px`;
+                    } else {
+                      textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+                    }
+                  }}
+                  onFocus={(e) => {
+                    if (isMobile) {
+                      setIsInputFocused(true);
+                      // Expand to max height when focused on mobile
+                      e.target.style.height = 'auto';
+                      e.target.style.height = `${Math.min(e.target.scrollHeight, 300)}px`;
+                    }
+                  }}
+                  onBlur={(e) => {
+                    if (isMobile) {
+                      setIsInputFocused(false);
+                      // Reset to normal height when blurred
+                      e.target.style.height = 'auto';
+                      e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                    }
                   }}
                   onKeyDown={(e) => {
                     // Let Enter create new lines
@@ -3280,15 +3352,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             : `Template: ${selectedTemplate.title}`
                           : "Type a message..."
                   }
-                  className={`flex-1 resize-none rounded-2xl transition-all ${
+                  className={`flex-1 resize-none rounded-2xl transition-all duration-300 ${
                     isMobile 
-                      ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
+                      ? `bg-white/80 backdrop-blur-md border border-gray-300/50 ${isInputFocused ? 'flex-[1.2]' : ''}` 
                       : 'textarea textarea-bordered'
                   } ${isLocked ? 'bg-gray-100/80 cursor-not-allowed' : ''}`}
                   disabled={sending || uploadingMedia || isLocked}
                   rows={1}
                   style={{ 
-                    maxHeight: '200px', 
+                    maxHeight: isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0) ? '300px' : '200px', 
                     minHeight: '40px',
                     paddingTop: '12px', 
                     paddingBottom: '12px', 
@@ -3296,7 +3368,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     paddingRight: '16px',
                     direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
                     textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left',
-                    fontSize: '15px'
+                    fontSize: '15px',
+                    transition: 'all 0.3s ease-in-out'
                   }}
                 />
                 

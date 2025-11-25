@@ -98,6 +98,53 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
+  
+  // Mobile detection
+  const [isMobile, setIsMobile] = useState(false);
+  
+  // Mobile input focus state
+  const [isInputFocused, setIsInputFocused] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  
+  // Mobile detection
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Expand textarea on mobile when template or AI content is added
+  useEffect(() => {
+    if (isMobile && textareaRef.current && (selectedTemplate || aiSuggestions.length > 0 || newMessage.length > 100)) {
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+        }
+      }, 0);
+    }
+  }, [newMessage, selectedTemplate, aiSuggestions, isMobile]);
+
+  // Handle click outside to reset input focus on mobile
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (isMobile && isInputFocused && textareaRef.current) {
+        if (!target.closest('textarea') && !target.closest('form')) {
+          setIsInputFocused(false);
+          textareaRef.current.blur();
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isMobile, isInputFocused]);
 
   // Fetch current user
   useEffect(() => {
@@ -831,6 +878,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       setShouldAutoScroll(true);
       setNewMessage('');
       setSelectedTemplate(null);
+      // Reset mobile input focus state
+      if (isMobile) {
+        setIsInputFocused(false);
+        textareaRef.current?.blur();
+      }
       
       if (onClientUpdate) {
         await onClientUpdate();
@@ -991,6 +1043,15 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     setNewMessage(suggestion);
     setShowAISuggestions(false);
     setAiSuggestions([]);
+    // Expand textarea on mobile when AI suggestion is applied
+    if (isMobile && textareaRef.current) {
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+        }
+      }, 0);
+    }
   };
 
   // Handlers
@@ -1276,6 +1337,15 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           setTemplateSearchTerm('');
                           if (template.params === '0') {
                             setNewMessage(template.content || '');
+                            // Expand textarea on mobile when template is applied
+                            if (isMobile && textareaRef.current) {
+                              setTimeout(() => {
+                                if (textareaRef.current) {
+                                  textareaRef.current.style.height = 'auto';
+                                  textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+                                }
+                              }, 0);
+                            }
                           } else {
                             setNewMessage('');
                           }
@@ -1346,19 +1416,23 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           )}
 
           {/* Input Area */}
-          <form onSubmit={handleSendMessage} className="flex items-center gap-2 p-4">
-            {/* Template Icon Button */}
-            <button
-              type="button"
-              onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-              className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                selectedTemplate 
-                  ? 'bg-green-500 text-white' 
-                  : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              <DocumentTextIcon className="w-5 h-5" />
-            </button>
+          <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
+            {/* Template Icon Button - Hidden on mobile when input is focused */}
+            {(!isMobile || !isInputFocused) && (
+              <button
+                type="button"
+                onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
+                  selectedTemplate 
+                    ? 'bg-green-500 text-white' 
+                    : isMobile
+                      ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
+                      : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
+                } ${isMobile && isInputFocused ? 'opacity-0 pointer-events-none w-0' : 'opacity-100'}`}
+              >
+                <DocumentTextIcon className="w-5 h-5" />
+              </button>
+            )}
 
             {/* File upload button */}
             <label 
@@ -1461,11 +1535,34 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             )}
             {/* Message Input */}
             <textarea
+              ref={textareaRef}
               value={newMessage}
               onChange={(e) => {
                 setNewMessage(e.target.value);
-                e.target.style.height = 'auto';
-                e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                const textarea = e.target;
+                textarea.style.height = 'auto';
+                // On mobile, when focused or when template/AI content is added, expand to max height
+                if (isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0)) {
+                  textarea.style.height = `${Math.min(textarea.scrollHeight, 300)}px`;
+                } else {
+                  textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+                }
+              }}
+              onFocus={(e) => {
+                if (isMobile) {
+                  setIsInputFocused(true);
+                  // Expand to max height when focused on mobile
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 300)}px`;
+                }
+              }}
+              onBlur={(e) => {
+                if (isMobile) {
+                  setIsInputFocused(false);
+                  // Reset to normal height when blurred
+                  e.target.style.height = 'auto';
+                  e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
+                }
               }}
               placeholder={
                 isLocked 
@@ -1480,18 +1577,21 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         : `Template: ${selectedTemplate.title}`
                       : "Type a message..."
               }
-              className={`flex-1 resize-none rounded-2xl textarea textarea-bordered ${
-                (isLocked && !selectedTemplate) ? 'bg-gray-100 cursor-not-allowed' : ''
-              }`}
+              className={`flex-1 resize-none rounded-2xl transition-all duration-300 ${
+                isMobile
+                  ? `bg-white/80 backdrop-blur-md border border-gray-300/50 ${isInputFocused ? 'flex-[1.2]' : ''}`
+                  : 'textarea textarea-bordered'
+              } ${(isLocked && !selectedTemplate) ? 'bg-gray-100 cursor-not-allowed' : ''}`}
               disabled={sending || uploadingMedia || (isLocked && !selectedTemplate)}
               rows={1}
               style={{ 
-                maxHeight: '200px', 
+                maxHeight: isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0) ? '300px' : '200px', 
                 minHeight: '40px',
                 paddingTop: '12px', 
                 paddingBottom: '12px', 
                 paddingLeft: '16px', 
                 paddingRight: '16px',
+                transition: 'all 0.3s ease-in-out',
                 direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
                 textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left',
                 fontSize: '15px'

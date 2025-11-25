@@ -37,6 +37,7 @@ import AdminPage from './components/admin/AdminPage';
 import TeamsPage from './pages/TeamsPage';
 import WhatsAppPage from './pages/WhatsAppPage';
 import WhatsAppLeadsPage from './pages/WhatsAppLeadsPage';
+import EmailThreadLeadPage from './pages/EmailThreadLeadPage';
 import WhatsAppModal from './components/WhatsAppModal';
 import CollectionPage from './pages/CollectionPage';
 import MyPerformancePage from './pages/MyPerformancePage';
@@ -448,6 +449,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/scheduler-tool" element={<SchedulerToolPage />} />
                     <Route path="/whatsapp" element={<WhatsAppPage />} />
                     <Route path="/whatsapp-leads" element={<WhatsAppLeadsPage />} />
+                    <Route path="/email-leads" element={<EmailThreadLeadPage />} />
                     <Route path="/collection" element={<CollectionPage />} />
                     <Route path="/performance" element={<MyPerformancePage />} />
                     <Route path="/proforma/:id" element={<ProformaViewPage />} />

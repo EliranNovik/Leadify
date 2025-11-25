@@ -22,6 +22,9 @@ import {
   PencilIcon,
   TrashIcon,
   CheckIcon,
+  ChevronDownIcon,
+  UserGroupIcon,
+  LinkIcon,
 } from '@heroicons/react/24/outline';
 import EmojiPicker from 'emoji-picker-react';
 import { FaWhatsapp } from 'react-icons/fa';
@@ -97,6 +100,17 @@ const WhatsAppLeadsPage: React.FC = () => {
   
   // Emoji picker state
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
+
+  // Mobile input focus state
+  const [isInputFocused, setIsInputFocused] = useState(false);
+
+  // Dropdown and lead selection state
+  const [showActionDropdown, setShowActionDropdown] = useState(false);
+  const [showLeadSearchModal, setShowLeadSearchModal] = useState(false);
+  const [leadSearchQuery, setLeadSearchQuery] = useState('');
+  const [leadSearchResults, setLeadSearchResults] = useState<any[]>([]);
+  const [isSearchingLeads, setIsSearchingLeads] = useState(false);
+  const [actionType, setActionType] = useState<'sublead' | 'contact' | null>(null);
 
   // Helper function to fetch user name by ID
   const getUserName = async (userId: string) => {
@@ -735,6 +749,11 @@ const WhatsAppLeadsPage: React.FC = () => {
       setMessages(prev => [...prev, newMsg]);
       setNewMessage('');
       setSelectedTemplate(null); // Clear template after sending
+      // Reset mobile input focus state
+      if (isMobile) {
+        setIsInputFocused(false);
+        textareaRef.current?.blur();
+      }
       
       // Refresh messages to get updated data (including any new incoming messages)
       // This will update the timer based on the latest message
@@ -1049,6 +1068,486 @@ const WhatsAppLeadsPage: React.FC = () => {
     }
   };
 
+  // Search leads from both leads and leads_lead tables
+  const searchLeadsForSelection = async (query: string) => {
+    if (!query.trim() || query.length < 2) {
+      setLeadSearchResults([]);
+      return;
+    }
+
+    setIsSearchingLeads(true);
+    try {
+      // Search in leads table (new leads)
+      const { data: leadsData, error: leadsError } = await supabase
+        .from('leads')
+        .select(`
+          id,
+          lead_number,
+          name,
+          email,
+          phone,
+          mobile,
+          stage
+        `)
+        .or(`lead_number.ilike.%${query}%,name.ilike.%${query}%,email.ilike.%${query}%`)
+        .limit(10);
+
+      // Search in leads_lead table (legacy leads)
+      const { data: legacyLeadsData, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          lead_number,
+          name,
+          email,
+          phone,
+          mobile,
+          stage
+        `)
+        .or(`lead_number.ilike.%${query}%,name.ilike.%${query}%,email.ilike.%${query}%`)
+        .limit(10);
+
+      if (leadsError) console.error('Error searching leads:', leadsError);
+      if (legacyError) console.error('Error searching legacy leads:', legacyError);
+
+      // Combine and format results
+      const allLeads = [
+        ...(leadsData || []).map(lead => ({ ...lead, isLegacy: false })),
+        ...(legacyLeadsData || []).map(lead => ({ ...lead, isLegacy: true }))
+      ];
+
+      // Deduplicate by lead_number
+      const uniqueLeads = allLeads.filter((lead, index, self) => 
+        index === self.findIndex(l => l.lead_number === lead.lead_number)
+      );
+
+      setLeadSearchResults(uniqueLeads.slice(0, 10));
+    } catch (error) {
+      console.error('Error in lead search:', error);
+      setLeadSearchResults([]);
+    } finally {
+      setIsSearchingLeads(false);
+    }
+  };
+
+  // Handle lead search input change
+  useEffect(() => {
+    if (showLeadSearchModal && leadSearchQuery) {
+      const timeoutId = setTimeout(() => {
+        searchLeadsForSelection(leadSearchQuery);
+      }, 300);
+      return () => clearTimeout(timeoutId);
+    } else {
+      setLeadSearchResults([]);
+    }
+  }, [leadSearchQuery, showLeadSearchModal]);
+
+  // Handle create sublead
+  const handleCreateSublead = async (parentLead: any) => {
+    if (!selectedLead) return;
+
+    try {
+      setLoading(true);
+      console.log('🔄 Creating sublead for parent:', parentLead);
+
+      // Get current user information
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.email) {
+        toast.error('User not authenticated');
+        return;
+      }
+
+      const leadName = selectedLead.sender_name?.trim() || selectedLead.phone_number || 'WhatsApp Lead';
+      const parentLeadNumber = parentLead.lead_number;
+
+      // Generate sublead number (parent_number/sub_number)
+      // First, find the highest sublead number for this parent
+      const { data: existingSubLeads } = await supabase
+        .from('leads')
+        .select('lead_number')
+        .like('lead_number', `${parentLeadNumber}/%`)
+        .order('lead_number', { ascending: false })
+        .limit(1);
+
+      let subNumber = 1;
+      if (existingSubLeads && existingSubLeads.length > 0) {
+        const lastSubLead = existingSubLeads[0].lead_number;
+        const match = lastSubLead.match(/\/(\d+)$/);
+        if (match) {
+          subNumber = parseInt(match[1], 10) + 1;
+        }
+      }
+
+      const subLeadNumber = `${parentLeadNumber}/${subNumber}`;
+
+      // Get parent lead's master_id and manual_id
+      let masterId: string | number = parentLead.id;
+      let manualId: string = parentLead.lead_number;
+
+      if (!parentLead.isLegacy) {
+        // For new leads, try to get master_id and manual_id from the parent
+        const { data: parentLeadData } = await supabase
+          .from('leads')
+          .select('master_id, manual_id')
+          .eq('id', parentLead.id)
+          .maybeSingle();
+
+        if (parentLeadData?.master_id) {
+          masterId = parentLeadData.master_id;
+        }
+        if (parentLeadData?.manual_id) {
+          manualId = parentLeadData.manual_id;
+        } else {
+          // Generate a new manual_id if parent doesn't have one
+          const { data: maxLeadData } = await supabase
+            .from('leads')
+            .select('manual_id')
+            .not('manual_id', 'is', null)
+            .order('manual_id', { ascending: false })
+            .limit(1)
+            .single();
+          
+          if (maxLeadData?.manual_id) {
+            const maxId = BigInt(String(maxLeadData.manual_id));
+            manualId = (maxId + BigInt(1)).toString();
+          } else {
+            manualId = Date.now().toString();
+          }
+        }
+      } else {
+        // For legacy leads, extract numeric ID from lead_number
+        const numericMatch = parentLead.lead_number.match(/\d+/);
+        if (numericMatch) {
+          masterId = parseInt(numericMatch[0], 10);
+          manualId = parentLead.lead_number;
+        }
+      }
+
+      // Create sublead
+      const subLeadData: Record<string, any> = {
+        lead_number: subLeadNumber,
+        master_id: masterId,
+        manual_id: manualId,
+        name: leadName,
+        email: null,
+        phone: selectedLead.phone_number || null,
+        mobile: null,
+        topic: 'WhatsApp Inquiry',
+        language: 'English',
+        source: 'WhatsApp',
+        stage: 0,
+        status: 'new',
+        created_at: new Date().toISOString(),
+        created_by: user.email,
+        balance_currency: 'NIS',
+        proposal_currency: 'NIS'
+      };
+
+      const { data: insertedSubLead, error: subLeadError } = await supabase
+        .from('leads')
+        .insert([subLeadData])
+        .select('id')
+        .single();
+
+      if (subLeadError) {
+        console.error('Error creating sublead:', subLeadError);
+        toast.error('Failed to create sublead');
+        return;
+      }
+
+      // Create contact for the sublead
+      if (insertedSubLead?.id) {
+        const { data: maxContactId } = await supabase
+          .from('leads_contact')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+
+        const newContactId = maxContactId ? maxContactId.id + 1 : 1;
+        const currentDate = new Date().toISOString().split('T')[0];
+
+        const { error: contactError } = await supabase
+          .from('leads_contact')
+          .insert([{
+            id: newContactId,
+            name: leadName,
+            mobile: null,
+            phone: selectedLead.phone_number || null,
+            email: null,
+            newlead_id: insertedSubLead.id,
+            cdate: currentDate,
+            udate: currentDate
+          }]);
+
+        if (contactError) {
+          console.error('Error creating contact:', contactError);
+        } else {
+          // Create relationship
+          const { data: maxRelationshipId } = await supabase
+            .from('lead_leadcontact')
+            .select('id')
+            .order('id', { ascending: false })
+            .limit(1)
+            .single();
+
+          const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
+
+          const { error: relationshipError } = await supabase
+            .from('lead_leadcontact')
+            .insert([{
+              id: newRelationshipId,
+              contact_id: newContactId,
+              newlead_id: insertedSubLead.id,
+              main: 'true'
+            }]);
+
+          if (relationshipError) {
+            console.error('Error creating contact relationship:', relationshipError);
+          }
+        }
+      }
+
+      // Update WhatsApp messages to link them to the sublead
+      const { error: updateError } = await supabase
+        .from('whatsapp_messages')
+        .update({ 
+          lead_id: insertedSubLead.id,
+          legacy_id: null
+        })
+        .or(`sender_name.ilike.%${selectedLead.phone_number}%,sender_name.ilike.%${selectedLead.sender_name}%,message.ilike.%${selectedLead.phone_number}%`);
+
+      if (updateError) {
+        console.error('Error linking messages to sublead:', updateError);
+      }
+
+      toast.success(`Sublead ${subLeadNumber} created successfully!`);
+      
+      // Refresh the leads list
+      setLeads(prevLeads => prevLeads.filter(l => l.id !== selectedLead.id));
+      setSelectedLead(null);
+      setShowLeadSearchModal(false);
+      setShowActionDropdown(false);
+
+      // Navigate to the sublead's page
+      window.location.href = `/clients/${subLeadNumber}`;
+
+    } catch (error) {
+      console.error('Error creating sublead:', error);
+      toast.error('Failed to create sublead');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Handle add as contact to lead
+  const handleAddAsContact = async (targetLead: any) => {
+    if (!selectedLead) return;
+
+    try {
+      setLoading(true);
+      console.log('🔄 Adding WhatsApp lead as contact to:', targetLead);
+
+      const leadName = selectedLead.sender_name?.trim() || selectedLead.phone_number || 'WhatsApp Contact';
+      const targetLeadId = targetLead.id;
+      const isLegacyLead = targetLead.isLegacy;
+
+      // For legacy leads, create contact without lead_id/newlead_id, then link via lead_leadcontact
+      // For new leads, use newlead_id in leads_contact and newlead_id in lead_leadcontact
+      if (isLegacyLead) {
+        // Get the next available contact ID
+        const { data: maxContactId } = await supabase
+          .from('leads_contact')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+
+        const newContactId = maxContactId ? maxContactId.id + 1 : 1;
+        const currentDate = new Date().toISOString().split('T')[0];
+
+        // Create contact (without lead_id or newlead_id for legacy leads)
+        let contactResult = await supabase
+          .from('leads_contact')
+          .insert([{
+            id: newContactId,
+            name: leadName,
+            mobile: null,
+            phone: selectedLead.phone_number || null,
+            email: null,
+            cdate: currentDate,
+            udate: currentDate
+          }])
+          .select('id')
+          .single();
+
+        // If duplicate key error, get next available ID
+        if (contactResult.error && contactResult.error.code === '23505') {
+          const { data: maxIdData } = await supabase
+            .from('leads_contact')
+            .select('id')
+            .order('id', { ascending: false })
+            .limit(1)
+            .single();
+          
+          const nextId = maxIdData ? maxIdData.id + 1 : 1;
+          contactResult = await supabase
+            .from('leads_contact')
+            .insert([{
+              id: nextId,
+              name: leadName,
+              mobile: null,
+              phone: selectedLead.phone_number || null,
+              email: null,
+              cdate: currentDate,
+              udate: currentDate
+            }])
+            .select('id')
+            .single();
+        }
+
+        if (contactResult.error || !contactResult.data) {
+          console.error('Error creating contact:', contactResult.error);
+          toast.error('Failed to create contact');
+          return;
+        }
+
+        const finalContactId = contactResult.data.id;
+
+        // Create relationship in lead_leadcontact with lead_id for legacy leads
+        const { data: maxRelationshipId } = await supabase
+          .from('lead_leadcontact')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+
+        const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
+
+        let relationshipResult = await supabase
+          .from('lead_leadcontact')
+          .insert([{
+            id: newRelationshipId,
+            contact_id: finalContactId,
+            lead_id: targetLeadId, // For legacy leads
+            main: 'false'
+          }]);
+
+        // If duplicate key error, get next available ID
+        if (relationshipResult.error && relationshipResult.error.code === '23505') {
+          const { data: maxRelIdData } = await supabase
+            .from('lead_leadcontact')
+            .select('id')
+            .order('id', { ascending: false })
+            .limit(1)
+            .single();
+          
+          const nextRelId = maxRelIdData ? maxRelIdData.id + 1 : 1;
+          relationshipResult = await supabase
+            .from('lead_leadcontact')
+            .insert([{
+              id: nextRelId,
+              contact_id: finalContactId,
+              lead_id: targetLeadId,
+              main: 'false'
+            }]);
+        }
+
+        if (relationshipResult.error) {
+          console.error('Error creating contact relationship:', relationshipResult.error);
+          toast.error('Failed to link contact to lead');
+          return;
+        }
+      } else {
+        // For new leads
+        const { data: maxContactId } = await supabase
+          .from('leads_contact')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+
+        const newContactId = maxContactId ? maxContactId.id + 1 : 1;
+        const currentDate = new Date().toISOString().split('T')[0];
+
+        // Create contact
+        const { error: contactError } = await supabase
+          .from('leads_contact')
+          .insert([{
+            id: newContactId,
+            name: leadName,
+            mobile: null,
+            phone: selectedLead.phone_number || null,
+            email: null,
+            newlead_id: targetLeadId, // For new leads
+            cdate: currentDate,
+            udate: currentDate
+          }]);
+
+        if (contactError) {
+          console.error('Error creating contact:', contactError);
+          toast.error('Failed to create contact');
+          return;
+        }
+
+        // Create relationship
+        const { data: maxRelationshipId } = await supabase
+          .from('lead_leadcontact')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+
+        const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
+
+        const { error: relationshipError } = await supabase
+          .from('lead_leadcontact')
+          .insert([{
+            id: newRelationshipId,
+            contact_id: newContactId,
+            newlead_id: targetLeadId, // For new leads
+            main: 'false'
+          }]);
+
+        if (relationshipError) {
+          console.error('Error creating contact relationship:', relationshipError);
+          toast.error('Failed to link contact to lead');
+          return;
+        }
+      }
+
+      // Update WhatsApp messages to link them to the target lead
+      const { error: updateError } = await supabase
+        .from('whatsapp_messages')
+        .update({ 
+          lead_id: isLegacyLead ? null : targetLeadId,
+          legacy_id: isLegacyLead ? targetLeadId : null
+        })
+        .or(`sender_name.ilike.%${selectedLead.phone_number}%,sender_name.ilike.%${selectedLead.sender_name}%,message.ilike.%${selectedLead.phone_number}%`);
+
+      if (updateError) {
+        console.error('Error linking messages to lead:', updateError);
+      }
+
+      toast.success(`Contact added to lead ${targetLead.lead_number} successfully!`);
+      
+      // Refresh the leads list
+      setLeads(prevLeads => prevLeads.filter(l => l.id !== selectedLead.id));
+      setSelectedLead(null);
+      setShowLeadSearchModal(false);
+      setShowActionDropdown(false);
+
+      // Navigate to the target lead's page
+      window.location.href = `/clients/${targetLead.lead_number}`;
+
+    } catch (error) {
+      console.error('Error adding contact:', error);
+      toast.error('Failed to add contact');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Format time
   const formatTime = (timestamp: string) => {
     const date = new Date(timestamp);
@@ -1258,7 +1757,8 @@ const WhatsAppLeadsPage: React.FC = () => {
     if (textarea) {
       textarea.style.height = 'auto';
       const scrollHeight = textarea.scrollHeight;
-      const maxHeight = 250; // Max height in pixels - increased for longer messages
+      // On mobile, when focused or when template/AI content is added, expand to max height
+      const maxHeight = isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0) ? 300 : 250;
       textarea.style.height = Math.min(scrollHeight, maxHeight) + 'px';
     }
   };
@@ -1338,12 +1838,48 @@ const WhatsAppLeadsPage: React.FC = () => {
     setNewMessage(suggestion);
     setShowAISuggestions(false);
     setAiSuggestions([]);
+    // Expand textarea on mobile when AI suggestion is applied
+    if (isMobile && textareaRef.current) {
+      setTimeout(() => {
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+        }
+      }, 0);
+    }
   };
 
-  // Adjust textarea height when message changes
+  // Adjust textarea height when message changes or mobile focus state changes
   useEffect(() => {
     adjustTextareaHeight();
-  }, [newMessage, isMobile]);
+  }, [newMessage, isMobile, isInputFocused, selectedTemplate, aiSuggestions]);
+
+  // Expand textarea on mobile when template or AI content is added
+  useEffect(() => {
+    if (isMobile && textareaRef.current && (selectedTemplate || aiSuggestions.length > 0 || newMessage.length > 100)) {
+      setTimeout(() => {
+        adjustTextareaHeight();
+      }, 0);
+    }
+  }, [newMessage, selectedTemplate, aiSuggestions, isMobile]);
+
+  // Handle click outside to reset input focus on mobile
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (isMobile && isInputFocused && textareaRef.current) {
+        if (!target.closest('textarea') && !target.closest('form')) {
+          setIsInputFocused(false);
+          textareaRef.current.blur();
+        }
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isMobile, isInputFocused]);
 
   return (
     <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
@@ -1586,13 +2122,76 @@ const WhatsAppLeadsPage: React.FC = () => {
                           )}
                         </div>
                       )}
-                    <button
-                      onClick={() => handleConvertToLead(selectedLead)}
-                      className="btn btn-primary"
-                    >
-                      <UserPlusIcon className="w-4 h-4 mr-2" />
-                      Convert to Lead
-                    </button>
+                      {/* Action Dropdown */}
+                      <div className="relative">
+                        <button
+                          className="btn btn-primary"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowActionDropdown(!showActionDropdown);
+                          }}
+                        >
+                          <UserPlusIcon className="w-4 h-4 mr-2" />
+                          Actions
+                          <ChevronDownIcon className="w-4 h-4 ml-2" />
+                        </button>
+                        {showActionDropdown && (
+                          <>
+                            {/* Backdrop to close on outside click */}
+                            <div
+                              className="fixed inset-0 z-40"
+                              onClick={() => setShowActionDropdown(false)}
+                            />
+                            <ul
+                              className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-64 z-50 border border-gray-200"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              <li>
+                                <button
+                                  onClick={() => {
+                                    setShowActionDropdown(false);
+                                    handleConvertToLead(selectedLead);
+                                  }}
+                                  className="flex items-center gap-2 w-full text-left"
+                                >
+                                  <UserPlusIcon className="w-4 h-4" />
+                                  <span>Convert to Lead</span>
+                                </button>
+                              </li>
+                              <li>
+                                <button
+                                  onClick={() => {
+                                    setShowActionDropdown(false);
+                                    setActionType('sublead');
+                                    setShowLeadSearchModal(true);
+                                    setLeadSearchQuery('');
+                                    setLeadSearchResults([]);
+                                  }}
+                                  className="flex items-center gap-2 w-full text-left"
+                                >
+                                  <UserGroupIcon className="w-4 h-4" />
+                                  <span>Create a Sublead</span>
+                                </button>
+                              </li>
+                              <li>
+                                <button
+                                  onClick={() => {
+                                    setShowActionDropdown(false);
+                                    setActionType('contact');
+                                    setShowLeadSearchModal(true);
+                                    setLeadSearchQuery('');
+                                    setLeadSearchResults([]);
+                                  }}
+                                  className="flex items-center gap-2 w-full text-left"
+                                >
+                                  <LinkIcon className="w-4 h-4" />
+                                  <span>Add as Contact to Lead</span>
+                                </button>
+                              </li>
+                            </ul>
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1877,6 +2476,15 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 setTemplateSearchTerm('');
                                 if (template.params === '0') {
                                   setNewMessage(template.content || '');
+                                  // Expand textarea on mobile when template is applied
+                                  if (isMobile && textareaRef.current) {
+                                    setTimeout(() => {
+                                      if (textareaRef.current) {
+                                        textareaRef.current.style.height = 'auto';
+                                        textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+                                      }
+                                    }, 0);
+                                  }
                                 } else {
                                   setNewMessage('');
                                 }
@@ -1933,6 +2541,12 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   setTemplateSearchTerm('');
                                   if (template.params === '0') {
                                     setNewMessage(template.content || '');
+                                    // Expand textarea on mobile when template is applied
+                                    if (isMobile && textareaRef.current) {
+                                      setTimeout(() => {
+                                        adjustTextareaHeight();
+                                      }, 0);
+                                    }
                                   } else {
                                     setNewMessage('');
                                   }
@@ -2008,20 +2622,22 @@ const WhatsAppLeadsPage: React.FC = () => {
 
                   {/* Input Form */}
                   <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
-                    {/* Template Icon Button */}
-                    <button
-                      type="button"
-                      onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                      className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all ${
-                        selectedTemplate 
-                          ? 'bg-green-500 text-white' 
-                          : isMobile 
-                            ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
-                            : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-                      }`}
-                    >
-                      <DocumentTextIcon className="w-5 h-5" />
-                    </button>
+                    {/* Template Icon Button - Hidden on mobile when input is focused */}
+                    {(!isMobile || !isInputFocused) && (
+                      <button
+                        type="button"
+                        onClick={() => setShowTemplateSelector(!showTemplateSelector)}
+                        className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
+                          selectedTemplate 
+                            ? 'bg-green-500 text-white' 
+                            : isMobile 
+                              ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
+                              : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
+                        } ${isMobile && isInputFocused ? 'opacity-0 pointer-events-none w-0' : 'opacity-100'}`}
+                      >
+                        <DocumentTextIcon className="w-5 h-5" />
+                      </button>
+                    )}
 
                     {/* Mobile Dropdown Button */}
                     {isMobile ? (
@@ -2207,19 +2823,33 @@ const WhatsAppLeadsPage: React.FC = () => {
                       ref={textareaRef}
                       value={newMessage}
                       onChange={handleMessageChange}
+                      onFocus={(e) => {
+                        if (isMobile) {
+                          setIsInputFocused(true);
+                          // Expand to max height when focused on mobile
+                          adjustTextareaHeight();
+                        }
+                      }}
+                      onBlur={(e) => {
+                        if (isMobile) {
+                          setIsInputFocused(false);
+                          // Reset to normal height when blurred
+                          adjustTextareaHeight();
+                        }
+                      }}
                       onKeyDown={(e) => {
                         // Let Enter create new lines
                       }}
                       placeholder={isLocked ? "Window expired - use templates" : "Type a reply..."}
-                      className={`flex-1 resize-none rounded-2xl transition-all ${
+                      className={`flex-1 resize-none rounded-2xl transition-all duration-300 ${
                         isMobile 
-                          ? 'bg-white/80 backdrop-blur-md border border-gray-300/50' 
+                          ? `bg-white/80 backdrop-blur-md border border-gray-300/50 ${isInputFocused ? 'flex-[1.2]' : ''}` 
                           : 'textarea textarea-bordered'
                       } ${isLocked ? 'bg-gray-100/80 cursor-not-allowed' : ''}`}
                       disabled={sending || isLocked}
                       rows={1}
                       style={{ 
-                        maxHeight: '250px', 
+                        maxHeight: isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0) ? '300px' : '250px', 
                         minHeight: '40px',
                         paddingTop: '12px', 
                         paddingBottom: '12px', 
@@ -2227,7 +2857,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                         paddingRight: '16px',
                         direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
                         textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left',
-                        fontSize: '15px'
+                        fontSize: '15px',
+                        transition: 'all 0.3s ease-in-out'
                       }}
                     />
 
@@ -2368,6 +2999,111 @@ const WhatsAppLeadsPage: React.FC = () => {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Lead Search Modal */}
+      {showLeadSearchModal && (
+        <div className="fixed inset-0 z-[9999] bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900">
+                {actionType === 'sublead' ? 'Select Parent Lead for Sublead' : 'Select Lead to Add Contact'}
+              </h3>
+              <button
+                onClick={() => {
+                  setShowLeadSearchModal(false);
+                  setLeadSearchQuery('');
+                  setLeadSearchResults([]);
+                  setActionType(null);
+                }}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Search Input */}
+            <div className="p-4 border-b border-gray-200">
+              <div className="relative">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search by lead number, name, or email..."
+                  value={leadSearchQuery}
+                  onChange={(e) => setLeadSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            {/* Search Results */}
+            <div className="flex-1 overflow-y-auto p-4">
+              {isSearchingLeads ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="loading loading-spinner loading-lg text-green-600"></div>
+                </div>
+              ) : leadSearchResults.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  {leadSearchQuery.length >= 2 ? (
+                    <>
+                      <p className="text-lg font-medium">No leads found</p>
+                      <p className="text-sm">Try a different search term</p>
+                    </>
+                  ) : (
+                    <>
+                      <MagnifyingGlassIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                      <p className="text-lg font-medium">Search for a lead</p>
+                      <p className="text-sm">Enter at least 2 characters to search</p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {leadSearchResults.map((lead) => (
+                    <button
+                      key={`${lead.id}-${lead.isLegacy}`}
+                      onClick={() => {
+                        if (actionType === 'sublead') {
+                          handleCreateSublead(lead);
+                        } else if (actionType === 'contact') {
+                          handleAddAsContact(lead);
+                        }
+                      }}
+                      className="w-full text-left p-4 border border-gray-200 rounded-lg hover:bg-gray-50 hover:border-green-300 transition-colors"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="font-semibold text-gray-900">{lead.lead_number}</span>
+                            {lead.isLegacy && (
+                              <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded">Legacy</span>
+                            )}
+                          </div>
+                          <p className="text-sm font-medium text-gray-700 truncate">{lead.name || 'No name'}</p>
+                          {lead.email && (
+                            <p className="text-xs text-gray-500 truncate">{lead.email}</p>
+                          )}
+                          {(lead.phone || lead.mobile) && (
+                            <p className="text-xs text-gray-500 truncate">{lead.phone || lead.mobile}</p>
+                          )}
+                        </div>
+                        <div className="ml-4 flex-shrink-0">
+                          {actionType === 'sublead' ? (
+                            <UserGroupIcon className="w-5 h-5 text-green-600" />
+                          ) : (
+                            <LinkIcon className="w-5 h-5 text-green-600" />
+                          )}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -192,6 +192,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [whatsappLeadsUnreadCount, setWhatsappLeadsUnreadCount] = useState(0);
   const [whatsappClientsUnreadCount, setWhatsappClientsUnreadCount] = useState(0);
   const [emailUnreadCount, setEmailUnreadCount] = useState(0);
+  const [emailLeadMessages, setEmailLeadMessages] = useState<Array<{
+    id: string;
+    sender_email: string | null;
+    sender_name: string | null;
+    latest_subject: string;
+    latest_preview: string;
+    latest_sent_at: string;
+    message_count: number;
+    message_ids: number[];
+  }>>([]);
+  const [emailLeadUnreadCount, setEmailLeadUnreadCount] = useState(0);
   const [isRmqModalOpen, setIsRmqModalOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -201,7 +212,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const stageIdsReadyRef = useRef(false);
   const resolvingStageIdsRef = useRef<Promise<void> | null>(null);
 
-  const unreadCount = rmqUnreadCount + whatsappLeadsUnreadCount + assignmentNotifications.length;
+  const unreadCount = rmqUnreadCount + whatsappLeadsUnreadCount + assignmentNotifications.length + emailLeadUnreadCount;
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
@@ -1033,6 +1044,73 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   }, []);
 
+  const fetchEmailLeadMessages = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('id, sender_name, sender_email, subject, body_preview, body_html, sent_at, recipient_list')
+        .eq('direction', 'incoming')
+        .or('is_read.is.null,is_read.eq.false')
+        .ilike('recipient_list', '%office@lawoffice.org.il%')
+        .order('sent_at', { ascending: false })
+        .limit(50);
+
+      if (error) {
+        console.error('Error fetching email lead messages:', error);
+        setEmailLeadMessages([]);
+        setEmailLeadUnreadCount(0);
+        return;
+      }
+
+      const groupedMap = new Map<string, {
+        id: string;
+        sender_email: string | null;
+        sender_name: string | null;
+        latest_subject: string;
+        latest_preview: string;
+        latest_sent_at: string;
+        message_count: number;
+        message_ids: number[];
+      }>();
+
+      (data || []).forEach(email => {
+        const key = (email.sender_email || `unknown-${email.id}`).toLowerCase();
+        const previewText = email.body_preview || email.body_html || '';
+        if (!groupedMap.has(key)) {
+          groupedMap.set(key, {
+            id: key,
+            sender_email: email.sender_email,
+            sender_name: email.sender_name,
+            latest_subject: email.subject || 'No Subject',
+            latest_preview: previewText,
+            latest_sent_at: email.sent_at,
+            message_count: 1,
+            message_ids: [email.id],
+          });
+        } else {
+          const entry = groupedMap.get(key)!;
+          entry.message_count += 1;
+          entry.message_ids.push(email.id);
+          if (new Date(email.sent_at) > new Date(entry.latest_sent_at)) {
+            entry.latest_subject = email.subject || 'No Subject';
+            entry.latest_preview = previewText;
+            entry.latest_sent_at = email.sent_at;
+          }
+        }
+      });
+
+      const grouped = Array.from(groupedMap.values()).sort(
+        (a, b) => new Date(b.latest_sent_at).getTime() - new Date(a.latest_sent_at).getTime()
+      );
+      setEmailLeadMessages(grouped);
+      setEmailLeadUnreadCount(grouped.length);
+    } catch (error) {
+      console.error('Unexpected error fetching email lead messages:', error);
+      setEmailLeadMessages([]);
+      setEmailLeadUnreadCount(0);
+    }
+  }, []);
+
 
   const ensureStageIds = async () => {
     if (stageIdsReadyRef.current) {
@@ -1120,17 +1198,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       fetchRmqMessages();
       fetchWhatsappLeadsMessages();
       fetchWhatsappClientsUnreadCount();
+      fetchEmailLeadMessages();
       fetchEmailUnreadCount();
       // Refresh messages every 60 seconds
       const interval = setInterval(() => {
         fetchRmqMessages();
         fetchWhatsappLeadsMessages();
         fetchWhatsappClientsUnreadCount();
+        fetchEmailLeadMessages();
         fetchEmailUnreadCount();
       }, 60000);
       return () => clearInterval(interval);
     }
-  }, [currentUser, fetchEmailUnreadCount]);
+  }, [currentUser, fetchEmailUnreadCount, fetchEmailLeadMessages]);
+
+  useEffect(() => {
+    if (!currentUser) {
+      fetchEmailLeadMessages();
+      fetchEmailUnreadCount();
+    }
+  }, [currentUser, fetchEmailLeadMessages, fetchEmailUnreadCount]);
 
   // Fetch new leads count when component mounts and every 30 seconds
   useEffect(() => {
@@ -1210,6 +1297,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       fetchRmqMessages();
       fetchWhatsappLeadsMessages();
       fetchWhatsappClientsUnreadCount();
+      fetchEmailLeadMessages();
+      fetchEmailUnreadCount();
     }
     if (newShowState && (currentUser || currentUserEmployee)) {
       fetchAssignmentNotifications();
@@ -1274,6 +1363,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Clear WhatsApp leads messages from notifications
       setWhatsappLeadsMessages([]);
       setWhatsappLeadsUnreadCount(0);
+      // Mark email lead messages as read
+      const emailIds = emailLeadMessages.flatMap(message => message.message_ids);
+      if (emailIds.length > 0) {
+        const { error: emailError } = await supabase
+          .from('emails')
+          .update({
+            is_read: true,
+            read_at: new Date().toISOString(),
+            read_by: currentUser.id
+          })
+          .in('id', emailIds);
+
+        if (emailError) {
+          console.error('Error marking email lead messages as read:', emailError);
+        }
+      }
+      setEmailLeadMessages([]);
+      setEmailLeadUnreadCount(0);
+      fetchEmailUnreadCount();
       if (assignmentNotifications.length > 0) {
         rememberAssignments(assignmentNotifications.map(notification => notification.key));
         setAssignmentNotifications([]);
@@ -1693,6 +1801,11 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     navigate('/whatsapp-leads');
   };
 
+  const handleEmailLeadClick = () => {
+    setShowNotifications(false);
+    navigate('/email-leads');
+  };
+
   const handleWhatsappMessageRead = async (message: any) => {
     try {
       // Mark the specific message as read
@@ -1717,6 +1830,32 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
       console.log('✅ WhatsApp message marked as read');
     } catch (error) {
       console.error('Error marking WhatsApp message as read:', error);
+    }
+  };
+
+  const handleEmailLeadMessageRead = async (message: typeof emailLeadMessages[number]) => {
+    try {
+      if (message.message_ids.length > 0) {
+        const { error } = await supabase
+          .from('emails')
+          .update({ 
+            is_read: true, 
+            read_at: new Date().toISOString(),
+            read_by: currentUser?.id || null 
+          })
+          .in('id', message.message_ids);
+
+        if (error) {
+          console.error('Error marking email lead messages as read:', error);
+          return;
+        }
+      }
+
+      setEmailLeadMessages(prev => prev.filter(m => m.id !== message.id));
+      setEmailLeadUnreadCount(prev => Math.max(0, prev - 1));
+      fetchEmailUnreadCount();
+    } catch (error) {
+      console.error('Error marking email leads as read:', error);
     }
   };
 
@@ -2860,6 +2999,78 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       ))}
                     </div>
                   )}
+                  {/* Email Leads Messages Section */}
+                  {emailLeadMessages.length > 0 && (
+                    <div className="border-b border-base-200">
+                      <div className="p-3 bg-blue-50 border-b border-blue-100">
+                        <div className="flex items-center gap-2">
+                          <EnvelopeIcon className="w-4 h-4 text-blue-600" />
+                          <span className="text-sm font-semibold text-blue-800">Email Leads</span>
+                        </div>
+                      </div>
+                      {emailLeadMessages.map((message) => (
+                        <div key={message.id} className="border-b border-blue-100">
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            onClick={handleEmailLeadClick}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                handleEmailLeadClick();
+                              }
+                            }}
+                            className="w-full p-4 text-left hover:bg-blue-50 transition-colors duration-200 cursor-pointer"
+                          >
+                            <div className="flex gap-3">
+                              <div className="flex-shrink-0">
+                                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                                  <EnvelopeIcon className="w-4 h-4 text-blue-600" />
+                                </div>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-sm font-semibold text-gray-900 truncate">
+                                    {message.sender_name || message.sender_email || 'Unknown Sender'}
+                                  </p>
+                                  <p className="text-xs text-gray-500">
+                                    {new Date(message.latest_sent_at).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit'
+                                    })}
+                                  </p>
+                                </div>
+                                <p className="text-xs text-gray-600 mt-1 truncate">
+                                  {message.latest_subject}
+                                </p>
+                                {message.latest_preview && (
+                                  <p className="text-xs text-gray-500 mt-1 truncate">
+                                    {message.latest_preview.replace(/<[^>]+>/g, '')}
+                                  </p>
+                                )}
+                                {message.message_count > 1 && (
+                                  <p className="text-xs text-blue-600 mt-1">
+                                    {message.message_count} messages
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="px-4 py-2 border-t border-blue-100 flex justify-end">
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleEmailLeadMessageRead(message);
+                              }}
+                              className="text-xs font-medium text-blue-700 hover:text-blue-900"
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   
                   {/* RMQ Messages Section */}
                   {currentUser && (
@@ -2928,16 +3139,16 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   {/* Lead Assignment Notifications */}
                   {assignmentNotifications.length > 0 && (
                     <div className="border-b border-base-200">
-                      <div className="p-3 bg-blue-50 border-b border-blue-100">
+                      <div className="p-3 bg-purple-50 border-b border-purple-100">
                         <div className="flex items-center gap-2">
-                          <UserGroupIcon className="w-4 h-4 text-blue-600" />
-                          <span className="text-sm font-semibold text-blue-800">Lead Assignments</span>
+                          <UserGroupIcon className="w-4 h-4 text-purple-600" />
+                          <span className="text-sm font-semibold text-purple-800">Lead Assignments</span>
                         </div>
                       </div>
                       {assignmentNotifications.map(notification => (
                         <div
                           key={notification.key}
-                          className="border-b border-blue-100 cursor-pointer"
+                          className="border-b border-purple-100 cursor-pointer"
                         >
                           <div
                             role="button"
@@ -2949,11 +3160,11 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                                 handleAssignmentOpen(notification);
                               }
                             }}
-                            className="w-full text-left p-4 hover:bg-blue-50 transition-colors duration-200"
+                            className="w-full text-left p-4 hover:bg-purple-50 transition-colors duration-200"
                           >
                             <div className="flex items-start gap-3">
-                              <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                                <UserIcon className="w-4 h-4 text-blue-700" />
+                              <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
+                                <UserIcon className="w-4 h-4 text-purple-700" />
                               </div>
                               <div className="flex-1 min-w-0">
                                 <p className="text-sm text-gray-800 leading-relaxed">
@@ -2961,17 +3172,17 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                                   <span className="font-semibold">{notification.roleLabel}</span> to lead{' '}
                                   <span className="font-semibold">{notification.leadNumber}</span>.
                                 </p>
-                                <p className="text-xs text-blue-600 mt-2">Tap to open lead</p>
+                                <p className="text-xs text-purple-600 mt-2">Tap to open lead</p>
                               </div>
                             </div>
                           </div>
-                          <div className="px-4 pb-3 border-t border-blue-100 flex justify-end">
+                          <div className="px-4 pb-3 border-t border-purple-100 flex justify-end">
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 dismissAssignmentNotification(notification);
                               }}
-                              className="text-xs font-medium text-blue-700 hover:text-blue-900"
+                              className="text-xs font-medium text-purple-700 hover:text-purple-900"
                             >
                               Dismiss
                             </button>

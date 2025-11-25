@@ -28,6 +28,7 @@ import {
   FireIcon,
   DocumentArrowUpIcon,
   ReceiptRefundIcon,
+  EnvelopeIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 
@@ -79,6 +80,7 @@ const desktopSidebarItems: SidebarItem[] = [
   { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
   { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
+  { icon: EnvelopeIcon, label: 'Email Leads', path: '/email-leads' },
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
   { icon: Cog6ToothIcon, label: 'Settings', path: '/settings' },
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
