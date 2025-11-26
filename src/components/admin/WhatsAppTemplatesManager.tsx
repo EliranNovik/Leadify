@@ -20,51 +20,27 @@ const WhatsAppTemplatesManager: React.FC = () => {
       hideInTable: false
     },
     {
-      name: 'number_id',
-      label: 'WhatsApp ID',
+      name: 'whatsapp_template_id',
+      label: 'WhatsApp Template ID',
       type: 'text' as const,
       required: true,
       hideInEdit: true,
       hideInTable: false
     },
     {
-      name: 'title',
-      label: 'Title',
+      name: 'name',
+      label: 'Template Name',
       type: 'text' as const,
       required: true,
       hideInEdit: true,
       hideInTable: false
     },
     {
-      name: 'name360',
-      label: 'Name 360',
-      type: 'text' as const,
-      required: true,
-      hideInEdit: true,
-      hideInTable: true
-    },
-    {
-      name: 'category_id',
-      label: 'Category',
-      type: 'select' as const,
-      required: false,
-      foreignKey: {
-        table: 'misc_maincategory',
-        displayField: 'name',
-        valueField: 'id'
-      },
-      hideInTable: false
-    },
-    {
-      name: 'language_id',
+      name: 'language',
       label: 'Language',
-      type: 'select' as const,
+      type: 'text' as const,
       required: false,
-      foreignKey: {
-        table: 'misc_language',
-        displayField: 'name',
-        valueField: 'id'
-      },
+      hideInEdit: true,
       hideInTable: false
     },
     {
@@ -89,9 +65,23 @@ const WhatsAppTemplatesManager: React.FC = () => {
       label: 'Content',
       type: 'textarea' as const,
       required: false,
-      placeholder: 'e.g., Template message content',
+      placeholder: 'Template message content',
       readOnly: true,
-      hideInTable: true
+      hideInTable: false,  // Show in table
+      formatValue: (value: any) => {
+        if (!value) return '-';
+        // Truncate long content for table display
+        const content = String(value);
+        const maxLength = 100;
+        if (content.length > maxLength) {
+          return (
+            <span className="block max-w-md" title={content}>
+              {content.substring(0, maxLength)}...
+            </span>
+          );
+        }
+        return <span className="block max-w-md whitespace-pre-wrap">{content}</span>;
+      }
     }
   ];
 
@@ -145,7 +135,7 @@ const WhatsAppTemplatesManager: React.FC = () => {
       
       <div key={key}>
         <GenericCRUDManager
-          tableName="whatsapp_whatsapptemplate"
+          tableName="whatsapp_templates_v2"
           fields={fields}
           title="WhatsApp Template"
           description="Manage WhatsApp message templates and their configurations"

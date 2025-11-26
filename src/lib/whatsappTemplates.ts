@@ -49,12 +49,12 @@ async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
   try {
     console.log('🔍 Fetching WhatsApp templates from database...');
     
-    // Fetch only active templates and order by title
+    // Fetch only active templates from new table (whatsapp_templates_v2)
     const { data, error } = await supabase
-      .from('whatsapp_whatsapptemplate')
-      .select('id, title, name360, params, active, category_id, firm_id, number_id, content, language')
-      .eq('active', 't') // Only fetch active templates
-      .order('title', { ascending: true });
+      .from('whatsapp_templates_v2')
+      .select('id, name, language, content, params, active, whatsapp_template_id')
+      .eq('active', true) // Only fetch active templates
+      .order('name', { ascending: true });
 
     if (error) {
       console.error('❌ Error fetching from database:', error);
@@ -63,18 +63,18 @@ async function fetchTemplatesFromDatabase(): Promise<WhatsAppTemplate[]> {
 
     console.log('✅ Templates fetched from database:', data?.length || 0);
     
-    // Map database templates to our format
-    const mappedTemplates = (data || []).map((template: any) => {
+    // Map database templates to our format (new table structure only)
+    const mappedTemplates: WhatsAppTemplate[] = (data || []).map((template: any) => {
       return {
-        id: template.id, // This is the database primary key - use this as template_id
-        title: template.title || template.name360 || '',
-        name360: template.name360 || template.title || '',
+        id: template.id, // Auto-incrementing database primary key (1, 2, 3, 4...)
+        title: template.name || '',
+        name360: template.name || '',
         params: template.params || '0',
-        active: template.active || 't',
-        category_id: template.category_id || '',
-        firm_id: template.firm_id || 0,
-        number_id: template.number_id || 0, // WhatsApp template ID from API
-        content: template.content || '',
+        active: template.active === true ? 't' : 'f',
+        category_id: '',
+        firm_id: 0,
+        number_id: template.whatsapp_template_id ? Number(template.whatsapp_template_id) : 0, // WhatsApp template ID
+        content: template.content || '', // Template message content
         language: template.language || 'en_US',
       };
     });
@@ -94,25 +94,23 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
     
     // First, fetch templates from database to get real IDs for matching
     const { data: dbTemplates, error: dbError } = await supabase
-      .from('whatsapp_whatsapptemplate')
-      .select('id, name360, title, language, content, params, active, number_id')
+      .from('whatsapp_templates_v2')
+      .select('id, name, language, content, params, active, whatsapp_template_id')
       .order('id', { ascending: true });
     
-    // Create a map of database templates by WhatsApp template ID (number_id) for fast lookup
-    // This is the correct way to match: WhatsApp API returns templates with an 'id' field
-    // which is stored in the database 'number_id' column
+    // Create a map of database templates by WhatsApp template ID for fast lookup
     const dbTemplateMapByWhatsAppId = new Map<string, any>();
-    // Also create a fallback map by name+language for templates without number_id
+    // Also create a fallback map by name+language
     const dbTemplateMapByNameLang = new Map<string, any>();
     
     if (dbTemplates && !dbError) {
       dbTemplates.forEach((template: any) => {
-        // Primary matching: by WhatsApp template ID (number_id)
-        if (template.number_id) {
-          dbTemplateMapByWhatsAppId.set(String(template.number_id), template);
+        // Primary matching: by WhatsApp template ID (whatsapp_template_id)
+        if (template.whatsapp_template_id) {
+          dbTemplateMapByWhatsAppId.set(String(template.whatsapp_template_id), template);
         }
-        // Fallback matching: by name360+language
-        const key = `${template.name360 || template.title || ''}_${template.language || ''}`.toLowerCase();
+        // Fallback matching: by name+language
+        const key = `${template.name || ''}_${template.language || ''}`.toLowerCase();
         dbTemplateMapByNameLang.set(key, template);
       });
       console.log(`📋 Loaded ${dbTemplates.length} templates from database for ID mapping (${dbTemplateMapByWhatsAppId.size} with WhatsApp IDs)`);
@@ -195,13 +193,14 @@ async function fetchTemplatesFromAPI(): Promise<WhatsAppTemplate[]> {
   }
 }
 
-// Function to trigger fetch and save to database
+// Function to trigger sync templates from API to database
 export async function refreshTemplatesFromAPI(): Promise<{success: boolean, message: string}> {
   try {
-    console.log('🔄 Triggering template refresh from API...');
+    console.log('🔄 Triggering template sync from API to database...');
     
-    const response = await fetch(buildApiUrl('/api/whatsapp/templates'), {
-      method: 'GET',
+    // Use the sync endpoint instead of just fetching
+    const response = await fetch(buildApiUrl('/api/whatsapp/templates/sync'), {
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
@@ -209,20 +208,20 @@ export async function refreshTemplatesFromAPI(): Promise<{success: boolean, mess
 
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('❌ Error refreshing templates:', errorData);
-      return { success: false, message: errorData.error || 'Failed to refresh templates' };
+      console.error('❌ Error syncing templates:', errorData);
+      return { success: false, message: errorData.error || 'Failed to sync templates' };
     }
 
     const data = await response.json();
     
     if (data.success) {
-      console.log('✅ Templates refreshed successfully');
-      return { success: true, message: `Successfully fetched ${data.templates?.length || 0} templates` };
+      console.log('✅ Templates synced successfully');
+      return { success: true, message: data.message || `Successfully synced ${data.new || 0} new, ${data.updated || 0} updated templates` };
     }
 
-    return { success: false, message: 'Failed to refresh templates' };
+    return { success: false, message: data.error || 'Failed to sync templates' };
   } catch (error) {
-    console.error('❌ Error refreshing templates:', error);
+    console.error('❌ Error syncing templates:', error);
     return { success: false, message: error instanceof Error ? error.message : 'Unknown error' };
   }
 }

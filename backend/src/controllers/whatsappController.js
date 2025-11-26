@@ -871,16 +871,20 @@ const sendMessage = async (req, res) => {
         let finalTemplateLanguage = templateLanguage;
         
         if (templateId) {
-          const { data: template, error: templateError } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language, number_id')
+          // Try new table first (whatsapp_templates_v2)
+          let { data: template, error: templateError } = await supabase
+            .from('whatsapp_templates_v2')
+            .select('id, name, language, whatsapp_template_id')
             .eq('id', templateId)
+            .eq('active', true)
             .single();
           
+          // Template lookup completed (no fallback needed - using new table only)
+          
           if (!templateError && template) {
-            finalTemplateName = template.name360 || template.title || templateName;
+            finalTemplateName = template.name || templateName;
             finalTemplateLanguage = template.language || templateLanguage || 'en_US';
-            console.log(`✅ Found template by database ID ${templateId}: ${finalTemplateName} (${finalTemplateLanguage}), WhatsApp ID: ${template.number_id}`);
+            console.log(`✅ Found template by database ID ${templateId}: ${finalTemplateName} (${finalTemplateLanguage}), WhatsApp ID: ${template.whatsapp_template_id || template.number_id}`);
           } else {
             console.warn(`⚠️ Template with database ID ${templateId} not found, using provided templateName: ${templateName}`);
           }
@@ -973,16 +977,18 @@ const sendMessage = async (req, res) => {
       if (templateId !== undefined && templateId !== null) {
         const templateIdNum = Number(templateId);
         if (!isNaN(templateIdNum) && templateIdNum > 0) {
-          // Verify the template exists in database
-          const { data: templateById, error: errorById } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language, number_id')
+          // Verify the template exists in database (try new table first)
+          let { data: templateById, error: errorById } = await supabase
+            .from('whatsapp_templates_v2')
+            .select('id, name, language, whatsapp_template_id')
             .eq('id', templateIdNum)
+            .eq('active', true)
             .single();
           
           if (!errorById && templateById) {
             finalTemplateId = templateIdNum;
-            console.log(`✅ Template ID ${finalTemplateId} verified in database (name: ${templateById.name360 || templateById.title}, language: ${templateById.language})`);
+            const templateName = templateById.name;
+            console.log(`✅ Template ID ${finalTemplateId} verified in database (name: ${templateName}, language: ${templateById.language})`);
           } else {
             console.warn(`⚠️ Template ID ${templateIdNum} not found in database, will try to find by name+language as fallback`);
           }
@@ -995,75 +1001,54 @@ const sendMessage = async (req, res) => {
       if (finalTemplateId === null) {
         console.log(`🔍 Looking up template by name: "${templateName}", language: "${templateLanguage || 'en_US'}"`);
         
-        // PRIORITY 2: Look up by name360 + language (exact match first)
+        // PRIORITY 2: Look up by name + language (exact match first)
         let { data: templateByName, error: errorByName } = await supabase
-          .from('whatsapp_whatsapptemplate')
-          .select('id, name360, title, language')
-          .eq('name360', templateName)
+          .from('whatsapp_templates_v2')
+          .select('id, name, language')
+          .eq('name', templateName)
           .eq('language', templateLanguage || 'en_US')
           .maybeSingle();
         
         if (!templateByName) {
-          // 2. Try case-insensitive match: name360 + language
+          // 2. Try case-insensitive match: name + language
           const { data: templateByNameCI } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language')
-            .ilike('name360', templateName)
+            .from('whatsapp_templates_v2')
+            .select('id, name, language')
+            .ilike('name', templateName)
             .ilike('language', templateLanguage || 'en_US')
             .maybeSingle();
           templateByName = templateByNameCI;
         }
         
         if (!templateByName) {
-          // 3. Try matching by title instead of name360
-          const { data: templateByTitle } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language')
-            .eq('title', templateName)
-            .eq('language', templateLanguage || 'en_US')
-            .maybeSingle();
-          templateByName = templateByTitle;
-        }
-        
-        if (!templateByName) {
-          // 4. Try by name360 only (ignore language)
+          // 3. Try by name only (ignore language)
           const { data: templateByNameOnly } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language')
-            .eq('name360', templateName)
+            .from('whatsapp_templates_v2')
+            .select('id, name, language')
+            .eq('name', templateName)
             .maybeSingle();
           templateByName = templateByNameOnly;
         }
         
         if (!templateByName) {
-          // 5. Try by title only (ignore language)
-          const { data: templateByTitleOnly } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language')
-            .eq('title', templateName)
-            .maybeSingle();
-          templateByName = templateByTitleOnly;
-        }
-        
-        if (!templateByName) {
-          // 6. Try case-insensitive by name360 only
+          // 4. Try case-insensitive by name only
           const { data: templateByNameCIONly } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language')
-            .ilike('name360', templateName)
+            .from('whatsapp_templates_v2')
+            .select('id, name, language')
+            .ilike('name', templateName)
             .maybeSingle();
           templateByName = templateByNameCIONly;
         }
         
         if (templateByName && templateByName.id) {
           finalTemplateId = Number(templateByName.id);
-          console.log(`✅ Found template by name/language: ID ${finalTemplateId} (name360: ${templateByName.name360}, title: ${templateByName.title}, language: ${templateByName.language})`);
+          console.log(`✅ Found template by name/language: ID ${finalTemplateId} (name: ${templateByName.name}, language: ${templateByName.language})`);
         } else {
           // Last resort: List all templates with similar names for debugging
           const { data: similarTemplates } = await supabase
-            .from('whatsapp_whatsapptemplate')
-            .select('id, name360, title, language, number_id')
-            .ilike('name360', `%${templateName}%`)
+            .from('whatsapp_templates_v2')
+            .select('id, name, language, whatsapp_template_id')
+            .ilike('name', `%${templateName}%`)
             .limit(5);
           
           if (similarTemplates && similarTemplates.length > 0) {
@@ -1885,6 +1870,35 @@ const getTemplates = async (req, res) => {
   }
 };
 
+// Sync templates from WhatsApp API to database
+const syncTemplates = async (req, res) => {
+  try {
+    console.log('🔄 Sync templates request received');
+    
+    const templateSyncService = require('../services/whatsappTemplateSyncService');
+    const result = await templateSyncService.syncTemplatesToDatabase();
+    
+    if (result.success) {
+      res.json({
+        success: true,
+        message: `Sync complete: ${result.new} new, ${result.updated} updated, ${result.skipped} skipped`,
+        ...result
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        error: result.error || 'Failed to sync templates'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Error in syncTemplates:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to sync templates'
+    });
+  }
+};
+
 module.exports = {
   verifyWebhook,
   handleWebhook,
@@ -1898,5 +1912,6 @@ module.exports = {
   updateMessageStatus,
   editMessage,
   deleteMessage,
-  getTemplates
+  getTemplates,
+  syncTemplates
 }; 

@@ -33,6 +33,9 @@ router.get('/message-status/:messageId', whatsappController.getMessageStatus);
 // Get templates from WhatsApp API
 router.get('/templates', whatsappController.getTemplates);
 
+// Sync templates from WhatsApp API to database (automated)
+router.post('/templates/sync', whatsappController.syncTemplates);
+
 // Get conversation history
 router.get('/conversation/:leadId', whatsappController.getConversation);
 
