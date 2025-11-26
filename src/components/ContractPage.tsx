@@ -476,6 +476,44 @@ function buildPaymentPlan(finalAmount: number, archivalFee: number) {
   return plan;
 }
 
+// Helper function to get currency from lead data
+const getLeadCurrency = async (client: any): Promise<string> => {
+  if (!client) return '₪'; // Default fallback
+  
+  const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+  
+  if (isLegacyLead) {
+    // For legacy leads, fetch currency from accounting_currencies table
+    if (client.currency_id) {
+      try {
+        const { data: currencyData, error } = await supabase
+          .from('accounting_currencies')
+          .select('iso_code, name')
+          .eq('id', client.currency_id)
+          .single();
+        
+        if (!error && currencyData) {
+          // Return the symbol based on ISO code
+          const isoCode = currencyData.iso_code?.toUpperCase();
+          if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+          if (isoCode === 'USD') return '$';
+          if (isoCode === 'EUR') return '€';
+          if (isoCode === 'GBP') return '£';
+          // Return the ISO code if no symbol match
+          return isoCode || currencyData.name || '₪';
+        }
+      } catch (error) {
+        console.error('Error fetching currency for legacy lead:', error);
+      }
+    }
+    // Fallback for legacy leads without currency_id
+    return '₪';
+  } else {
+    // For new leads, use balance_currency or proposal_currency
+    return client.balance_currency || client.proposal_currency || '₪';
+  }
+};
+
 const ContractPage: React.FC = () => {
   const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber?: string; contractId?: string }>();
   const location = useLocation();
@@ -490,6 +528,7 @@ const ContractPage: React.FC = () => {
   const [template, setTemplate] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [leadCurrency, setLeadCurrency] = useState<string>('₪'); // Store the lead's currency
 
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
   const [editing, setEditing] = useState(false);
@@ -539,13 +578,20 @@ const ContractPage: React.FC = () => {
         let clientData = null;
 
         if (isLegacyLead) {
-          // For legacy leads, fetch from leads_lead table
+          // For legacy leads, fetch from leads_lead table with currency information
           const legacyId = leadNumber.toString().replace('legacy_', '');
           console.log('ContractPage: fetchClient - fetching from leads_lead with id:', legacyId);
 
           const { data: legacyClient, error: legacyError } = await supabase
             .from('leads_lead')
-            .select('*')
+            .select(`
+              *,
+              accounting_currencies!leads_lead_currency_id_fkey (
+                id,
+                iso_code,
+                name
+              )
+            `)
             .eq('id', legacyId)
             .single();
 
@@ -555,6 +601,28 @@ const ContractPage: React.FC = () => {
           }
 
           if (legacyClient) {
+            // Get currency from accounting_currencies
+            let currency = '₪'; // Default
+            const currencyData = Array.isArray(legacyClient.accounting_currencies) 
+              ? legacyClient.accounting_currencies[0] 
+              : legacyClient.accounting_currencies;
+            if (currencyData) {
+              const isoCode = currencyData.iso_code?.toUpperCase();
+              if (isoCode === 'ILS' || isoCode === 'NIS') currency = '₪';
+              else if (isoCode === 'USD') currency = '$';
+              else if (isoCode === 'EUR') currency = '€';
+              else if (isoCode === 'GBP') currency = '£';
+              else currency = isoCode || currencyData.name || '₪';
+            } else if (legacyClient.currency_id) {
+              // Fallback: map currency_id to symbol
+              switch (legacyClient.currency_id) {
+                case 1: currency = '₪'; break;
+                case 2: currency = '$'; break;
+                case 3: currency = '€'; break;
+                default: currency = '₪';
+              }
+            }
+            
             // Transform legacy client to match new client structure
             clientData = {
               ...legacyClient,
@@ -576,7 +644,11 @@ const ContractPage: React.FC = () => {
               closer: null,
               handler: null,
               unactivation_reason: null,
+              balance_currency: currency, // Store currency for consistency
             };
+            
+            // Set the lead currency
+            setLeadCurrency(currency);
           }
         } else {
           // For new leads, fetch from leads table
@@ -594,6 +666,10 @@ const ContractPage: React.FC = () => {
           }
 
           clientData = newClient;
+          
+          // Set currency from new lead
+          const currency = newClient.balance_currency || newClient.proposal_currency || '₪';
+          setLeadCurrency(currency);
         }
 
         console.log('ContractPage: fetchClient - setting client data:', clientData);
@@ -789,18 +865,70 @@ const ContractPage: React.FC = () => {
           }
         }
 
+        // Get currency from client if available, otherwise use contract's currency or default
+        let currencyToUse = leadCurrency || '₪';
+        if (!currencyToUse || currencyToUse === '₪') {
+          // If we don't have client currency yet, try to get it from the contract's client_id
+          if (contractData.client_id && !client) {
+            // Try to fetch client to get currency
+            try {
+              // Try new leads first
+              const { data: leadData } = await supabase
+                .from('leads')
+                .select('balance_currency, proposal_currency')
+                .eq('id', contractData.client_id)
+                .single();
+              
+              if (leadData) {
+                currencyToUse = leadData.balance_currency || leadData.proposal_currency || '₪';
+              } else {
+                // Try legacy leads
+                const legacyId = contractData.client_id.toString().replace('legacy_', '');
+                const { data: legacyData } = await supabase
+                  .from('leads_lead')
+                  .select(`
+                    currency_id,
+                    accounting_currencies!leads_lead_currency_id_fkey (
+                      iso_code,
+                      name
+                    )
+                  `)
+                  .eq('id', legacyId)
+                  .single();
+                
+                const currencyData = legacyData?.accounting_currencies 
+                  ? (Array.isArray(legacyData.accounting_currencies) 
+                      ? legacyData.accounting_currencies[0] 
+                      : legacyData.accounting_currencies)
+                  : null;
+                if (currencyData) {
+                  const isoCode = currencyData.iso_code?.toUpperCase();
+                  if (isoCode === 'ILS' || isoCode === 'NIS') currencyToUse = '₪';
+                  else if (isoCode === 'USD') currencyToUse = '$';
+                  else if (isoCode === 'EUR') currencyToUse = '€';
+                  else if (isoCode === 'GBP') currencyToUse = '£';
+                  else currencyToUse = isoCode || currencyData.name || '₪';
+                }
+              }
+            } catch (error) {
+              console.error('Error fetching currency from contract client_id:', error);
+            }
+          }
+        }
+
         // Set the custom pricing if available
         if (contractData.custom_pricing) {
           console.log('ContractPage: Setting custom pricing:', contractData.custom_pricing);
-          // Force VAT calculation by temporarily setting payment_plan to null
+          // Update currency to match lead's currency
           const pricingWithVat = {
             ...contractData.custom_pricing,
+            currency: currencyToUse, // Use lead's currency
             payment_plan: null // This will trigger the useEffect to recalculate with VAT
           };
           setCustomPricing(pricingWithVat);
         } else {
           console.log('ContractPage: No custom pricing found in contract data, initializing with defaults');
-          // Initialize with default pricing structure
+          // Initialize with default pricing structure using lead's currency
           const defaultPricing = {
             applicant_count: contractData.applicant_count || 1,
             pricing_tiers: {},
@@ -809,10 +937,10 @@ const ContractPage: React.FC = () => {
             discount_amount: 0,
             final_amount: 0,
             payment_plan: [],
-            currency: contractData.client_country || '₪',
+            currency: currencyToUse, // Use lead's currency instead of client_country
             archival_research_fee: 0,
           };
-          console.log('ContractPage: Setting default pricing:', defaultPricing);
+          console.log('ContractPage: Setting default pricing with currency:', defaultPricing);
           setCustomPricing(defaultPricing);
         }
 
@@ -934,6 +1062,17 @@ const ContractPage: React.FC = () => {
     }
   }, [editor, template, contract?.custom_content, editing, customPricing, client, contract]);
 
+  // Update customPricing currency when leadCurrency changes
+  useEffect(() => {
+    if (leadCurrency && customPricing && customPricing.currency !== leadCurrency) {
+      console.log('ContractPage: Updating currency from', customPricing.currency, 'to', leadCurrency);
+      setCustomPricing((prev: any) => ({
+        ...prev,
+        currency: leadCurrency
+      }));
+    }
+  }, [leadCurrency, customPricing]);
+
   // Save handler for edited contract
   const handleSaveEdit = async () => {
     if (!editor) return;
@@ -996,7 +1135,8 @@ const ContractPage: React.FC = () => {
     const archivalFee = customPricing.archival_research_fee || 0;
     const totalAmount = customPricing.total_amount || 0;
     const discountAmount = customPricing?.discount_amount || 0;
-    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+    const currency = leadCurrency || customPricing?.currency || '₪';
+    const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
 
     // Check if payment plan needs VAT calculation
     const currentPaymentPlan = customPricing.payment_plan || [];
@@ -1035,7 +1175,8 @@ const ContractPage: React.FC = () => {
   useEffect(() => {
     if (!customPricing || !customPricing.payment_plan) return;
     
-    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+    const currency = leadCurrency || customPricing?.currency || '₪';
+    const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
     const currentPaymentPlan = customPricing.payment_plan;
     
     // Check if payment plan needs VAT calculation (has numeric values instead of "value + VAT" strings)
@@ -1051,7 +1192,7 @@ const ContractPage: React.FC = () => {
         _forceVatCalculation: Date.now() 
       }));
     }
-  }, [customPricing?.payment_plan, contract?.client_country, customPricing?.currency]);
+  }, [customPricing?.payment_plan, leadCurrency, customPricing?.currency]);
 
   // Discount options
   const discountOptions = [0, 5, 10, 15, 20];
@@ -1082,7 +1223,8 @@ const ContractPage: React.FC = () => {
     // Calculate final amount with VAT for payment plan calculations
     const archivalFee = customPricing?.archival_research_fee || 0;
     const baseTotal = total + archivalFee;
-    const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+    const currency = leadCurrency || customPricing?.currency || '₪';
+    const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
 
     // Calculate VAT on the discounted amount (baseTotal - discountAmount)
     const discountedBaseTotal = baseTotal - discountAmount;
@@ -1351,16 +1493,16 @@ const ContractPage: React.FC = () => {
     }
   };
 
-  // Add handler for country change
+  // Add handler for country change (deprecated - currency now comes from lead)
   const handleCountryChange = async (newCountry: string) => {
     if (!contract) return;
     // Update contract in DB
     await supabase.from('contracts').update({ client_country: newCountry }).eq('id', contract.id);
     // Update local contract state
     setContract((prev: any) => ({ ...prev, client_country: newCountry }));
-    // Recalculate pricing tiers and currency
-    const isIsraeli = newCountry === 'IL';
-    const currency = isIsraeli ? 'NIS' : 'USD';
+    // Recalculate pricing tiers and currency - use lead's currency instead
+    const currency = leadCurrency || '₪';
+    const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
     // Rebuild pricing tiers
     const pricingTiers: { [key: string]: number } = {};
     const tierStructure = [
@@ -2333,18 +2475,6 @@ const ContractPage: React.FC = () => {
                       <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
                     </div>
                     <div className="text-gray-700 flex items-center"><span className="font-medium">Applicants:</span> <span className="ml-2">{customPricing?.applicant_count || ''}</span></div>
-                    <div className="text-gray-700 flex items-center">
-                      <span className="font-medium">Country:</span>
-                      <select
-                        className="select select-bordered select-sm ml-2"
-                        value={contract?.client_country || 'US'}
-                        onChange={e => handleCountryChange(e.target.value)}
-                        disabled={status === 'signed'}
-                      >
-                        <option value="IL">Israel</option>
-                        <option value="US">United States</option>
-                      </select>
-                    </div>
                     <div className="text-gray-700"><span className="font-medium">Created:</span> {new Date(contract.created_at).toLocaleDateString()}</div>
                     {contract.signed_at && (
                       <div className="text-gray-700"><span className="font-medium">Signed:</span> {new Date(contract.signed_at).toLocaleDateString()}</div>

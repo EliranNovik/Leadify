@@ -69,6 +69,19 @@ interface Contact {
   lead_type?: 'legacy' | 'new';
   client_uuid?: string | null;
   user_internal_id?: string | number | null;
+  // Role fields for filtering
+  closer?: string;
+  scheduler?: string;
+  handler?: string;
+  manager?: string;
+  helper?: string;
+  expert?: string;
+  closer_id?: number;
+  meeting_scheduler_id?: number;
+  meeting_manager_id?: number;
+  meeting_lawyer_id?: number;
+  expert_id?: number;
+  case_handler_id?: number;
 }
 
 interface EmailMessage {
@@ -320,6 +333,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const isSettingUpContactRef = useRef(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>('');
+  const [databaseUserId, setDatabaseUserId] = useState<string | number | null>(null); // Database user ID for read_by
   const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; lastSync?: string | null; error?: string | null }>({
     connected: false,
   });
@@ -329,6 +343,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   // State for lead contacts (all contacts associated with the selected lead)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
+  
+  // State for role-based filtering
+  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+  const [showMyContactsOnly, setShowMyContactsOnly] = useState<boolean>(true);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -392,15 +410,58 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         if (authUser) {
           setUserId(authUser.id);
           setUserEmail(authUser.email || '');
+          
+          // Fetch database user ID from users table for read_by field
+          if (authUser.email && authUser.email.includes('@')) {
+            // Try by email first
+            const { data: userRow, error } = await supabase
+              .from('users')
+              .select('id, full_name, email, employee_id')
+              .eq('email', authUser.email)
+              .maybeSingle();
+            
+            if (!error && userRow) {
+              setDatabaseUserId(userRow.id);
+              if (userRow.full_name) {
+                setCurrentUserFullName(userRow.full_name);
+              }
+              if (userRow.employee_id && typeof userRow.employee_id === 'number') {
+                setCurrentUserEmployeeId(userRow.employee_id);
+              }
+            } else {
+              // Try by auth_id if email lookup fails
+              const { data: userByAuthId, error: authIdError } = await supabase
+                .from('users')
+                .select('id, full_name, email, employee_id')
+                .eq('auth_id', authUser.id)
+                .maybeSingle();
+              
+              if (!authIdError && userByAuthId) {
+                setDatabaseUserId(userByAuthId.id);
+                if (userByAuthId.full_name) {
+                  setCurrentUserFullName(userByAuthId.full_name);
+                }
+                if (userByAuthId.employee_id && typeof userByAuthId.employee_id === 'number') {
+                  setCurrentUserEmployeeId(userByAuthId.employee_id);
+                }
+              }
+            }
+          }
         } else {
           setUserId(null);
           setUserEmail('');
+          setDatabaseUserId(null);
+          setCurrentUserFullName('');
+          setCurrentUserEmployeeId(null);
         }
       } catch (error) {
         console.error('Failed to load authenticated user for EmailThreadModal:', error);
         if (isMounted) {
           setUserId(null);
           setUserEmail('');
+          setDatabaseUserId(null);
+          setCurrentUserFullName('');
+          setCurrentUserEmployeeId(null);
         }
       }
     };
@@ -430,37 +491,6 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     refreshMailboxStatus();
   }, [refreshMailboxStatus]);
 
-  useEffect(() => {
-    if (!userId) {
-      setCurrentUserFullName('');
-      return;
-    }
-    let isMounted = true;
-    const loadFullName = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('users')
-          .select('full_name, email')
-          .eq('auth_id', userId)
-          .maybeSingle();
-        if (!isMounted) return;
-        if (!error && data) {
-          if (data.full_name) {
-            setCurrentUserFullName(data.full_name);
-          }
-          if (data.email && !userEmail) {
-            setUserEmail(data.email);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to load current user details for EmailThreadModal:', error);
-      }
-    };
-    loadFullName();
-    return () => {
-      isMounted = false;
-    };
-  }, [userId, userEmail]);
 
   const pushRecipient = (list: string[], address: string) => {
     const normalized = address.trim();
@@ -633,6 +663,78 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  // Helper function to check if a contact matches user roles (same logic as WhatsAppPage)
+  const contactMatchesUserRoles = (
+    contact: Contact,
+    employeeId: number | null,
+    fullName: string | null
+  ): boolean => {
+    if (!employeeId && !fullName) return false;
+
+    const stringIdentifiers = fullName ? [fullName.trim().toLowerCase()] : [];
+    const numericId = employeeId ? String(employeeId).trim() : null;
+
+    const isLegacyLead = contact.lead_type === 'legacy' || contact.id.toString().startsWith('legacy_');
+
+    if (isLegacyLead) {
+      // For legacy leads, check numeric fields
+      const roleFields = [
+        contact.closer_id,
+        contact.meeting_scheduler_id,
+        contact.meeting_manager_id,
+        contact.meeting_lawyer_id,
+        contact.expert_id,
+        contact.case_handler_id
+      ];
+
+      if (numericId) {
+        return roleFields.some(field => {
+          if (field === null || field === undefined) return false;
+          return String(field).trim() === numericId;
+        });
+      }
+    } else {
+      // For new leads, check both text and numeric fields
+      const textRoleFields = [
+        contact.closer,
+        contact.scheduler,
+        contact.handler,
+        contact.manager,
+        contact.helper,
+        contact.expert
+      ];
+
+      const numericRoleFields = [
+        contact.closer_id,
+        contact.meeting_scheduler_id,
+        contact.meeting_manager_id,
+        contact.meeting_lawyer_id,
+        contact.expert_id,
+        contact.case_handler_id
+      ];
+
+      // Check text fields
+      if (stringIdentifiers.length > 0) {
+        const textMatch = textRoleFields.some(field => {
+          if (!field || typeof field !== 'string') return false;
+          return stringIdentifiers.includes(field.trim().toLowerCase());
+        });
+        if (textMatch) return true;
+      }
+
+      // Check numeric fields
+      if (numericId) {
+        const numericMatch = numericRoleFields.some(field => {
+          if (field === null || field === undefined) return false;
+          return String(field).trim() === numericId;
+        });
+        if (numericMatch) return true;
+      }
+    }
+
+    return false;
+  };
+
   // Fetch all contacts
   useEffect(() => {
     const fetchContactsWithEmailConversations = async () => {
@@ -663,14 +765,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
         });
 
-        // Fetch new leads with email conversations
+        // Fetch new leads with email conversations (including role fields)
         const newLeadIds = Array.from(uniqueClientIds);
         let newLeadsData: any[] = [];
         
         if (newLeadIds.length > 0) {
           const { data: leadsData, error: leadsError } = await supabase
             .from('leads')
-            .select('id, name, email, lead_number, phone, mobile, created_at, topic')
+            .select('id, name, email, lead_number, phone, mobile, created_at, topic, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
             .in('id', newLeadIds);
 
           if (leadsError) {
@@ -684,33 +786,71 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
         }
 
-        // Fetch legacy leads with email conversations
+        // Fetch legacy leads with email conversations (including role fields)
         const legacyLeadIds = Array.from(uniqueLegacyIds).filter(id => !isNaN(id));
         let legacyLeadsData: any[] = [];
         
         if (legacyLeadIds.length > 0) {
           const { data: legacyLeads, error: legacyLeadsError } = await supabase
             .from('leads_lead')
-            .select('id, name, email, phone, mobile, cdate, category_id')
+            .select('id, name, email, phone, mobile, cdate, category_id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
             .in('id', legacyLeadIds);
 
           if (legacyLeadsError) {
             console.error('Error fetching legacy leads:', legacyLeadsError);
           } else {
             legacyLeadsData = (legacyLeads || []).map(lead => ({
-              ...lead,
+              id: `legacy_${lead.id}`, // Use legacy_ prefix like WhatsAppPage
               lead_number: lead.id?.toString(),
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
               created_at: lead.cdate,
               topic: null,
               lead_type: 'legacy' as const,
               idstring: null,
-              client_uuid: null
+              client_uuid: null,
+              // Map role fields for filtering - convert IDs to strings like WhatsAppPage
+              closer: lead.closer_id ? String(lead.closer_id) : '',
+              scheduler: lead.meeting_scheduler_id ? String(lead.meeting_scheduler_id) : '',
+              closer_id: lead.closer_id || null,
+              meeting_scheduler_id: lead.meeting_scheduler_id || null,
+              meeting_manager_id: lead.meeting_manager_id || null,
+              meeting_lawyer_id: lead.meeting_lawyer_id || null,
+              expert_id: lead.expert_id || null,
+              case_handler_id: lead.case_handler_id || null,
+              handler: null, // Not used for legacy
+              manager: null, // Not used for legacy
+              helper: null, // Not used for legacy
+              expert: null // Not used for legacy
             }));
           }
         }
 
         // Combine all contacts
-        const allContacts: Contact[] = [...newLeadsData, ...legacyLeadsData];
+        let allContacts: Contact[] = [...newLeadsData, ...legacyLeadsData];
+        
+        console.log(`📧 Before filtering: ${allContacts.length} contacts (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
+        console.log(`📧 Filter settings: showMyContactsOnly=${showMyContactsOnly}, employeeId=${currentUserEmployeeId}, fullName=${currentUserFullName}`);
+        
+        // Apply role-based filtering if "My Contacts" toggle is enabled
+        if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+          const beforeFilterCount = allContacts.length;
+          allContacts = allContacts.filter(contact => {
+            const matches = contactMatchesUserRoles(contact, currentUserEmployeeId, currentUserFullName);
+            if (!matches && contact.lead_type === 'legacy') {
+              console.log(`❌ Legacy contact ${contact.id} (${contact.name}) did not match:`, {
+                closer_id: (contact as any).closer_id,
+                meeting_scheduler_id: (contact as any).meeting_scheduler_id,
+                employeeId: currentUserEmployeeId,
+                fullName: currentUserFullName
+              });
+            }
+            return matches;
+          });
+          console.log(`📧 After filtering: ${allContacts.length} contacts (filtered from ${beforeFilterCount})`);
+        }
         
         console.log(`📧 Fetched ${allContacts.length} contacts with email conversations (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
         
@@ -752,28 +892,84 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             }
 
             // Check for unread incoming messages (last 7 days)
+            // For contacts, we need to check by both client_id/legacy_id AND contact_id when available
             const sevenDaysAgo = new Date();
             sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
  
+            // First, try to find a contact with matching email to get contact_id
+            let contactIdForUnread: number | null = null;
+            if (contact.email) {
+              // Fetch contacts for this lead to find matching contact_id
+              const isLegacyForContact = contact.lead_type === 'legacy';
+              const leadIdForContact = isLegacyForContact
+                ? (contact.lead_number ? parseInt(contact.lead_number.replace(/[^0-9]/g, ''), 10) : null)
+                : (contact.client_uuid || contact.id);
+              
+              if (leadIdForContact) {
+                try {
+                  const contactsList = await fetchLeadContacts(
+                    String(leadIdForContact), 
+                    isLegacyForContact
+                  );
+                  const matchingContact = contactsList.find((c: ContactInfo) => 
+                    c.email && contact.email && c.email.toLowerCase() === contact.email.toLowerCase()
+                  );
+                  if (matchingContact) {
+                    contactIdForUnread = matchingContact.id;
+                  }
+                } catch (error) {
+                  console.error('Error fetching contacts for unread count:', error);
+                }
+              }
+            }
+            
+            // Build query for unread emails
             let unreadMessages: { id: string }[] | null = null;
+            
             if (isLegacyContact && legacyId !== null) {
-              const { data } = await supabase
+              // For legacy contacts: check by legacy_id and optionally by contact_id
+              let query = supabase
                 .from('emails')
-                .select('id')
+                .select('id, contact_id')
                 .eq('legacy_id', legacyId)
                 .eq('direction', 'incoming')
                 .gte('sent_at', sevenDaysAgo.toISOString())
-                .is('is_read', false);
-              unreadMessages = data ?? null;
+                .or('is_read.is.null,is_read.eq.false');
+              
+              const { data } = await query;
+              
+              // Filter in memory if we have a contact_id
+              if (contactIdForUnread && data) {
+                // Include emails that match contact_id OR don't have contact_id set (fallback to main contact)
+                const filtered = data.filter((email: any) => 
+                  !email.contact_id || email.contact_id === contactIdForUnread
+                );
+                unreadMessages = filtered;
+              } else {
+                unreadMessages = data ?? null;
+              }
             } else {
-              const { data } = await supabase
+              // For new leads: check by client_id and optionally by contact_id
+              let query = supabase
                 .from('emails')
-                .select('id')
+                .select('id, contact_id')
                 .eq('client_id', String(contact.id))
                 .eq('direction', 'incoming')
                 .gte('sent_at', sevenDaysAgo.toISOString())
-                .is('is_read', false);
-              unreadMessages = data ?? null;
+                .or('is_read.is.null,is_read.eq.false');
+              
+              const { data } = await query;
+              
+              // Filter in memory if we have a contact_id
+              if (contactIdForUnread && data) {
+                // Include emails that match contact_id OR don't have contact_id set (fallback to main contact)
+                const filtered = data.filter((email: any) => 
+                  !email.contact_id || email.contact_id === contactIdForUnread
+                );
+                unreadMessages = filtered;
+              } else {
+                unreadMessages = data ?? null;
+              }
             }
  
             return {
@@ -803,7 +999,25 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           });
  
         setContacts(sortedContacts);
-        setFilteredContacts(sortedContacts);
+        // Apply search filter if there's a search query
+        if (searchQuery.trim()) {
+          const filtered = sortedContacts.filter(contact =>
+            contact.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            contact.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            contact.lead_number?.toLowerCase().includes(searchQuery.toLowerCase())
+          );
+          setFilteredContacts(filtered);
+        } else {
+          setFilteredContacts(sortedContacts);
+        }
+        
+        // If current selected contact is no longer in the filtered list, clear it
+        if (selectedContact && !sortedContacts.some(c => c.id === selectedContact.id)) {
+          console.log(`⚠️ Selected contact ${selectedContact.name} is no longer in filtered list, clearing selection`);
+          setSelectedContact(null);
+          setSelectedContactId(null);
+          setEmailThread([]);
+        }
       } catch (error) {
         console.error('Error fetching contacts with email conversations:', error);
         toast.error('Failed to load contacts');
@@ -815,7 +1029,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     if (isOpen) {
       fetchContactsWithEmailConversations();
     }
-  }, [isOpen]);
+  }, [isOpen, showMyContactsOnly, currentUserEmployeeId, currentUserFullName]);
 
   // Filter contacts based on search - now only filters through fetched contacts (no API calls)
   useEffect(() => {
@@ -1238,7 +1452,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       
       let emailQuery = supabase
         .from('emails')
-        .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id, contact_id')
+        .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id, contact_id, is_read')
         .order('sent_at', { ascending: true });
 
       // If we have a contact_id, filter by it (each contact has their own conversation)
@@ -1420,6 +1634,52 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       if (currentLoadingContactIdRef.current === loadingContactId) {
         setEmailThread(formattedThread);
         hydrateEmailThreadBodies(formattedThread);
+        
+        // Mark incoming emails as read when viewing the conversation
+        if (databaseUserId && data && data.length > 0) {
+          // Get all incoming emails that are unread from the original data
+          const incomingUnreadEmails = (data || []).filter((email: any) => 
+            email.direction === 'incoming' && 
+            (email.is_read === null || email.is_read === false)
+          );
+          
+          if (incomingUnreadEmails.length > 0) {
+            const emailIds = incomingUnreadEmails.map((e: any) => e.id).filter(Boolean) as string[];
+            
+            if (emailIds.length > 0) {
+              try {
+                // Update emails to mark as read - use databaseUserId (users.id) not auth userId
+                const { error: updateError } = await supabase
+                  .from('emails')
+                  .update({ 
+                    is_read: true, 
+                    read_at: new Date().toISOString(),
+                    read_by: databaseUserId 
+                  })
+                  .in('id', emailIds);
+                
+                if (updateError) {
+                  console.error('Error marking emails as read:', updateError);
+                } else {
+                  console.log(`✅ Marked ${emailIds.length} incoming emails as read`);
+                  
+                  // Update unread count for the contact in the contacts list
+                  setContacts(prev => prev.map(contact => {
+                    if (contact.id === selectedContact.id) {
+                      return { ...contact, unread_count: 0 };
+                    }
+                    return contact;
+                  }));
+                  
+                  // Refresh unread count for all contacts to update Header
+                  // This will be done in the next fetch cycle
+                }
+              } catch (error) {
+                console.error('Error marking emails as read:', error);
+              }
+            }
+          }
+        }
       } else {
         console.log(`⚠️ Skipping email thread update - contact changed during fetch`);
         setEmailThread([]);
@@ -2132,24 +2392,62 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       `}</style>
       <div className="h-full flex flex-col overflow-hidden">
         {/* Header */}
-        <div className={`flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200`}>
-          <div className="flex items-center gap-2 md:gap-4">
-            <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
-            {selectedContact && !isMobile && (
-              <div className="flex items-center gap-2">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-gray-600">
-                  {selectedContact.name} ({selectedContact.lead_number})
-                </span>
-              </div>
-            )}
+        <div className={`flex-none flex flex-col border-b border-gray-200`}>
+          <div className="flex items-center justify-between p-4 md:p-6">
+            <div className="flex items-center gap-2 md:gap-4">
+              <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
+              {selectedContact && !isMobile && (
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <span className="text-gray-600">
+                    {selectedContact.name} ({selectedContact.lead_number})
+                  </span>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              className="btn btn-ghost btn-circle"
+            >
+              <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="btn btn-ghost btn-circle"
-          >
-            <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-          </button>
+          
+          {/* Toggle Tabs in Header when mobile and chat is open */}
+          {isMobile && showChat && (
+            <div className="px-3 pb-3 border-t border-gray-200 bg-white">
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMyContactsOnly(false);
+                    setShowChat(false); // Show contacts list so user can see the filter working
+                  }}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    !showMyContactsOnly
+                      ? 'bg-green-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  All Contacts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMyContactsOnly(true);
+                    setShowChat(false); // Show contacts list so user can see the filter working
+                  }}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    showMyContactsOnly
+                      ? 'bg-green-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  My Contacts
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 flex overflow-hidden">
@@ -2174,8 +2472,35 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               </div>
             )}
             
-            {/* Search Bar */}
-            <div className="p-3 md:p-4 border-b border-gray-200">
+            {/* Toggle Tabs and Search Bar */}
+            <div className="p-3 border-b border-gray-200 bg-white">
+              {/* Toggle Tabs */}
+              <div className="flex gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => setShowMyContactsOnly(false)}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    !showMyContactsOnly
+                      ? 'bg-green-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  All Contacts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMyContactsOnly(true)}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    showMyContactsOnly
+                      ? 'bg-green-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  My Contacts
+                </button>
+              </div>
+              
+              {/* Search Bar */}
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input

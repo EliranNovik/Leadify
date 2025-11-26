@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -17,7 +17,8 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
   onUpdate
 }) => {
   const [formData, setFormData] = useState({
-    currency: '',
+    currencyId: '', // Store currency ID instead of symbol
+    currency: '', // Will be computed from ID
     proposal_total: 0,
     proposal_vat: '',
     subcontractor_fee: 0,
@@ -28,6 +29,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [currencies, setCurrencies] = useState<any[]>([]);
   const [loadingCurrencies, setLoadingCurrencies] = useState(false);
+  const initializedForClientRef = useRef<string | null>(null);
 
   // Helper function to get currency symbol
   const getCurrencySymbol = (currency: string | undefined) => {
@@ -65,6 +67,20 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
     { value: 'included', label: 'VAT included' }
   ];
 
+  // Helper function to get symbol from ISO code (used in multiple places)
+  const getSymbolFromISO = (isoCode: string) => {
+    switch (isoCode?.toUpperCase()) {
+      case 'ILS': return '₪';
+      case 'USD': return '$';
+      case 'EUR': return '€';
+      case 'GBP': return '£';
+      case 'CAD': return 'C$';
+      case 'AUD': return 'A$';
+      case 'JPY': return '¥';
+      default: return isoCode || '₪';
+    }
+  };
+
   // Fetch currencies from accounting_currencies table
   const fetchCurrencies = async () => {
     setLoadingCurrencies(true);
@@ -84,23 +100,105 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
     }
   };
 
+  // Reset initialization ref when modal closes
   useEffect(() => {
-    if (isOpen) {
+    if (!isOpen) {
+      initializedForClientRef.current = null;
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !selectedClient) return;
+    
+    const clientId = selectedClient.id?.toString();
+    if (!clientId) return;
+
+    // Fetch currencies when modal opens
+    if (currencies.length === 0 && !loadingCurrencies) {
       fetchCurrencies();
-      
-      if (selectedClient) {
+      return;
+    }
+
+    // Wait for currencies to be loaded
+    if (currencies.length === 0 || loadingCurrencies) {
+      return;
+    }
+
+    // Check if we've already initialized for this client
+    if (initializedForClientRef.current === clientId) {
+      return;
+    }
+
+    // For new leads, check the 'vat' column (text type)
+    // NULL, FALSE, 'false', 'FALSE' → excluded
+    // TRUE, 'true', 'TRUE' → included
+    // Default to 'included' (true) since database has default TRUE
+    let vatStatus = 'included'; // Default to included
+    const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
+    
+    if (!isLegacyLead) {
+      // For new leads, check the vat column
+      if (selectedClient.vat !== null && selectedClient.vat !== undefined) {
+        const vatValue = String(selectedClient.vat).toLowerCase().trim();
+        if (vatValue === 'false' || vatValue === '0' || vatValue === 'no') {
+          vatStatus = 'excluded';
+        } else {
+          // Default to included for 'true', '1', 'yes', or any other value
+          vatStatus = 'included';
+        }
+      }
+      // If vat is null/undefined, keep default 'included'
+    } else if (selectedClient.proposal_vat) {
+      // Fallback to proposal_vat for legacy leads
+      vatStatus = selectedClient.proposal_vat;
+    } else {
+      // For legacy leads without proposal_vat, default to included
+      vatStatus = 'included';
+    }
+    
+        // Get currency_id (works for both legacy and new leads)
+        let currencyId = '';
+        
+        if (isLegacyLead) {
+          // Legacy leads: currency_id is already in the client data
+          currencyId = selectedClient.currency_id?.toString() || '';
+        } else {
+          // New leads: use currency_id if available
+          if (selectedClient.currency_id) {
+            currencyId = selectedClient.currency_id.toString();
+          } else {
+            // Fallback: try to find currency by symbol (for backward compatibility)
+            const currentCurrencySymbol = selectedClient.balance_currency || selectedClient.proposal_currency || selectedClient.currency || '₪';
+            const normalizedSymbol = getCurrencySymbol(currentCurrencySymbol);
+            const matchingCurrency = currencies.find(c => {
+              const symbol = getSymbolFromISO(c.iso_code);
+              return symbol === normalizedSymbol;
+            });
+            currencyId = matchingCurrency?.id?.toString() || '';
+          }
+        }
+        
+        console.log('🔍 Initializing form data:', {
+          clientId,
+          currencyId,
+          isLegacyLead,
+          currenciesCount: currencies.length
+        });
+        
         setFormData({
-          currency: selectedClient.balance_currency || selectedClient.proposal_currency || selectedClient.currency || '₪',
+          currencyId: currencyId,
+          currency: '', // Will be computed from currencyId when needed
           proposal_total: selectedClient.balance || selectedClient.proposal_total || selectedClient.total || 0,
-          proposal_vat: selectedClient.proposal_vat || 'excluded',
-          subcontractor_fee: selectedClient.subcontractor_fee ?? 0, // Use nullish coalescing to handle null/undefined
+          proposal_vat: vatStatus,
+          subcontractor_fee: selectedClient.subcontractor_fee ?? 0,
           potential_value: selectedClient.potential_value || selectedClient.potential_total || 0,
           number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || 1,
           vat_value: selectedClient.vat_value || 0
         });
-      }
-    }
-  }, [isOpen, selectedClient]);
+
+    // Mark as initialized for this client
+    initializedForClientRef.current = clientId;
+  }, [isOpen, selectedClient?.id, currencies.length, loadingCurrencies]);
 
   const handleInputChange = (field: string, value: any) => {
     setFormData(prev => ({
@@ -118,6 +216,17 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
   };
 
   const calculateVAT = () => {
+    // Only calculate VAT if it's included or if VAT should be displayed
+    // For new leads, we check the 'vat' column value
+    const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+    const shouldShowVAT = isLegacyLead 
+      ? formData.proposal_vat === 'included'
+      : formData.proposal_vat === 'included';
+    
+    if (!shouldShowVAT) {
+      return 0;
+    }
+    
     if (formData.proposal_vat === 'included') {
       // If VAT is included, calculate the VAT amount
       const totalWithVAT = formData.proposal_total;
@@ -133,28 +242,27 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
 
   const handleSave = async () => {
     if (!selectedClient) return;
+    
+    // Validate currency is selected
+    if (!formData.currencyId || formData.currencyId === '') {
+      toast.error('Please select a currency');
+      return;
+    }
+    
+    // Get the currency ID (we'll save this directly, like legacy leads)
+    const currencyId = parseInt(formData.currencyId, 10);
+    if (!currencyId || isNaN(currencyId)) {
+      toast.error('Invalid currency selected');
+      return;
+    }
 
     setLoading(true);
     try {
       const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
       
       if (isLegacyLead) {
-        // Find the currency ID from the currency symbol
-        const getSymbolFromISO = (isoCode: string) => {
-          switch (isoCode?.toUpperCase()) {
-            case 'ILS': return '₪';
-            case 'USD': return '$';
-            case 'EUR': return '€';
-            case 'GBP': return '£';
-            case 'CAD': return 'C$';
-            case 'AUD': return 'A$';
-            case 'JPY': return '¥';
-            default: return isoCode || '₪';
-          }
-        };
-        
-        const selectedCurrency = currencies.find(c => getSymbolFromISO(c.iso_code) === formData.currency);
-        const currencyId = selectedCurrency?.id || 1; // Default to ID 1 if not found
+        // For legacy leads, use the currency ID directly from formData.currencyId
+        const currencyId = parseInt(formData.currencyId, 10) || 1; // Default to ID 1 if not found
         
         // Update legacy lead in leads_lead table
         const { error } = await supabase
@@ -171,25 +279,75 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         if (error) throw error;
       } else {
         // Update new lead in leads table
-        const { error } = await supabase
+        // Map proposal_vat to 'vat' column (text): 'included' → 'true', 'excluded' → 'false'
+        const vatColumnValue = formData.proposal_vat === 'included' ? 'true' : 'false';
+        
+        // Get currency ID from formData.currencyId (same as legacy leads)
+        const currencyId = parseInt(formData.currencyId, 10) || 1; // Default to ID 1 if not found
+        
+        console.log('💾 Saving balance update for new lead:', {
+          leadId: selectedClient.id,
+          currencyId: currencyId,
+          previousCurrencyId: selectedClient.currency_id,
+          balance: formData.proposal_total,
+          vat: vatColumnValue
+        });
+        
+        const updateData: any = {
+          balance: formData.proposal_total,
+          currency_id: currencyId, // Save currency ID (like legacy leads)
+          proposal_total: formData.proposal_total,
+          subcontractor_fee: formData.subcontractor_fee,
+          potential_total: formData.potential_value,
+          number_of_applicants_meeting: formData.number_of_applicants_meeting,
+          vat_value: calculateVAT(),
+          vat: vatColumnValue
+        };
+        
+        console.log('📤 Update payload being sent to database:', updateData);
+        
+        const { data, error } = await supabase
           .from('leads')
-          .update({
-            balance: formData.proposal_total,
-            balance_currency: formData.currency,
-            proposal_currency: formData.currency,
-            proposal_total: formData.proposal_total,
-            subcontractor_fee: formData.subcontractor_fee,
-            potential_total: formData.potential_value,
-            number_of_applicants_meeting: formData.number_of_applicants_meeting,
-            vat_value: calculateVAT()
-          })
-          .eq('id', selectedClient.id);
+          .update(updateData)
+          .eq('id', selectedClient.id)
+          .select('id, currency_id, balance'); // Select back to verify
 
-        if (error) throw error;
+        if (error) {
+          console.error('❌ Error updating balance:', error);
+          console.error('❌ Error details:', JSON.stringify(error, null, 2));
+          toast.error(`Failed to update balance: ${error.message}`);
+          throw error;
+        }
+        
+        console.log('✅ Balance updated successfully. Updated data from DB:', data);
+        
+        // Verify the currency_id was saved correctly
+        if (data && data[0]) {
+          const updatedCurrencyId = data[0].currency_id;
+          if (updatedCurrencyId !== currencyId) {
+            console.error('❌ Currency ID mismatch! Expected:', currencyId, 'Got:', updatedCurrencyId);
+            toast.error(`Currency save verification failed. Expected ID: ${currencyId}, Got: ${updatedCurrencyId}`);
+          } else {
+            console.log('✅ Currency ID saved correctly:', updatedCurrencyId);
+          }
+        } else {
+          console.error('❌ No data returned from update query!');
+        }
       }
 
       toast.success('Balance updated successfully!');
-      await onUpdate(selectedClient.id);
+      // Refresh client data to show updated currency - ensure we wait for it to complete
+      try {
+        console.log('🔄 Refreshing client data after balance update...');
+        await onUpdate(selectedClient.id);
+        console.log('✅ Client data refreshed after balance update');
+        // Force a longer delay to ensure state updates propagate and UI re-renders
+        await new Promise(resolve => setTimeout(resolve, 300));
+        // Force a re-render by closing and letting the parent handle the update
+      } catch (refreshError) {
+        console.error('⚠️ Error refreshing client data:', refreshError);
+        // Don't block the close, but log the error
+      }
       onClose();
     } catch (error) {
       console.error('Error updating balance:', error);
@@ -202,9 +360,15 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
   if (!isOpen) return null;
 
   const vatAmount = calculateVAT();
+  // Only show VAT if it's included (for new leads, this means vat column is 'true')
+  const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+  const shouldShowVAT = isLegacyLead 
+    ? formData.proposal_vat === 'included'
+    : formData.proposal_vat === 'included';
+  
   const totalWithVAT = formData.proposal_vat === 'included' 
     ? formData.proposal_total 
-    : formData.proposal_total + vatAmount;
+    : formData.proposal_total + (shouldShowVAT ? vatAmount : 0);
 
   return (
     <>
@@ -233,29 +397,22 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
               </label>
               <select
                 className="select select-bordered w-full"
-                value={formData.currency}
-                onChange={(e) => handleInputChange('currency', e.target.value)}
+                value={formData.currencyId}
+                onChange={(e) => {
+                  const selectedCurrencyId = e.target.value;
+                  const selectedCurrency = currencies.find(c => c.id.toString() === selectedCurrencyId);
+                  const symbol = selectedCurrency ? getSymbolFromISO(selectedCurrency.iso_code) : '';
+                  handleInputChange('currencyId', selectedCurrencyId);
+                  handleInputChange('currency', symbol);
+                }}
                 required
                 disabled={loadingCurrencies}
               >
                 <option value="">Select currency...</option>
                 {currencies.map(currency => {
-                  // Map ISO codes to symbols
-                  const getSymbol = (isoCode: string) => {
-                    switch (isoCode?.toUpperCase()) {
-                      case 'ILS': return '₪';
-                      case 'USD': return '$';
-                      case 'EUR': return '€';
-                      case 'GBP': return '£';
-                      case 'CAD': return 'C$';
-                      case 'AUD': return 'A$';
-                      case 'JPY': return '¥';
-                      default: return isoCode || '₪';
-                    }
-                  };
-                  const symbol = getSymbol(currency.iso_code);
+                  const symbol = getSymbolFromISO(currency.iso_code);
                   return (
-                    <option key={currency.id} value={symbol}>
+                    <option key={currency.id} value={currency.id.toString()}>
                       {symbol} ({currency.name} - {currency.iso_code})
                     </option>
                   );
@@ -283,7 +440,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
                   onFocus={handleInputFocus}
                   required
                 />
-                {vatAmount > 0 && (
+                {shouldShowVAT && vatAmount > 0 && (
                   <span className="text-sm text-gray-600 whitespace-nowrap">
                     +{vatAmount.toFixed(2)} VAT
                   </span>

@@ -2,16 +2,28 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import Confetti from 'react-confetti';
 import { useCelebration } from '../contexts/CelebrationContext';
+import { useLocation } from 'react-router-dom';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 
 const MoneyRainCelebration: React.FC = () => {
   const { isCelebrating, celebrationData, closeCelebration, showCelebration } = useCelebration();
+  const location = useLocation();
   const [windowSize, setWindowSize] = useState({ width: 0, height: 0 });
   const [showContent, setShowContent] = useState(false);
+
+  // Check if we're on a public contract page - don't show celebration there
+  const isPublicContractPage = location.pathname.startsWith('/public-contract') || 
+                                location.pathname.startsWith('/public-legacy-contract');
 
   // Listen for custom events to trigger celebration
   useEffect(() => {
     const handleCelebrationEvent = (event: CustomEvent) => {
+      // Don't show celebration on public contract pages
+      if (isPublicContractPage) {
+        console.log('Celebration skipped: On public contract page');
+        return;
+      }
+      
       const { employeeName, employeeId } = event.detail;
       showCelebration({
         employeeName: employeeName || 'Team Member',
@@ -24,7 +36,7 @@ const MoneyRainCelebration: React.FC = () => {
     return () => {
       window.removeEventListener('celebrate-contract-signed', handleCelebrationEvent as EventListener);
     };
-  }, [showCelebration]);
+  }, [showCelebration, isPublicContractPage]);
 
   useEffect(() => {
     const updateSize = () => {
@@ -47,6 +59,11 @@ const MoneyRainCelebration: React.FC = () => {
       setShowContent(false);
     }
   }, [isCelebrating]);
+
+  // Don't show celebration on public contract pages
+  if (isPublicContractPage) {
+    return null;
+  }
 
   if (!isCelebrating || !celebrationData) {
     return null;

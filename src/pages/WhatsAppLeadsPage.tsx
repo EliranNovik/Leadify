@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
@@ -59,6 +60,7 @@ interface WhatsAppLead {
 }
 
 const WhatsAppLeadsPage: React.FC = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [leads, setLeads] = useState<WhatsAppLead[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -233,10 +235,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         // Get all incoming WhatsApp messages, including read status
         const { data: incomingMessages, error } = await supabase
           .from('whatsapp_messages')
-          .select(`
-            *,
-            leads!whatsapp_messages_lead_id_fkey(id, name, lead_number, phone, mobile)
-          `)
+          .select('*')
           .eq('direction', 'in')
           .order('sent_at', { ascending: false });
 
@@ -262,18 +261,13 @@ const WhatsAppLeadsPage: React.FC = () => {
             phone_number: message.phone_number,
             extractedPhone: phoneNumber,
             lead_id: message.lead_id,
-            legacy_id: message.legacy_id,
-            hasLeads: !!message.leads
+            legacy_id: message.legacy_id
           });
           
           if (!leadMap.has(phoneNumber)) {
-            // Consider connected if linked to a new lead via FK or legacy_id present
-            const isConnected = !!message.lead_id || !!message.legacy_id || !!message.leads;
-            
-            // Additional check: see if phone number matches any existing lead's phone/mobile (new leads only)
-            const phoneMatchesLead = !!message.leads && (
-              message.leads.phone === phoneNumber || message.leads.mobile === phoneNumber
-            );
+            // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
+            // Backend should handle phone number matching, frontend only checks if lead exists
+            const isConnected = !!message.lead_id || !!message.legacy_id;
             
             // Count unread messages (messages that are not read or is_read is null/false)
             const isUnread = !message.is_read || message.is_read === false;
@@ -281,7 +275,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             leadMap.set(phoneNumber, {
               ...message,
               phone_number: phoneNumber,
-              is_connected: !!isConnected || !!phoneMatchesLead,
+              is_connected: isConnected,
               message_count: 1,
               unread_count: isUnread ? 1 : 0,
               last_message_at: message.sent_at
@@ -339,6 +333,40 @@ const WhatsAppLeadsPage: React.FC = () => {
     const interval = setInterval(fetchWhatsAppLeads, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  // Auto-select lead from URL parameter (when navigating from bell icon)
+  useEffect(() => {
+    const phoneParam = searchParams.get('phone');
+    if (phoneParam && leads.length > 0 && !selectedLead) {
+      // Try to find the lead by phone number
+      const normalizedPhoneParam = decodeURIComponent(phoneParam);
+      const matchingLead = leads.find(lead => {
+        // Try exact match first
+        if (lead.phone_number === normalizedPhoneParam) return true;
+        // Try matching with extracted phone number variations
+        const extracted = extractPhoneNumber(lead.sender_name) || extractPhoneFromMessage(lead.message);
+        if (extracted === normalizedPhoneParam) return true;
+        // Try partial match (in case of formatting differences)
+        if (lead.phone_number && normalizedPhoneParam && 
+            (lead.phone_number.includes(normalizedPhoneParam) || normalizedPhoneParam.includes(lead.phone_number))) {
+          return true;
+        }
+        return false;
+      });
+      
+      if (matchingLead) {
+        console.log('✅ Auto-selecting lead from URL parameter:', normalizedPhoneParam, matchingLead);
+        setSelectedLead(matchingLead);
+        if (isMobile) {
+          setShowChat(true);
+        }
+        // Clear the URL parameter after selecting
+        setSearchParams({});
+      } else {
+        console.log('⚠️ Could not find lead with phone number:', normalizedPhoneParam);
+      }
+    }
+  }, [leads, searchParams, selectedLead, isMobile, setSearchParams]);
 
   // Helper function to extract phone number from sender name
   const extractPhoneNumber = (senderName: string): string | null => {
@@ -843,13 +871,15 @@ const WhatsAppLeadsPage: React.FC = () => {
                 const phoneNumber = message.phone_number || extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
                 
                 if (!leadMap.has(phoneNumber)) {
+                  // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
+                  // Backend should handle phone number matching, frontend only checks if lead exists
                   const isConnected = !!message.lead_id || !!message.legacy_id;
                   const isUnread = !message.is_read || message.is_read === false;
                   
                   leadMap.set(phoneNumber, {
                     ...message,
                     phone_number: phoneNumber,
-                    is_connected: !!isConnected,
+                    is_connected: isConnected,
                     message_count: 1,
                     unread_count: isUnread ? 1 : 0,
                     last_message_at: message.sent_at

@@ -149,16 +149,70 @@ interface ClientsProps {
 }
 
 const getCurrencySymbol = (currencyCode?: string) => {
-  switch (currencyCode) {
+  if (!currencyCode) return '₪';
+  
+  // Convert to string and trim whitespace from currency code
+  const strCode = String(currencyCode).trim();
+  if (!strCode) return '₪';
+  
+  // If it's already a symbol, return it as-is (check exact match first)
+  const symbols = ['₪', '$', '€', '£', 'C$', 'A$', '¥', 'CHF', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'RON', 'BGN', 'HRK', 'RUB', 'UAH', 'TRY'];
+  const exactMatch = symbols.find(s => s === strCode);
+  if (exactMatch) {
+    return exactMatch;
+  }
+  
+  // Map currency codes to symbols
+  const upperCode = trimmedCode.toUpperCase();
+  switch (upperCode) {
     case 'USD':
+    case 'US$':
       return '$';
     case 'EUR':
       return '€';
+    case 'GBP':
+      return '£';
+    case 'ILS':
     case 'NIS':
-    case '₪':
       return '₪';
+    case 'CAD':
+      return 'C$';
+    case 'AUD':
+      return 'A$';
+    case 'JPY':
+      return '¥';
+    case 'CHF':
+      return 'CHF';
+    case 'SEK':
+      return 'SEK';
+    case 'NOK':
+      return 'NOK';
+    case 'DKK':
+      return 'DKK';
+    case 'PLN':
+      return 'PLN';
+    case 'CZK':
+      return 'CZK';
+    case 'HUF':
+      return 'HUF';
+    case 'RON':
+      return 'RON';
+    case 'BGN':
+      return 'BGN';
+    case 'HRK':
+      return 'HRK';
+    case 'RUB':
+      return 'RUB';
+    case 'UAH':
+      return 'UAH';
+    case 'TRY':
+      return 'TRY';
     default:
-      return '$';
+      // If it's a short string that looks like a symbol, return it
+      if (trimmedCode.length <= 3 && !trimmedCode.match(/^[A-Z]{3}$/)) {
+        return trimmedCode;
+      }
+      return trimmedCode; // Return as-is if we can't map it
   }
 };
 
@@ -794,6 +848,7 @@ const Clients: React.FC<ClientsProps> = ({
   }, []); // Empty deps - observers handle all updates
   
   const lastCategoryRefreshIds = useRef<Set<string>>(new Set());
+  const isBalanceUpdatingRef = useRef<boolean>(false);
   
   // State for unactivation modal
   const [showUnactivationModal, setShowUnactivationModal] = useState(false);
@@ -1456,6 +1511,12 @@ useEffect(() => {
 
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
+    
+    // Skip if balance is being updated - refreshClientData will handle it
+    if (isBalanceUpdatingRef.current) {
+      console.log('⏸️ Skipping onClientUpdate - balance update in progress (from callback)');
+      return;
+    }
 
     // Check if this is a legacy lead
     const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
@@ -1582,10 +1643,25 @@ useEffect(() => {
           setSelectedClient(normalizeClientStage(transformedData));
         }
       } else {
-        // For new leads, fetch from leads table
+        // For new leads, fetch from leads table - join with accounting_currencies (like legacy leads)
         const { data: newData, error: newError } = await supabase
           .from('leads')
-          .select('*')
+          .select(`
+            *,
+            balance,
+            currency_id,
+            proposal_total,
+            subcontractor_fee,
+            potential_total,
+            vat,
+            vat_value,
+            number_of_applicants_meeting,
+            accounting_currencies!leads_currency_id_fkey (
+              id,
+              name,
+              iso_code
+            )
+          `)
           .eq('id', selectedClient.id)
           .single();
 
@@ -1602,6 +1678,45 @@ useEffect(() => {
           const categoryName = getCategoryName(data.category_id, data.category);
           console.log('🔍 Processing onClientUpdate category result:', { category_id: data.category_id, category_name: categoryName });
           const newLeadStageId = resolveStageId(data.stage);
+          
+          // Extract currency data from joined table (like legacy leads)
+          const currencyRecord = data.accounting_currencies 
+            ? (Array.isArray(data.accounting_currencies) ? data.accounting_currencies[0] : data.accounting_currencies)
+            : null;
+          
+          // Convert currency_id to symbol (like legacy leads)
+          const currencySymbol = (() => {
+            if (currencyRecord?.iso_code) {
+              const isoCode = currencyRecord.iso_code.toUpperCase();
+              if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+              if (isoCode === 'USD') return '$';
+              if (isoCode === 'EUR') return '€';
+              if (isoCode === 'GBP') return '£';
+              if (isoCode === 'CAD') return 'C$';
+              if (isoCode === 'AUD') return 'A$';
+              if (isoCode === 'JPY') return '¥';
+              return currencyRecord.name || isoCode || '₪';
+            }
+            // Fallback: if we have currency_id but no joined data, use simple mapping
+            if (data.currency_id) {
+              const currencyId = Number(data.currency_id);
+              switch (currencyId) {
+                case 1: return '₪'; break; // ILS
+                case 2: return '€'; break; // EUR
+                case 3: return '$'; break; // USD
+                case 4: return '£'; break; // GBP
+                default: return '₪';
+              }
+            }
+            return '₪'; // Default fallback
+          })();
+          
+          // CRITICAL: If balance is updating, don't overwrite fresh data
+          if (isBalanceUpdatingRef.current) {
+            console.log('⏸️ onClientUpdate: Skipping - balance update in progress, not overwriting fresh data');
+            return;
+          }
+          
           const transformedData = {
             ...data,
             category: categoryName,
@@ -1613,8 +1728,29 @@ useEffect(() => {
                 : (data.case_handler_id !== null && data.case_handler_id !== undefined
                     ? getEmployeeDisplayName(String(data.case_handler_id))
                     : 'Not assigned'),
+            // CRITICAL: Preserve currency_id from database - preserve from selectedClient if missing in fetched data
+            currency_id: data.currency_id ?? selectedClient?.currency_id ?? null,
+            // Ensure all financial columns are preserved from the database
+            balance: data.balance,
+            proposal_total: data.proposal_total,
+            subcontractor_fee: data.subcontractor_fee,
+            potential_total: data.potential_total,
+            vat: data.vat,
+            vat_value: data.vat_value,
+            number_of_applicants_meeting: data.number_of_applicants_meeting,
+            // For backward compatibility, also set balance_currency and proposal_currency as computed symbols
+            balance_currency: currencySymbol,
+            proposal_currency: currencySymbol,
           };
-          console.log('onClientUpdate: Setting new lead data:', transformedData);
+          
+          console.log('onClientUpdate: Setting new lead data:', {
+            ...transformedData,
+            balance_currency: transformedData.balance_currency,
+            proposal_currency: transformedData.proposal_currency,
+            balance: transformedData.balance,
+            proposal_total: transformedData.proposal_total
+          });
+          console.log('onClientUpdate: Currency values - balance_currency:', data.balance_currency, 'proposal_currency:', data.proposal_currency);
           setSelectedClient(normalizeClientStage(transformedData));
         }
       }
@@ -1630,6 +1766,12 @@ useEffect(() => {
   // Refresh client data when categories are loaded to update category names
   useEffect(() => {
     if (allCategories.length === 0 || !selectedClient?.id) {
+      return;
+    }
+
+    // Skip if balance is being updated - let refreshClientData handle it
+    if (isBalanceUpdatingRef.current) {
+      console.log('⏸️ Skipping onClientUpdate - balance update in progress');
       return;
     }
 
@@ -7274,31 +7416,79 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               <div className="text-center">
                 <div className="text-white text-2xl font-bold whitespace-nowrap">
                   {(() => {
-                    const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                    // For new leads, use balance column. For legacy, use total
+                    const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                    const baseAmount = isLegacyLead 
+                      ? Number(selectedClient?.total || selectedClient?.balance || 0)
+                      : Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
                     const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
                     const mainAmount = baseAmount - subcontractorFee;
-                    const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
                     
-                    // Calculate VAT
+                    // Get currency symbol - prioritize computed values from refreshClientData
+                    // These are set by App.tsx refreshClientData and are fresh
+                    let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+                    
+                    // If no computed currency, try to get from currency_id directly
+                    if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
+                      // For new leads without computed currency, use currency_id mapping
+                      // This is a fallback - normally App.tsx should set proposal_currency/balance_currency
+                      const currencyId = Number(selectedClient.currency_id);
+                      switch (currencyId) {
+                        case 1: currency = '₪'; break; // ILS
+                        case 2: currency = '€'; break; // EUR  
+                        case 3: currency = '$'; break; // USD
+                        case 4: currency = '£'; break; // GBP
+                        default: currency = '₪';
+                      }
+                    }
+                    
+                    console.log('💰 Balance badge rendering - currency_id:', selectedClient?.currency_id, 'proposal_currency:', selectedClient?.proposal_currency, 'balance_currency:', selectedClient?.balance_currency, 'final currency:', currency);
+                    
+                    // Calculate VAT - only show if vat column is 'true' for new leads
                     let vatAmount = 0;
-                    if (selectedClient?.id?.toString().startsWith('legacy_')) {
+                    let shouldShowVAT = false;
+                    
+                    if (isLegacyLead) {
+                      // Legacy leads: calculate VAT based on currency
                       const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
                       if (currency === '₪' || currency === 'ILS') {
                         vatAmount = totalAmount * 0.18;
+                        shouldShowVAT = true; // Always show for legacy Israeli currency
                       }
                     } else {
-                      const totalAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
-                      if (currency === '₪' || currency === 'ILS') {
-                        vatAmount = totalAmount * 0.18;
-                      } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                        vatAmount = Number(selectedClient.vat_value);
+                      // New leads: check 'vat' column (text type)
+                      // Default to showing VAT (since database default is TRUE)
+                      // NULL/undefined → show VAT (default)
+                      // FALSE, 'false', 'FALSE' → don't show VAT
+                      // TRUE, 'true', 'TRUE' → show VAT
+                      const vatValue = selectedClient?.vat;
+                      shouldShowVAT = true; // Default to showing VAT
+                      
+                      if (vatValue !== null && vatValue !== undefined) {
+                        const vatStr = String(vatValue).toLowerCase().trim();
+                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no') {
+                          shouldShowVAT = false;
+                        }
+                      }
+                      
+                      // Only calculate VAT if we should show it
+                      if (shouldShowVAT) {
+                        // Use vat_value from database if available, otherwise calculate
+                        if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                          vatAmount = Number(selectedClient.vat_value);
+                        } else {
+                          const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                          if (currency === '₪' || currency === 'ILS') {
+                            vatAmount = totalAmount * 0.18;
+                          }
+                        }
                       }
                     }
                     
                     return (
                       <span>
-                        {getCurrencySymbol(currency)}{Number(mainAmount.toFixed(2)).toLocaleString()}
-                        {vatAmount > 0 && (
+                        {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                        {shouldShowVAT && vatAmount > 0 && (
                           <span className="text-white text-base opacity-90 font-normal ml-2">
                             +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
                           </span>
@@ -7309,10 +7499,27 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
                 {/* Always show Total */}
                 <div className="text-white text-sm opacity-90 mt-1">
-                  Total: {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
-                  {(() => {
-                    const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
-                    return Number(baseAmount.toFixed(2)).toLocaleString();
+                  Total: {(() => {
+                    const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                    // Get currency symbol - prioritize computed values from refreshClientData
+                    let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+                    
+                    // If no computed currency, try to get from currency_id directly
+                    if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
+                      const currencyId = Number(selectedClient.currency_id);
+                      switch (currencyId) {
+                        case 1: currency = '₪'; break; // ILS
+                        case 2: currency = '€'; break; // EUR  
+                        case 3: currency = '$'; break; // USD
+                        case 4: currency = '£'; break; // GBP
+                        default: currency = '₪';
+                      }
+                    }
+                    
+                    const baseAmount = isLegacyLead
+                      ? Number(selectedClient?.total || selectedClient?.balance || 0)
+                      : Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                    return `${currency}${Number(baseAmount.toFixed(2)).toLocaleString()}`;
                   })()}
                 </div>
                 {/* Always show Potential Value */}
@@ -7326,13 +7533,26 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       if (potentialValue !== null && potentialValue !== undefined) {
                         const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
                         if (!isNaN(numValue) && numValue > 0) {
-                          const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                            // Get currency symbol - prioritize computed values from refreshClientData
+                          let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+                          
+                          // If no computed currency, try to get from currency_id directly
+                          if ((!currency || currency === '₪') && selectedClient?.currency_id) {
+                            const currencyId = Number(selectedClient.currency_id);
+                            switch (currencyId) {
+                              case 1: currency = '₪'; break; // ILS
+                              case 2: currency = '€'; break; // EUR  
+                              case 3: currency = '$'; break; // USD
+                              case 4: currency = '£'; break; // GBP
+                              default: currency = '₪';
+                            }
+                          }
                           const formattedValue = typeof potentialValue === 'string' 
                             ? potentialValue 
                             : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
                           return (
                             <span className="text-white">
-                              {getCurrencySymbol(currency)}{formattedValue}
+                              {currency}{formattedValue}
                             </span>
                           );
                         }
@@ -7603,32 +7823,74 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   <div className="text-center">
                     <div className="text-white text-2xl font-bold whitespace-nowrap">
                       {(() => {
-                        // Get base amount and subtract subcontractor fee for main display value
-                        const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
+                        // For new leads, use balance column. For legacy, use total
+                        const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                        const baseAmount = isLegacyLead 
+                          ? Number(selectedClient?.total || selectedClient?.balance || 0)
+                          : Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
                         const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                        const mainAmount = baseAmount - subcontractorFee; // Main value after subtracting subcontractor fee
-                        const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                        const mainAmount = baseAmount - subcontractorFee;
                         
-                        // Calculate VAT based on base amount (before subtracting subcontractor fee)
+                        // Get currency symbol - prioritize computed values from refreshClientData
+                        let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+                        
+                        // If no computed currency, try to get from currency_id directly
+                        if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
+                          const currencyId = Number(selectedClient.currency_id);
+                          switch (currencyId) {
+                            case 1: currency = '₪'; break; // ILS
+                            case 2: currency = '€'; break; // EUR  
+                            case 3: currency = '$'; break; // USD
+                            case 4: currency = '£'; break; // GBP
+                            default: currency = '₪';
+                          }
+                        }
+                        
+                        // Calculate VAT - only show if vat column is 'true' for new leads
                         let vatAmount = 0;
-                        if (selectedClient?.id?.toString().startsWith('legacy_')) {
+                        let shouldShowVAT = false;
+                        
+                        if (isLegacyLead) {
+                          // Legacy leads: calculate VAT based on currency
                           const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
                           if (currency === '₪' || currency === 'ILS') {
                             vatAmount = totalAmount * 0.18;
+                            shouldShowVAT = true; // Always show for legacy Israeli currency
                           }
                         } else {
-                          const totalAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
-                          if (currency === '₪' || currency === 'ILS') {
-                            vatAmount = totalAmount * 0.18;
-                          } else if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                            vatAmount = Number(selectedClient.vat_value);
+                          // New leads: check 'vat' column (text type)
+                          // Default to showing VAT (since database default is TRUE)
+                          // NULL/undefined → show VAT (default)
+                          // FALSE, 'false', 'FALSE' → don't show VAT
+                          // TRUE, 'true', 'TRUE' → show VAT
+                          const vatValue = selectedClient?.vat;
+                          shouldShowVAT = true; // Default to showing VAT
+                          
+                          if (vatValue !== null && vatValue !== undefined) {
+                            const vatStr = String(vatValue).toLowerCase().trim();
+                            if (vatStr === 'false' || vatStr === '0' || vatStr === 'no') {
+                              shouldShowVAT = false;
+                            }
+                          }
+                          
+                          // Only calculate VAT if we should show it
+                          if (shouldShowVAT) {
+                            // Use vat_value from database if available, otherwise calculate
+                            if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                              vatAmount = Number(selectedClient.vat_value);
+                            } else {
+                              const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                              if (currency === '₪' || currency === 'ILS') {
+                                vatAmount = totalAmount * 0.18;
+                              }
+                            }
                           }
                         }
                         
                         return (
                           <span>
-                            {getCurrencySymbol(currency)}{Number(mainAmount.toFixed(2)).toLocaleString()}
-                            {vatAmount > 0 && (
+                            {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                            {shouldShowVAT && vatAmount > 0 && (
                               <span className="text-white text-base opacity-90 font-normal ml-2">
                                 +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
                               </span>
@@ -7643,7 +7905,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       if (potentialValue !== null && potentialValue !== undefined) {
                         const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
                         if (!isNaN(numValue) && numValue > 0) {
-                          const currency = selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency;
+                            // Get currency symbol - prioritize computed values from refreshClientData
+                          let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+                          
+                          // If no computed currency, try to get from currency_id directly
+                          if ((!currency || currency === '₪') && selectedClient?.currency_id) {
+                            const currencyId = Number(selectedClient.currency_id);
+                            switch (currencyId) {
+                              case 1: currency = '₪'; break; // ILS
+                              case 2: currency = '€'; break; // EUR  
+                              case 3: currency = '$'; break; // USD
+                              case 4: currency = '£'; break; // GBP
+                              default: currency = '₪';
+                            }
+                          }
                           const formattedValue = typeof potentialValue === 'string' 
                             ? potentialValue 
                             : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -7652,7 +7927,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                               <div className="font-medium">Potential Value:</div>
                               <div className="text-white">
                                 <span className="text-white">
-                                  {getCurrencySymbol(currency)}{formattedValue}
+                                  {currency}{formattedValue}
                                 </span>
                               </div>
                             </div>
@@ -7664,11 +7939,26 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     {/* Conditionally show Total - only if subcontractor fee exists */}
                     {Number(selectedClient?.subcontractor_fee ?? 0) > 0 && (
                       <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
-                        Total: {getCurrencySymbol(selectedClient?.balance_currency || selectedClient?.proposal_currency || selectedClient?.currency)}
-                        {(() => {
-                          // Total is the base amount from database, not calculated as value + VAT
-                          const baseAmount = Number(selectedClient?.balance || selectedClient?.total || 0);
-                          return Number(baseAmount.toFixed(2)).toLocaleString();
+                        Total: {(() => {
+                          const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                            // Get currency symbol - prioritize computed values from refreshClientData
+                          let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+                          
+                          // If no computed currency, try to get from currency_id directly
+                          if ((!currency || currency === '₪') && selectedClient?.currency_id) {
+                            const currencyId = Number(selectedClient.currency_id);
+                            switch (currencyId) {
+                              case 1: currency = '₪'; break; // ILS
+                              case 2: currency = '€'; break; // EUR  
+                              case 3: currency = '$'; break; // USD
+                              case 4: currency = '£'; break; // GBP
+                              default: currency = '₪';
+                            }
+                          }
+                          const baseAmount = isLegacyLead
+                            ? Number(selectedClient?.total || selectedClient?.balance || 0)
+                            : Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                          return `${currency}${Number(baseAmount.toFixed(2)).toLocaleString()}`;
                         })()}
                       </div>
                     )}
@@ -10104,7 +10394,24 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         isOpen={isBalanceModalOpen}
         onClose={() => setIsBalanceModalOpen(false)}
         selectedClient={selectedClient}
-        onUpdate={(clientId) => refreshClientData(clientId || selectedClient?.id)}
+        onUpdate={async (clientId) => {
+          isBalanceUpdatingRef.current = true;
+          console.log('🔒 Setting balance update flag to prevent onClientUpdate');
+          try {
+            await refreshClientData(clientId || selectedClient?.id);
+            // Wait longer for state to fully propagate and UI to update
+            await new Promise(resolve => setTimeout(resolve, 500));
+            console.log('✅ Balance update complete, UI should be updated');
+          } catch (error) {
+            console.error('❌ Error in balance update:', error);
+          } finally {
+            // Clear the flag after a longer delay to ensure all updates are done
+            setTimeout(() => {
+              isBalanceUpdatingRef.current = false;
+              console.log('🔓 Clearing balance update flag');
+            }, 1500);
+          }
+        }}
       />
     </div>
   );

@@ -190,13 +190,90 @@ const AppContentInner: React.FC = () => {
         setSelectedClient(clientData);
       } else {
         // Handle new leads
+        console.log('🔄 Refreshing new lead data for ID:', clientId);
         const { data, error } = await supabase
           .from('leads')
-          .select('*, emails (*)')
+          .select(`
+            *,
+            emails (*),
+            balance,
+            currency_id,
+            proposal_total,
+            subcontractor_fee,
+            potential_total,
+            vat,
+            vat_value,
+            number_of_applicants_meeting,
+            accounting_currencies!leads_currency_id_fkey (
+              id,
+              name,
+              iso_code
+            )
+          `)
           .eq('id', clientId)
           .single();
         if (error) throw error;
-        setSelectedClient(data);
+        // Extract currency data from joined table
+        const currencyData = data.accounting_currencies 
+          ? (Array.isArray(data.accounting_currencies) ? data.accounting_currencies[0] : data.accounting_currencies)
+          : null;
+        
+        console.log('✅ New lead data refreshed:', { 
+          id: data.id, 
+          currency_id: data.currency_id,
+          currency_iso_code: currencyData?.iso_code,
+          balance: data.balance,
+          proposal_total: data.proposal_total,
+          subcontractor_fee: data.subcontractor_fee,
+          potential_total: data.potential_total,
+          vat: data.vat,
+          vat_value: data.vat_value,
+          number_of_applicants_meeting: data.number_of_applicants_meeting
+        });
+        // Convert currency_id to symbol for display (like legacy leads)
+        const currencySymbol = (() => {
+          if (currencyData?.iso_code) {
+            const isoCode = currencyData.iso_code.toUpperCase();
+            if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+            if (isoCode === 'USD') return '$';
+            if (isoCode === 'EUR') return '€';
+            if (isoCode === 'GBP') return '£';
+            if (isoCode === 'CAD') return 'C$';
+            if (isoCode === 'AUD') return 'A$';
+            if (isoCode === 'JPY') return '¥';
+            return currencyData.name || isoCode || '₪';
+          }
+          return '₪'; // Default fallback
+        })();
+        
+        // Create a completely new object reference to ensure React detects the change
+        // Spread all properties to create a new object reference
+        // CRITICAL: Preserve ALL financial columns exactly as they come from the database
+        const newClientData = {
+          ...data,
+          // Explicitly preserve financial columns - don't let them be overridden
+          balance: data.balance,
+          currency_id: data.currency_id, // Store currency_id
+          proposal_total: data.proposal_total,
+          subcontractor_fee: data.subcontractor_fee,
+          potential_total: data.potential_total,
+          vat: data.vat,
+          vat_value: data.vat_value,
+          number_of_applicants_meeting: data.number_of_applicants_meeting,
+          // Compute currency symbols for backward compatibility
+          balance_currency: currencySymbol,
+          proposal_currency: currencySymbol,
+          // Explicitly spread nested objects/arrays to ensure new references
+          emails: data.emails ? [...(Array.isArray(data.emails) ? data.emails : [])] : []
+        };
+        console.log('🔄 Setting selectedClient with fresh data:', {
+          currency_id: newClientData.currency_id,
+          currency_iso_code: currencyData?.iso_code,
+          currency_symbol: currencySymbol,
+          balance: newClientData.balance
+        });
+        setSelectedClient(newClientData);
+        console.log('✅ setSelectedClient called with new data, currency_id:', newClientData.currency_id, 'currency_symbol:', currencySymbol);
       }
     } catch (error) {
       console.error('Error refreshing client data:', error);

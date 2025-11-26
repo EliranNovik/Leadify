@@ -931,19 +931,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   // Fetch WhatsApp leads messages (unread messages from new leads)
   const fetchWhatsappLeadsMessages = async () => {
     try {
-      // Fetch incoming WhatsApp messages from numbers not connected to existing clients
-      // These are messages where lead_id is null and direction is 'in' and not read yet
+      // Fetch incoming WhatsApp messages - same logic as WhatsAppLeadsPage
+      // Only filter by lead_id or legacy_id (backend handles phone number matching)
       let whatsappMessages: any[] = [];
       
       try {
         const { data, error } = await supabase
           .from('whatsapp_messages')
           .select('*')
-          .is('lead_id', null)
           .eq('direction', 'in')
           .or('is_read.is.null,is_read.eq.false')
           .order('sent_at', { ascending: false })
-          .limit(10); // Get latest 10 unread messages
+          .limit(50); // Get more messages to properly filter
 
         if (error) {
           console.error('Error fetching WhatsApp leads messages:', error);
@@ -968,31 +967,62 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return;
       }
 
-      // Group messages by phone number to avoid duplicates
-      const groupedMessages = whatsappMessages.reduce((acc, message) => {
-        const phoneNumber = message.phone_number || message.sender_name;
-        if (!acc[phoneNumber]) {
-          acc[phoneNumber] = {
+      // Helper function to extract phone number (same as WhatsAppLeadsPage)
+      const extractPhoneNumber = (senderName: string): string | null => {
+        if (!senderName) return null;
+        const phoneRegex = /(\+?9725[0-9]{8}|05[0-9]{8}|5[0-9]{8})/;
+        const match = senderName.match(phoneRegex);
+        return match ? match[1] : null;
+      };
+
+      const extractPhoneFromMessage = (message: string): string | null => {
+        if (!message) return null;
+        const phoneRegex = /(\+?9725[0-9]{8}|05[0-9]{8}|5[0-9]{8})/;
+        const match = message.match(phoneRegex);
+        return match ? match[1] : null;
+      };
+
+      // Filter and group messages by phone number (same logic as WhatsAppLeadsPage)
+      const leadMap = new Map<string, any>();
+      
+      whatsappMessages.forEach((message) => {
+        // Use phone_number field directly from database, fallback to extraction if not available
+        const phoneNumber = message.phone_number || extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
+        
+        // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
+        // Backend should handle phone number matching, frontend only checks if lead exists
+        const isConnected = !!message.lead_id || !!message.legacy_id;
+        
+        // Only include unconnected leads
+        if (isConnected || phoneNumber === 'unknown') {
+          return; // Skip connected leads
+        }
+        
+        if (!leadMap.has(phoneNumber)) {
+          leadMap.set(phoneNumber, {
             phone_number: phoneNumber,
             sender_name: message.sender_name,
             latest_message: message.message,
             latest_message_time: message.sent_at,
             message_count: 1,
             id: message.id // Use the latest message ID as the group ID
-          };
+          });
         } else {
-          acc[phoneNumber].message_count++;
+          const existingLead = leadMap.get(phoneNumber)!;
+          existingLead.message_count++;
           // Keep the latest message
-          if (new Date(message.sent_at) > new Date(acc[phoneNumber].latest_message_time)) {
-            acc[phoneNumber].latest_message = message.message;
-            acc[phoneNumber].latest_message_time = message.sent_at;
-            acc[phoneNumber].id = message.id;
+          if (new Date(message.sent_at) > new Date(existingLead.latest_message_time)) {
+            existingLead.latest_message = message.message;
+            existingLead.latest_message_time = message.sent_at;
+            existingLead.id = message.id;
           }
         }
-        return acc;
-      }, {} as Record<string, any>);
+      });
 
-      const groupedMessagesArray = Object.values(groupedMessages);
+      const groupedMessagesArray = Array.from(leadMap.values())
+        .sort((a, b) => new Date(b.latest_message_time).getTime() - new Date(a.latest_message_time).getTime())
+        .slice(0, 10); // Limit to latest 10 unconnected leads
+
       setWhatsappLeadsMessages(groupedMessagesArray);
       setWhatsappLeadsUnreadCount(groupedMessagesArray.length);
     } catch (error) {
@@ -1027,22 +1057,120 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const fetchEmailUnreadCount = useCallback(async () => {
     try {
-      const { count, error } = await supabase
+      // Fetch unread incoming emails with client_id and legacy_id
+      const { data: emailsData, error: emailsError } = await supabase
         .from('emails')
-        .select('id', { count: 'exact', head: true })
+        .select('id, client_id, legacy_id')
         .eq('direction', 'incoming')
         .or('is_read.is.null,is_read.eq.false');
 
-      if (error) {
-        console.error('Error fetching email unread count:', error);
+      if (emailsError) {
+        console.error('Error fetching email unread count:', emailsError);
+        setEmailUnreadCount(0);
         return;
       }
 
-      setEmailUnreadCount(count || 0);
+      if (!emailsData || emailsData.length === 0) {
+        setEmailUnreadCount(0);
+        return;
+      }
+
+      // If we don't have user data, count all emails
+      if (!currentUserEmployee?.id && !currentUser?.employee_id && !userFullName) {
+        setEmailUnreadCount(emailsData.length);
+        return;
+      }
+
+      // Get unique client IDs (new leads) and legacy IDs
+      const uniqueClientIds = new Set<string>();
+      const uniqueLegacyIds = new Set<number>();
+      
+      emailsData.forEach((email: any) => {
+        if (email.client_id) {
+          uniqueClientIds.add(String(email.client_id));
+        }
+        if (email.legacy_id) {
+          uniqueLegacyIds.add(Number(email.legacy_id));
+        }
+      });
+
+      // Fetch leads with role fields
+      const newLeadIds = Array.from(uniqueClientIds);
+      const legacyLeadIds = Array.from(uniqueLegacyIds).filter(id => !isNaN(id));
+      
+      let matchingLeadIds = new Set<string>();
+      let matchingLegacyIds = new Set<number>();
+
+      // Fetch new leads
+      if (newLeadIds.length > 0) {
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select('id, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
+          .in('id', newLeadIds);
+
+        if (!newLeadsError && newLeads) {
+          const employeeId = currentUserEmployee?.id || currentUser?.employee_id;
+          const fullName = userFullName?.trim().toLowerCase();
+
+          newLeads.forEach((lead: any) => {
+            // Check text fields
+            if (fullName) {
+              const textFields = [lead.closer, lead.scheduler, lead.handler, lead.manager, lead.helper, lead.expert];
+              if (textFields.some(field => field && typeof field === 'string' && field.trim().toLowerCase() === fullName)) {
+                matchingLeadIds.add(String(lead.id));
+                return;
+              }
+            }
+            
+            // Check numeric fields
+            if (employeeId) {
+              const numericFields = [lead.closer_id, lead.meeting_scheduler_id, lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
+              if (numericFields.some(field => field && String(field) === String(employeeId))) {
+                matchingLeadIds.add(String(lead.id));
+              }
+            }
+          });
+        }
+      }
+
+      // Fetch legacy leads
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select('id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
+          .in('id', legacyLeadIds);
+
+        if (!legacyLeadsError && legacyLeads) {
+          const employeeId = currentUserEmployee?.id || currentUser?.employee_id;
+
+          if (employeeId) {
+            legacyLeads.forEach((lead: any) => {
+              const numericFields = [lead.closer_id, lead.meeting_scheduler_id, lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
+              if (numericFields.some(field => field && String(field) === String(employeeId))) {
+                matchingLegacyIds.add(Number(lead.id));
+              }
+            });
+          }
+        }
+      }
+
+      // Count emails that belong to matching leads
+      const count = emailsData.filter((email: any) => {
+        if (email.client_id && matchingLeadIds.has(String(email.client_id))) {
+          return true;
+        }
+        if (email.legacy_id && matchingLegacyIds.has(Number(email.legacy_id))) {
+          return true;
+        }
+        return false;
+      }).length;
+
+      setEmailUnreadCount(count);
     } catch (error) {
       console.error('Unexpected error fetching email unread count:', error);
+      setEmailUnreadCount(0);
     }
-  }, []);
+  }, [currentUserEmployee, currentUser, userFullName]);
 
   const fetchEmailLeadMessages = useCallback(async () => {
     try {
@@ -1218,6 +1346,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       fetchEmailUnreadCount();
     }
   }, [currentUser, fetchEmailLeadMessages, fetchEmailUnreadCount]);
+
+  // Re-fetch email unread count when user employee data changes (for "My Contacts" filtering)
+  useEffect(() => {
+    if (currentUser || currentUserEmployee || userFullName) {
+      fetchEmailUnreadCount();
+    }
+  }, [currentUserEmployee, userFullName, fetchEmailUnreadCount]);
 
   // Fetch new leads count when component mounts and every 30 seconds
   useEffect(() => {
@@ -1794,11 +1929,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     });
   };
 
-  const handleWhatsappLeadsClick = () => {
+  const handleWhatsappLeadsClick = (phoneNumber?: string) => {
     // Close notifications dropdown
     setShowNotifications(false);
-    // Navigate to WhatsApp Leads page
-    navigate('/whatsapp-leads');
+    // Navigate to WhatsApp Leads page with optional phone number parameter
+    if (phoneNumber) {
+      navigate(`/whatsapp-leads?phone=${encodeURIComponent(phoneNumber)}`);
+    } else {
+      navigate('/whatsapp-leads');
+    }
   };
 
   const handleEmailLeadClick = () => {
@@ -2939,16 +3078,16 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                           <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
                         </div>
                       </div>
-                      {whatsappLeadsMessages.map((message) => (
+                          {whatsappLeadsMessages.map((message) => (
                         <div key={message.id} className="border-b border-green-100">
                           <div
                             role="button"
                             tabIndex={0}
-                            onClick={handleWhatsappLeadsClick}
+                            onClick={() => handleWhatsappLeadsClick(message.phone_number)}
                             onKeyDown={(e) => {
                               if (e.key === 'Enter' || e.key === ' ') {
                                 e.preventDefault();
-                                handleWhatsappLeadsClick();
+                                handleWhatsappLeadsClick(message.phone_number);
                               }
                             }}
                             className="w-full p-4 text-left hover:bg-green-50 transition-colors duration-200 cursor-pointer"

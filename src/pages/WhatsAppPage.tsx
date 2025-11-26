@@ -148,6 +148,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
 
+  // State for user role filtering
+  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+  const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
+  const [showMyContactsOnly, setShowMyContactsOnly] = useState(true);
+
   // Helper function to fetch user name by ID
   const getUserName = async (userId: string) => {
     if (!userId) return null;
@@ -195,6 +200,87 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
     
     return hasNonAscii && isShort;
+  };
+
+  // Helper function to check if a client matches user roles (same logic as Header.tsx assignment notifications)
+  const clientMatchesUserRoles = (
+    client: Client,
+    employeeId: number | null,
+    fullName: string | null
+  ): boolean => {
+    if (!employeeId && !fullName) return false;
+
+    const stringIdentifiers = fullName ? [fullName.trim().toLowerCase()] : [];
+    const numericId = employeeId ? String(employeeId).trim() : null;
+
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+
+    if (isLegacyLead) {
+      // For legacy leads, check numeric fields only (legacy leads use numeric IDs for roles)
+      const roleFields = [
+        (client as any).closer_id,
+        (client as any).meeting_scheduler_id,
+        (client as any).meeting_manager_id,
+        (client as any).meeting_lawyer_id,
+        (client as any).expert_id,
+        (client as any).case_handler_id
+      ];
+
+      // Legacy leads require numeric employee ID to match (they don't use text names for roles)
+      if (numericId) {
+        const match = roleFields.some(field => {
+          if (field === null || field === undefined) return false;
+          return String(field).trim() === numericId;
+        });
+        if (match) {
+          console.log(`✅ Legacy lead ${client.id} matched by numeric role field`);
+        }
+        return match;
+      } else {
+        // If no numeric ID available, can't match legacy leads (they use numeric IDs only)
+        console.log(`⚠️ Legacy lead ${client.id} cannot be matched: no employee ID available`);
+        return false;
+      }
+    } else {
+      // For new leads, check both text and numeric fields
+      const textRoleFields = [
+        client.closer,
+        client.scheduler,
+        (client as any).handler,
+        (client as any).manager,
+        (client as any).helper,
+        (client as any).expert
+      ];
+
+      const numericRoleFields = [
+        (client as any).closer_id,
+        (client as any).meeting_scheduler_id,
+        (client as any).meeting_manager_id,
+        (client as any).meeting_lawyer_id,
+        (client as any).expert_id,
+        (client as any).case_handler_id
+      ];
+
+      // Check text fields
+      if (stringIdentifiers.length > 0) {
+        const textMatch = textRoleFields.some(field => {
+          if (!field || typeof field !== 'string') return false;
+          return stringIdentifiers.includes(field.trim().toLowerCase());
+        });
+        if (textMatch) return true;
+      }
+
+      // Check numeric fields
+      if (numericId) {
+        const numericMatch = numericRoleFields.some(field => {
+          if (field === null || field === undefined) return false;
+          return String(field).trim() === numericId;
+        });
+        if (numericMatch) return true;
+      }
+    }
+
+    return false;
   };
 
   // Helper function to process template messages for display (optimized - minimal logging)
@@ -427,7 +513,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [selectedMedia, isNewMessageModalOpen]);
 
-  // Fetch current user info
+  // Fetch current user info and employee data
   useEffect(() => {
     const fetchCurrentUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
@@ -438,13 +524,36 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (user.email.includes('@')) {
           const { data: userRow, error } = await supabase
             .from('users')
-            .select('id, full_name, email')
+            .select(`
+              id, 
+              full_name, 
+              email,
+              employee_id,
+              tenants_employee!employee_id(
+                id,
+                display_name
+              )
+            `)
             .eq('email', user.email)
             .single();
           
           if (userRow) {
             console.log('✅ Found user in database:', userRow);
             setCurrentUser(userRow);
+            
+            // Set employee ID and display name for role filtering
+            if (userRow.employee_id && typeof userRow.employee_id === 'number') {
+              setCurrentUserEmployeeId(userRow.employee_id);
+            }
+            
+            if (userRow.full_name) {
+              setCurrentUserFullName(userRow.full_name);
+            } else if (userRow.tenants_employee && Array.isArray(userRow.tenants_employee) && userRow.tenants_employee.length > 0) {
+              const displayName = (userRow.tenants_employee as any)[0].display_name;
+              if (displayName) {
+                setCurrentUserFullName(displayName);
+              }
+            }
             return;
           }
         }
@@ -458,6 +567,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         };
         console.log('📝 Using fallback user:', fallbackUser);
         setCurrentUser(fallbackUser);
+        
+        // Try to set full name from metadata
+        if (fallbackUser.full_name) {
+          setCurrentUserFullName(fallbackUser.full_name);
+        }
       }
     };
     fetchCurrentUser();
@@ -545,7 +659,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (newLeadIds.length > 0) {
           const { data: leadsData, error: leadsError } = await supabase
             .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, next_followup, probability, balance, potential_applicants')
+            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, balance, potential_applicants')
             .in('id', newLeadIds);
 
           if (leadsError) {
@@ -566,7 +680,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (legacyLeadIds.length > 0) {
           const { data: legacyLeads, error: legacyLeadsError } = await supabase
             .from('leads_lead')
-            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, next_followup, probability, total, potential_applicants')
+            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants')
             .in('id', legacyLeadIds);
 
           if (legacyLeadsError) {
@@ -582,14 +696,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               topic: lead.topic || '',
               status: lead.status ? String(lead.status) : '',
               stage: lead.stage ? String(lead.stage) : '',
-              closer: lead.closer_id ? String(lead.closer_id) : '',
-              scheduler: lead.meeting_scheduler_id ? String(lead.meeting_scheduler_id) : '',
-              next_followup: lead.next_followup || '',
-              probability: lead.probability ? Number(lead.probability) : undefined,
-              balance: lead.total ? Number(lead.total) : undefined,
-              potential_applicants: lead.potential_applicants || '',
-              lead_type: 'legacy' as const,
-              isContact: false
+                      closer: lead.closer_id ? String(lead.closer_id) : '',
+                      scheduler: lead.meeting_scheduler_id ? String(lead.meeting_scheduler_id) : '',
+                      closer_id: lead.closer_id || null,
+                      meeting_scheduler_id: lead.meeting_scheduler_id || null,
+                      meeting_manager_id: lead.meeting_manager_id || null,
+                      meeting_lawyer_id: lead.meeting_lawyer_id || null,
+                      expert_id: lead.expert_id || null,
+                      case_handler_id: lead.case_handler_id || null,
+                      next_followup: lead.next_followup || '',
+                      probability: lead.probability ? Number(lead.probability) : undefined,
+                      balance: lead.total ? Number(lead.total) : undefined,
+                      potential_applicants: lead.potential_applicants || '',
+                      lead_type: 'legacy' as const,
+                      isContact: false
             }));
           }
         }
@@ -644,7 +764,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 if (leadIdsForContacts.size > 0) {
                   const { data: leadsForContactsData, error: leadsForContactsError } = await supabase
                     .from('leads')
-                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, next_followup, probability, balance, potential_applicants')
+                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, balance, potential_applicants')
                     .in('id', Array.from(leadIdsForContacts));
 
                   if (!leadsForContactsError && leadsForContactsData) {
@@ -687,7 +807,37 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
 
         // Combine all clients: leads and contacts
-        const allClients = [...newLeadsData, ...legacyLeadsData, ...contactClientsData];
+        let allClients = [...newLeadsData, ...legacyLeadsData, ...contactClientsData];
+        
+        console.log(`📱 Before filtering: ${allClients.length} clients (${newLeadsData.length} new + ${legacyLeadsData.length} legacy + ${contactClientsData.length} contacts)`);
+        console.log(`📱 Filter settings: showMyContactsOnly=${showMyContactsOnly}, employeeId=${currentUserEmployeeId}, fullName=${currentUserFullName}`);
+        
+        // Apply role-based filtering if "My Contacts" toggle is enabled
+        if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+          const beforeFilterCount = allClients.length;
+          allClients = allClients.filter(client => {
+            const matches = clientMatchesUserRoles(client, currentUserEmployeeId, currentUserFullName);
+            const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+            if (!matches && isLegacy) {
+              console.log(`❌ Legacy client ${client.id} (${client.name}) did not match:`, {
+                closer_id: (client as any).closer_id,
+                meeting_scheduler_id: (client as any).meeting_scheduler_id,
+                meeting_manager_id: (client as any).meeting_manager_id,
+                meeting_lawyer_id: (client as any).meeting_lawyer_id,
+                expert_id: (client as any).expert_id,
+                case_handler_id: (client as any).case_handler_id,
+                employeeId: currentUserEmployeeId,
+                fullName: currentUserFullName
+              });
+            }
+            if (matches && isLegacy) {
+              console.log(`✅ Legacy client ${client.id} (${client.name}) matched!`);
+            }
+            return matches;
+          });
+          console.log(`📱 After filtering: ${allClients.length} clients (filtered from ${beforeFilterCount})`);
+        }
+        
         setClients(allClients);
       } catch (error) {
         console.error('Error fetching clients with conversations:', error);
@@ -698,7 +848,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     };
 
     fetchClientsWithConversations();
-  }, []);
+  }, [showMyContactsOnly, currentUserEmployeeId, currentUserFullName]);
 
   // If propSelectedContact is provided, use it directly
   useEffect(() => {
@@ -2403,9 +2553,39 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             {selectedClient && (
               <button
                 onClick={() => {
-                  console.log('Navigating to client:', selectedClient.lead_number);
-                  // Navigate to client page - this will replace the WhatsApp route in the browser history
-                  navigate(`/clients/${selectedClient.lead_number}`);
+                  // Get the correct lead identifier based on lead type
+                  const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                  
+                  let leadIdentifier: string | null = null;
+                  
+                  if (isLegacy) {
+                    // For legacy leads, extract the numeric ID
+                    const clientId = selectedClient.id?.toString();
+                    if (clientId) {
+                      if (clientId.startsWith('legacy_')) {
+                        // Extract numeric ID from "legacy_<id>"
+                        leadIdentifier = clientId.replace('legacy_', '');
+                      } else if (/^\d+$/.test(clientId)) {
+                        // Already numeric
+                        leadIdentifier = clientId;
+                      }
+                    }
+                  } else {
+                    // For new leads, use lead_number
+                    leadIdentifier = selectedClient.lead_number || selectedClient.manual_id || null;
+                  }
+                  
+                  if (!leadIdentifier) {
+                    console.error('Cannot navigate: No valid lead identifier found', selectedClient);
+                    return;
+                  }
+                  
+                  // Encode the identifier to handle sub-leads with '/' characters
+                  const encodedIdentifier = encodeURIComponent(leadIdentifier);
+                  console.log('Navigating to client:', leadIdentifier, 'encoded:', encodedIdentifier);
+                  
+                  // Navigate to client page
+                  navigate(`/clients/${encodedIdentifier}`);
                 }}
                 className="btn btn-primary btn-sm gap-2"
                 title="View Client Page"
@@ -2428,7 +2608,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         <div className="flex-1 flex overflow-hidden">
           {/* Left Panel - Client List */}
           <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
-            {/* Search Bar (sticky on mobile, hides on scroll down) */}
+            {/* Filter Toggle and Search Bar */}
             <div className={`${isMobile
                 ? 'sticky top-0 z-10 bg-white transition-all duration-300 ' +
                   (isSearchHiddenMobile
@@ -2436,6 +2616,33 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     : 'p-3 translate-y-0 border-b border-gray-200')
                 : 'p-3 border-b border-gray-200'
               }`}>
+              {/* Toggle Tabs */}
+              <div className="flex gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => setShowMyContactsOnly(false)}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    !showMyContactsOnly
+                      ? 'bg-green-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  All Contacts
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMyContactsOnly(true)}
+                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    showMyContactsOnly
+                      ? 'bg-green-600 text-white shadow-sm'
+                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
+                >
+                  My Contacts
+                </button>
+              </div>
+              
+              {/* Search Bar */}
               <div className="relative search-container">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
@@ -2646,15 +2853,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
-                  <div className={`flex-none flex items-center px-4 py-3 border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={{ zIndex: 40 }}>
-                    <button
-                      onClick={() => setShowChat(false)}
-                      className="btn btn-ghost btn-circle btn-sm flex-shrink-0 mr-3"
-                    >
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                      </svg>
-                    </button>
+                  <div className={`flex-none flex flex-col border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={{ zIndex: 40 }}>
+                    <div className="flex items-center px-4 py-3">
+                      <button
+                        onClick={() => setShowChat(false)}
+                        className="btn btn-ghost btn-circle btn-sm flex-shrink-0 mr-3"
+                      >
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
                     <div className="flex items-center gap-2 flex-1 min-w-0 mr-3" style={{ maxWidth: 'calc(100% - 100px)' }}>
                       <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center relative flex-shrink-0">
                         <span className="text-green-600 font-semibold text-sm">
@@ -2692,6 +2900,41 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         )}
                       </div>
                     )}
+                    </div>
+                    
+                    {/* Toggle Tabs in Mobile Chat Header */}
+                    <div className="px-3 pb-3 border-t border-gray-200 bg-white">
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowMyContactsOnly(false);
+                            setShowChat(false); // Show contacts list so user can see the filter working
+                          }}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                            !showMyContactsOnly
+                              ? 'bg-green-600 text-white shadow-sm'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          All Contacts
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowMyContactsOnly(true);
+                            setShowChat(false); // Show contacts list so user can see the filter working
+                          }}
+                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                            showMyContactsOnly
+                              ? 'bg-green-600 text-white shadow-sm'
+                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                          }`}
+                        >
+                          My Contacts
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 )}
 
