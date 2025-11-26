@@ -13,7 +13,7 @@ import {
 interface Field {
   name: string;
   label: string;
-  type: 'text' | 'number' | 'email' | 'password' | 'textarea' | 'select' | 'boolean' | 'date' | 'datetime';
+  type: 'text' | 'number' | 'email' | 'password' | 'textarea' | 'select' | 'boolean' | 'date' | 'datetime' | 'jsonb' | 'custom';
   required?: boolean;
   options?: { value: string; label: string }[];
   placeholder?: string;
@@ -35,6 +35,8 @@ interface Field {
   };
   searchableSelect?: boolean;
   isMulti?: boolean;
+  customComponent?: React.ComponentType<{ value: any; onChange: (value: any) => void; record?: Record | null; readOnly?: boolean }>;
+  customProps?: Record<string, any>; // Additional props to pass to custom component
 }
 
 interface GenericCRUDManagerProps {
@@ -1278,6 +1280,43 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           />
         );
 
+      case 'custom':
+        if (field.customComponent) {
+          const CustomComponent = field.customComponent;
+          return (
+            <CustomComponent
+              value={value}
+              onChange={onChange}
+              record={editingRecord}
+              readOnly={field.readOnly}
+              {...(field.customProps || {})}
+            />
+          );
+        }
+        return <div className="text-sm text-gray-500">Custom component not defined</div>;
+        
+      case 'jsonb':
+        // For JSONB fields, render as JSON editor (textarea with formatted JSON)
+        return (
+          <textarea
+            className="textarea textarea-bordered w-full font-mono text-sm"
+            rows={6}
+            value={value ? JSON.stringify(value, null, 2) : ''}
+            onChange={(e) => {
+              try {
+                const parsed = e.target.value ? JSON.parse(e.target.value) : null;
+                onChange(parsed);
+              } catch (err) {
+                // Invalid JSON, but let user continue typing
+                onChange(e.target.value);
+              }
+            }}
+            readOnly={field.readOnly}
+            disabled={field.readOnly}
+            placeholder={field.placeholder || 'Enter JSON...'}
+          />
+        );
+
       default:
         return (
           <input 
@@ -1583,7 +1622,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                 saveRecord(record);
               }}>
                 <div className="grid grid-cols-1 gap-6">
-                  {fields.filter(field => field.type !== 'boolean' && (!editingRecord?.id || !field.hideInAdd) && (!editingRecord?.id || !field.hideInEdit)).map(field => (
+                  {fields.filter(field => field.type !== 'boolean' && field.type !== 'custom' && field.type !== 'jsonb' && (!editingRecord?.id || !field.hideInAdd) && (!editingRecord?.id || !field.hideInEdit)).map(field => (
                     <div key={field.name} className="form-control">
                       <label className="label">
                         <span className="label-text font-semibold text-gray-700">
@@ -1606,6 +1645,36 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                   
                   {/* Boolean fields */}
                   {fields.filter(field => field.type === 'boolean' && (!editingRecord?.id || !field.hideInAdd) && (!editingRecord?.id || !field.hideInEdit)).map(field => (
+                    <div key={field.name} className="form-control">
+                      <label className="label">
+                        <span className="label-text font-semibold text-gray-700">
+                          {field.label}
+                          {field.required && !editingRecord?.id && <span className="text-error ml-1">*</span>}
+                        </span>
+                      </label>
+                      {renderField(
+                        field,
+                        editingRecord?.[field.name],
+                        (value) => {
+                          setEditingRecord(prev => prev ? {
+                            ...prev,
+                            [field.name]: value
+                          } : null);
+                        }
+                      )}
+                    </div>
+                  ))}
+                  
+                  {/* Custom and JSONB fields */}
+                  {fields.filter(field => {
+                    if (field.type !== 'custom' && field.type !== 'jsonb') return false;
+                    // If we're adding (no id), check hideInAdd - only show if NOT hidden
+                    if (!editingRecord?.id) {
+                      return field.hideInAdd !== true;
+                    }
+                    // If we're editing (has id), check hideInEdit - only show if NOT hidden
+                    return field.hideInEdit !== true;
+                  }).map(field => (
                     <div key={field.name} className="form-control">
                       <label className="label">
                         <span className="label-text font-semibold text-gray-700">

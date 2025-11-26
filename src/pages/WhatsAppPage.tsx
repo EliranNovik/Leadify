@@ -4,6 +4,9 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
 import { fetchWhatsAppTemplates, filterTemplates, testDatabaseAccess, refreshTemplatesFromAPI, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import TemplateOptionCard from '../components/whatsapp/TemplateOptionCard';
+import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
+import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
@@ -215,12 +218,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         console.log(`✅ Matched template by ID ${templateId}: ${template.title} (${template.language || 'N/A'})`);
         if (template.params === '0' && template.content) {
           return { ...message, message: template.content };
-        } else if (template.params === '1') {
-          // For templates with params, try to extract parameter from message or show template name
-          const paramMatch = message.message.match(/\[Template:.*?\]\s*(.+)/);
-          if (paramMatch && paramMatch[1].trim()) {
-            return { ...message, message: paramMatch[1].trim() };
+        } else {
+          // Template has parameters - check if message already has filled content
+          const paramCount = Number(template.params) || 0;
+          
+          // If message doesn't contain template markers and has actual content, use it
+          if (message.message && !message.message.includes('TEMPLATE_MARKER:') && !message.message.includes('[Template:')) {
+            return message; // Already filled content
           }
+          
+          // Otherwise, show the template content with placeholders
           return { ...message, message: template.content || `Template: ${template.title}` };
         }
       } else {
@@ -1191,6 +1198,35 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   
   // Mobile dropdown state
   const [showMobileDropdown, setShowMobileDropdown] = useState(false);
+
+  const filteredTemplates = filterTemplates(templates, templateSearchTerm);
+
+  const handleTemplateSelect = (template: WhatsAppTemplate) => {
+    if (template.active !== 't') {
+      toast.error('Template pending approval');
+      return;
+    }
+
+    setSelectedTemplate(template);
+    setShowTemplateSelector(false);
+    setShowMobileDropdown(false);
+    setTemplateSearchTerm('');
+
+    if (template.params === '0') {
+      setNewMessage(template.content || '');
+
+      if (isMobile && textareaRef.current) {
+        setTimeout(() => {
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+          }
+        }, 0);
+      }
+    } else {
+      setNewMessage('');
+    }
+  };
   
   useEffect(() => {
     if (shouldAutoScroll && messages.length > 0) {
@@ -1561,22 +1597,63 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
         
-        // Only add parameters if the template requires them
-        if (selectedTemplate.params === '1') {
-          // Template requires parameters - send default empty parameters
-          // Even if user didn't provide input, we need to send parameters for WhatsApp
-          messagePayload.templateParameters = [
-            {
-              type: 'text',
-              text: newMessage.trim() || 'Hello' // User message or default
+        // Generate parameters based on actual param count
+        const paramCount = Number(selectedTemplate.params) || 0;
+        console.log(`🔍 Template "${selectedTemplate.name360}" requires ${paramCount} parameter(s)`);
+        
+        if (paramCount > 0) {
+          // Try to get specific param definitions first, otherwise use generic
+          let templateParams: Array<{ type: string; text: string }> = [];
+          
+          try {
+            console.log('🔍 Getting template param definitions...');
+            const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name360);
+            console.log('🔍 Param definitions:', paramDefinitions);
+            
+            if (paramDefinitions.length > 0) {
+              console.log('✅ Using template-specific param definitions');
+              templateParams = await generateParamsFromDefinitions(paramDefinitions, selectedClient, contactId || null);
+            } else {
+              console.log('⚠️ No specific param definitions, using generic generation');
+              // Fallback to generic param generation
+              templateParams = await generateTemplateParameters(paramCount, selectedClient, contactId || null);
             }
-          ];
-          messagePayload.message = newMessage.trim() || 'Template sent';
-          console.log('📱 Template with params - sending with templateParameters');
-        } else if (selectedTemplate.params === '0') {
-          // Template with no parameters - don't include message or templateParameters
-          // WhatsApp will send template as-is
-          messagePayload.message = `TEMPLATE_MARKER:${selectedTemplate.title}`; // Mark as template for database storage
+            
+            console.log('✅ Generated template params:', templateParams);
+            
+            // Ensure we have valid parameters
+            if (templateParams && templateParams.length > 0) {
+              messagePayload.templateParameters = templateParams;
+              
+            // Generate the filled template content for display
+            let filledContent = selectedTemplate.content || '';
+            templateParams.forEach((param, index) => {
+              if (param && param.text) {
+                // Replace placeholder with actual value, or keep placeholder if value is empty
+                const value = param.text.trim() || `{{${index + 1}}}`;
+                filledContent = filledContent.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), value);
+              }
+            });
+              
+              messagePayload.message = filledContent || `TEMPLATE_MARKER:${selectedTemplate.title}`;
+              console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, messagePayload.templateParameters);
+              console.log(`✅ Filled template content:`, filledContent);
+            } else {
+              console.error('❌ Failed to generate template parameters, templateParams is empty:', templateParams);
+              toast.error('Failed to generate template parameters. Please try again.');
+              setSending(false);
+              return;
+            }
+          } catch (error) {
+            console.error('❌ Error generating template parameters:', error);
+            toast.error(`Error generating template parameters: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            setSending(false);
+            return;
+          }
+        } else {
+          // Template with no parameters - use the content directly
+          messagePayload.message = selectedTemplate.content || `TEMPLATE_MARKER:${selectedTemplate.title}`;
+          console.log('✅ Template with no parameters, using content directly:', messagePayload.message);
         }
       } else {
         // Regular message requires message text
@@ -3025,9 +3102,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             >
               {/* Template Dropdown - Above input on mobile, toggled by icon */}
               {showTemplateSelector && isMobile && (
-                <div className="absolute bottom-full left-0 right-0 mb-2 p-3 bg-white/95 backdrop-blur-lg supports-[backdrop-filter]:bg-white/85 rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm font-semibold text-gray-900">Templates</div>
+                <div className="absolute bottom-full left-0 right-0 mb-2 p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="text-sm font-semibold text-gray-900">Select Template</div>
                     <button
                       type="button"
                       onClick={() => setShowTemplateSelector(false)}
@@ -3044,22 +3121,27 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       placeholder="Search templates..."
                       value={templateSearchTerm}
                       onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                     />
                   </div>
                   
                   {/* Templates List */}
-                  <div className="space-y-2 max-h-[40vh] overflow-y-auto">
+                  <div className="space-y-3 max-h-[40vh] overflow-y-auto">
                     {isLoadingTemplates ? (
                       <div className="text-center text-gray-500 py-4">
                         <div className="loading loading-spinner loading-sm"></div>
                         <span className="ml-2">Loading...</span>
                       </div>
+                    ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
+                      <div className="text-center text-gray-500 py-4 text-sm">
+                        {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                      </div>
                     ) : (
                       filterTemplates(templates, templateSearchTerm).map((template) => (
-                        <button
+                        <TemplateOptionCard
                           key={template.id}
-                          type="button"
+                          template={template}
+                          isSelected={selectedTemplate?.id === template.id}
                           onClick={() => {
                             if (template.active !== 't') {
                               toast.error('Template pending approval');
@@ -3083,23 +3165,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               setNewMessage('');
                             }
                           }}
-                          className={`w-full text-left p-2 rounded-lg border transition-colors ${
-                            selectedTemplate?.id === template.id 
-                              ? 'bg-green-50 border-green-300' 
-                              : 'bg-white border-gray-200 hover:bg-white'
-                          }`}
-                        >
-                          <div className="font-medium text-gray-900 text-sm">{template.title}</div>
-                          {template.active === 't' ? (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 mt-1">
-                              Active
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 mt-1">
-                              Pending
-                            </span>
-                          )}
-                        </button>
+                        />
                       ))
                     )}
                   </div>
@@ -3146,8 +3212,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               {/* Template Dropdown - Desktop */}
               {!isMobile && showTemplateSelector && (
                 <div className="px-4 pt-3 pb-2">
-                  <div className="p-3 bg-white rounded-lg border">
-                    <div className="text-sm font-medium mb-2">Select Template:</div>
+                  <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="text-sm font-semibold text-gray-900">Select Template</div>
+                      <button
+                        type="button"
+                        onClick={() => setShowTemplateSelector(false)}
+                        className="btn btn-ghost btn-xs"
+                      >
+                        <XMarkIcon className="w-4 h-4" />
+                      </button>
+                    </div>
                     
                     <div className="mb-3">
                       <input
@@ -3155,85 +3230,42 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         placeholder="Search templates..."
                         value={templateSearchTerm}
                         onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                       />
                     </div>
                     
-                    <div className="max-h-64 overflow-y-auto space-y-2">
+                    <div className="max-h-64 overflow-y-auto space-y-3">
                       {isLoadingTemplates ? (
                         <div className="text-center text-gray-500 py-4">
                           <div className="loading loading-spinner loading-sm"></div>
                           <span className="ml-2">Loading templates...</span>
                         </div>
+                      ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
+                        <div className="text-center text-gray-500 py-4 text-sm">
+                          {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                        </div>
                       ) : (
-                        <>
-                          {filterTemplates(templates, templateSearchTerm).map((template) => (
-                            <button
-                              key={template.id}
-                              type="button"
-                              onClick={() => {
-                                if (template.active !== 't') {
-                                  toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
-                                  return;
-                                }
-                                setSelectedTemplate(template);
-                                setShowTemplateSelector(false);
-                                setTemplateSearchTerm('');
-                                if (template.params === '0') {
-                                  setNewMessage(template.content || '');
-                                } else {
-                                  setNewMessage('');
-                                }
-                              }}
-                              className={`block w-full text-left p-3 rounded border ${
-                                selectedTemplate?.id === template.id 
-                                  ? 'bg-blue-50 border-blue-300' 
-                                  : 'bg-white border-gray-200 hover:bg-white'
-                              }`}
-                            >
-                              <div className="flex items-center justify-between">
-                                <div className="font-medium text-gray-900">{template.title}</div>
-                                <div className="flex items-center gap-1">
-                                  <span className="text-xs text-gray-500 font-mono">{template.name360}</span>
-                                  {template.active === 't' && (
-                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                                      Active
-                                    </span>
-                                  )}
-                                  {template.active !== 't' && (
-                                    <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                                      Pending
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                              <div className="text-sm text-gray-500 mt-1">
-                                {template.params === '1' && (
-                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800 mb-2">
-                                    Requires Parameter
-                                  </span>
-                                )}
-                                {template.params === '0' && (
-                                  <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800 mb-2">
-                                    No Parameters
-                                  </span>
-                                )}
-                                {template.content && template.content !== 'EMPTY' && (
-                                  <div className="text-xs text-gray-600 mt-1 bg-white p-2 rounded">
-                                    <strong>Template Name:</strong> {template.name360}<br/>
-                                    <strong>Content:</strong> {template.content}
-                                  </div>
-                                )}
-                              </div>
-                            </button>
-                          ))}
-                          
-                          {filterTemplates(templates, templateSearchTerm).length === 0 && (
-                            <div className="text-center text-gray-500 py-4">
-                              {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                            </div>
-                          )}
-                        </>
+                        filterTemplates(templates, templateSearchTerm).map((template) => (
+                          <TemplateOptionCard
+                            key={template.id}
+                            template={template}
+                            isSelected={selectedTemplate?.id === template.id}
+                            onClick={() => {
+                              if (template.active !== 't') {
+                                toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
+                                return;
+                              }
+                              setSelectedTemplate(template);
+                              setShowTemplateSelector(false);
+                              setTemplateSearchTerm('');
+                              if (template.params === '0') {
+                                setNewMessage(template.content || '');
+                              } else {
+                                setNewMessage('');
+                              }
+                            }}
+                          />
+                        ))
                       )}
                     </div>
                   </div>

@@ -77,7 +77,8 @@ class WhatsAppTemplateSyncService {
           // Count variables ({{1}}, {{2}}, etc.)
           const variableMatches = textContent.match(/\{\{\d+\}\}/g);
           const variableCount = variableMatches ? variableMatches.length : 0;
-          const hasParams = variableCount > 0;
+          // Store actual count instead of just 0 or 1
+          const paramsCount = String(variableCount);
           
           // Prepare template data for database
           const templateData = {
@@ -85,7 +86,7 @@ class WhatsAppTemplateSyncService {
             name: apiTemplate.name || 'unknown',
             language: apiTemplate.language || 'en_US',
             content: textContent, // The actual template message text
-            params: hasParams ? '1' : '0',
+            params: paramsCount, // Store actual count: '0', '1', '2', '3', etc.
             active: apiTemplate.status === 'APPROVED',
             updated_at: new Date().toISOString()
           };

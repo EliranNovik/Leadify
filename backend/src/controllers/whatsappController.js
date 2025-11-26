@@ -912,30 +912,88 @@ const sendMessage = async (req, res) => {
         // Always add components section if template parameters are expected
         // If no parameters provided, use default values
         if (templateParameters && templateParameters.length > 0) {
-          console.log('📱 Template has user-provided parameters, using them');
-          messagePayload.template.components = [
-            {
-              type: 'body',
-              parameters: templateParameters
+          // First, get required param count from template
+          let requiredParamCount = 0;
+          try {
+            const { data: templateInfo } = await supabase
+              .from('whatsapp_templates_v2')
+              .select('params')
+              .eq('id', templateId)
+              .single();
+            
+            if (templateInfo) {
+              requiredParamCount = Number(templateInfo.params) || 0;
             }
-          ];
-        } else {
-          // No parameters provided - check if this template needs parameters based on template name
-          // If template is "missed_appointment", it needs 2 parameters
-          if (finalTemplateName === 'missed_appointment') {
-            console.log('📱 No params provided for missed_appointment - sending 2 default parameters');
+          } catch (err) {
+            console.warn('Could not fetch template param count:', err);
+          }
+          
+          // Process parameters: replace empty strings with placeholders, then filter/validate
+          const processedParameters = templateParameters.map((param, index) => {
+            if (!param || !param.text || param.text.trim().length === 0) {
+              // Replace empty parameters with placeholder
+              console.warn(`⚠️ Parameter ${index + 1} is empty, using placeholder`);
+              return {
+                type: 'text',
+                text: 'N/A'
+              };
+            }
+            return {
+              type: param.type || 'text',
+              text: param.text.trim()
+            };
+          });
+          
+          // Ensure we have the correct number of parameters
+          while (processedParameters.length < requiredParamCount) {
+            console.warn(`⚠️ Missing parameter ${processedParameters.length + 1}, adding placeholder`);
+            processedParameters.push({
+              type: 'text',
+              text: 'N/A'
+            });
+          }
+          
+          // Use only the required number of parameters (in case we have extras)
+          const finalParameters = processedParameters.slice(0, requiredParamCount > 0 ? requiredParamCount : processedParameters.length);
+          
+          if (finalParameters.length > 0) {
+            console.log('📱 Template has valid parameters, using them:', finalParameters);
             messagePayload.template.components = [
               {
                 type: 'body',
-                parameters: [
-                  { type: 'text', text: 'Customer' },
-                  { type: 'text', text: 'Appointment' }
-                ]
+                parameters: finalParameters
               }
             ];
           } else {
-            // For other templates, don't add components section
-            console.log('📱 Sending template without components section');
+            console.warn('⚠️ All template parameters are empty, cannot send template message');
+            return res.status(400).json({ 
+              error: 'Template parameters are required but were not provided or are empty. Please ensure client name and meeting information are available.' 
+            });
+          }
+        } else {
+          // No parameters provided - check template params count from database
+          // Fetch template info to get param count
+          try {
+            const { data: templateInfo, error: templateError } = await supabase
+              .from('whatsapp_templates_v2')
+              .select('params')
+              .eq('id', templateId)
+              .single();
+            
+            if (!templateError && templateInfo) {
+              const paramCount = Number(templateInfo.params) || 0;
+              if (paramCount > 0) {
+                console.warn(`⚠️ Template requires ${paramCount} parameter(s) but none were provided. Sending with empty parameters.`);
+                messagePayload.template.components = [
+                  {
+                    type: 'body',
+                    parameters: Array(paramCount).fill(null).map(() => ({ type: 'text', text: '' }))
+                  }
+                ];
+              }
+            }
+          } catch (error) {
+            console.error('❌ Error checking template params:', error);
           }
         }
         
@@ -1070,7 +1128,9 @@ const sendMessage = async (req, res) => {
       phone_number: phoneNumber, // Store phone number for new WhatsApp leads
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
-      message: isTemplate ? `[Template: ${templateName}] ${templateParameters?.[0]?.text || ''}` : message,
+      message: isTemplate 
+        ? (req.body.message || `[Template: ${templateName}]`) // Use filled content from frontend if provided
+        : message,
       template_id: finalTemplateId, // Store template ID for proper matching (converted to number)
       sent_at: new Date().toISOString(),
       whatsapp_message_id: whatsappMessageId,

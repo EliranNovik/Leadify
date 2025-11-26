@@ -7,6 +7,9 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { buildApiUrl } from '../lib/api';
 import { fetchWhatsAppTemplates, filterTemplates, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import TemplateOptionCard from './whatsapp/TemplateOptionCard';
+import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
+import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { format } from 'date-fns';
@@ -837,16 +840,62 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
         
-        if (selectedTemplate.params === '1') {
-          messagePayload.templateParameters = [
-            {
-              type: 'text',
-              text: newMessage.trim() || 'Hello'
+        // Generate parameters based on actual param count
+        const paramCount = Number(selectedTemplate.params) || 0;
+        console.log(`🔍 Template "${selectedTemplate.name360}" requires ${paramCount} parameter(s)`);
+        
+        if (paramCount > 0) {
+          let templateParams: Array<{ type: string; text: string }> = [];
+          
+          try {
+            console.log('🔍 Getting template param definitions...');
+            const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name360);
+            
+            // Create a client object from the client prop
+            const clientForParams = client ? {
+              id: client.id,
+              name: client.name,
+              lead_type: client.lead_type || 'new',
+              isContact: false
+            } : null;
+            
+            if (paramDefinitions.length > 0) {
+              console.log('✅ Using template-specific param definitions');
+              templateParams = await generateParamsFromDefinitions(paramDefinitions, clientForParams || {}, contactId || null);
+            } else {
+              console.log('⚠️ No specific param definitions, using generic generation');
+              templateParams = await generateTemplateParameters(paramCount, clientForParams || {}, contactId || null);
             }
-          ];
-          messagePayload.message = newMessage.trim() || 'Template sent';
-        } else if (selectedTemplate.params === '0') {
-          messagePayload.message = `TEMPLATE_MARKER:${selectedTemplate.title}`;
+            
+            if (templateParams && templateParams.length > 0) {
+              messagePayload.templateParameters = templateParams;
+              
+              // Generate the filled template content for display
+              let filledContent = selectedTemplate.content || '';
+              templateParams.forEach((param, index) => {
+                if (param && param.text) {
+                  filledContent = filledContent.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), param.text);
+                }
+              });
+              
+              messagePayload.message = filledContent || 'Template sent';
+              console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, messagePayload.templateParameters);
+              console.log(`✅ Filled template content:`, filledContent);
+            } else {
+              console.error('❌ Failed to generate template parameters');
+              toast.error('Failed to generate template parameters. Please try again.');
+              setSending(false);
+              return;
+            }
+          } catch (error) {
+            console.error('❌ Error generating template parameters:', error);
+            toast.error(`Error generating template parameters: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            setSending(false);
+            return;
+          }
+        } else {
+          // Template with no parameters
+          messagePayload.message = selectedTemplate.content || `TEMPLATE_MARKER:${selectedTemplate.title}`;
         }
       } else {
         if (!newMessage.trim()) {
@@ -1317,9 +1366,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           {/* Template Dropdown */}
           {showTemplateSelector && (
             <div className="px-4 pt-3 pb-2">
-              <div className="p-3 bg-gray-50 rounded-lg border">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-sm font-medium">Select Template:</div>
+              <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="text-sm font-semibold text-gray-900">Select Template</div>
                   <button
                     type="button"
                     onClick={() => setShowTemplateSelector(false)}
@@ -1335,21 +1384,26 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     placeholder="Search templates..."
                     value={templateSearchTerm}
                     onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
                   />
                 </div>
                 
-                <div className="max-h-64 overflow-y-auto space-y-2">
+                <div className="max-h-64 overflow-y-auto space-y-3">
                   {isLoadingTemplates ? (
                     <div className="text-center text-gray-500 py-4">
                       <div className="loading loading-spinner loading-sm"></div>
                       <span className="ml-2">Loading templates...</span>
                     </div>
+                  ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
+                    <div className="text-center text-gray-500 py-4 text-sm">
+                      {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                    </div>
                   ) : (
                     filterTemplates(templates, templateSearchTerm).map((template) => (
-                      <button
+                      <TemplateOptionCard
                         key={template.id}
-                        type="button"
+                        template={template}
+                        isSelected={selectedTemplate?.id === template.id}
                         onClick={() => {
                           if (template.active !== 't') {
                             toast.error('Template pending approval');
@@ -1373,25 +1427,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                             setNewMessage('');
                           }
                         }}
-                        className={`block w-full text-left p-3 rounded border ${
-                          selectedTemplate?.id === template.id 
-                            ? 'bg-green-50 border-green-300' 
-                            : 'bg-white border-gray-200 hover:bg-gray-50'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="font-medium text-gray-900">{template.title}</div>
-                          {template.active === 't' ? (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                              Active
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
-                              Pending
-                            </span>
-                          )}
-                        </div>
-                      </button>
+                      />
                     ))
                   )}
                 </div>

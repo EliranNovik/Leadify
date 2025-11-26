@@ -3,6 +3,9 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
 import { fetchWhatsAppTemplates, filterTemplates, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import TemplateOptionCard from '../components/whatsapp/TemplateOptionCard';
+import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
+import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
 import {
   MagnifyingGlassIcon,
   PaperAirplaneIcon,
@@ -693,17 +696,22 @@ const WhatsAppLeadsPage: React.FC = () => {
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
         
-        // Only add parameters if the template requires them
-        if (selectedTemplate.params === '1' && newMessage.trim()) {
-          messagePayload.templateParameters = [
-            {
-              type: 'text',
-              text: newMessage.trim()
-            }
-          ];
-        } else if (selectedTemplate.params === '0') {
-          // Template doesn't require parameters, send without them
+        // Generate parameters based on actual param count
+        const paramCount = Number(selectedTemplate.params) || 0;
+        if (paramCount > 0) {
+          // Import the helper function
+          const { generateTemplateParameters } = await import('../lib/whatsappTemplateParams');
+          messagePayload.templateParameters = await generateTemplateParameters(
+            paramCount,
+            selectedLead,
+            null // WhatsAppLeadsPage doesn't use contacts
+          );
+          messagePayload.message = selectedTemplate.content || 'Template sent';
+          console.log(`📱 Template with ${paramCount} param(s) - auto-filled parameters:`, messagePayload.templateParameters);
+        } else {
+          // Template with no parameters
           messagePayload.templateParameters = [];
+          messagePayload.message = `TEMPLATE_MARKER:${selectedTemplate.title}`;
         }
       }
 
@@ -1661,14 +1669,16 @@ const WhatsAppLeadsPage: React.FC = () => {
         const template = templates.find(t => t.id === message.template_id);
         if (template) {
           console.log('✅ Found template by ID (Leads):', template.id, template.title);
-          if (template.params === '0' && template.content) {
+          const paramCount = Number(template.params) || 0;
+          if (paramCount === 0 && template.content) {
             return { ...message, message: template.content };
-          } else if (template.params === '1') {
-            // For templates with params, try to extract parameter from message or show template name
-            const paramMatch = message.message.match(/\[Template:.*?\]\s*(.+)/);
-            if (paramMatch && paramMatch[1].trim()) {
-              return { ...message, message: paramMatch[1].trim() };
+          } else {
+            // Template has parameters - check if message already has filled content
+            // If message doesn't contain template markers and has actual content, use it
+            if (message.message && !message.message.includes('TEMPLATE_MARKER:') && !message.message.includes('[Template:')) {
+              return message; // Already filled content
             }
+            // Otherwise, show the template content with placeholders
             return { ...message, message: template.content || `Template: ${template.title}` };
           }
         }
@@ -2458,9 +2468,9 @@ const WhatsAppLeadsPage: React.FC = () => {
                 >
                   {/* Template Dropdown - Above input on mobile */}
                   {showTemplateSelector && isMobile && (
-                    <div className="absolute bottom-full left-0 right-0 mb-2 p-3 bg-white/95 backdrop-blur-lg rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="text-sm font-semibold text-gray-900">Templates</div>
+                    <div className="absolute bottom-full left-0 right-0 mb-2 p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="text-sm font-semibold text-gray-900">Select Template</div>
                         <button
                           type="button"
                           onClick={() => setShowTemplateSelector(false)}
@@ -2471,26 +2481,31 @@ const WhatsAppLeadsPage: React.FC = () => {
                       </div>
                       
                       <div className="mb-3">
-                    <input
-                      type="text"
+                        <input
+                          type="text"
                           placeholder="Search templates..."
                           value={templateSearchTerm}
                           onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                         />
                       </div>
                       
-                      <div className="space-y-2 max-h-[40vh] overflow-y-auto">
+                      <div className="space-y-3 max-h-[40vh] overflow-y-auto">
                         {isLoadingTemplates ? (
                           <div className="text-center text-gray-500 py-4">
                             <div className="loading loading-spinner loading-sm"></div>
                             <span className="ml-2">Loading...</span>
                           </div>
+                        ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
+                          <div className="text-center text-gray-500 py-4 text-sm">
+                            {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                          </div>
                         ) : (
                           filterTemplates(templates, templateSearchTerm).map((template) => (
-                            <button
+                            <TemplateOptionCard
                               key={template.id}
-                              type="button"
+                              template={template}
+                              isSelected={selectedTemplate?.id === template.id}
                               onClick={() => {
                                 if (template.active !== 't') {
                                   toast.error('Template pending approval');
@@ -2514,23 +2529,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   setNewMessage('');
                                 }
                               }}
-                              className={`w-full text-left p-2 rounded-lg border transition-colors ${
-                                selectedTemplate?.id === template.id 
-                                  ? 'bg-green-50 border-green-300' 
-                                  : 'bg-white border-gray-200 hover:bg-gray-50'
-                              }`}
-                            >
-                              <div className="font-medium text-gray-900 text-sm">{template.title}</div>
-                              {template.active === 't' ? (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 mt-1">
-                                  Active
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 mt-1">
-                                  Pending
-                                </span>
-                              )}
-                            </button>
+                            />
                           ))
                         )}
                       </div>
@@ -2540,27 +2539,47 @@ const WhatsAppLeadsPage: React.FC = () => {
                   {/* Template Dropdown - Desktop */}
                   {!isMobile && showTemplateSelector && (
                     <div className="px-4 pt-3 pb-2">
-                      <div className="p-3 bg-gray-50 rounded-lg border">
-                        <div className="text-sm font-medium mb-2">Select Template:</div>
-                        <input
-                          type="text"
-                          className="input input-sm input-bordered w-full mb-2"
-                          placeholder="Search templates..."
-                          value={templateSearchTerm}
-                          onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                        />
-                        <div className="space-y-1 max-h-60 overflow-y-auto">
+                      <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="text-sm font-semibold text-gray-900">Select Template</div>
+                          <button
+                            type="button"
+                            onClick={() => setShowTemplateSelector(false)}
+                            className="btn btn-ghost btn-xs"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <div className="mb-3">
+                          <input
+                            type="text"
+                            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                            placeholder="Search templates..."
+                            value={templateSearchTerm}
+                            onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-3 max-h-60 overflow-y-auto">
                           {isLoadingTemplates ? (
                             <div className="flex items-center justify-center py-2">
                               <div className="loading loading-spinner loading-sm"></div>
                               <span className="ml-2">Loading...</span>
                             </div>
+                          ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
+                            <div className="text-center text-gray-500 py-4 text-sm">
+                              {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                            </div>
                           ) : (
                             filterTemplates(templates, templateSearchTerm).map((template) => (
-                              <button
+                              <TemplateOptionCard
                                 key={template.id}
-                                type="button"
+                                template={template}
+                                isSelected={selectedTemplate?.id === template.id}
                                 onClick={() => {
+                                  if (template.active !== 't') {
+                                    toast.error('Template pending approval');
+                                    return;
+                                  }
                                   setSelectedTemplate(template);
                                   setShowTemplateSelector(false);
                                   setTemplateSearchTerm('');
@@ -2576,18 +2595,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                     setNewMessage('');
                                   }
                                 }}
-                                className={`w-full text-left px-3 py-2 rounded text-sm hover:bg-gray-100 ${
-                                  template.active !== 't' ? 'opacity-50' : ''
-                                }`}
-                              >
-                                <div className="font-medium">{template.title}</div>
-                                {template.content && (
-                                  <div className="text-xs text-gray-500 truncate">{template.content}</div>
-                                )}
-                                {template.active !== 't' && (
-                                  <span className="text-xs text-orange-600">(Pending Approval)</span>
-                                )}
-                              </button>
+                              />
                             ))
                           )}
                         </div>

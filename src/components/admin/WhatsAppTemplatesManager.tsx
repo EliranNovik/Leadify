@@ -4,6 +4,7 @@ import { refreshTemplatesFromAPI } from '../../lib/whatsappTemplates';
 import GenericCRUDManager from './GenericCRUDManager';
 import { buildApiUrl } from '../../lib/api';
 import toast from 'react-hot-toast';
+import ParameterMappingEditor, { type ParameterDefinition } from './ParameterMappingEditor';
 
 const WhatsAppTemplatesManager: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -45,12 +46,19 @@ const WhatsAppTemplatesManager: React.FC = () => {
     },
     {
       name: 'params',
-      label: 'Has Parameters',
+      label: 'Parameter Count',
       type: 'text' as const,
       required: false,
-      placeholder: '0 or 1',
+      placeholder: '0, 1, 2, 3...',
       hideInEdit: true,
-      hideInTable: false
+      hideInTable: false,
+      formatValue: (value: any) => {
+        const count = Number(value) || 0;
+        if (count === 0) {
+          return <span className="text-gray-500">No parameters</span>;
+        }
+        return <span className="font-semibold text-orange-600">{count} parameter{count !== 1 ? 's' : ''}</span>;
+      }
     },
     {
       name: 'active',
@@ -81,6 +89,83 @@ const WhatsAppTemplatesManager: React.FC = () => {
           );
         }
         return <span className="block max-w-md whitespace-pre-wrap">{content}</span>;
+      }
+    },
+    {
+      name: 'param_mapping',
+      label: 'Parameter Mapping',
+      type: 'custom' as const,
+      required: false,
+      hideInTable: true, // Hide in table, show only in edit form
+      hideInAdd: true, // Only edit existing templates
+      hideInEdit: false, // Show in edit mode
+      customComponent: ({ value, onChange, record, readOnly }) => {
+        const paramCount = record ? Number(record.params) || 0 : 0;
+        const paramMapping = value as ParameterDefinition[] | null;
+        
+        console.log('🔧 Parameter Mapping Editor rendering:', { 
+          paramCount, 
+          paramMapping, 
+          record: record ? { id: record.id, params: record.params } : null 
+        });
+        
+        // Only show editor if template has parameters
+        if (paramCount === 0) {
+          return (
+            <div className="text-sm text-gray-500 italic p-4 bg-gray-50 rounded-lg border border-gray-200">
+              This template has no parameters, so no parameter mapping is needed.
+            </div>
+          );
+        }
+        
+        return (
+          <ParameterMappingEditor
+            value={paramMapping}
+            onChange={(mapping) => {
+              console.log('🔧 Parameter mapping changed:', mapping);
+              onChange(mapping);
+            }}
+            paramCount={paramCount}
+            readOnly={readOnly || false}
+          />
+        );
+      },
+      prepareValueForForm: (value: any) => {
+        // Parse JSONB from database
+        if (!value) return null;
+        if (typeof value === 'string') {
+          try {
+            return JSON.parse(value);
+          } catch {
+            return null;
+          }
+        }
+        return value;
+      },
+      prepareValueForSave: (value: any) => {
+        // Ensure it's valid JSON or null
+        if (!value || !Array.isArray(value) || value.length === 0) {
+          return null;
+        }
+        return value;
+      },
+      formatValue: (value: any, record: Record) => {
+        if (!value || !Array.isArray(value)) {
+          return <span className="text-gray-500 italic">Not configured</span>;
+        }
+        const paramCount = Number(record.params) || 0;
+        if (value.length === 0 || value.length !== paramCount) {
+          return <span className="text-orange-600">Incomplete ({value.length}/{paramCount})</span>;
+        }
+        return (
+          <div className="flex flex-wrap gap-1">
+            {value.map((param: ParameterDefinition, idx: number) => (
+              <span key={idx} className="badge badge-sm badge-outline">
+                {idx + 1}: {param.type}
+              </span>
+            ))}
+          </div>
+        );
       }
     }
   ];
