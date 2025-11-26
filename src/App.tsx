@@ -427,6 +427,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
                     <Route path="/clients/:lead_number/contract" element={<ContractPage />} />
+                    <Route path="/contract/:contractId" element={<ContractPage />} />
                     <Route path="/clients/:lead_number/timeline" element={<TimelinePage />} />
                     <Route path="/clients/:lead_number/history" element={<HistoryPage />} />
                     <Route path="/clients/:lead_number/master" element={<MasterLeadPage />} />

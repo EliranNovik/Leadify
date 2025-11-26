@@ -477,14 +477,14 @@ function buildPaymentPlan(finalAmount: number, archivalFee: number) {
 }
 
 const ContractPage: React.FC = () => {
-  const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber: string; contractId?: string }>();
+  const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber?: string; contractId?: string }>();
   const location = useLocation();
   const navigate = useNavigate();
 
-  // Extract leadNumber from URL path manually
-  const leadNumber = paramLeadNumber || location.pathname.split('/')[2];
-  // Extract contractId from URL if available
-  const contractId = paramContractId || new URLSearchParams(location.search).get('contractId');
+  // Extract leadNumber from URL path manually (may be undefined if using /contract/:contractId route)
+  const leadNumber = paramLeadNumber || (location.pathname.startsWith('/contract/') ? undefined : location.pathname.split('/')[2]);
+  // Extract contractId from URL - can be from route param or query string
+  const contractId = paramContractId || new URLSearchParams(location.search).get('contractId') || (location.pathname.startsWith('/contract/') ? location.pathname.split('/')[2] : null);
 
   const [contract, setContract] = useState<any>(null);
   const [template, setTemplate] = useState<any>(null);
@@ -524,6 +524,9 @@ const ContractPage: React.FC = () => {
   // Fetch client data
   useEffect(() => {
     const fetchClient = async () => {
+      if (!leadNumber) {
+        return;
+      }
       try {
         console.log('ContractPage: fetchClient called with leadNumber:', leadNumber);
 
@@ -601,9 +604,11 @@ const ContractPage: React.FC = () => {
       }
     };
 
+    // Fetch client either by leadNumber or after contract is loaded
     if (leadNumber) {
       fetchClient();
     }
+    // If we only have contractId, we'll fetch client after contract is loaded
   }, [leadNumber]);
 
   // Fetch contract data
@@ -611,15 +616,6 @@ const ContractPage: React.FC = () => {
     const fetchContract = async () => {
       try {
         console.log('ContractPage: fetchContract called with:', { leadNumber, contractId });
-
-        // Check if this is a legacy lead
-        // Legacy leads can be identified by:
-        // 1. Starting with 'legacy_' prefix
-        // 2. Being a numeric string (UUIDs are not numeric)
-        const isLegacyLead = leadNumber?.toString().startsWith('legacy_') ||
-          (!isNaN(Number(leadNumber)));
-
-        console.log('ContractPage: isLegacyLead:', isLegacyLead, 'leadNumber:', leadNumber);
 
         let query = supabase
           .from('contracts')
@@ -632,38 +628,57 @@ const ContractPage: React.FC = () => {
             )
           `);
 
-        if (isLegacyLead) {
-          // For legacy leads, use legacy_id
-          const legacyId = leadNumber.toString().replace('legacy_', '');
-          console.log('ContractPage: Using legacy_id:', legacyId);
-          query = query.eq('legacy_id', legacyId);
-        } else {
-          // For new leads, we need to get the UUID from the leads table first
-          console.log('ContractPage: Fetching UUID for lead_number:', leadNumber);
-          const { data: leadData, error: leadError } = await supabase
-            .from('leads')
-            .select('id')
-            .eq('lead_number', leadNumber)
-            .single();
-
-          if (leadError) {
-            console.error('ContractPage: Error fetching lead UUID:', leadError);
-            return;
-          }
-
-          if (!leadData) {
-            console.error('ContractPage: No lead found for lead_number:', leadNumber);
-            return;
-          }
-
-          console.log('ContractPage: Using client_id (UUID):', leadData.id);
-          query = query.eq('client_id', leadData.id);
-        }
-
-        // If we have a specific contractId, filter by that too
-        if (contractId) {
-          console.log('ContractPage: Also filtering by contractId:', contractId);
+        // If we only have contractId (no leadNumber), fetch contract directly
+        if (contractId && !leadNumber) {
+          console.log('ContractPage: Fetching contract directly by contractId:', contractId);
           query = query.eq('id', contractId);
+        } else if (leadNumber) {
+          // Check if this is a legacy lead
+          // Legacy leads can be identified by:
+          // 1. Starting with 'legacy_' prefix
+          // 2. Being a numeric string (UUIDs are not numeric)
+          const isLegacyLead = leadNumber.toString().startsWith('legacy_') ||
+            (!isNaN(Number(leadNumber)));
+
+          console.log('ContractPage: isLegacyLead:', isLegacyLead, 'leadNumber:', leadNumber);
+
+          if (isLegacyLead) {
+            // For legacy leads, use legacy_id
+            const legacyId = leadNumber.toString().replace('legacy_', '');
+            console.log('ContractPage: Using legacy_id:', legacyId);
+            query = query.eq('legacy_id', legacyId);
+          } else {
+            // For new leads, we need to get the UUID from the leads table first
+            console.log('ContractPage: Fetching UUID for lead_number:', leadNumber);
+            const { data: leadData, error: leadError } = await supabase
+              .from('leads')
+              .select('id')
+              .eq('lead_number', leadNumber)
+              .single();
+
+            if (leadError) {
+              console.error('ContractPage: Error fetching lead UUID:', leadError);
+              return;
+            }
+
+            if (!leadData) {
+              console.error('ContractPage: No lead found for lead_number:', leadNumber);
+              return;
+            }
+
+            console.log('ContractPage: Using client_id (UUID):', leadData.id);
+            query = query.eq('client_id', leadData.id);
+          }
+
+          // If we have a specific contractId, filter by that too
+          if (contractId) {
+            console.log('ContractPage: Also filtering by contractId:', contractId);
+            query = query.eq('id', contractId);
+          }
+        } else {
+          console.error('ContractPage: No contractId or leadNumber provided');
+          setLoading(false);
+          return;
         }
 
         console.log('ContractPage: Executing query...');
@@ -678,6 +693,70 @@ const ContractPage: React.FC = () => {
 
         console.log('ContractPage: Setting contract data:', contractData);
         setContract(contractData);
+
+        // If we don't have leadNumber but have a contract, fetch the client from the contract's client_id
+        let clientLoaded = false;
+        if (!leadNumber && contractData.client_id) {
+          console.log('ContractPage: Fetching client from contract client_id:', contractData.client_id);
+          try {
+            // Try fetching from leads table first (new leads)
+            let { data: clientData, error: clientError } = await supabase
+              .from('leads')
+              .select('*')
+              .eq('id', contractData.client_id)
+              .single();
+            
+            // If not found in leads table, try legacy leads_lead table
+            if (clientError || !clientData) {
+              console.log('ContractPage: Client not found in leads table, trying legacy table...');
+              const legacyId = contractData.client_id?.toString().replace('legacy_', '') || contractData.client_id;
+              const { data: legacyClient, error: legacyError } = await supabase
+                .from('leads_lead')
+                .select('*')
+                .eq('id', legacyId)
+                .single();
+              
+              if (!legacyError && legacyClient) {
+                // Transform legacy client to match new client structure
+                clientData = {
+                  ...legacyClient,
+                  id: `legacy_${legacyClient.id}`,
+                  lead_number: String(legacyClient.id),
+                  stage: String(legacyClient.stage || ''),
+                  source: String(legacyClient.source_id || ''),
+                  created_at: legacyClient.cdate,
+                  updated_at: legacyClient.udate,
+                  notes: legacyClient.notes || '',
+                  special_notes: legacyClient.special_notes || '',
+                  next_followup: legacyClient.next_followup || '',
+                  probability: String(legacyClient.probability || ''),
+                  category: String(legacyClient.category_id || legacyClient.category || ''),
+                  language: String(legacyClient.language_id || ''),
+                  balance: String(legacyClient.total || ''),
+                  lead_type: 'legacy',
+                };
+                clientError = null;
+              } else {
+                clientError = legacyError;
+              }
+            }
+            
+            if (clientError) {
+              console.error('ContractPage: Error fetching client from contract:', clientError);
+              // Don't return - continue to set loading to false
+            } else if (clientData) {
+              console.log('ContractPage: Setting client data from contract:', clientData);
+              setClient(clientData);
+              clientLoaded = true;
+            }
+          } catch (err) {
+            console.error('ContractPage: Exception fetching client:', err);
+            // Don't return - continue to set loading to false
+          }
+        } else if (leadNumber) {
+          // Client should already be loaded from the fetchClient useEffect
+          clientLoaded = true;
+        }
 
         // Set the template if available
         if (contractData.contract_templates) {
@@ -748,17 +827,52 @@ const ContractPage: React.FC = () => {
           // Contract is signed, displaying filled-in content
         }
 
+        // Set loading to false after contract is loaded
+        // For contractId-only routes: if we tried to fetch client, it should be loaded by now (or failed)
+        // For leadNumber routes: client is loaded separately in fetchClient useEffect
+        // Only set loading to false if we don't need to wait for client, or if client is already loaded
+        if (leadNumber || clientLoaded || client) {
+          setLoading(false);
+        } else if (!leadNumber && !contractData.client_id) {
+          // No client needed, set loading to false
+          setLoading(false);
+        }
+
       } catch (error) {
         console.error('Error in fetchContract:', error);
-      } finally {
         setLoading(false);
       }
     };
 
-    if (leadNumber) {
+    // Fetch contract if we have either leadNumber or contractId
+    if (leadNumber || contractId) {
+      console.log('ContractPage: Starting fetchContract with:', { leadNumber, contractId });
       fetchContract();
+    } else {
+      console.log('ContractPage: No leadNumber or contractId, setting loading to false');
+      setLoading(false);
     }
-  }, [leadNumber]);
+  }, [leadNumber, contractId]);
+
+  // Set loading to false when both contract and client are loaded (for contractId-only routes)
+  useEffect(() => {
+    if (contract && !leadNumber) {
+      // For contractId-only routes, we need both contract and client before setting loading to false
+      if (client || !contract.client_id) {
+        // Client is loaded, or contract doesn't require a client
+        if (loading) {
+          console.log('ContractPage: Contract and client ready, setting loading to false');
+          setLoading(false);
+        }
+      }
+    } else if (contract && leadNumber && client) {
+      // For leadNumber routes, both contract and client are loaded
+      if (loading) {
+        console.log('ContractPage: Contract and client ready (leadNumber route), setting loading to false');
+        setLoading(false);
+      }
+    }
+  }, [contract, client, leadNumber, loading]);
 
   // Auto-refresh signed contracts to ensure we have the latest filled-in content
   useEffect(() => {
@@ -2078,14 +2192,6 @@ const ContractPage: React.FC = () => {
         <div className="w-full px-2 sm:px-4 md:px-8 lg:px-16 xl:px-32 2xl:px-48">
           <div className="flex justify-between items-center py-2 sm:py-4">
             <div className="flex items-center space-x-1 sm:space-x-4">
-              <button
-                onClick={() => navigate(`/clients/${leadNumber}`)}
-                className="btn btn-ghost btn-xs sm:btn-sm"
-                title="Back to Client"
-              >
-                <ArrowLeftIcon className="w-5 h-5" />
-                <span className="hidden sm:inline ml-1">Back to Client</span>
-              </button>
               <div className="min-w-0 flex-1">
                 <h1 className="text-sm sm:text-2xl font-bold text-gray-900 truncate">{template.name || 'Contract'}</h1>
                 <div className="flex flex-col">

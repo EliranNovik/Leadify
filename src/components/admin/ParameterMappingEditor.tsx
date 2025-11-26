@@ -17,9 +17,9 @@ interface ParameterMappingEditorProps {
 
 const PARAM_TYPE_OPTIONS: Array<{ value: ParamType; label: string; description: string }> = [
   { value: 'name', label: 'Name', description: 'The name of the client or contact (automatically selected based on chat context)' },
-  { value: 'phone_number', label: 'Phone Number', description: 'The phone number of the client/contact' },
-  { value: 'mobile_number', label: 'Mobile Number', description: 'The mobile number of the client/contact' },
-  { value: 'email', label: 'Email Address', description: 'The email address of the client/contact' },
+  { value: 'phone_number', label: 'Phone Number', description: 'The phone number of the user sending the message (from tenants_employee table)' },
+  { value: 'mobile_number', label: 'Mobile Number', description: 'The mobile number of the user sending the message (from tenants_employee table)' },
+  { value: 'email', label: 'Email Address', description: 'The email address of the user sending the message (from users table)' },
   { value: 'meeting_datetime', label: 'Meeting Date & Time', description: 'Full meeting date and time (e.g., "January 15, 2025 at 10:00 AM")' },
   { value: 'meeting_date', label: 'Meeting Date Only', description: 'Just the meeting date (e.g., "January 15, 2025")' },
   { value: 'meeting_time', label: 'Meeting Time Only', description: 'Just the meeting time (e.g., "10:00 AM")' },

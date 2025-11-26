@@ -38,30 +38,60 @@ export async function getClientOrContactName(
 }
 
 /**
- * Get phone number for client/contact
+ * Get phone number for the current user (sender)
+ * Fetches from tenants_employee table via employee_id
  */
 export async function getPhoneNumber(
   client: any,
   contactId?: number | null
 ): Promise<string> {
   try {
-    // If we have a contactId and it's not the main contact, get the contact phone
-    if (contactId && contactId > 0 && client?.isContact !== true) {
-      const contacts = await fetchLeadContacts(client.id, client.lead_type === 'legacy');
-      const contact = contacts.find((c: ContactInfo) => c.id === contactId);
-      if (contact?.phone) {
-        return contact.phone;
+    // Get the current authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      console.error('Error getting authenticated user:', authError);
+      return '';
+    }
+    
+    // Find the user in users table by auth_id or email
+    let { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('id, employee_id, email')
+      .eq('auth_id', user.id)
+      .maybeSingle();
+    
+    // If not found by auth_id, try by email
+    if (!userData && user.email) {
+      const { data: userByEmail } = await supabase
+        .from('users')
+        .select('id, employee_id, email')
+        .eq('email', user.email)
+        .maybeSingle();
+      userData = userByEmail;
+    }
+    
+    if (userError || !userData) {
+      console.error('Error fetching user data:', userError);
+      return '';
+    }
+    
+    // If user has an employee_id, fetch phone from tenants_employee table
+    if (userData.employee_id) {
+      const { data: employeeData, error: employeeError } = await supabase
+        .from('tenants_employee')
+        .select('phone')
+        .eq('id', userData.employee_id)
+        .maybeSingle();
+      
+      if (employeeError) {
+        console.error('Error fetching employee phone:', employeeError);
+        return '';
       }
-    }
-    
-    // For contacts, use the contact phone directly
-    if (client?.isContact && client?.phone) {
-      return client.phone;
-    }
-    
-    // Use client phone as fallback
-    if (client?.phone) {
-      return client.phone;
+      
+      if (employeeData?.phone) {
+        return employeeData.phone;
+      }
     }
     
     return '';
@@ -72,35 +102,63 @@ export async function getPhoneNumber(
 }
 
 /**
- * Get mobile number for client/contact
+ * Get mobile number for the current user (sender)
+ * Fetches from tenants_employee table via employee_id
  */
 export async function getMobileNumber(
   client: any,
   contactId?: number | null
 ): Promise<string> {
   try {
-    // If we have a contactId and it's not the main contact, get the contact mobile
-    if (contactId && contactId > 0 && client?.isContact !== true) {
-      const contacts = await fetchLeadContacts(client.id, client.lead_type === 'legacy');
-      const contact = contacts.find((c: ContactInfo) => c.id === contactId);
-      if (contact?.mobile) {
-        return contact.mobile;
+    // Get the current authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      console.error('Error getting authenticated user:', authError);
+      return '';
+    }
+    
+    // Find the user in users table by auth_id or email
+    let { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('id, employee_id, email')
+      .eq('auth_id', user.id)
+      .maybeSingle();
+    
+    // If not found by auth_id, try by email
+    if (!userData && user.email) {
+      const { data: userByEmail } = await supabase
+        .from('users')
+        .select('id, employee_id, email')
+        .eq('email', user.email)
+        .maybeSingle();
+      userData = userByEmail;
+    }
+    
+    if (userError || !userData) {
+      console.error('Error fetching user data:', userError);
+      return '';
+    }
+    
+    // If user has an employee_id, fetch mobile from tenants_employee table
+    if (userData.employee_id) {
+      const { data: employeeData, error: employeeError } = await supabase
+        .from('tenants_employee')
+        .select('mobile, phone')
+        .eq('id', userData.employee_id)
+        .maybeSingle();
+      
+      if (employeeError) {
+        console.error('Error fetching employee mobile:', employeeError);
+        return '';
       }
-    }
-    
-    // For contacts, use the contact mobile directly
-    if (client?.isContact && client?.mobile) {
-      return client.mobile;
-    }
-    
-    // Use client mobile as fallback
-    if (client?.mobile) {
-      return client.mobile;
-    }
-    
-    // Fallback to phone if mobile not available
-    if (client?.phone) {
-      return client.phone;
+      
+      // Return mobile, or fallback to phone if mobile not available
+      if (employeeData?.mobile) {
+        return employeeData.mobile;
+      } else if (employeeData?.phone) {
+        return employeeData.phone;
+      }
     }
     
     return '';
@@ -111,30 +169,51 @@ export async function getMobileNumber(
 }
 
 /**
- * Get email address for client/contact
+ * Get email address for the current user (sender)
+ * Fetches from users table
  */
 export async function getEmailAddress(
   client: any,
   contactId?: number | null
 ): Promise<string> {
   try {
-    // If we have a contactId and it's not the main contact, get the contact email
-    if (contactId && contactId > 0 && client?.isContact !== true) {
-      const contacts = await fetchLeadContacts(client.id, client.lead_type === 'legacy');
-      const contact = contacts.find((c: ContactInfo) => c.id === contactId);
-      if (contact?.email) {
-        return contact.email;
-      }
+    // Get the current authenticated user
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    
+    if (authError || !user) {
+      console.error('Error getting authenticated user:', authError);
+      return '';
     }
     
-    // For contacts, use the contact email directly
-    if (client?.isContact && client?.email) {
-      return client.email;
+    // First try to get email from auth user
+    if (user.email) {
+      return user.email;
     }
     
-    // Use client email as fallback
-    if (client?.email) {
-      return client.email;
+    // Find the user in users table by auth_id to get email
+    let { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('email')
+      .eq('auth_id', user.id)
+      .maybeSingle();
+    
+    // If not found by auth_id, try by user.id (in case auth_id is different)
+    if (!userData && user.id) {
+      const { data: userById } = await supabase
+        .from('users')
+        .select('email')
+        .eq('id', user.id)
+        .maybeSingle();
+      userData = userById;
+    }
+    
+    if (userError) {
+      console.error('Error fetching user email:', userError);
+      return '';
+    }
+    
+    if (userData?.email) {
+      return userData.email;
     }
     
     return '';

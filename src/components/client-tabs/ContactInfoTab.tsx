@@ -636,13 +636,40 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           }
         } else {
           // For new leads, fetch contracts from contracts table
-          // Only one contract per lead is allowed, so we fetch the most recent one
+          // Check if this is a sub-lead and also fetch contracts from master lead
+          let masterLeadId: string | null = null;
+          
+          // Check if this is a sub-lead by checking lead_number or master_id
+          const isSubLead = client.lead_number && client.lead_number.includes('/');
+          
+          if (isSubLead) {
+            // Extract master lead number
+            const masterLeadNumber = client.lead_number.split('/')[0];
+            
+            // Fetch master lead to get its UUID
+            const { data: masterLead } = await supabase
+              .from('leads')
+              .select('id')
+              .eq('lead_number', masterLeadNumber)
+              .maybeSingle();
+            
+            if (masterLead?.id) {
+              masterLeadId = masterLead.id;
+              console.log('🔍 Sub-lead detected, master lead ID:', masterLeadId);
+            }
+          }
+          
+          // Fetch contracts for current client and master lead (if sub-lead)
+          const clientIds = [client.id];
+          if (masterLeadId && masterLeadId !== client.id) {
+            clientIds.push(masterLeadId);
+          }
+          
           const { data, error } = await supabase
             .from('contracts')
             .select('*')
-            .eq('client_id', client.id)
-            .order('created_at', { ascending: false })
-            .limit(1); // Only get the most recent contract
+            .in('client_id', clientIds)
+            .order('created_at', { ascending: false });
           
           if (error) throw error;
           
@@ -653,14 +680,25 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               contactContractsMap[contact.id] = null;
             });
             
-            // If there's a contract, assign it ONLY to the main contact
+            // Get the most recent contract (prefer contracts from master lead if sub-lead)
+            let contractToUse = null;
             if (data.length > 0) {
-              const contract = data[0];
+              // If we have multiple contracts (sub-lead with master contracts), prefer master's contracts
+              if (masterLeadId) {
+                const masterContracts = data.filter(c => c.client_id === masterLeadId);
+                contractToUse = masterContracts.length > 0 ? masterContracts[0] : data[0];
+              } else {
+                contractToUse = data[0];
+              }
+            }
+            
+            // If there's a contract, assign it ONLY to the main contact
+            if (contractToUse) {
               const contractInfo = {
-                  id: contract.id,
-                  name: contractTemplates.find(t => t.id === contract.template_id)?.name || 'Contract',
-                  status: contract.status,
-                  signed_at: contract.signed_at
+                  id: contractToUse.id,
+                  name: contractTemplates.find(t => t.id === contractToUse.template_id)?.name || 'Contract',
+                  status: contractToUse.status,
+                  signed_at: contractToUse.signed_at
                 };
               
               // Find the main contact and assign contract only to it
@@ -673,8 +711,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             setContactContracts(contactContractsMap);
             
             // Set most recent contract for backward compatibility
-            if (data.length > 0) {
-              setMostRecentContract(data[0]);
+            if (contractToUse) {
+              setMostRecentContract(contractToUse);
             } else {
               setMostRecentContract(null);
             }
@@ -2279,9 +2317,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contactId: null,
       });
 
-      // Automatically navigate to the contract page
-      if (contract && client.lead_number) {
-        navigate(`/clients/${client.lead_number}/contract?contractId=${contract.id}`);
+      // Automatically navigate to the contract page using just contractId
+      if (contract && contract.id) {
+        navigate(`/contract/${contract.id}`);
       }
     } catch (error) {
       console.error('Error creating contract:', error);
@@ -2424,46 +2462,50 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     
     // For new contracts, use the existing navigation logic
     if (client.lead_number) {
+      // Check if this is a sub-lead and if the contract belongs to the master lead
+      const isSubLead = client.lead_number.includes('/');
+      let targetLeadNumber = client.lead_number;
+      
+      if (isSubLead && contractId) {
+        // Fetch the contract to check which client_id it belongs to
+        const { data: contractData } = await supabase
+          .from('contracts')
+          .select('client_id')
+          .eq('id', contractId)
+          .maybeSingle();
+        
+        if (contractData?.client_id) {
+          // Extract master lead number
+          const masterLeadNumber = client.lead_number.split('/')[0];
+          
+          // Fetch master lead to get its UUID
+          const { data: masterLead } = await supabase
+            .from('leads')
+            .select('id, lead_number')
+            .eq('lead_number', masterLeadNumber)
+            .maybeSingle();
+          
+          // If contract belongs to master lead, use master lead number in URL
+          if (masterLead?.id === contractData.client_id) {
+            targetLeadNumber = masterLead.lead_number;
+            console.log('🔍 Contract belongs to master lead, using master lead number:', targetLeadNumber);
+          }
+        }
+      }
+      
+      // Navigate to contract using just contractId - simpler link
       if (contractId) {
-        // Navigate to specific contract
-        navigate(`/clients/${client.lead_number}/contract?contractId=${contractId}`);
+        navigate(`/contract/${contractId}`);
+      } else if (mostRecentContract?.id) {
+        navigate(`/contract/${mostRecentContract.id}`);
       } else {
-        // Navigate to most recent contract
-        navigate(`/clients/${client.lead_number}/contract`);
+        alert('No contract found for this client.');
       }
     } else if (contractId) {
-      // Fetch lead_number from Supabase using the contract
-      const { data, error } = await supabase
-        .from('contracts')
-        .select('client_id')
-        .eq('id', contractId)
-        .single();
-      if (data && data.client_id) {
-        const { data: leadData, error: leadError } = await supabase
-          .from('leads')
-          .select('lead_number')
-          .eq('id', data.client_id)
-          .single();
-        if (leadData && leadData.lead_number) {
-          navigate(`/clients/${leadData.lead_number}/contract?contractId=${contractId}`);
-        } else {
-          alert('Lead number not found for this contract.');
-        }
-      } else {
-        alert('Contract not found.');
-      }
-    } else if (mostRecentContract && mostRecentContract.client_id) {
-      // Fallback to most recent contract
-      const { data, error } = await supabase
-        .from('leads')
-        .select('lead_number')
-        .eq('id', mostRecentContract.client_id)
-        .single();
-      if (data && data.lead_number) {
-        navigate(`/clients/${data.lead_number}/contract`);
-      } else {
-        alert('Lead number not found for this contract.');
-      }
+      // Navigate to contract using just contractId
+      navigate(`/contract/${contractId}`);
+    } else if (mostRecentContract?.id) {
+      navigate(`/contract/${mostRecentContract.id}`);
     } else {
       alert('No contract found for this client.');
     }

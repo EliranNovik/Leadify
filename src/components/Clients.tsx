@@ -246,6 +246,41 @@ const Clients: React.FC<ClientsProps> = ({
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   // State to store all categories for name lookup
   const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [allLanguages, setAllLanguages] = useState<Array<{ id: number; name: string | null }>>([]);
+  const [allCountries, setAllCountries] = useState<Array<{ id: number; name: string; iso_code?: string | null }>>([]);
+  // State for country codes (for phone code dropdowns)
+  const [countryCodes, setCountryCodes] = useState<Array<{ code: string; country: string; name: string }>>([
+    { code: '+972', country: 'IL', name: 'Israel' } // Default fallback
+  ]);
+
+  // Helper function to extract country code and number from full phone number
+  const parsePhoneNumber = (fullNumber: string | undefined | null) => {
+    // Handle null, undefined, or empty values
+    if (!fullNumber || fullNumber === '---' || fullNumber === null || fullNumber === undefined || fullNumber.trim() === '') {
+      return { countryCode: '+972', number: '' };
+    }
+    
+    // Trim the input to remove any extra spaces
+    const trimmed = fullNumber.trim();
+    
+    // Find matching country code
+    const matchedCode = countryCodes.find(code => trimmed.startsWith(code.code));
+    if (matchedCode) {
+      return {
+        countryCode: matchedCode.code,
+        number: trimmed.substring(matchedCode.code.length)
+      };
+    }
+    
+    // Default to Israel if no match found
+    return { countryCode: '+972', number: trimmed };
+  };
+
+  // Helper function to format phone number for display
+  const formatPhoneNumber = (countryCode: string, number: string) => {
+    if (!number || number.trim() === '') return '';
+    return `${countryCode}${number}`;
+  };
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | null | undefined) => {
@@ -585,6 +620,65 @@ const Clients: React.FC<ClientsProps> = ({
         console.error('Clients: Exception while fetching categories:', err);
       }
     };
+    
+    const fetchLanguages = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_language')
+          .select('id, name')
+          .order('name', { ascending: true });
+        
+        if (error) {
+          console.error('Clients: Error fetching languages:', error);
+        } else if (data) {
+          setAllLanguages(data);
+        }
+      } catch (err) {
+        console.error('Clients: Exception while fetching languages:', err);
+      }
+    };
+    
+    const fetchCountries = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_country')
+          .select('id, name, iso_code')
+          .order('name', { ascending: true });
+        
+        if (error) {
+          console.error('Clients: Error fetching countries:', error);
+        } else if (data) {
+          setAllCountries(data);
+        }
+      } catch (err) {
+        console.error('Clients: Exception while fetching countries:', err);
+      }
+    };
+
+    const fetchCountryCodes = async () => {
+      try {
+        const { data: countriesData, error: countriesError } = await supabase
+          .from('misc_country')
+          .select('id, name, phone_code, iso_code, order')
+          .not('phone_code', 'is', null)
+          .order('order', { ascending: true })
+          .order('name', { ascending: true });
+
+        if (!countriesError && countriesData) {
+          setCountryCodes(
+            countriesData
+              .filter(country => country?.phone_code && country?.name)
+              .map(country => ({
+                code: country.phone_code.startsWith('+') ? country.phone_code : `+${country.phone_code}`,
+                country: country.iso_code || '',
+                name: country.name
+              }))
+          );
+        }
+      } catch (error) {
+        console.error('Error fetching country codes:', error);
+      }
+    };
 
     const fetchAvailableStages = async () => {
       try {
@@ -612,6 +706,9 @@ const Clients: React.FC<ClientsProps> = ({
 
     fetchEmployees();
     fetchCategories();
+    fetchLanguages();
+    fetchCountries();
+    fetchCountryCodes();
     fetchAvailableStages();
     // Initialize stage names cache
     fetchStageNames().then(stageNames => {
@@ -5975,11 +6072,127 @@ useEffect(() => {
 
   // Sub-lead drawer state
   const [showSubLeadDrawer, setShowSubLeadDrawer] = useState(false);
-  const [subLeadStep, setSubLeadStep] = useState<'initial' | 'newContact' | 'newProcedure' | 'details'>('initial');
+  const [subLeadStep, setSubLeadStep] = useState<'initial' | 'newContact' | 'newContactDetails' | 'newProcedure' | 'details' | 'sameContract'>('initial');
+  // State for contracts and contacts with contracts (for "Same Contract" feature)
+  const [contactContracts, setContactContracts] = useState<{
+    [contactId: number]: {
+      contactId: number;
+      contactName: string;
+      contractId: string;
+      contractName: string;
+      contactEmail?: string | null;
+      contactPhone?: string | null;
+      contactMobile?: string | null;
+      contactCountryId?: number | null;
+    };
+  }>({});
+  const [selectedContractContactId, setSelectedContractContactId] = useState<number | null>(null);
+  const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+  const [contactsWithContracts, setContactsWithContracts] = useState<Array<{
+    contactId: number;
+    contactName: string;
+    contractId: string;
+    contractName: string;
+    contactEmail?: string | null;
+    contactPhone?: string | null;
+    contactMobile?: string | null;
+    contactCountryId?: number | null;
+  }>>([]);
+
+  // Fetch contracts and contacts when drawer opens
+  useEffect(() => {
+    if (!showSubLeadDrawer || !selectedClient) return;
+    
+    const fetchContractsAndContacts = async () => {
+      try {
+        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+        const contactsMap: { [contactId: number]: { contactName: string; contractId: string; contractName: string } } = {};
+        
+        if (!isLegacyLead && selectedClient?.id) {
+          // For new leads, fetch contracts from contracts table
+          const { data: contracts, error: contractsError } = await supabase
+            .from('contracts')
+            .select('id, template_id, contact_id, contact_name, status')
+            .eq('client_id', selectedClient.id)
+            .order('created_at', { ascending: false });
+          
+          if (contractsError) {
+            console.error('Error fetching contracts:', contractsError);
+            return;
+          }
+          
+          if (contracts && contracts.length > 0) {
+            // Fetch contract templates to get contract names
+            const { data: templates } = await supabase
+              .from('contract_templates')
+              .select('id, name');
+            
+            const templateMap = new Map((templates || []).map(t => [t.id, t.name]));
+            
+            // Fetch contacts to get contact names
+            const { data: leadContacts } = await supabase
+              .from('lead_leadcontact')
+              .select('contact_id, newlead_id')
+              .eq('newlead_id', selectedClient.id);
+            
+            if (leadContacts && leadContacts.length > 0) {
+              const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
+              
+            const { data: contacts } = await supabase
+              .from('leads_contact')
+              .select('id, name, email, phone, mobile, country_id')
+                .in('id', contactIds);
+              
+              const contactMap = new Map((contacts || []).map(c => [c.id, c]));
+              
+              // Process contracts and map them to contacts
+              contracts.forEach(contract => {
+                const contactId = contract.contact_id;
+                if (contactId) {
+                  const contactRecord: any = contactMap.get(contactId);
+                  const contactName = contract.contact_name || contactRecord?.name || 'Unknown Contact';
+                  const contactEmail = contactRecord?.email || null;
+                  const contactPhone = contactRecord?.phone || null;
+                  const contactMobile = contactRecord?.mobile || null;
+                  const contactCountryId = contactRecord?.country_id ?? null;
+                  const contractName = templateMap.get(contract.template_id) || 'Contract';
+                  
+                  if (!contactsMap[contactId] || contracts.indexOf(contract) === 0) {
+                    // Only store the most recent contract per contact
+                    contactsMap[contactId] = {
+                      contactId,
+                      contactName,
+                      contractId: contract.id,
+                      contractName,
+                      contactEmail,
+                      contactPhone,
+                      contactMobile,
+                      contactCountryId
+                    };
+                  }
+                }
+              });
+            }
+          }
+        }
+        
+        const contactsList = Object.values(contactsMap);
+        setContactsWithContracts(contactsList);
+        setContactContracts(contactsMap);
+      } catch (error) {
+        console.error('Error fetching contracts and contacts:', error);
+      }
+    };
+    
+    fetchContractsAndContacts();
+  }, [showSubLeadDrawer, selectedClient]);
   const [subLeadForm, setSubLeadForm] = useState({
     name: '',
     email: '',
     phone: '',
+    mobile: '', // For new contact details
+    country: '', // For new contact details (country name)
+    countryId: '', // For new contact details (country ID)
     category: '',
     categoryId: '',
     topic: '',
@@ -5987,6 +6200,7 @@ useEffect(() => {
     source: '',
     language: '',
     tags: '',
+    facts: '',
     // Details step fields
     handler: '',
     handlerId: '',
@@ -6120,8 +6334,9 @@ const getMaxLeadNumberFromLegacy = async (): Promise<bigint> => {
 const manualIdExists = async (manualId: bigint): Promise<boolean> => {
   const manualString = manualId.toString();
 
-  const [leadsCheck, legacyCheck] = await Promise.all([
-    supabase
+  try {
+    // Check leads table first
+    const leadsCheck = await supabase
       .from('leads')
       .select('id', { count: 'exact', head: true })
       .or(
@@ -6132,17 +6347,48 @@ const manualIdExists = async (manualId: bigint): Promise<boolean> => {
           `lead_number.like.${manualString}/%`,
           `lead_number.like.L${manualString}/%`,
         ].join(',')
-      ),
-    supabase
-      .from('leads_lead')
-      .select('id', { count: 'exact', head: true })
-      .or(`manual_id.eq.${manualString},lead_number.eq.${manualString},id.eq.${manualString}`),
-  ]);
+      );
 
-  if (leadsCheck.error) throw leadsCheck.error;
-  if (legacyCheck.error) throw legacyCheck.error;
+    if (leadsCheck.error) {
+      console.warn('Error checking manual_id in leads table:', leadsCheck.error);
+    } else if ((leadsCheck.count ?? 0) > 0) {
+      return true;
+    }
 
-  return (leadsCheck.count ?? 0) > 0 || (legacyCheck.count ?? 0) > 0;
+    // Check legacy table separately to avoid query issues
+    try {
+      const legacyCheckManualId = await supabase
+        .from('leads_lead')
+        .select('id', { count: 'exact', head: true })
+        .eq('manual_id', manualString);
+      
+      if (!legacyCheckManualId.error && (legacyCheckManualId.count ?? 0) > 0) {
+        return true;
+      }
+    } catch (err) {
+      console.warn('Error checking manual_id in leads_lead table:', err);
+    }
+
+    try {
+      const legacyCheckLeadNumber = await supabase
+        .from('leads_lead')
+        .select('id', { count: 'exact', head: true })
+        .eq('lead_number', manualString);
+      
+      if (!legacyCheckLeadNumber.error && (legacyCheckLeadNumber.count ?? 0) > 0) {
+        return true;
+      }
+    } catch (err) {
+      console.warn('Error checking lead_number in leads_lead table:', err);
+    }
+
+    // Don't check id.eq as it might cause type issues - manual_id and lead_number are sufficient
+    return false;
+  } catch (error) {
+    console.error('Error in manualIdExists:', error);
+    // On error, assume ID doesn't exist to allow creation to proceed
+    return false;
+  }
 };
 
 const ensureUniqueManualId = async (initialManualId: bigint): Promise<bigint> => {
@@ -6160,18 +6406,40 @@ const ensureUniqueManualId = async (initialManualId: bigint): Promise<bigint> =>
 };
 
 const getNextAvailableManualId = async (): Promise<bigint> => {
-  const [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax] = await Promise.all([
-    getMaxManualIdFromLeads(),
-    getMaxManualIdFromLegacy(),
-    getMaxLeadNumberFromLeads(),
-    getMaxLeadNumberFromLegacy(),
-    getMaxLegacyLeadId(),
-  ]);
-  const currentMax = [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax].reduce(
-    (acc, value) => (value > acc ? value : acc),
-    BigInt(0)
-  );
-  return ensureUniqueManualId(currentMax + BigInt(1));
+  try {
+    const [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax] = await Promise.all([
+      getMaxManualIdFromLeads().catch(err => {
+        console.warn('Error getting max manual_id from leads table:', err);
+        return BigInt(0);
+      }),
+      getMaxManualIdFromLegacy().catch(err => {
+        console.warn('Error getting max manual_id from legacy table:', err);
+        return BigInt(0);
+      }),
+      getMaxLeadNumberFromLeads().catch(err => {
+        console.warn('Error getting max lead_number from leads table:', err);
+        return BigInt(0);
+      }),
+      getMaxLeadNumberFromLegacy().catch(err => {
+        console.warn('Error getting max lead_number from legacy table:', err);
+        return BigInt(0);
+      }),
+      getMaxLegacyLeadId().catch(err => {
+        console.warn('Error getting max legacy lead id:', err);
+        return BigInt(0);
+      }),
+    ]);
+    const currentMax = [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax].reduce(
+      (acc, value) => (value > acc ? value : acc),
+      BigInt(0)
+    );
+    return await ensureUniqueManualId(currentMax + BigInt(1));
+  } catch (error) {
+    console.error('Error in getNextAvailableManualId, using timestamp-based fallback:', error);
+    // Fallback: use timestamp-based ID if all else fails
+    const timestampId = BigInt(Date.now());
+    return timestampId;
+  }
 };
 
 const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number> => {
@@ -6261,6 +6529,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       special_notes: selectedClient.special_notes || '',
       source: selectedClient.source || '',
       language: selectedClient.language || '',
+      facts: selectedClient.facts || '',
       tags: (() => {
         if (Array.isArray(selectedClient.tags)) {
           return selectedClient.tags.join(', ');
@@ -6297,9 +6566,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       validationErrors.push('Name is required to create a sub-lead.');
     }
 
-    if (!subLeadForm.categoryId && !subLeadForm.category.trim()) {
-      validationErrors.push('Please select a category for the sub-lead.');
-    }
+    // Category will automatically be inherited from the master lead - no validation needed
+    // We'll ensure it's set from selectedClient.category_id in the save logic
 
     if (validationErrors.length > 0) {
       toast.error(validationErrors[0]);
@@ -6332,9 +6600,126 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       const subLeadNumber = `${masterBaseNumber}/${nextSuffix}`;
       const masterIdValue = extractDigits(masterBaseNumber) ?? masterBaseNumber;
 
-      const selectedCategoryOption = subLeadForm.categoryId ? categoryOptionsMap.get(subLeadForm.categoryId) : undefined;
-      const categoryIdValue = subLeadForm.categoryId ? Number(subLeadForm.categoryId) : null;
-      const categoryName = selectedCategoryOption?.raw?.name || selectedCategoryOption?.label || subLeadForm.category || null;
+      // For sub-leads, always inherit category_id from the master lead (selectedClient)
+      let categoryIdValue: number | null = null;
+      
+      // Primary source: selectedClient's category_id (master lead)
+      if (selectedClient?.category_id != null) {
+        const clientCategoryId = typeof selectedClient.category_id === 'number' 
+          ? selectedClient.category_id 
+          : Number(selectedClient.category_id);
+        if (!Number.isNaN(clientCategoryId) && clientCategoryId > 0) {
+          categoryIdValue = clientCategoryId;
+        }
+      }
+      
+      // If category_id is null but we have category text, search for it in allCategories
+      if (categoryIdValue === null && selectedClient?.category && selectedClient.category.trim() !== '') {
+        console.log('🔍 Master lead has category text but no category_id, searching in allCategories:', {
+          categoryText: selectedClient.category,
+          allCategoriesCount: allCategories.length
+        });
+        
+        // Try to find category by matching the text
+        // The category text might be in format like "Lived bef 1933,le af (Germany)" or just the name
+        const categoryText = selectedClient.category.trim();
+        
+        // First try exact match with category name
+        let foundCategory = allCategories.find((cat: any) => {
+          const catName = cat.name?.trim() || '';
+          return catName.toLowerCase() === categoryText.toLowerCase();
+        });
+        
+        // If not found, try matching just the category name part (before comma or parentheses)
+        if (!foundCategory) {
+          const categoryNamePart = categoryText.split(',')[0].split('(')[0].trim();
+          foundCategory = allCategories.find((cat: any) => {
+            const catName = cat.name?.trim() || '';
+            return catName.toLowerCase() === categoryNamePart.toLowerCase();
+          });
+        }
+        
+        // If still not found, try partial match
+        if (!foundCategory) {
+          const categoryNamePart = categoryText.split(',')[0].split('(')[0].trim();
+          foundCategory = allCategories.find((cat: any) => {
+            const catName = cat.name?.trim() || '';
+            return catName.toLowerCase().includes(categoryNamePart.toLowerCase()) ||
+                   categoryNamePart.toLowerCase().includes(catName.toLowerCase());
+          });
+        }
+        
+        // Also try matching with the formatted label (Main Category > Category)
+        if (!foundCategory) {
+          foundCategory = categoryOptions.find(opt => {
+            const optLabel = opt.label?.trim() || '';
+            return optLabel.toLowerCase() === categoryText.toLowerCase() ||
+                   optLabel.toLowerCase().includes(categoryText.toLowerCase()) ||
+                   categoryText.toLowerCase().includes(optLabel.toLowerCase());
+          });
+          if (foundCategory) {
+            const parsedId = Number(foundCategory.id);
+            if (!Number.isNaN(parsedId) && parsedId > 0) {
+              categoryIdValue = parsedId;
+              console.log('✅ Found category ID from formatted label:', { categoryId: categoryIdValue, label: foundCategory.label });
+            }
+          }
+        }
+        
+        if (foundCategory && !categoryIdValue) {
+          const parsedId = Number(foundCategory.id || foundCategory.raw?.id);
+          if (!Number.isNaN(parsedId) && parsedId > 0) {
+            categoryIdValue = parsedId;
+            console.log('✅ Found category ID from category search:', { 
+              categoryId: categoryIdValue, 
+              categoryName: foundCategory.name || foundCategory.raw?.name 
+            });
+          }
+        }
+      }
+      
+      // Fallback: try form's categoryId if master lead doesn't have one
+      if (categoryIdValue === null && subLeadForm.categoryId && subLeadForm.categoryId.trim() !== '') {
+        const categoryIdStr = subLeadForm.categoryId.trim();
+        const parsedId = Number(categoryIdStr);
+        if (!Number.isNaN(parsedId) && parsedId > 0) {
+          categoryIdValue = parsedId;
+        }
+      }
+      
+      // If still null, try to find it from the form category name/text
+      if (categoryIdValue === null && subLeadForm.category && subLeadForm.category.trim() !== '') {
+        const matchingOption = categoryOptions.find(opt => 
+          opt.label === subLeadForm.category || 
+          opt.label.toLowerCase() === subLeadForm.category.toLowerCase()
+        );
+        if (matchingOption) {
+          const parsedId = Number(matchingOption.id);
+          if (!Number.isNaN(parsedId) && parsedId > 0) {
+            categoryIdValue = parsedId;
+          }
+        }
+      }
+      
+      // Final validation - if still null, show error
+      if (categoryIdValue === null || categoryIdValue <= 0) {
+        console.error('❌ Category ID could not be determined:', {
+          masterLeadCategoryId: selectedClient?.category_id,
+          masterLeadCategory: selectedClient?.category,
+          formCategoryId: subLeadForm.categoryId,
+          formCategory: subLeadForm.category,
+          allCategoriesCount: allCategories.length
+        });
+        toast.error('Unable to determine category. The master lead must have a category set.');
+        setIsSavingSubLead(false);
+        return;
+      }
+      
+      console.log('✅ Category ID inherited from master lead:', { 
+        categoryIdValue, 
+        masterLeadCategoryId: selectedClient?.category_id,
+        masterLeadName: selectedClient?.name
+      });
 
       let handlerIdValue: string | number | null = null;
       if (subLeadForm.handlerId && subLeadForm.handlerId.trim() !== '') {
@@ -6362,6 +6747,25 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         setIsSavingSubLead(false);
         return;
       }
+      const masterStageId =
+        selectedClient && selectedClient.stage !== undefined && selectedClient.stage !== null
+          ? resolveStageId(selectedClient.stage)
+          : null;
+      const targetStageId =
+        subLeadStep === 'sameContract' && masterStageId !== null ? masterStageId : createdStageId;
+
+      // Final validation - categoryIdValue should never be null at this point
+      if (!categoryIdValue || categoryIdValue <= 0) {
+        console.error('❌ CRITICAL: categoryIdValue is invalid after all checks:', {
+          categoryIdValue,
+          formCategoryId: subLeadForm.categoryId,
+          formCategory: subLeadForm.category,
+          clientCategoryId: selectedClient?.category_id
+        });
+        toast.error('Unable to determine a valid category ID. Please select a category from the dropdown and try again.');
+        setIsSavingSubLead(false);
+        return;
+      }
 
       const newLeadData: Record<string, any> = {
         manual_id: manualIdString,
@@ -6370,14 +6774,15 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         name: trimmedName,
         email: subLeadForm.email,
         phone: subLeadForm.phone,
-        category: categoryName,
-        category_id: categoryIdValue,
+        category_id: categoryIdValue, // Only save the ID for new leads, not the text
+        category: null, // Explicitly set to null to ensure we don't save text
         topic: subLeadForm.topic,
         special_notes: subLeadForm.special_notes,
         source: subLeadForm.source,
         language: subLeadForm.language,
+        facts: subLeadForm.facts,
         tags: subLeadForm.tags,
-        stage: createdStageId,
+        stage: targetStageId,
         probability: 0,
         balance: proposalAmount ?? 0,
         balance_currency: currencyValue,
@@ -6390,12 +6795,28 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         number_of_applicants_meeting: applicantCount,
         created_at: new Date().toISOString(),
       };
-
-      if (!categoryName) {
-        newLeadData.category = null;
-      }
+      
+      console.log('🔍 Creating sublead with data:', {
+        subLeadStep,
+        newLeadData: { ...newLeadData, manual_id: newLeadData.manual_id?.toString() },
+        masterBaseNumber,
+        subLeadNumber
+      });
+      
       const { data: insertedLead, error } = await supabase.from('leads').insert([newLeadData]).select('id').single();
-      if (error) throw error;
+      
+      if (error) {
+        console.error('❌ Error inserting lead:', {
+          error,
+          message: error?.message,
+          details: error?.details,
+          hint: error?.hint,
+          code: error?.code
+        });
+        throw error;
+      }
+      
+      console.log('✅ Lead inserted successfully:', insertedLead);
       
       // Create the first contact in leads_contact and lead_leadcontact tables
       if (insertedLead?.id) {
@@ -6410,15 +6831,79 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         const newContactId = maxContactId ? maxContactId.id + 1 : 1;
         const currentDate = new Date().toISOString().split('T')[0];
         
+        // Determine contact details based on which step we came from
+        let contactName: string;
+        let contactMobile: string | null;
+        let contactPhone: string | null;
+        let contactEmail: string | null;
+        let contactCountryId: number | null = null;
+        
+        if (subLeadStep === 'newContactDetails') {
+          // Use new contact details from form
+          contactName = trimmedName;
+          contactMobile = subLeadForm.mobile || null;
+          contactPhone = subLeadForm.phone || null;
+          contactEmail = subLeadForm.email || null;
+          contactCountryId = subLeadForm.countryId ? Number(subLeadForm.countryId) : null;
+        } else if (subLeadStep === 'sameContract' && selectedContractContactId) {
+          const storedContact = contactContracts[selectedContractContactId];
+          
+          contactName = trimmedName || storedContact?.contactName || selectedClient?.name || '';
+          contactMobile = storedContact?.contactMobile || selectedClient?.mobile || null;
+          contactPhone = storedContact?.contactPhone || selectedClient?.phone || null;
+          contactEmail = storedContact?.contactEmail || selectedClient?.email || null;
+          contactCountryId = storedContact?.contactCountryId ?? selectedClient?.country_id ?? null;
+        } else {
+          // For 'newProcedure', fetch the existing client's main contact information
+          const isLegacyClient = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+          
+          // Try to get main contact from client
+          let mainContact = null;
+          if (!isLegacyClient && selectedClient?.id) {
+            // Fetch main contact for new leads
+            const { data: leadContacts } = await supabase
+              .from('lead_leadcontact')
+              .select('contact_id, main')
+              .eq('newlead_id', selectedClient.id)
+              .eq('main', true)
+              .limit(1)
+              .maybeSingle();
+            
+            if (leadContacts?.contact_id) {
+              const { data: contactData } = await supabase
+                .from('leads_contact')
+                .select('name, email, phone, mobile, country_id')
+                .eq('id', leadContacts.contact_id)
+                .maybeSingle();
+              
+              if (contactData) {
+                mainContact = contactData;
+              }
+            }
+          }
+          
+          // Use main contact data if available, otherwise fall back to client data
+          contactName = trimmedName || mainContact?.name || selectedClient?.name || '';
+          contactMobile = mainContact?.mobile || selectedClient?.mobile || null;
+          contactPhone = mainContact?.phone || selectedClient?.phone || null;
+          contactEmail = mainContact?.email || selectedClient?.email || null;
+          contactCountryId = mainContact?.country_id || selectedClient?.country_id || null;
+          
+          if (contactCountryId && typeof contactCountryId !== 'number') {
+            contactCountryId = Number(contactCountryId) || null;
+          }
+        }
+        
         // Insert the first contact
         const { error: contactError } = await supabase
           .from('leads_contact')
           .insert([{
             id: newContactId,
-            name: trimmedName,
-            mobile: null,
-            phone: subLeadForm.phone || null,
-            email: subLeadForm.email || null,
+            name: contactName,
+            mobile: contactMobile,
+            phone: contactPhone,
+            email: contactEmail,
+            country_id: contactCountryId,
             newlead_id: insertedLead.id,
             cdate: currentDate,
             udate: currentDate
@@ -6452,6 +6937,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             console.error('Error creating contact relationship:', relationshipError);
             // Continue even if relationship creation fails
           }
+          
+          // For 'sameContract' step, we don't copy or modify the contract
+          // The contract remains linked to the original lead/client
+          // The UI should display contracts from the master lead when viewing sub-leads
+          if (subLeadStep === 'sameContract' && selectedContractId) {
+            console.log('🔍 Sub-lead created with same contract. Contract remains with original lead:', selectedContractId);
+          }
         }
       }
       
@@ -6459,10 +6951,15 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       toast.success(`Sub-lead created: ${subLeadNumber}`);
       setShowSubLeadDrawer(false);
       setSubLeadStep('initial');
+      setSelectedContractContactId(null);
+      setSelectedContractId(null);
       setSubLeadForm({
         name: '',
         email: '',
         phone: '',
+        mobile: '',
+        country: '',
+        countryId: '',
         category: '',
         categoryId: '',
         topic: '',
@@ -6470,6 +6967,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         source: '',
         language: '',
         tags: '',
+        facts: '',
         handler: '',
         handlerId: '',
         currency: 'NIS',
@@ -6480,9 +6978,29 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       
       // Navigate to the newly created sub-lead's page
       navigate(buildClientRoute(manualIdString, subLeadNumber));
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating sub-lead:', error);
-      toast.error(error instanceof Error ? error.message : 'Failed to create sub-lead.');
+      console.error('Error details:', {
+        message: error?.message,
+        details: error?.details,
+        hint: error?.hint,
+        code: error?.code,
+        error: error
+      });
+      
+      // Get a more detailed error message
+      let errorMessage = 'Failed to create sub-lead.';
+      if (error?.message) {
+        errorMessage = error.message;
+      } else if (error?.details) {
+        errorMessage = error.details;
+      } else if (error?.hint) {
+        errorMessage = error.hint;
+      } else if (typeof error === 'string') {
+        errorMessage = error;
+      }
+      
+      toast.error(errorMessage);
     } finally {
       setIsSavingSubLead(false);
     }
@@ -8737,6 +9255,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               setShowSubLeadDrawer(false);
               setSubLeadStep('initial');
               setIsSavingSubLead(false);
+              setSelectedContractContactId(null);
+              setSelectedContractId(null);
             }}
           />
           <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
@@ -8747,6 +9267,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 onClick={() => {
                   setShowSubLeadDrawer(false);
                   setIsSavingSubLead(false);
+                  setSubLeadStep('initial');
+                  setSelectedContractContactId(null);
+                  setSelectedContractId(null);
                 }}
               >
                 <XMarkIcon className="w-6 h-6" />
@@ -8759,55 +9282,364 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     className="btn btn-primary mb-4"
                     onClick={() => {
                       prefillSubLeadFormFromClient();
-                      setSubLeadStep('details');
+                      setSubLeadStep('newProcedure');
                     }}
                   >
                     New Procedure (Same Contact)
                   </button>
-                  <button className="btn btn-outline" onClick={() => setSubLeadStep('newContact')}>
+                  <button 
+                    className="btn btn-outline" 
+                    onClick={() => {
+                      // Pre-fill category, topic, facts, and special notes from existing client
+                      const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
+                      const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
+                      
+                      setSubLeadForm({
+                        name: '',
+                        email: '',
+                        phone: '',
+                        mobile: '',
+                        country: '',
+                        countryId: '',
+                        category: categoryOption?.label || selectedClient?.category || '',
+                        categoryId: baseCategoryId || '',
+                        topic: selectedClient?.topic || '',
+                        special_notes: selectedClient?.special_notes || '',
+                        source: '',
+                        language: '',
+                        tags: '',
+                        facts: selectedClient?.facts || '',
+                        handler: '',
+                        handlerId: '',
+                        currency: 'NIS',
+                        numApplicants: '',
+                        proposal: '',
+                        potentialValue: '',
+                      });
+                      setSubLeadStep('newContact');
+                    }}
+                  >
                     Add New Contact
                   </button>
+                  {/* Same Contract buttons - one for each contact with a contract */}
+                  {contactsWithContracts.map((item) => (
+                    <button
+                      key={item.contactId}
+                      className="btn btn-outline btn-success"
+                      onClick={() => {
+                        setSelectedContractContactId(item.contactId);
+                        setSelectedContractId(item.contractId);
+                        // Pre-fill form with client data
+                        const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
+                        const countryIdValue = item.contactCountryId ?? selectedClient?.country_id ?? '';
+                        const countryIdString =
+                          countryIdValue !== null && countryIdValue !== undefined ? String(countryIdValue) : '';
+                        setSubLeadForm({
+                          name: item.contactName,
+                          email: item.contactEmail || selectedClient?.email || '',
+                          phone: item.contactPhone || selectedClient?.phone || '',
+                          mobile: item.contactMobile || selectedClient?.mobile || '',
+                          country: '',
+                          countryId: countryIdString,
+                          category: selectedClient?.category || '',
+                          categoryId: baseCategoryId || '',
+                          topic: selectedClient?.topic || '',
+                          special_notes: selectedClient?.special_notes || '',
+                          source: '',
+                          language: selectedClient?.language || '',
+                          tags: '',
+                          facts: selectedClient?.facts || '',
+                          handler: '',
+                          handlerId: '',
+                          currency: 'NIS',
+                          numApplicants: '',
+                          proposal: '',
+                          potentialValue: '',
+                        });
+                        setSubLeadStep('sameContract');
+                      }}
+                    >
+                      Same Contract - {item.contactName}
+                    </button>
+                  ))}
                 </>
               )}
               {subLeadStep === 'newContact' && (
                 <>
-                  <label className="block font-semibold mb-1">Name</label>
-                  <input className="input input-bordered w-full" value={subLeadForm.name} onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))} />
-                  <label className="block font-semibold mb-1">Email</label>
-                  <input className="input input-bordered w-full" value={subLeadForm.email} onChange={e => setSubLeadForm(f => ({ ...f, email: e.target.value }))} />
-                  <label className="block font-semibold mb-1">Phone</label>
-                  <input className="input input-bordered w-full" value={subLeadForm.phone} onChange={e => setSubLeadForm(f => ({ ...f, phone: e.target.value }))} />
-                  <label className="block font-semibold mb-1">Category</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={subLeadForm.categoryId}
-                    onChange={e => {
-                      const value = e.target.value;
-                      const selected = categoryOptionsMap.get(value);
-                      setSubLeadForm(f => ({
-                        ...f,
-                        categoryId: value,
-                        category: selected?.label || '',
-                      }));
-                    }}
-                  >
-                    <option value="">Select category...</option>
-                    {categoryOptions.map(opt => (
-                      <option key={opt.id} value={opt.id}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
                   <label className="block font-semibold mb-1">Topic</label>
-                  <input
-                    className="input input-bordered w-full"
+                  <input 
+                    className="input input-bordered w-full" 
                     value={subLeadForm.topic}
                     onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
                     placeholder="Enter topic"
                   />
+                  {/* Category is automatically inherited from master lead - no dropdown needed */}
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                    <p className="text-sm text-gray-700">
+                      <strong>Category:</strong> {subLeadForm.category || selectedClient?.category || 'Will be inherited from master lead'}
+                    </p>
+                  </div>
+                  <label className="block font-semibold mb-1">Client Name</label>
+                  <input 
+                    className="input input-bordered w-full" 
+                    value={subLeadForm.name}
+                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="Enter client name"
+                  />
+                  <label className="block font-semibold mb-1">Language</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={subLeadForm.language}
+                    onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                  >
+                    <option value="">Select language...</option>
+                    {allLanguages.map(lang => (
+                      <option key={lang.id} value={lang.name || ''}>
+                        {lang.name || 'Unknown'}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="block font-semibold mb-1">Facts of Case</label>
+                  <textarea 
+                    className="textarea textarea-bordered w-full" 
+                    value={subLeadForm.facts}
+                    onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                    placeholder="Enter facts of the case"
+                    rows={4}
+                  />
                   <label className="block font-semibold mb-1">Special Notes</label>
-                  <textarea className="textarea textarea-bordered w-full" value={subLeadForm.special_notes} onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))} />
-                  <button className="btn btn-primary mt-4" onClick={() => setSubLeadStep('details')}>Save & Next</button>
+                  <textarea 
+                    className="textarea textarea-bordered w-full" 
+                    value={subLeadForm.special_notes}
+                    onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                    placeholder="Enter special notes"
+                    rows={4}
+                  />
+                  <button 
+                    className="btn btn-primary mt-4" 
+                    onClick={() => setSubLeadStep('newContactDetails')}
+                  >
+                    Next: Contact Details
+                  </button>
+                </>
+              )}
+              {subLeadStep === 'newContactDetails' && (
+                <>
+                  <label className="block font-semibold mb-1">Name *</label>
+                  <input 
+                    className="input input-bordered w-full" 
+                    value={subLeadForm.name}
+                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="Enter contact name"
+                  />
+                  <label className="block font-semibold mb-1">Mobile</label>
+                  <div className="flex gap-2">
+                    <select
+                      className="select select-bordered w-40"
+                      value={parsePhoneNumber(subLeadForm.mobile).countryCode}
+                      onChange={(e) => {
+                        const currentMobile = subLeadForm.mobile || '';
+                        const currentParsed = parsePhoneNumber(currentMobile);
+                        const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                        setSubLeadForm(f => ({ ...f, mobile: newNumber }));
+                      }}
+                    >
+                      {countryCodes.map((code) => (
+                        <option key={`${code.code}-${code.country}`} value={code.code}>
+                          {code.code} {code.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="tel"
+                      placeholder="Enter mobile number"
+                      className="input input-bordered flex-1"
+                      value={parsePhoneNumber(subLeadForm.mobile).number}
+                      onChange={(e) => {
+                        const { countryCode } = parsePhoneNumber(subLeadForm.mobile);
+                        setSubLeadForm(f => ({ ...f, mobile: formatPhoneNumber(countryCode, e.target.value) }));
+                      }}
+                    />
+                  </div>
+                  <label className="block font-semibold mb-1">Phone</label>
+                  <div className="flex gap-2">
+                    <select
+                      className="select select-bordered w-40"
+                      value={parsePhoneNumber(subLeadForm.phone).countryCode}
+                      onChange={(e) => {
+                        const currentPhone = subLeadForm.phone || '';
+                        const currentParsed = parsePhoneNumber(currentPhone);
+                        const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                        setSubLeadForm(f => ({ ...f, phone: newNumber }));
+                      }}
+                    >
+                      {countryCodes.map((code) => (
+                        <option key={`${code.code}-${code.country}`} value={code.code}>
+                          {code.code} {code.name}
+                        </option>
+                      ))}
+                    </select>
+                    <input
+                      type="tel"
+                      placeholder="Enter phone number"
+                      className="input input-bordered flex-1"
+                      value={parsePhoneNumber(subLeadForm.phone).number}
+                      onChange={(e) => {
+                        const { countryCode } = parsePhoneNumber(subLeadForm.phone);
+                        setSubLeadForm(f => ({ ...f, phone: formatPhoneNumber(countryCode, e.target.value) }));
+                      }}
+                    />
+                  </div>
+                  <label className="block font-semibold mb-1">Email</label>
+                  <input 
+                    className="input input-bordered w-full" 
+                    value={subLeadForm.email}
+                    onChange={e => setSubLeadForm(f => ({ ...f, email: e.target.value }))}
+                    placeholder="Enter email address"
+                    type="email"
+                  />
+                  <label className="block font-semibold mb-1">Country</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={subLeadForm.country}
+                    onChange={e => {
+                      const countryName = e.target.value;
+                      const countryId = allCountries.find(c => c.name === countryName)?.id || '';
+                      setSubLeadForm(f => ({ ...f, country: countryName, countryId: countryId.toString() }));
+                    }}
+                  >
+                    <option value="">Select country...</option>
+                    {allCountries.map(country => (
+                      <option key={country.id} value={country.name}>
+                        {country.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button 
+                    className="btn btn-primary mt-4" 
+                    onClick={handleSaveSubLead} 
+                    disabled={isSavingSubLead}
+                  >
+                    {isSavingSubLead ? 'Creating...' : 'Create Sub-Lead'}
+                  </button>
+                </>
+              )}
+              {subLeadStep === 'sameContract' && (
+                <>
+                  <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                    <p className="text-sm text-blue-800">
+                      <strong>Contract:</strong> {contactContracts[selectedContractContactId || 0]?.contractName || 'Contract'} - {contactContracts[selectedContractContactId || 0]?.contactName || 'Contact'}
+                    </p>
+                  </div>
+                  {/* Category is automatically inherited from master lead */}
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                    <p className="text-sm text-gray-700">
+                      <strong>Category:</strong> {subLeadForm.category || selectedClient?.category || 'Will be inherited from master lead'}
+                    </p>
+                  </div>
+                  <label className="block font-semibold mb-1">Name</label>
+                  <input 
+                    className="input input-bordered w-full" 
+                    value={subLeadForm.name}
+                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="Enter client name"
+                  />
+                  <label className="block font-semibold mb-1">Language</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={subLeadForm.language}
+                    onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                  >
+                    <option value="">Select language...</option>
+                    {allLanguages.map(lang => (
+                      <option key={lang.id} value={lang.name || ''}>
+                        {lang.name || 'Unknown'}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="block font-semibold mb-1">Facts of Case</label>
+                  <textarea 
+                    className="textarea textarea-bordered w-full" 
+                    value={subLeadForm.facts}
+                    onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                    placeholder="Enter facts of the case"
+                    rows={4}
+                  />
+                  <label className="block font-semibold mb-1">Special Notes</label>
+                  <textarea 
+                    className="textarea textarea-bordered w-full" 
+                    value={subLeadForm.special_notes}
+                    onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                    placeholder="Enter special notes"
+                    rows={4}
+                  />
+                  <button 
+                    className="btn btn-primary mt-4" 
+                    onClick={handleSaveSubLead} 
+                    disabled={isSavingSubLead}
+                  >
+                    {isSavingSubLead ? 'Creating...' : 'Create Sub-Lead'}
+                  </button>
+                </>
+              )}
+              {subLeadStep === 'newProcedure' && (
+                <>
+                  <label className="block font-semibold mb-1">Topic</label>
+                  <input 
+                    className="input input-bordered w-full" 
+                    value={subLeadForm.topic}
+                    onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
+                    placeholder="Enter topic"
+                  />
+                  {/* Category is automatically inherited from master lead - no dropdown needed */}
+                  <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                    <p className="text-sm text-gray-700">
+                      <strong>Category:</strong> {subLeadForm.category || selectedClient?.category || 'Will be inherited from master lead'}
+                    </p>
+                  </div>
+                  <label className="block font-semibold mb-1">Client Name</label>
+                  <input 
+                    className="input input-bordered w-full" 
+                    value={subLeadForm.name}
+                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder="Enter client name"
+                  />
+                  <label className="block font-semibold mb-1">Language</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={subLeadForm.language}
+                    onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                  >
+                    <option value="">Select language...</option>
+                    {allLanguages.map(lang => (
+                      <option key={lang.id} value={lang.name || ''}>
+                        {lang.name || 'Unknown'}
+                      </option>
+                    ))}
+                  </select>
+                  <label className="block font-semibold mb-1">Facts of Case</label>
+                  <textarea 
+                    className="textarea textarea-bordered w-full" 
+                    value={subLeadForm.facts}
+                    onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                    placeholder="Enter facts of the case"
+                    rows={4}
+                  />
+                  <label className="block font-semibold mb-1">Special Notes</label>
+                  <textarea 
+                    className="textarea textarea-bordered w-full" 
+                    value={subLeadForm.special_notes}
+                    onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                    placeholder="Enter special notes"
+                    rows={4}
+                  />
+                  <button 
+                    className="btn btn-primary mt-4" 
+                    onClick={handleSaveSubLead} 
+                    disabled={isSavingSubLead}
+                  >
+                    {isSavingSubLead ? 'Creating...' : 'Create Sub-Lead'}
+                  </button>
                 </>
               )}
               {subLeadStep === 'details' && (
