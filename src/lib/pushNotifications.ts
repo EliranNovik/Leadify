@@ -54,22 +54,41 @@ export async function getPushSubscription(): Promise<PushSubscription | null> {
     return null;
   }
 
+  // Check if VAPID key is configured
+  if (!VAPID_PUBLIC_KEY || VAPID_PUBLIC_KEY.trim() === '') {
+    console.error('VAPID public key is not configured. Please set VITE_VAPID_PUBLIC_KEY in your environment variables.');
+    throw new Error('VAPID public key is not configured. Please contact your administrator.');
+  }
+
   try {
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
 
     if (!subscription) {
       // Create new subscription
-      subscription = await registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-      });
+      try {
+        subscription = await registration.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+        });
+      } catch (subscribeError: any) {
+        console.error('Error subscribing to push:', subscribeError);
+        // Provide more specific error messages
+        if (subscribeError.message?.includes('Invalid key')) {
+          throw new Error('Invalid VAPID key. Please check your configuration.');
+        } else if (subscribeError.message?.includes('permission')) {
+          throw new Error('Notification permission is required. Please grant permission and try again.');
+        } else {
+          throw new Error(`Failed to create push subscription: ${subscribeError.message || 'Unknown error'}`);
+        }
+      }
     }
 
     return subscription;
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error getting push subscription:', error);
-    return null;
+    // Re-throw with better error message
+    throw error;
   }
 }
 

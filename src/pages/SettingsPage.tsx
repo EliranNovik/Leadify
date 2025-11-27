@@ -334,14 +334,25 @@ const SettingsPage: React.FC = () => {
 
         if (permission === 'granted') {
           // Get or create subscription
-          const subscription = await getPushSubscription();
-          if (subscription) {
-            await savePushSubscription(subscription);
-            updateSetting('pushNotifications', true);
-            toast.success('Push notifications enabled!');
-          } else {
+          try {
+            const subscription = await getPushSubscription();
+            if (subscription) {
+              const saved = await savePushSubscription(subscription);
+              if (saved) {
+                updateSetting('pushNotifications', true);
+                toast.success('Push notifications enabled!');
+              } else {
+                updateSetting('pushNotifications', false);
+                toast.error('Failed to save push subscription. Please try again.');
+              }
+            } else {
+              updateSetting('pushNotifications', false);
+              toast.error('Failed to create push subscription. Please check your VAPID key configuration.');
+            }
+          } catch (subscriptionError: any) {
+            console.error('Subscription error:', subscriptionError);
             updateSetting('pushNotifications', false);
-            toast.error('Failed to set up push notifications');
+            toast.error(subscriptionError?.message || 'Failed to set up push notifications');
           }
         } else if (permission === 'denied') {
           updateSetting('pushNotifications', false);

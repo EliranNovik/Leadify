@@ -17,6 +17,7 @@ const onecomRoutes = require('./src/routes/onecomRoutes');
 const authRoutes = require('./src/routes/authRoutes');
 const emailRoutes = require('./src/routes/emailRoutes');
 const syncRoutes = require('./src/routes/syncRoutes');
+const pushNotificationRoutes = require('./src/routes/pushNotificationRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
 const accessLogger = require('./src/middleware/accessLogger');
 
@@ -318,6 +319,7 @@ app.use('/api/onecom', onecomRoutes);
 app.use('/api', authRoutes);
 app.use('/api', emailRoutes);
 app.use('/api', syncRoutes);
+app.use('/api', pushNotificationRoutes);
 
 // Serve uploaded files
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));

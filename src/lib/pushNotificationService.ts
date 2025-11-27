@@ -17,28 +17,38 @@ export interface PushNotificationPayload {
 
 /**
  * Send push notification to user
- * This should be called from the backend, but we provide a client-side helper
+ * Calls the Node.js backend API to send push notifications
  */
 export async function sendPushNotification(
   userId: string,
   payload: PushNotificationPayload
 ): Promise<boolean> {
   try {
+    // Get backend URL from environment
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+    const apiUrl = `${backendUrl}/api/push/send`;
+
     // Call backend endpoint to send push notification
     // The backend will fetch the user's subscriptions and send to all devices
-    const { error } = await supabase.functions.invoke('send-push-notification', {
-      body: {
+    const response = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
         userId,
         payload,
-      },
+      }),
     });
 
-    if (error) {
-      console.error('Error sending push notification:', error);
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+      console.error('Error sending push notification:', errorData);
       return false;
     }
 
-    return true;
+    const result = await response.json();
+    return result.success === true;
   } catch (error) {
     console.error('Error sending push notification:', error);
     return false;
