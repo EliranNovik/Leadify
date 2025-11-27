@@ -26,6 +26,7 @@ import {
   FilmIcon,
   MusicalNoteIcon,
   LockClosedIcon,
+  MicrophoneIcon,
   ClockIcon,
   PencilIcon,
   TrashIcon,
@@ -33,6 +34,9 @@ import {
   CheckIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
+import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
+import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
+import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
 
 interface Client {
   id: string;
@@ -54,6 +58,7 @@ interface Client {
   isContact?: boolean;
   lead_id?: string | null; // For contacts, this is the associated lead_id
   contact_id?: number; // For contacts, this is the contact_id
+  whatsapp_profile_picture_url?: string | null; // WhatsApp profile picture URL
 }
 
 interface WhatsAppMessage {
@@ -77,6 +82,8 @@ interface WhatsAppMessage {
   whatsapp_timestamp?: string;
   error_message?: string;
   template_id?: number; // Database template ID for proper matching
+  profile_picture_url?: string | null; // WhatsApp profile picture URL
+  voice_note?: boolean; // True if this is a voice note (not regular audio)
 }
 
 interface WhatsAppPageProps {
@@ -98,6 +105,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [loadingMessages, setLoadingMessages] = useState(false);
   const [sending, setSending] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   
   // Search state (for filtering fetched clients only - no API calls)
@@ -744,7 +752,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               // Fetch contact details only for contacts connected to leads
               const { data: contactsData, error: contactsError } = await supabase
                 .from('leads_contact')
-                .select('id, name, email, phone, mobile')
+                .select('id, name, email, phone, mobile, whatsapp_profile_picture_url')
                 .in('id', Array.from(connectedContactIds));
 
               if (contactsError) {
@@ -798,7 +806,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       balance: associatedLead?.balance || undefined,
                       potential_applicants: associatedLead?.potential_applicants || '',
                       lead_type: 'new' as const,
-                      isContact: true // Mark as contact
+                      isContact: true, // Mark as contact
+                      whatsapp_profile_picture_url: contact.whatsapp_profile_picture_url || null // Include profile picture URL
                     };
                   });
               }
@@ -2276,17 +2285,50 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   };
 
-  // Send media message
-  const handleSendMedia = async () => {
-    if (!selectedFile || !selectedClient || !currentUser) {
-      console.log('❌ Cannot send media - missing file, client, or user:', { selectedFile, selectedClient, currentUser });
+  // Send media message (optionally with a specific file)
+  const handleSendMedia = async (fileOverride?: File) => {
+    const fileToSend = fileOverride || selectedFile;
+    
+    if (!fileToSend || !selectedClient || !currentUser) {
+      console.log('❌ Cannot send media - missing file, client, or user:', { 
+        fileToSend, 
+        selectedFile,
+        fileOverride,
+        selectedClient, 
+        currentUser 
+      });
       return;
     }
 
+    // Validate file object
+    if (!(fileToSend instanceof File) && !(fileToSend instanceof Blob)) {
+      console.error('❌ Invalid file object:', fileToSend);
+      toast.error('Invalid file. Please try recording again.');
+      return;
+    }
+
+    // Check if file is WebM format (not supported by WhatsApp)
+    const isWebM = fileToSend.type?.includes('webm') || (fileToSend.name && fileToSend.name.endsWith('.webm'));
+    if (isWebM) {
+      const shouldContinue = window.confirm(
+        '⚠️ WebM audio format is not supported by WhatsApp.\n\n' +
+        'Your browser recorded in WebM format, which WhatsApp cannot accept.\n\n' +
+        'Options:\n' +
+        '1. Try recording again - your browser may use a supported format\n' +
+        '2. Use Firefox browser which supports OGG/Opus format\n' +
+        '3. Cancel and try a different approach\n\n' +
+        'Do you want to try sending anyway? (It will likely fail)'
+      );
+      if (!shouldContinue) {
+        if (!fileOverride) setSelectedFile(null);
+        return;
+      }
+    }
+
     console.log('📤 Starting to send media:', {
-      fileName: selectedFile.name,
-      fileSize: selectedFile.size,
-      fileType: selectedFile.type,
+      fileName: fileToSend.name,
+      fileSize: fileToSend.size,
+      fileType: fileToSend.type,
       clientId: selectedClient.id,
       clientName: selectedClient.name
     });
@@ -2301,23 +2343,56 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       // Create FormData for file upload
       const formData = new FormData();
-      formData.append('file', selectedFile);
+      
+      // Ensure we have a proper File object (not just a Blob)
+      let fileForUpload: File;
+      if (fileToSend instanceof File) {
+        fileForUpload = fileToSend;
+      } else if (fileToSend instanceof Blob) {
+        // Convert Blob to File if needed
+        const mimeType = fileToSend.type || 'audio/ogg;codecs=opus';
+        const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+        fileForUpload = new File([fileToSend], `voice_${Date.now()}.${extension}`, { type: mimeType });
+      } else {
+        throw new Error('Invalid file type');
+      }
+      
+      console.log('📤 Uploading file:', {
+        name: fileForUpload.name,
+        size: fileForUpload.size,
+        type: fileForUpload.type,
+        isFile: fileForUpload instanceof File
+      });
+      
+      formData.append('file', fileForUpload);
       formData.append('leadId', selectedClient.id);
 
       // Upload media to WhatsApp
+      // Note: Don't set Content-Type header - browser will set it automatically with boundary for FormData
       const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
         method: 'POST',
         body: formData,
+        // Don't set Content-Type - let browser set it with multipart/form-data boundary
       });
 
       const uploadResult = await uploadResponse.json();
 
       if (!uploadResponse.ok) {
+        // Check if it's a WebM format issue
+        if (uploadResult.requiresConversion || fileToSend.type.includes('webm')) {
+          throw new Error('WebM audio format is not supported by WhatsApp. Please try recording again - your browser should automatically use a supported format (OGG/Opus). If the issue persists, try using a different browser like Firefox or Chrome.');
+        }
         throw new Error(uploadResult.error || 'Failed to upload media');
       }
 
       // Send media message
-      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
+      // Determine media type: check if it's a voice message (audio/webm or audio/ogg) or regular audio
+      const isVoiceMessage = fileToSend.type.includes('webm') || fileToSend.type.includes('opus') || fileToSend.type.includes('ogg');
+      const mediaType = fileToSend.type.startsWith('image/') 
+        ? 'image' 
+        : fileToSend.type.startsWith('audio/') || isVoiceMessage
+          ? 'audio'
+          : 'document';
       const senderName = currentUser.full_name || currentUser.email;
       const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
         method: 'POST',
@@ -2330,7 +2405,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           mediaType: mediaType,
           caption: newMessage.trim() || undefined,
           phoneNumber: phoneNumber,
-          sender_name: senderName
+          sender_name: senderName,
+          voiceNote: isVoiceMessage // Flag to indicate this is a voice note
         }),
       });
 
@@ -2342,6 +2418,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       // Add message to local state
       console.log('📤 Sending media with sender:', senderName, 'from user:', currentUser);
+      console.log('📤 Media details:', {
+        mediaType,
+        isVoiceMessage,
+        mediaId: uploadResult.mediaId,
+        messageId: result.messageId
+      });
       
       const newMsg: WhatsAppMessage = {
         id: Date.now(),
@@ -2349,20 +2431,26 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         sender_id: currentUser.id,
         sender_name: senderName,
         direction: 'out',
-        message: newMessage.trim() || `${mediaType} message`,
+        message: newMessage.trim() || (isVoiceMessage ? 'Voice message' : `${mediaType} message`),
         sent_at: new Date().toISOString(),
         status: 'sent',
         message_type: mediaType as any,
         whatsapp_status: 'sent',
         whatsapp_message_id: result.messageId,
         media_url: uploadResult.mediaId,
-        caption: newMessage.trim() || undefined
+        media_id: uploadResult.mediaId, // Also set media_id for compatibility
+        caption: newMessage.trim() || undefined,
+        voice_note: isVoiceMessage
       };
 
+      console.log('📤 Adding message to local state:', newMsg);
       setMessages(prev => [...prev, newMsg]);
       setShouldAutoScroll(true); // Trigger auto-scroll when media message is sent
       setNewMessage('');
-      setSelectedFile(null);
+      if (!fileOverride) {
+        setSelectedFile(null);
+      }
+      setShowVoiceRecorder(false); // Close voice recorder if it was open
       toast.success('Media sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending media:', error);
@@ -2777,10 +2865,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       >
                         <div className="flex items-center gap-2 md:gap-3">
                           {/* Avatar */}
-                          <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)] dark:bg-white/15 dark:border-white/30 dark:text-white dark:shadow-[0_4px_12px_rgba(0,0,0,0.35)]">
-                            <span className="font-semibold text-sm md:text-lg text-green-700 dark:text-white dark:drop-shadow">
-                              {client.name.charAt(0).toUpperCase()}
-                            </span>
+                          <div className="flex-shrink-0 relative">
+                            <div className="w-10 h-10 md:w-12 md:h-12">
+                              <WhatsAppAvatar
+                                name={client.name}
+                                profilePictureUrl={client.whatsapp_profile_picture_url}
+                                size="md"
+                                className="w-full h-full"
+                              />
+                            </div>
                             {/* Lock icon overlay */}
                             {locked && (
                               <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
@@ -2901,40 +2994,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       </div>
                     )}
                     </div>
-                    
-                    {/* Toggle Tabs in Mobile Chat Header */}
-                    <div className="px-3 pb-3 border-t border-gray-200 bg-white">
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowMyContactsOnly(false);
-                            setShowChat(false); // Show contacts list so user can see the filter working
-                          }}
-                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                            !showMyContactsOnly
-                              ? 'bg-green-600 text-white shadow-sm'
-                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
-                        >
-                          All Contacts
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowMyContactsOnly(true);
-                            setShowChat(false); // Show contacts list so user can see the filter working
-                          }}
-                          className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                            showMyContactsOnly
-                              ? 'bg-green-600 text-white shadow-sm'
-                              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                          }`}
-                        >
-                          My Contacts
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 )}
 
@@ -2971,27 +3030,28 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       )}
                       
                   <div
-                    className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
+                    className={`flex gap-2 ${message.direction === 'out' ? 'flex-row-reverse' : 'flex-row'}`}
                   >
-                    {message.direction === 'out' && (
-                      <span className="text-sm text-gray-600 mb-1 mr-2 font-medium">
-                        {message.sender_name}
-                      </span>
-                    )}
-                    {message.direction === 'in' && (
-                      <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
-                        {message.sender_name}
-                      </span>
-                    )}
-                    <div
-                      className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
-                        message.direction === 'out'
-                          ? isEmojiOnly(message.message)
-                            ? 'bg-white text-gray-900'
-                            : 'bg-green-600 text-white'
-                          : 'bg-white text-gray-900 border border-gray-200'
-                      }`}
-                    >
+                    <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'} flex-1`}>
+                      {message.direction === 'out' && (
+                        <span className="text-sm text-gray-600 mb-1 mr-2 font-medium">
+                          {message.sender_name}
+                        </span>
+                      )}
+                      {message.direction === 'in' && (
+                        <span className="text-sm text-gray-600 mb-1 ml-2 font-medium">
+                          {message.sender_name}
+                        </span>
+                      )}
+                      <div
+                        className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
+                          message.direction === 'out'
+                            ? isEmojiOnly(message.message)
+                              ? 'bg-white text-gray-900'
+                              : 'bg-green-600 text-white'
+                            : 'bg-white text-gray-900 border border-gray-200'
+                        }`}
+                      >
                       {/* Edit input or message content */}
                       {editingMessage === message.id ? (
                         <textarea
@@ -3220,16 +3280,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </div>
                       )}
                       
-                      {message.message_type === 'audio' && (
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <span className="text-sm">Audio message</span>
-                          </div>
+                      {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
+                        <div className="mt-2">
+                          <VoiceMessagePlayer
+                            audioUrl={(message.media_url || message.media_id || '').startsWith('http') 
+                              ? (message.media_url || message.media_id || '') 
+                              : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
+                            className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
+                            senderName={message.sender_name || 'Unknown'}
+                            profilePictureUrl={message.profile_picture_url}
+                          />
                           {message.caption && (
                             <p className="text-base break-words mt-2">{message.caption}</p>
+                          )}
+                          {!message.caption && message.message && message.message !== 'Voice message' && (
+                            <p className="text-base break-words mt-2">{message.message}</p>
                           )}
                         </div>
                       )}
@@ -3325,6 +3390,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         
                         {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
                       </div>
+                    </div>
                     </div>
                   </div>
                     </React.Fragment>
@@ -3648,6 +3714,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       />
                     </label>
                     
+                    {/* Desktop Voice Message Button */}
+                    <button
+                      type="button"
+                      onClick={() => setShowVoiceRecorder(!showVoiceRecorder)}
+                      className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-red-500 hover:bg-red-50"
+                      disabled={isLocked}
+                      title="Record voice message"
+                    >
+                      <MicrophoneIcon className="w-5 h-5" />
+                    </button>
+                    
                     {/* Desktop Emoji Button */}
                     <div className="relative flex-shrink-0">
                       <button 
@@ -3698,6 +3775,28 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       )}
                     </button>
                   </>
+                )}
+
+                {/* Voice Recorder */}
+                {showVoiceRecorder && (
+                  <div className="w-full mb-2">
+                    <VoiceMessageRecorder
+                      onRecorded={(audioBlob) => {
+                        // Convert blob to File and set as selectedFile
+                        // Use the MIME type from the recorder (should be audio/ogg if supported)
+                        const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
+                        const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+                        const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
+                        
+                        // Set as selectedFile so the regular send button can handle it
+                        setSelectedFile(audioFile);
+                        
+                        // Close the recorder UI
+                        setShowVoiceRecorder(false);
+                      }}
+                      onCancel={() => setShowVoiceRecorder(false)}
+                    />
+                  </div>
                 )}
 
                 {/* Selected file preview */}
@@ -3786,7 +3885,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 {selectedFile ? (
                   <button
                     type="button"
-                    onClick={handleSendMedia}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      handleSendMedia();
+                    }}
                     disabled={uploadingMedia}
                     className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
                   >

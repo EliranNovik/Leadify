@@ -13,6 +13,8 @@ interface Case {
   stage_colour?: string | null;
   assigned_date: string;
   applicants_count: number | null;
+  value: number | null;
+  currency: string | null;
 }
 
 // Helper function to get contrasting text color based on background
@@ -123,7 +125,13 @@ const MyCasesPage: React.FC = () => {
           stage,
           category_id,
           cdate,
-          no_of_applicants
+          no_of_applicants,
+          total,
+          currency_id,
+          accounting_currencies!leads_lead_currency_id_fkey (
+            name,
+            iso_code
+          )
         `)
         .eq('case_handler_id', employeeId)
         // Remove status filter - let's see all leads assigned to this handler
@@ -197,12 +205,58 @@ const MyCasesPage: React.FC = () => {
         }))
       });
 
+      // Helper function to get currency symbol
+      const getCurrencySymbol = (currencyId: number | null | undefined, currencyData: any): string => {
+        if (!currencyId) return '₪'; // Default to shekel
+        
+        // Handle currency data (could be array or object)
+        const currency = Array.isArray(currencyData) ? currencyData[0] : currencyData;
+        
+        if (currency?.iso_code) {
+          // Map ISO codes to symbols
+          const symbolMap: { [key: string]: string } = {
+            'ILS': '₪',
+            'USD': '$',
+            'EUR': '€',
+            'GBP': '£',
+            'CAD': 'C$',
+            'AUD': 'A$',
+            'JPY': '¥',
+            'CHF': 'CHF',
+            'SEK': 'kr',
+            'NOK': 'kr',
+            'DKK': 'kr',
+            'PLN': 'zł',
+            'CZK': 'Kč',
+            'HUF': 'Ft',
+            'RON': 'lei',
+            'BGN': 'лв',
+            'HRK': 'kn',
+            'RUB': '₽',
+            'UAH': '₴',
+            'TRY': '₺'
+          };
+          return symbolMap[currency.iso_code] || currency.iso_code;
+        }
+        
+        // Fallback to currency_id mapping if no currency data
+        const fallbackMap: { [key: number]: string } = {
+          1: '₪',
+          2: '€',
+          3: '$',
+          4: '£'
+        };
+        return fallbackMap[currencyId] || '₪';
+      };
+
       // Process the data with proper lookups
       const processedCases: Case[] = (leadsData || []).map(lead => {
         const leadNumber = lead.manual_id || lead.id;
         const category = getCategoryName(lead.category_id);
         const stage = stageMap.get(String(lead.stage)) || String(lead.stage) || 'Unknown';
         const stageColour = stageColourMap.get(String(lead.stage)) || getStageColour(String(lead.stage)) || null;
+        const value = lead.total || null;
+        const currency = getCurrencySymbol(lead.currency_id, lead.accounting_currencies);
 
         return {
           id: lead.id,
@@ -212,7 +266,9 @@ const MyCasesPage: React.FC = () => {
           stage,
           stage_colour: stageColour, // Add stage colour to the case object
           assigned_date: lead.cdate,
-          applicants_count: lead.no_of_applicants
+          applicants_count: lead.no_of_applicants,
+          value,
+          currency
         };
       });
 
@@ -330,6 +386,9 @@ const MyCasesPage: React.FC = () => {
                 <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-center text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
                   Applicants
                 </th>
+                <th className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                  Value
+                </th>
                 <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
                   Stage
                 </th>
@@ -351,8 +410,13 @@ const MyCasesPage: React.FC = () => {
                     <div className="whitespace-nowrap">
                       {caseItem.client_name}
                     </div>
-                    <div className="md:hidden text-[10px] text-gray-500 mt-0.5 whitespace-nowrap">
-                      {caseItem.category}
+                    <div className="md:hidden text-[10px] text-gray-500 mt-0.5 space-y-0.5">
+                      <div className="whitespace-nowrap">{caseItem.category}</div>
+                      {caseItem.value !== null && caseItem.value !== undefined && (
+                        <div className="whitespace-nowrap font-medium text-gray-700">
+                          {caseItem.currency || '₪'}{typeof caseItem.value === 'number' ? caseItem.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : caseItem.value}
+                        </div>
+                      )}
                     </div>
                   </td>
                   <td className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
@@ -362,6 +426,15 @@ const MyCasesPage: React.FC = () => {
                   </td>
                   <td className="px-1 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-center text-gray-900 text-xs sm:text-sm">
                     {caseItem.applicants_count || 0}
+                  </td>
+                  <td className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right text-gray-900 text-xs sm:text-sm">
+                    {caseItem.value !== null && caseItem.value !== undefined ? (
+                      <span className="font-medium">
+                        {caseItem.currency || '₪'}{typeof caseItem.value === 'number' ? caseItem.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : caseItem.value}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
                   </td>
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right">
                     {caseItem.stage_colour ? (() => {

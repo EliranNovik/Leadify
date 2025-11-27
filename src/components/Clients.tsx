@@ -4,6 +4,7 @@ import { supabase, type Lead } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
+import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import BalanceEditModal from './BalanceEditModal';
 import {
   PencilIcon,
@@ -344,6 +345,257 @@ const Clients: React.FC<ClientsProps> = ({
     return employee ? employee.display_name : employeeId; // Fallback to ID if not found
   };
 
+  // Function to find duplicate contacts
+  const findDuplicateContacts = async () => {
+    if (!selectedClient?.id) {
+      setDuplicateContacts([]);
+      return;
+    }
+
+    try {
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const currentLeadId = isLegacyLead 
+        ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
+        : selectedClient.id;
+
+      // Get all contacts for the current lead
+      const { data: leadContacts } = await supabase
+        .from('lead_leadcontact')
+        .select('contact_id, main, newlead_id, lead_id')
+        .or(isLegacyLead 
+          ? `lead_id.eq.${currentLeadId}` 
+          : `newlead_id.eq.${currentLeadId}`
+        );
+
+      if (!leadContacts || leadContacts.length === 0) {
+        setDuplicateContacts([]);
+        return;
+      }
+
+      const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
+      if (contactIds.length === 0) {
+        setDuplicateContacts([]);
+        return;
+      }
+
+      // Get contact details
+      const { data: currentContacts } = await supabase
+        .from('leads_contact')
+        .select('id, name, email, phone, mobile')
+        .in('id', contactIds);
+
+      if (!currentContacts || currentContacts.length === 0) {
+        setDuplicateContacts([]);
+        return;
+      }
+
+      // Build search filters for duplicate detection
+      const duplicateMatches: Array<{
+        contactId: number;
+        contactName: string;
+        contactEmail: string | null;
+        contactPhone: string | null;
+        contactMobile: string | null;
+        leadId: string | number;
+        leadNumber: string;
+        leadName: string;
+        leadType: 'new' | 'legacy';
+        matchingFields: string[];
+      }> = [];
+
+      for (const currentContact of currentContacts) {
+        const filters: string[] = [];
+        
+        // Normalize phone numbers for comparison
+        const normalizePhone = (phone: string | null | undefined): string => {
+          if (!phone) return '';
+          return phone.replace(/\D/g, '');
+        };
+
+        if (currentContact.email) {
+          filters.push(`email.eq.${currentContact.email}`);
+        }
+        if (currentContact.name) {
+          filters.push(`name.ilike.%${currentContact.name}%`);
+        }
+        if (currentContact.phone) {
+          const normalizedPhone = normalizePhone(currentContact.phone);
+          if (normalizedPhone) {
+            filters.push(`phone.eq.${currentContact.phone}`);
+            // Also check mobile field
+            filters.push(`mobile.eq.${currentContact.phone}`);
+          }
+        }
+        if (currentContact.mobile) {
+          const normalizedMobile = normalizePhone(currentContact.mobile);
+          if (normalizedMobile) {
+            filters.push(`phone.eq.${currentContact.mobile}`);
+            filters.push(`mobile.eq.${currentContact.mobile}`);
+          }
+        }
+
+        if (filters.length === 0) continue;
+
+        // Find contacts with matching data (excluding current lead's contacts)
+        // Build OR query properly for Supabase
+        let duplicateQuery = supabase
+          .from('leads_contact')
+          .select('id, name, email, phone, mobile');
+        
+        if (filters.length > 0) {
+          duplicateQuery = duplicateQuery.or(filters.join(','));
+        }
+        
+        // Exclude current lead's contacts - filter after fetching
+        const { data: allDuplicateContacts } = await duplicateQuery;
+        const duplicateContacts = allDuplicateContacts?.filter(
+          dc => !contactIds.includes(dc.id)
+        ) || [];
+
+        if (!duplicateContacts || duplicateContacts.length === 0) continue;
+
+        // For each duplicate contact, find which leads it belongs to
+        const duplicateContactIds = duplicateContacts.map(dc => dc.id);
+        const { data: relationships } = await supabase
+          .from('lead_leadcontact')
+          .select('contact_id, newlead_id, lead_id')
+          .in('contact_id', duplicateContactIds);
+
+        if (!relationships || relationships.length === 0) continue;
+
+        // Get lead information for each relationship
+        const newLeadIds = relationships
+          .map(r => r.newlead_id)
+          .filter(Boolean) as string[];
+        const legacyLeadIds = relationships
+          .map(r => r.lead_id)
+          .filter(Boolean) as number[];
+
+        // Fetch new leads
+        if (newLeadIds.length > 0) {
+          const { data: newLeads } = await supabase
+            .from('leads')
+            .select('id, lead_number, name')
+            .in('id', newLeadIds);
+
+          if (newLeads) {
+            for (const duplicateContact of duplicateContacts) {
+              const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
+              for (const rel of contactRelationships) {
+                if (rel.newlead_id) {
+                  const lead = newLeads.find(l => l.id === rel.newlead_id);
+                  if (lead && lead.id !== currentLeadId) {
+                    const matchingFields: string[] = [];
+                    if (currentContact.email && duplicateContact.email && currentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
+                      matchingFields.push('email');
+                    }
+                    if (currentContact.name && duplicateContact.name && currentContact.name.toLowerCase() === duplicateContact.name.toLowerCase()) {
+                      matchingFields.push('name');
+                    }
+                    if (currentContact.phone && duplicateContact.phone && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.phone)) {
+                      matchingFields.push('phone');
+                    }
+                    if (currentContact.mobile && duplicateContact.mobile && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.mobile)) {
+                      matchingFields.push('mobile');
+                    }
+                    if (currentContact.phone && duplicateContact.mobile && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.mobile)) {
+                      matchingFields.push('phone/mobile');
+                    }
+                    if (currentContact.mobile && duplicateContact.phone && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.phone)) {
+                      matchingFields.push('mobile/phone');
+                    }
+
+                    if (matchingFields.length > 0) {
+                      duplicateMatches.push({
+                        contactId: duplicateContact.id,
+                        contactName: duplicateContact.name || 'Unknown',
+                        contactEmail: duplicateContact.email,
+                        contactPhone: duplicateContact.phone,
+                        contactMobile: duplicateContact.mobile,
+                        leadId: lead.id,
+                        leadNumber: lead.lead_number || String(lead.id),
+                        leadName: lead.name || 'Unknown',
+                        leadType: 'new',
+                        matchingFields,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Fetch legacy leads
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyLeads } = await supabase
+            .from('leads_lead')
+            .select('id, name')
+            .in('id', legacyLeadIds);
+
+          if (legacyLeads) {
+            for (const duplicateContact of duplicateContacts) {
+              const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
+              for (const rel of contactRelationships) {
+                if (rel.lead_id) {
+                  const lead = legacyLeads.find(l => l.id === rel.lead_id);
+                  if (lead && String(lead.id) !== String(currentLeadId)) {
+                    const matchingFields: string[] = [];
+                    if (currentContact.email && duplicateContact.email && currentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
+                      matchingFields.push('email');
+                    }
+                    if (currentContact.name && duplicateContact.name && currentContact.name.toLowerCase() === duplicateContact.name.toLowerCase()) {
+                      matchingFields.push('name');
+                    }
+                    if (currentContact.phone && duplicateContact.phone && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.phone)) {
+                      matchingFields.push('phone');
+                    }
+                    if (currentContact.mobile && duplicateContact.mobile && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.mobile)) {
+                      matchingFields.push('mobile');
+                    }
+                    if (currentContact.phone && duplicateContact.mobile && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.mobile)) {
+                      matchingFields.push('phone/mobile');
+                    }
+                    if (currentContact.mobile && duplicateContact.phone && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.phone)) {
+                      matchingFields.push('mobile/phone');
+                    }
+
+                    if (matchingFields.length > 0) {
+                      duplicateMatches.push({
+                        contactId: duplicateContact.id,
+                        contactName: duplicateContact.name || 'Unknown',
+                        contactEmail: duplicateContact.email,
+                        contactPhone: duplicateContact.phone,
+                        contactMobile: duplicateContact.mobile,
+                        leadId: `legacy_${lead.id}`,
+                        leadNumber: String(lead.id),
+                        leadName: lead.name || 'Unknown',
+                        leadType: 'legacy',
+                        matchingFields,
+                      });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Deduplicate by contactId + leadId combination
+      const uniqueMatches = Array.from(
+        new Map(
+          duplicateMatches.map(m => [`${m.contactId}-${m.leadId}`, m])
+        ).values()
+      );
+
+      setDuplicateContacts(uniqueMatches);
+    } catch (error) {
+      console.error('Error finding duplicate contacts:', error);
+      setDuplicateContacts([]);
+    }
+  };
+
   // Helper function to format lead number for legacy leads
   const formatLegacyLeadNumber = (legacyLead: any): string => {
     const manualId = legacyLead.manual_id ? String(legacyLead.manual_id).trim() : '';
@@ -496,6 +748,21 @@ const Clients: React.FC<ClientsProps> = ({
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
   const [isClientInfoCollapsed, setIsClientInfoCollapsed] = useState(false);
   const [isProgressCollapsed, setIsProgressCollapsed] = useState(false);
+  const [duplicateContacts, setDuplicateContacts] = useState<Array<{
+    contactId: number;
+    contactName: string;
+    contactEmail: string | null;
+    contactPhone: string | null;
+    contactMobile: string | null;
+    leadId: string | number;
+    leadNumber: string;
+    leadName: string;
+    leadType: 'new' | 'legacy';
+    matchingFields: string[];
+  }>>([]);
+  const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
+  const [isDuplicateDropdownOpen, setIsDuplicateDropdownOpen] = useState(false);
+  const [copyingContactId, setCopyingContactId] = useState<number | null>(null);
   const { instance } = useMsal();
   const { isAdmin, isLoading: isAdminLoading } = useAdminRole();
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
@@ -1142,46 +1409,63 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
   }, [isUnactivatedView]);
 
   // Check selectedClient prop and set isUnactivatedView accordingly
+  // Consolidated into a single useEffect to prevent conflicts
+  const prevClientIdRef = useRef<string | undefined>();
+  const isSettingUpClientRef = useRef(false); // Flag to prevent useEffect from interfering during setup
+  
   useEffect(() => {
-    if (selectedClient) {
-      // Reset userManuallyExpanded when a new client is selected
-      setUserManuallyExpanded(false);
-
-      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const unactivationReason = selectedClient.unactivation_reason;
-      const stageNumeric =
-        selectedClient.stage !== null && selectedClient.stage !== undefined
-          ? Number(selectedClient.stage)
-          : null;
-      const isDropped = stageNumeric !== null && !Number.isNaN(stageNumeric) && stageNumeric === droppedStageId;
-      const isUnactivated = isLegacy
-        ? (isDropped || (unactivationReason && unactivationReason.trim() !== ''))
-        : (isDropped || (unactivationReason && unactivationReason.trim() !== ''));
-
-      setIsUnactivatedView(isUnactivated);
-    }
-  }, [selectedClient, droppedStageId]);
-
-  useEffect(() => {
-    if (!selectedClient || userManuallyExpanded) {
+    // Skip if we're in the middle of setting up a client
+    if (isSettingUpClientRef.current) {
+      console.log('🔍 useEffect: Skipping - client setup in progress');
       return;
     }
 
-    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-    const unactivationReason = selectedClient.unactivation_reason;
-    const stageNumeric =
-      selectedClient.stage !== null && selectedClient.stage !== undefined
-        ? Number(selectedClient.stage)
-        : null;
-    const isDropped = stageNumeric !== null && !Number.isNaN(stageNumeric) && stageNumeric === droppedStageId;
-    const isUnactivated = isLegacy
-      ? (isDropped || Boolean(unactivationReason && unactivationReason.trim() !== ''))
-      : Boolean(unactivationReason && unactivationReason.trim() !== '');
-
-    if (isUnactivated && !isUnactivatedView) {
-      setIsUnactivatedView(true);
+    if (!selectedClient) {
+      setIsUnactivatedView(false);
+      prevClientIdRef.current = undefined;
+      return;
     }
-  }, [selectedClient, userManuallyExpanded, isUnactivatedView, droppedStageId]);
+
+    const currentClientId = selectedClient.id?.toString();
+    // Reset userManuallyExpanded when a new client is selected (only if client ID actually changed)
+    if (currentClientId && prevClientIdRef.current !== currentClientId) {
+      setUserManuallyExpanded(false);
+      prevClientIdRef.current = currentClientId;
+    }
+
+    try {
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      // Check unactivation status based on status column
+      // For legacy leads, status might be a number or string, so we need to handle both
+      const statusValue = (selectedClient as any).status;
+      const isUnactivated = isLegacy
+        ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
+        : (statusValue === 'inactive');
+
+      console.log('🔍 useEffect: Checking unactivation status', {
+        currentClientId,
+        isLegacy,
+        statusValue,
+        isUnactivated,
+        userManuallyExpanded,
+        currentIsUnactivatedView: isUnactivatedView,
+        isSettingUpClient: isSettingUpClientRef.current
+      });
+
+      // Always update to match the actual status, but only if user hasn't manually expanded
+      // This ensures the state is always in sync with the actual data
+      if (!userManuallyExpanded) {
+        setIsUnactivatedView(isUnactivated);
+      } else if (!isUnactivated) {
+        // If lead is no longer unactivated, reset the expanded state
+        setUserManuallyExpanded(false);
+        setIsUnactivatedView(false);
+      }
+    } catch (error) {
+      console.error('Error checking unactivation status in useEffect:', error);
+      setIsUnactivatedView(false);
+    }
+  }, [selectedClient?.id, selectedClient?.lead_type, (selectedClient as any)?.status, userManuallyExpanded]);
 
   // Update newPayment currency when selected client changes
   useEffect(() => {
@@ -1792,6 +2076,16 @@ useEffect(() => {
 
     refreshClientData();
   }, [allCategories, selectedClient?.id, onClientUpdate]);
+
+  // Find duplicate contacts when selectedClient changes
+  useEffect(() => {
+    if (selectedClient?.id) {
+      findDuplicateContacts();
+    } else {
+      setDuplicateContacts([]);
+    }
+  }, [selectedClient?.id]);
+
   // Essential data loading for initial page display
   useEffect(() => {
     let isMounted = true;
@@ -1832,15 +2126,21 @@ useEffect(() => {
             }
 
             if (!chosenLead) {
-              chosenLead = manualResults.find(lead => typeof lead.lead_number === 'string' && lead.lead_number.includes('/1'));
-              if (chosenLead) {
+              // Prefer master lead (with /1 suffix) but only if it exists
+              const masterLead = manualResults.find(lead => typeof lead.lead_number === 'string' && lead.lead_number.includes('/1'));
+              if (masterLead) {
+                chosenLead = masterLead;
                 console.log('🔍 Defaulting to master lead with /1 suffix:', chosenLead.lead_number);
+              } else {
+                // If no master lead, use the first one but sort by lead_number to ensure consistency
+                const sortedLeads = [...manualResults].sort((a, b) => {
+                  const aNum = typeof a.lead_number === 'string' ? a.lead_number : '';
+                  const bNum = typeof b.lead_number === 'string' ? b.lead_number : '';
+                  return aNum.localeCompare(bNum);
+                });
+                chosenLead = sortedLeads[0];
+                console.log('🔍 Defaulting to first lead (sorted) for manual_id:', chosenLead?.id, chosenLead?.lead_number);
               }
-            }
-
-            if (!chosenLead) {
-              chosenLead = manualResults[0];
-              console.log('🔍 Defaulting to first lead for manual_id:', chosenLead?.id);
             }
 
             if (chosenLead) {
@@ -1978,6 +2278,11 @@ useEffect(() => {
                       : 'Not assigned'),
               scheduler: schedulerName, // Use resolved scheduler name
               unactivation_reason: legacyLead.unactivation_reason || null,
+              unactivated_by: legacyLead.unactivated_by || null,
+              unactivated_at: legacyLead.unactivated_at || null,
+              status: legacyLead.status || null, // Add status field for unactivation check
+              sales_roles_locked: legacyLead.sales_roles_locked || null, // Add sales_roles_locked for roles tab
+              reason_id: legacyLead.reason_id || null, // Add reason_id for fallback unactivation reason
             };
             console.log('🔍 Transformed clientData:', clientData);
             console.log('🔍 clientData.stage:', clientData.stage);
@@ -2068,37 +2373,120 @@ useEffect(() => {
             leadNumberParam: lead_number,
             fullLeadNumber,
           });
+          // Only navigate to latest lead if we're not already loading and no lead_number was provided
+          // This prevents navigation loops
+          if (!lead_number && isMounted) {
+            console.log('🔍 No lead_number provided and no client found, fetching latest lead');
+            const allLeads = await fetchAllLeads();
+            if (allLeads.length > 0 && isMounted) {
+              const latestLead = allLeads[0];
+              const latestManualId = (latestLead as any)?.manual_id;
+              const latestLeadNumber = (latestLead as any)?.lead_number;
+              // Only navigate if we're not already on this route
+              const currentRoute = buildClientRoute(latestManualId, latestLeadNumber);
+              if (location.pathname !== currentRoute) {
+                navigate(currentRoute);
+                // Set flag to prevent useEffect from interfering
+                isSettingUpClientRef.current = true;
+                
+                // Set unactivated view BEFORE setting selectedClient
+                const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
+                // Check unactivation status based on status column
+                // For legacy leads, handle both number and string types
+                const statusValue = (latestLead as any).status;
+                const isUnactivated = isLegacy
+                  ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
+                  : (statusValue === 'inactive');
+                console.log('🔍 fetchEssentialData (latest lead): Setting isUnactivatedView BEFORE setSelectedClient', {
+                  isLegacy,
+                  statusValue,
+                  isUnactivated,
+                  userManuallyExpanded
+                });
+                setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
+                
+                // Now set the client
+                setSelectedClient(normalizeClientStage(latestLead));
+                
+                // Clear flag after a brief delay
+                setTimeout(() => {
+                  isSettingUpClientRef.current = false;
+                }, 100);
+              }
+            }
+          }
         } else if (isMounted) {
+          // Set flag to prevent useEffect from interfering
+          isSettingUpClientRef.current = true;
+          
+          // Set unactivated view BEFORE setting selectedClient to avoid race condition
+          try {
+            const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
+            // Check unactivation status based on status column
+            // For legacy leads, handle both number and string types
+            const statusValue = (clientData as any).status;
+            const isUnactivated = isLegacy
+              ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
+              : (statusValue === 'inactive');
+            console.log('🔍 fetchEssentialData: Setting isUnactivatedView BEFORE setSelectedClient', {
+              isLegacy,
+              statusValue,
+              isUnactivated,
+              userManuallyExpanded
+            });
+            setIsUnactivatedView(!!(clientData && isUnactivated && !userManuallyExpanded));
+          } catch (error) {
+            console.error('Error checking unactivation status:', error);
+            setIsUnactivatedView(false);
+          }
+          
+          // Now set the client - this will trigger useEffect but it will be skipped due to flag
           setSelectedClient(normalizeClientStage(clientData));
-          // Set unactivated view immediately if lead is unactivated
-          const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
-          const unactivationReason = clientData.unactivation_reason;
-          const stageName = getStageName(clientData.stage);
-          const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
-          // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
-          const isUnactivated = isLegacy ? 
-            ((Number(clientData.stage) === droppedStageId) || (unactivationReason && unactivationReason.trim() !== '')) :
-            ((unactivationReason && unactivationReason.trim() !== '') || stageUnactivated);
-          setIsUnactivatedView(!!(clientData && isUnactivated && !userManuallyExpanded));
+          
+          // Clear flag after a brief delay to allow state to settle
+          setTimeout(() => {
+            isSettingUpClientRef.current = false;
+          }, 100);
         }
       } else {
         // Get the most recent lead from either table
+        // Only navigate if we're not already on a valid route to prevent switching
         const allLeads = await fetchAllLeads();
         if (allLeads.length > 0 && isMounted) {
           const latestLead = allLeads[0];
           const latestManualId = (latestLead as any)?.manual_id;
           const latestLeadNumber = (latestLead as any)?.lead_number;
-          navigate(buildClientRoute(latestManualId, latestLeadNumber));
-          setSelectedClient(normalizeClientStage(latestLead));
+          const targetRoute = buildClientRoute(latestManualId, latestLeadNumber);
+          // Only navigate if we're not already on this route
+          if (location.pathname !== targetRoute) {
+            navigate(targetRoute);
+          }
+          // Set flag to prevent useEffect from interfering
+          isSettingUpClientRef.current = true;
+          
+          // Set unactivated view BEFORE setting selectedClient
           const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
-          const unactivationReason = latestLead.unactivation_reason;
-          const stageName = getStageName(latestLead.stage);
-          const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
-          // For legacy leads, show unactivated view if stage is 91 (Dropped Spam/Irrelevant) or if deactivate_note exists
-          const isUnactivated = isLegacy ? 
-            ((Number(latestLead.stage) === droppedStageId) || (unactivationReason && unactivationReason.trim() !== '')) :
-            ((unactivationReason && unactivationReason.trim() !== '') || stageUnactivated);
+          // Check unactivation status based on status column
+          // For legacy leads, handle both number and string types
+          const statusValue = (latestLead as any).status;
+          const isUnactivated = isLegacy
+            ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
+            : (statusValue === 'inactive');
+          console.log('🔍 fetchEssentialData (no lead_number): Setting isUnactivatedView BEFORE setSelectedClient', {
+            isLegacy,
+            statusValue,
+            isUnactivated,
+            userManuallyExpanded
+          });
           setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
+          
+          // Now set the client
+          setSelectedClient(normalizeClientStage(latestLead));
+          
+          // Clear flag after a brief delay
+          setTimeout(() => {
+            isSettingUpClientRef.current = false;
+          }, 100);
         }
       }
       if (isMounted) setLocalLoading(false);
@@ -2107,7 +2495,7 @@ useEffect(() => {
     fetchEssentialData();
     
     return () => { isMounted = false; };
-  }, [lead_number, navigate, setSelectedClient, fullLeadNumber, requestedLeadNumber]); // Removed selectedClient dependencies to prevent infinite loops
+  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, location.pathname, droppedStageId, userManuallyExpanded]); // Added buildClientRoute and location.pathname for correctness
   // Background loading for non-essential data (runs after essential data is loaded)
   useEffect(() => {
     const loadBackgroundData = async () => {
@@ -2408,17 +2796,14 @@ useEffect(() => {
         unactivation_reason: finalReason
       };
 
-      // For legacy leads, also update the stage
+      // Set status based on lead type (do NOT change stage)
       if (isLegacy) {
-        // Use the known numeric ID for 'unactivated' stage in legacy system
-        updateData.stage = 91;
+        // For legacy leads, set status to 10 (inactive)
+        updateData.status = 10;
       } else {
-        updateData.stage = '91';
+        // For new leads, set status to 'inactive'
+        updateData.status = 'inactive';
       }
-
-      const stageActor = await fetchStageActorInfo();
-      updateData.stage_changed_by = currentUserFullName;
-      updateData.stage_changed_at = updateData.unactivated_at;
 
       const { error } = await supabase
         .from(tableName)
@@ -2426,13 +2811,6 @@ useEffect(() => {
         .eq(idField, clientId);
       
       if (error) throw error;
-
-      await recordLeadStageChange({
-        lead: selectedClient,
-        stage: isLegacy ? 91 : '91',
-        actor: stageActor,
-        timestamp: updateData.unactivated_at,
-      });
       
       // Refresh client data
       await onClientUpdate();
@@ -2476,27 +2854,13 @@ useEffect(() => {
         unactivation_reason: null
       };
 
-      const stageActor = await fetchStageActorInfo();
-      const stageTimestamp = new Date().toISOString();
-      let stageForHistory: number | null = await getLatestStageBeforeStage(selectedClient);
-
-      if (stageForHistory === null) {
-        const previousStage = selectedClient.previous_stage ?? (isLegacy ? 1 : null);
-        if (previousStage !== null && previousStage !== undefined) {
-          const numericPrevious =
-            typeof previousStage === 'number'
-              ? previousStage
-              : Number.parseInt(String(previousStage), 10);
-          if (Number.isFinite(numericPrevious)) {
-            stageForHistory = numericPrevious;
-          }
-        }
-      }
-
-      if (stageForHistory !== null) {
-        updateData.stage = stageForHistory;
-        updateData.stage_changed_by = currentUserFullName;
-        updateData.stage_changed_at = stageTimestamp;
+      // Set status based on lead type
+      if (isLegacy) {
+        // For legacy leads, set status to 0 (active)
+        updateData.status = 0;
+      } else {
+        // For new leads, set status to 'active'
+        updateData.status = 'active';
       }
 
       const tableName = isLegacy ? 'leads_lead' : 'leads';
@@ -2513,15 +2877,6 @@ useEffect(() => {
       if (error) throw error;
       
       console.log('🔍 Lead activation successful');
-
-      if (stageForHistory !== null) {
-        await recordLeadStageChange({
-          lead: selectedClient,
-          stage: stageForHistory,
-          actor: stageActor,
-          timestamp: stageTimestamp,
-        });
-      }
 
       // Record activation event in lead_changes table (only for new leads)
       if (!isLegacy) {
@@ -6124,7 +6479,13 @@ useEffect(() => {
       </li>
     );
   }
-  else if (selectedClient && (areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant') || areStagesEquivalent(currentStageName, 'unactivated'))) {
+  else if (selectedClient && (() => {
+    const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+    const isUnactivated = isLegacy
+      ? (selectedClient.status === 10)
+      : (selectedClient.status === 'inactive');
+    return isUnactivated;
+  })()) {
     dropdownItems = (
       <li className="px-2 py-2 text-sm text-gray-500">
         Please activate lead in actions first.
@@ -7199,32 +7560,128 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
     }
   };
 
-  // Check if lead is unactivated and show compact view
+  // Function to copy a duplicate contact to the current lead
+  const handleCopyDuplicateContact = async (duplicateContact: typeof duplicateContacts[0]) => {
+    if (!selectedClient?.id) {
+      toast.error('No lead selected');
+      return;
+    }
+
+    setCopyingContactId(duplicateContact.contactId);
+    
+    try {
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const currentLeadId = isLegacyLead 
+        ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
+        : selectedClient.id;
+
+      // Get the next available contact ID
+      const { data: maxContactId } = await supabase
+        .from('leads_contact')
+        .select('id')
+        .order('id', { ascending: false })
+        .limit(1)
+        .single();
+
+      const newContactId = maxContactId ? maxContactId.id + 1 : 1;
+      const currentDate = new Date().toISOString().split('T')[0];
+
+      // Create the contact
+      const contactInsertData: any = {
+        id: newContactId,
+        name: duplicateContact.contactName || '',
+        mobile: duplicateContact.contactMobile || null,
+        phone: duplicateContact.contactPhone || null,
+        email: duplicateContact.contactEmail || null,
+        cdate: currentDate,
+        udate: currentDate
+      };
+
+      // For new leads, add newlead_id
+      if (!isLegacyLead) {
+        contactInsertData.newlead_id = currentLeadId;
+      }
+
+      const { error: contactError } = await supabase
+        .from('leads_contact')
+        .insert([contactInsertData]);
+
+      if (contactError) {
+        console.error('Error creating contact:', contactError);
+        toast.error('Failed to create contact');
+        return;
+      }
+
+      // Get the next available relationship ID
+      const { data: maxRelationshipId } = await supabase
+        .from('lead_leadcontact')
+        .select('id')
+        .order('id', { ascending: false })
+        .limit(1)
+        .single();
+
+      const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
+
+      // Create the relationship
+      const relationshipInsertData: any = {
+        id: newRelationshipId,
+        contact_id: newContactId,
+        main: 'false'
+      };
+
+      if (isLegacyLead) {
+        relationshipInsertData.lead_id = currentLeadId;
+      } else {
+        relationshipInsertData.newlead_id = currentLeadId;
+      }
+
+      const { error: relationshipError } = await supabase
+        .from('lead_leadcontact')
+        .insert([relationshipInsertData]);
+
+      if (relationshipError) {
+        console.error('Error creating contact relationship:', relationshipError);
+        toast.error('Failed to link contact to lead');
+        return;
+      }
+
+      toast.success(`Contact "${duplicateContact.contactName}" copied successfully`);
+      
+      // Refresh client data to show the new contact
+      if (refreshClientData) {
+        await refreshClientData(selectedClient.id);
+      }
+    } catch (error: any) {
+      console.error('Error copying contact:', error);
+      toast.error(error?.message || 'Failed to copy contact');
+    } finally {
+      setCopyingContactId(null);
+    }
+  };
+
+  // ===== TOP PRIORITY: Check unactivation status FIRST, before any other logic =====
+  // This must be checked immediately to prevent flickering and ensure badge is always shown
   const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-  const unactivationReasonForView = selectedClient?.unactivation_reason;
-  const stageNumericForView =
-    selectedClient?.stage !== null && selectedClient?.stage !== undefined
-      ? Number(selectedClient.stage)
-      : null;
-  const isDroppedForView =
-    stageNumericForView !== null && !Number.isNaN(stageNumericForView) && stageNumericForView === droppedStageId;
-  const isUnactivated = isLegacyForView ? 
-    (isDroppedForView || (unactivationReasonForView && unactivationReasonForView.trim() !== '')) :
-    ((unactivationReasonForView && unactivationReasonForView.trim() !== '') || false);
+  const statusValue = selectedClient ? (selectedClient as any).status : null;
+  const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined
+    ? (isLegacyForView
+        ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
+        : (statusValue === 'inactive'))
+    : false;
   
-  
-  // Show loading state while determining view
-  if (localLoading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="loading loading-spinner loading-lg"></div>
-      </div>
-    );
-  }
+  console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
+    selectedClientId: selectedClient?.id,
+    isLegacyForView,
+    statusValue,
+    isUnactivated,
+    userManuallyExpanded,
+    hasSelectedClient: !!selectedClient
+  });
   
   // Show unactivated view if lead is unactivated and user hasn't clicked to expand
-  if (isUnactivated && isUnactivatedView && !userManuallyExpanded) {
-    console.log('🔍 RENDERING UNACTIVATED VIEW for client:', selectedClient.id);
+  // This takes priority over loading state to prevent flickering
+  if (selectedClient && isUnactivated && !userManuallyExpanded) {
+    console.log('🔍 RENDERING UNACTIVATED VIEW (TOP PRIORITY) for client:', selectedClient.id);
     return (
       <div className="min-h-screen p-4">
         <div className="max-w-2xl mx-auto">
@@ -7251,8 +7708,31 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     <p className="text-red-100 text-sm">Lead #{selectedClient.lead_number}</p>
                   </div>
                 </div>
-                <div className="bg-red-700 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide shadow-lg">
-                  Unactivated
+                <div className="flex items-center gap-2">
+                  {/* Stage Badge */}
+                  {(() => {
+                    const stageStr = selectedClient.stage ? String(selectedClient.stage) : '';
+                    const stageName = getStageName(stageStr);
+                    const stageColor = getStageColour(stageStr);
+                    const textColor = getContrastingTextColor(stageColor);
+                    const backgroundColor = stageColor || '#3b28c7';
+                    
+                    return (
+                      <span 
+                        className="badge text-xs px-2 py-1 shadow-lg"
+                        style={{
+                          backgroundColor: backgroundColor,
+                          color: textColor,
+                          borderColor: backgroundColor,
+                        }}
+                      >
+                        {stageName}
+                      </span>
+                    );
+                  })()}
+                  <div className="bg-red-700 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide shadow-lg">
+                    Unactivated
+                  </div>
                 </div>
               </div>
             </div>
@@ -7294,6 +7774,22 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </div>
                   )}
 
+                  {/* Handler */}
+                  {selectedClient.handler && selectedClient.handler !== 'Not assigned' && (
+                    <div className="flex items-center gap-2">
+                      <UserIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-600">Handler: {selectedClient.handler}</span>
+                    </div>
+                  )}
+
+                  {/* Closer */}
+                  {selectedClient.closer && (
+                    <div className="flex items-center gap-2">
+                      <UserIcon className="w-4 h-4 text-gray-400" />
+                      <span className="text-sm text-gray-600">Closer: {selectedClient.closer}</span>
+                    </div>
+                  )}
+
                   {/* Phone */}
                   <div className="flex items-center gap-2">
                     <PhoneIcon className="w-4 h-4 text-gray-400" />
@@ -7310,13 +7806,49 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
               </div>
 
+              {/* Value (Balance) Badge */}
+              {(() => {
+                const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                const balanceValue = isLegacy 
+                  ? (selectedClient as any).total || selectedClient.balance
+                  : selectedClient.balance || (selectedClient as any).proposal_total;
+                
+                // Get currency symbol - for legacy leads, use balance_currency or get from currency_id
+                let balanceCurrency = selectedClient.balance_currency;
+                if (!balanceCurrency && isLegacy) {
+                  const currencyId = (selectedClient as any).currency_id;
+                  if (currencyId) {
+                    balanceCurrency = getCurrencySymbol(currencyId, '₪');
+                  } else {
+                    balanceCurrency = '₪';
+                  }
+                } else if (!balanceCurrency) {
+                  balanceCurrency = '₪';
+                }
+                
+                if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
+                  const formattedValue = typeof balanceValue === 'number' 
+                    ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                    : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+                  
+                  return (
+                    <div className="flex items-center justify-center pt-2">
+                      <span className="badge badge-lg px-4 py-2 bg-green-100 text-green-800 border border-green-300 font-semibold">
+                        Value: {balanceCurrency}{formattedValue}
+                      </span>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
               {/* Unactivation Details */}
               {(() => {
-                const stageName = getStageName(selectedClient.stage);
                 const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                const unactivationReason = selectedClient.unactivation_reason;
-                const stageUnactivated = areStagesEquivalent(stageName, 'unactivated') || areStagesEquivalent(stageName, 'dropped_spam_irrelevant');
-                const isUnactivated = (unactivationReason && unactivationReason.trim() !== '') || stageUnactivated;
+                // Check unactivation status based on status column
+                const isUnactivated = isLegacy
+                  ? (selectedClient.status === 10)
+                  : (selectedClient.status === 'inactive');
                 return isUnactivated;
               })() && (
                 <div className="pt-3 border-t border-gray-100 space-y-2">
@@ -7326,23 +7858,24 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       {(() => {
                         const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
                         // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
-                        const unactivationReason = selectedClient.unactivation_reason;
-                        const stageName = getStageName(selectedClient.stage);
+                        let unactivationReason = selectedClient.unactivation_reason;
                         
-                        // For legacy leads with stage 91 but no unactivation_reason, show default reason
-                        const stageNumeric =
-                          selectedClient?.stage !== null && selectedClient?.stage !== undefined
-                            ? Number(selectedClient.stage)
-                            : null;
-                        if (isLegacy && stageNumeric !== null && !Number.isNaN(stageNumeric) && stageNumeric === droppedStageId && !unactivationReason) {
-                          return 'Reason: Dropped (Spam/Irrelevant)';
+                        // For legacy leads, if no unactivation_reason, try to get it from reason_id
+                        if (isLegacy && !unactivationReason) {
+                          const reasonId = (selectedClient as any).reason_id;
+                          if (reasonId) {
+                            const reasonFromId = getUnactivationReasonFromId(reasonId);
+                            if (reasonFromId) {
+                              unactivationReason = reasonFromId;
+                            }
+                          }
                         }
                         
-                        // Return the reason exactly as stored in the database
+                        // Return the reason exactly as stored in the database or from reason_id mapping
                         return unactivationReason ? (
                           `Reason: ${unactivationReason}`
                         ) : (
-                          'Status: Unactivated (Dropped/Spam/Irrelevant)'
+                          'No reason added'
                         );
                       })()}
                     </span>
@@ -7373,10 +7906,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               )}
 
               {/* Click to Expand Hint */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <div className="p-3">
                 <div className="flex items-center gap-2">
-                  <InformationCircleIcon className="w-4 h-4 text-blue-500" />
-                  <span className="text-sm text-blue-700 font-medium">Click to view full details</span>
+                  <InformationCircleIcon className="w-4 h-4 text-gray-500" />
+                  <span className="text-sm text-black font-medium">Click to view full details</span>
                 </div>
               </div>
             </div>
@@ -7385,6 +7918,16 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       </div>
     );
   }
+  
+  // Show loading state while determining view (only if not unactivated)
+  if (localLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="loading loading-spinner loading-lg"></div>
+      </div>
+    );
+  }
+  
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900">
       {/* Background loading indicator */}
@@ -7796,6 +8339,65 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           </span>
         )}
       </div>
+
+      {/* Duplicate Contacts Badge */}
+      {duplicateContacts.length > 0 && (
+        <div className="w-full flex justify-center mt-2 mb-2 px-4">
+          <div className="relative">
+            {duplicateContacts.length === 1 ? (
+              <button
+                onClick={() => setIsDuplicateModalOpen(true)}
+                className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
+              >
+                <DocumentDuplicateIcon className="w-4 h-4" />
+                Duplicate Contact: {duplicateContacts[0].contactName} in Lead {duplicateContacts[0].leadNumber}
+              </button>
+            ) : (
+              <div className="relative">
+                <button
+                  onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
+                  className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
+                >
+                  <DocumentDuplicateIcon className="w-4 h-4" />
+                  {duplicateContacts.length} Duplicate Contacts
+                  <ChevronDownIcon className={`w-4 h-4 transition-transform ${isDuplicateDropdownOpen ? 'rotate-180' : ''}`} />
+                </button>
+                {isDuplicateDropdownOpen && (
+                  <div className="absolute top-full left-0 mt-2 bg-white rounded-lg shadow-xl border border-gray-200 z-50 min-w-[300px] max-h-96 overflow-y-auto">
+                    {duplicateContacts.map((dup, idx) => (
+                      <div
+                        key={`${dup.contactId}-${dup.leadId}-${idx}`}
+                        className="p-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer"
+                        onClick={() => {
+                          navigate(`/clients/${dup.leadNumber}`);
+                          setIsDuplicateDropdownOpen(false);
+                        }}
+                      >
+                        <div className="font-semibold text-gray-800">{dup.contactName}</div>
+                        <div className="text-sm text-gray-600">Lead {dup.leadNumber}: {dup.leadName}</div>
+                        <div className="text-xs text-gray-500 mt-1">
+                          Matches: {dup.matchingFields.join(', ')}
+                        </div>
+                      </div>
+                    ))}
+                    <div className="p-3 border-t border-gray-200 bg-gray-50">
+                      <button
+                        onClick={() => {
+                          setIsDuplicateModalOpen(true);
+                          setIsDuplicateDropdownOpen(false);
+                        }}
+                        className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
+                      >
+                        View All Details
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {/* Client Details Section (desktop) */}
       <div className="hidden md:block bg-white dark:bg-gray-900 w-full">
         {/* Modern CRM Header */}
@@ -8092,14 +8694,22 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 })()}
                 
                 {/* Show "Case is not active" message for unactivated leads */}
-                {isUnactivated && (
-                  <div className="mt-3">
-                    <div className="inline-flex items-center gap-2 px-4 py-2 bg-red-100 border border-red-300 rounded-lg">
-                      <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                      <span className="text-red-700 font-medium text-sm">Case is not active</span>
+                {(() => {
+                  const isLegacyForBadge = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                  const statusValueForBadge = selectedClient ? (selectedClient as any).status : null;
+                  const isUnactivatedForBadge = isLegacyForBadge
+                    ? (statusValueForBadge === 10 || statusValueForBadge === '10' || Number(statusValueForBadge) === 10)
+                    : (statusValueForBadge === 'inactive');
+                  
+                  return isUnactivatedForBadge ? (
+                    <div className="mt-3">
+                      <div className="inline-flex items-center gap-2 px-4 py-2 bg-red-100 border border-red-300 rounded-lg">
+                        <div className="w-2 h-2 bg-red-500 rounded-full"></div>
+                        <span className="text-red-700 font-medium text-sm">Case is not active</span>
+                      </div>
                     </div>
-                  </div>
-                )}
+                  ) : null;
+                })()}
               </div>
               <div className="w-full lg:w-80">
                 <ProgressFollowupBox 
@@ -8280,7 +8890,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
                   </label>
                   <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
-                    {(selectedClient.unactivation_reason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant')) ? (
+                    {(() => {
+                      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                      const isUnactivated = isLegacy
+                        ? (selectedClient.status === 10)
+                        : (selectedClient.status === 'inactive');
+                      return isUnactivated;
+                    })() ? (
                       <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
                     ) : (
                       <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
@@ -10157,6 +10773,135 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   Unactivate Lead
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate Contacts Modal */}
+      {isDuplicateModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-0 md:p-4">
+          <div
+            className="fixed inset-0 bg-black/50"
+            onClick={() => setIsDuplicateModalOpen(false)}
+          />
+          <div className="bg-white rounded-none md:rounded-2xl shadow-2xl p-4 md:p-8 max-w-4xl w-full h-full md:h-auto md:mx-4 z-10 md:max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl md:text-2xl font-bold text-gray-900">Duplicate Contacts</h3>
+              <button 
+                className="btn btn-ghost btn-sm" 
+                onClick={() => setIsDuplicateModalOpen(false)}
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <p className="text-sm md:text-base text-gray-600 mb-4">
+                The following contacts have matching data (email, name, phone, or mobile) and are associated with other leads:
+              </p>
+              
+              <div className="space-y-3">
+                {duplicateContacts.map((dup, idx) => (
+                  <div
+                    key={`${dup.contactId}-${dup.leadId}-${idx}`}
+                    className="border border-gray-200 rounded-lg p-3 md:p-4 hover:bg-gray-50 transition-colors"
+                  >
+                    <div className="flex items-start justify-between flex-col md:flex-row gap-3">
+                      <div className="flex-1 w-full">
+                        <div className="flex items-center gap-3 mb-2">
+                          <h4 className="text-base md:text-lg font-semibold text-gray-900">{dup.contactName}</h4>
+                        </div>
+                        
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs md:text-sm text-gray-600 mb-3">
+                          <div>
+                            <span className="font-medium">Lead Number:</span>{' '}
+                            <button
+                              onClick={() => {
+                                navigate(`/clients/${dup.leadNumber}`);
+                                setIsDuplicateModalOpen(false);
+                              }}
+                              className="text-blue-600 hover:text-blue-800 underline"
+                            >
+                              {dup.leadNumber}
+                            </button>
+                          </div>
+                          <div>
+                            <span className="font-medium">Lead Name:</span> {dup.leadName}
+                          </div>
+                          {dup.contactEmail && (
+                            <div>
+                              <span className="font-medium">Email:</span> {dup.contactEmail}
+                            </div>
+                          )}
+                          {dup.contactPhone && (
+                            <div>
+                              <span className="font-medium">Phone:</span> {dup.contactPhone}
+                            </div>
+                          )}
+                          {dup.contactMobile && (
+                            <div>
+                              <span className="font-medium">Mobile:</span> {dup.contactMobile}
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-medium text-gray-500">Matching Fields:</span>
+                          <div className="flex flex-wrap gap-1">
+                            {dup.matchingFields.map((field, fieldIdx) => (
+                              <span
+                                key={fieldIdx}
+                                className="badge badge-sm badge-info"
+                              >
+                                {field}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex flex-col gap-2 w-full md:w-auto md:ml-4">
+                        <button
+                          onClick={() => {
+                            navigate(`/clients/${dup.leadNumber}`);
+                            setIsDuplicateModalOpen(false);
+                          }}
+                          className="btn btn-sm btn-primary w-full"
+                        >
+                          View Lead
+                        </button>
+                        <button
+                          onClick={() => handleCopyDuplicateContact(dup)}
+                          disabled={copyingContactId === dup.contactId}
+                          className="btn btn-sm btn-outline btn-success w-full"
+                        >
+                          {copyingContactId === dup.contactId ? (
+                            <>
+                              <span className="loading loading-spinner loading-xs"></span>
+                              Copying...
+                            </>
+                          ) : (
+                            <>
+                              <Square2StackIcon className="w-4 h-4" />
+                              Copy to Current Lead
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-gray-200">
+              <button 
+                className="btn btn-outline" 
+                onClick={() => setIsDuplicateModalOpen(false)}
+              >
+                Close
+              </button>
             </div>
           </div>
         </div>

@@ -356,10 +356,169 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // Format text with smart line breaks and lists
+  const formatMessageContent = (content: string): React.ReactNode => {
+    if (!content) return null;
+    
+    // First, normalize excessive dashes (replace multiple dashes with proper formatting)
+    let normalized = content.replace(/^[-]{2,}/gm, '').replace(/[-]{3,}/g, '—');
+    
+    // Split by double newlines for paragraphs, but preserve single newlines within paragraphs
+    const blocks = normalized.split(/\n\n+/).filter(p => p.trim());
+    
+    return blocks.map((block, bIdx) => {
+      const trimmed = block.trim();
+      const lines = trimmed.split('\n').filter(l => l.trim());
+      
+      // Check if all lines are list items
+      const allListItems = lines.every(line => /^[-*•]\s/.test(line.trim()) || /^\d+[.)]\s/.test(line.trim()));
+      
+      if (allListItems && lines.length > 1) {
+        // Check if it's a numbered list
+        const isNumbered = lines[0].trim().match(/^\d+[.)]\s/);
+        
+        if (isNumbered) {
+          return (
+            <ol key={bIdx} className="list-decimal list-inside my-3 space-y-1.5 ml-2">
+              {lines.map((line, idx) => {
+                const cleanItem = line.trim().replace(/^\d+[.)]\s/, '').trim();
+                const formatted = formatInlineText(cleanItem);
+                return <li key={idx} className="text-base leading-relaxed pl-1">{formatted}</li>;
+              })}
+            </ol>
+          );
+        } else {
+          return (
+            <ul key={bIdx} className="list-disc list-inside my-3 space-y-1.5 ml-2">
+              {lines.map((line, idx) => {
+                const cleanItem = line.trim().replace(/^[-*•]\s/, '').trim();
+                const formatted = formatInlineText(cleanItem);
+                return <li key={idx} className="text-base leading-relaxed pl-1">{formatted}</li>;
+              })}
+            </ul>
+          );
+        }
+      }
+      
+      // Regular paragraph - join lines with proper spacing
+      const paragraphText = lines.join(' ').trim();
+      return (
+        <p key={bIdx} className="my-2.5 text-base leading-relaxed">
+          {formatInlineText(paragraphText)}
+        </p>
+      );
+    });
+  };
+
+  // Format inline text (bold, italic, code, links)
+  const formatInlineText = (text: string): React.ReactNode => {
+    if (!text) return null;
+    
+    const parts: React.ReactNode[] = [];
+    let keyCounter = 0;
+    
+    // Pattern for **bold**, *italic*, `code`, and [links](url)
+    const patterns = [
+      { 
+        regex: /\*\*([^*]+)\*\*/g, 
+        render: (match: string) => <strong key={`format-${keyCounter++}`} className="font-semibold">{match}</strong> 
+      },
+      { 
+        regex: /\*([^*]+)\*/g, 
+        render: (match: string) => <em key={`format-${keyCounter++}`} className="italic">{match}</em> 
+      },
+      { 
+        regex: /`([^`]+)`/g, 
+        render: (match: string) => (
+          <code key={`format-${keyCounter++}`} className="bg-gray-100 dark:bg-gray-800 px-1.5 py-0.5 rounded text-sm font-mono text-gray-800 dark:text-gray-200">
+            {match}
+          </code>
+        ) 
+      },
+      { 
+        regex: /\[([^\]]+)\]\(([^)]+)\)/g, 
+        render: (match: string, url: string) => (
+          <a 
+            key={`format-${keyCounter++}`} 
+            href={url} 
+            target="_blank" 
+            rel="noopener noreferrer" 
+            className="text-blue-600 hover:text-blue-800 dark:text-blue-400 dark:hover:text-blue-300 underline"
+          >
+            {match}
+          </a>
+        ) 
+      },
+    ];
+    
+    // Find all matches with their positions
+    const allMatches: Array<{ index: number; length: number; type: number; match: RegExpExecArray }> = [];
+    patterns.forEach(({ regex }, typeIndex) => {
+      let match;
+      regex.lastIndex = 0;
+      while ((match = regex.exec(text)) !== null) {
+        allMatches.push({
+          index: match.index,
+          length: match[0].length,
+          type: typeIndex,
+          match: match
+        });
+      }
+    });
+    
+    // Sort matches by index
+    allMatches.sort((a, b) => a.index - b.index);
+    
+    // Remove overlapping matches (keep first)
+    const nonOverlapping: typeof allMatches = [];
+    allMatches.forEach(match => {
+      const overlaps = nonOverlapping.some(existing => 
+        (match.index >= existing.index && match.index < existing.index + existing.length) ||
+        (existing.index >= match.index && existing.index < match.index + match.length)
+      );
+      if (!overlaps) {
+        nonOverlapping.push(match);
+      }
+    });
+    
+    // Build parts
+    let currentIndex = 0;
+    nonOverlapping.forEach((matchInfo) => {
+      if (matchInfo.index > currentIndex) {
+        const plainText = text.substring(currentIndex, matchInfo.index);
+        if (plainText) {
+          parts.push(<span key={`text-${keyCounter++}`}>{plainText}</span>);
+        }
+      }
+      
+      const pattern = patterns[matchInfo.type];
+      const match = matchInfo.match;
+      if (match[2]) {
+        // Link pattern with URL
+        parts.push(pattern.render(match[1], match[2]));
+      } else {
+        // Other patterns (bold, italic, code)
+        parts.push(pattern.render(match[1], ''));
+      }
+      
+      currentIndex = matchInfo.index + matchInfo.length;
+    });
+    
+    if (currentIndex < text.length) {
+      const remaining = text.substring(currentIndex);
+      if (remaining) {
+        parts.push(<span key={`text-${keyCounter++}`}>{remaining}</span>);
+      }
+    }
+    
+    return parts.length > 0 ? <>{parts}</> : <span>{text}</span>;
+  };
+
   const handleSend = async (customInput?: string) => {
     const messageToSend = customInput || input;
     if (!messageToSend.trim() && images.length === 0) return;
     setIsLoading(true);
+    
     let userMessage: any;
     if (images.length > 0 && imagePreviews.length > 0) {
       userMessage = {
@@ -381,8 +540,8 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setImagePreviews([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
 
-    // Add a placeholder for the assistant's response
-    setMessages(prev => [...prev, { role: 'assistant', content: '...' }]);
+    // Add a loading message
+    setMessages(prev => [...prev, { role: 'assistant', content: 'AI is thinking...' }]);
     
     const messagesForApi = sanitizeMessages(newMessages);
 
@@ -412,16 +571,22 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       
       const aiResponseMessage = await response.json();
       
-      // Replace placeholder with actual response (which could be a question or a tool call)
+      // Replace loading message with actual response
       setMessages(prev => [...prev.slice(0, -1), aiResponseMessage]);
 
     } catch (error) {
       console.error('Error in handleSend:', error);
       const errorMessage = error instanceof Error ? error.message : "An unknown error occurred.";
       setMessages(prev => {
-        const lastMessage = prev[prev.length - 1];
-        const updatedLastMessage = { ...lastMessage, content: `Sorry, an error occurred: ${errorMessage}` };
-        return [...prev.slice(0, -1), updatedLastMessage];
+        const updated = [...prev];
+        const lastIndex = updated.length - 1;
+        if (lastIndex >= 0 && updated[lastIndex].role === 'assistant') {
+          updated[lastIndex] = { 
+            ...updated[lastIndex], 
+            content: `Sorry, an error occurred: ${errorMessage}`
+          };
+        }
+        return updated;
       });
     } finally {
       setIsLoading(false);
@@ -678,11 +843,46 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
           border-top-left-radius: 2rem !important;
         }
         .ai-bubble-assistant {
-          background: rgba(255,255,255,0.85);
-          color: #222;
+          background: rgba(255,255,255,0.95);
+          color: #1f2937;
           border-bottom-left-radius: 2rem !important;
           border-top-right-radius: 2rem !important;
-          border: 1px solid #e0e7ef;
+          border: 1px solid #e5e7eb;
+          box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+        }
+        
+        .ai-bubble-assistant .prose {
+          color: #1f2937;
+        }
+        
+        .ai-bubble-assistant .prose p {
+          margin-top: 0.75rem;
+          margin-bottom: 0.75rem;
+        }
+        
+        .ai-bubble-assistant .prose ul,
+        .ai-bubble-assistant .prose ol {
+          margin-top: 0.5rem;
+          margin-bottom: 0.5rem;
+          padding-left: 1.5rem;
+        }
+        
+        .ai-bubble-assistant .prose li {
+          margin-top: 0.25rem;
+          margin-bottom: 0.25rem;
+        }
+        
+        .ai-bubble-assistant .prose strong {
+          font-weight: 600;
+          color: #111827;
+        }
+        
+        .ai-bubble-assistant .prose code {
+          background-color: #f3f4f6;
+          padding: 0.125rem 0.375rem;
+          border-radius: 0.25rem;
+          font-size: 0.875em;
+          font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
         }
         .ai-quick-btn {
           border-radius: 9999px;
@@ -802,21 +1002,30 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
               }}
             >
               {messages.map((msg, idx) => (
-                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-[70%] px-5 py-3 rounded-2xl shadow ai-bubble-${msg.role} mb-2`} style={{fontSize:'1.05rem', lineHeight:1.6}}>
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} mb-4`}>
+                  <div className={`max-w-[75%] px-5 py-4 rounded-2xl shadow-sm ai-bubble-${msg.role} ${msg.content === 'AI is thinking...' ? 'opacity-75' : ''}`} style={{fontSize:'1.05rem', lineHeight:1.7}}>
                     {/* Render message content, supporting OpenAI Vision format */}
                     {Array.isArray(msg.content) ? (
                       msg.content.map((item, i) => {
                         if (item.type === 'text') {
-                          return <span key={i}>{item.text}</span>;
+                          return <div key={i} className="prose prose-sm max-w-none">{formatMessageContent(item.text)}</div>;
                         } else if (item.type === 'image_url') {
-                          return <img key={i} src={item.image_url.url} alt="uploaded" className="max-w-xs my-2 rounded-lg border border-base-300" />;
+                          return <img key={i} src={item.image_url.url} alt="uploaded" className="max-w-xs my-2 rounded-lg border border-base-300 shadow-sm" />;
                         } else {
                           return null;
                         }
                       })
                     ) : (
-                      <span>{msg.content}</span>
+                      <div className="prose prose-sm max-w-none">
+                        {msg.content === 'AI is thinking...' ? (
+                          <div className="flex items-center gap-2 text-gray-500 italic">
+                            <div className="loading loading-spinner loading-sm"></div>
+                            <span>{msg.content}</span>
+                          </div>
+                        ) : (
+                          formatMessageContent(msg.content)
+                        )}
+                      </div>
                     )}
                   </div>
                 </div>

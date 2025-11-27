@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, ClockIcon, LockClosedIcon, DocumentTextIcon, DocumentIcon, PhotoIcon, FilmIcon, MusicalNoteIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, ClockIcon, LockClosedIcon, DocumentTextIcon, DocumentIcon, PhotoIcon, FilmIcon, MusicalNoteIcon, MicrophoneIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import EmojiPicker from 'emoji-picker-react';
 import { toast } from 'react-hot-toast';
@@ -13,6 +13,8 @@ import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../l
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { format } from 'date-fns';
+import VoiceMessagePlayer from './whatsapp/VoiceMessagePlayer';
+import VoiceMessageRecorder from './whatsapp/VoiceMessageRecorder';
 
 interface WhatsAppMessage {
   id: number;
@@ -34,6 +36,8 @@ interface WhatsAppMessage {
   whatsapp_status?: 'sent' | 'delivered' | 'read' | 'failed';
   whatsapp_timestamp?: string;
   error_message?: string;
+  profile_picture_url?: string | null; // WhatsApp profile picture URL
+  voice_note?: boolean; // True if this is a voice note (not regular audio)
 }
 
 interface SchedulerWhatsAppModalProps {
@@ -73,6 +77,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [isEmojiPickerOpen, setIsEmojiPickerOpen] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -969,10 +974,37 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     }
   };
 
-  // Send media
-  const handleSendMedia = async () => {
-    if (!selectedFile || !client || !currentUser) {
+  // Send media (optionally with a specific file)
+  const handleSendMedia = async (fileOverride?: File) => {
+    const fileToSend = fileOverride || selectedFile;
+    
+    if (!fileToSend || !client || !currentUser) {
       return;
+    }
+
+    // Validate file object
+    if (!(fileToSend instanceof File) && !(fileToSend instanceof Blob)) {
+      console.error('❌ Invalid file object:', fileToSend);
+      toast.error('Invalid file. Please try recording again.');
+      return;
+    }
+
+    // Check if file is WebM format (not supported by WhatsApp)
+    const isWebM = fileToSend.type?.includes('webm') || (fileToSend.name && fileToSend.name.endsWith('.webm'));
+    if (isWebM) {
+      const shouldContinue = window.confirm(
+        '⚠️ WebM audio format is not supported by WhatsApp.\n\n' +
+        'Your browser recorded in WebM format, which WhatsApp cannot accept.\n\n' +
+        'Options:\n' +
+        '1. Try recording again - your browser may use a supported format\n' +
+        '2. Use Firefox browser which supports OGG/Opus format\n' +
+        '3. Cancel and try a different approach\n\n' +
+        'Do you want to try sending anyway? (It will likely fail)'
+      );
+      if (!shouldContinue) {
+        if (!fileOverride) setSelectedFile(null);
+        return;
+      }
     }
 
     setUploadingMedia(true);
@@ -984,7 +1016,21 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       }
 
       const formData = new FormData();
-      formData.append('file', selectedFile);
+      
+      // Ensure we have a proper File object (not just a Blob)
+      let fileForUpload: File;
+      if (fileToSend instanceof File) {
+        fileForUpload = fileToSend;
+      } else if (fileToSend instanceof Blob) {
+        // Convert Blob to File if needed
+        const mimeType = fileToSend.type || 'audio/ogg;codecs=opus';
+        const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+        fileForUpload = new File([fileToSend], `voice_${Date.now()}.${extension}`, { type: mimeType });
+      } else {
+        throw new Error('Invalid file type');
+      }
+      
+      formData.append('file', fileForUpload);
       formData.append('leadId', client.id);
 
       const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
@@ -998,7 +1044,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         throw new Error(uploadResult.error || 'Failed to upload media');
       }
 
-      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
+      // Determine media type: check if it's a voice message (audio/webm or audio/ogg) or regular audio
+      const isVoiceMessage = fileToSend.type.includes('webm') || fileToSend.type.includes('opus') || fileToSend.type.includes('ogg');
+      const mediaType = fileToSend.type.startsWith('image/') 
+        ? 'image' 
+        : fileToSend.type.startsWith('audio/') || isVoiceMessage
+          ? 'audio'
+          : 'document';
       const senderName = currentUser.full_name || currentUser.email;
       const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
         method: 'POST',
@@ -1011,7 +1063,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           mediaType: mediaType,
           caption: newMessage.trim() || undefined,
           phoneNumber: phoneNumber,
-          sender_name: senderName
+          sender_name: senderName,
+          voiceNote: isVoiceMessage // Flag to indicate this is a voice note
         }),
       });
 
@@ -1027,20 +1080,25 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         sender_id: currentUser.id,
         sender_name: senderName,
         direction: 'out',
-        message: newMessage.trim() || `${mediaType} message`,
+        message: newMessage.trim() || (isVoiceMessage ? 'Voice message' : `${mediaType} message`),
         sent_at: new Date().toISOString(),
         status: 'sent',
         message_type: mediaType as any,
         whatsapp_status: 'sent',
         whatsapp_message_id: result.messageId,
         media_url: uploadResult.mediaId,
-        caption: newMessage.trim() || undefined
+        media_id: uploadResult.mediaId, // Also set media_id for compatibility
+        caption: newMessage.trim() || undefined,
+        voice_note: isVoiceMessage
       };
 
       setMessages(prev => [...prev, newMsg]);
       setShouldAutoScroll(true);
       setNewMessage('');
-      setSelectedFile(null);
+      if (!fileOverride) {
+        setSelectedFile(null);
+      }
+      setShowVoiceRecorder(false); // Close voice recorder if it was open
       
       if (onClientUpdate) {
         await onClientUpdate();
@@ -1313,14 +1371,24 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         </video>
                       )}
                       
-                      {message.message_type === 'audio' && message.media_url && (
-                        <audio
-                          controls
-                          className="w-full"
-                        >
-                          <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
-                          Your browser does not support the audio tag.
-                        </audio>
+                      {/* Voice message */}
+                      {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
+                        <div className="mt-2">
+                          <VoiceMessagePlayer
+                            audioUrl={(message.media_url || message.media_id || '').startsWith('http') 
+                              ? (message.media_url || message.media_id || '') 
+                              : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
+                            className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
+                            senderName={message.sender_name || 'Unknown'}
+                            profilePictureUrl={message.profile_picture_url}
+                          />
+                          {message.caption && (
+                            <p className="text-base break-words mt-2">{message.caption}</p>
+                          )}
+                          {!message.caption && message.message && (
+                            <p className="text-base break-words mt-2">{message.message}</p>
+                          )}
+                        </div>
                       )}
 
                       {/* Message status and time */}
@@ -1493,6 +1561,34 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               </button>
             )}
 
+            {/* Voice Recorder */}
+            {showVoiceRecorder && (
+              <div className="w-full mb-2">
+                <VoiceMessageRecorder
+                  onRecorded={(audioBlob) => {
+                    // Convert blob to File and set as selectedFile
+                    // Use the MIME type from the recorder (should be audio/ogg if supported)
+                    const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
+                    const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+                    const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
+                    
+                    // Set as selectedFile so the regular send button can handle it
+                    setSelectedFile(audioFile);
+                    
+                    // Close the recorder UI
+                    setShowVoiceRecorder(false);
+                    
+                    // Automatically send the voice message
+                    handleSendMedia(audioFile);
+                  }}
+                  onCancel={() => {
+                    setShowVoiceRecorder(false);
+                  }}
+                  className="w-full"
+                />
+              </div>
+            )}
+
             {/* File upload button */}
             <label 
               className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100 cursor-pointer"
@@ -1506,6 +1602,17 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 disabled={uploadingMedia || (isLocked && !selectedTemplate)}
               />
             </label>
+
+            {/* Voice Message Button */}
+            <button
+              type="button"
+              onClick={() => setShowVoiceRecorder(!showVoiceRecorder)}
+              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-red-500 hover:bg-red-50"
+              disabled={isLocked && !selectedTemplate}
+              title="Record voice message"
+            >
+              <MicrophoneIcon className="w-5 h-5" />
+            </button>
 
             {/* Emoji Button */}
             <div className="relative flex-shrink-0">
@@ -1661,7 +1768,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             {selectedFile ? (
               <button
                 type="button"
-                onClick={handleSendMedia}
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleSendMedia();
+                }}
                 disabled={uploadingMedia || (isLocked && !selectedTemplate)}
                 className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
               >

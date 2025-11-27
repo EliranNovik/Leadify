@@ -589,14 +589,11 @@ const MasterLeadPage: React.FC = () => {
           sampleSubLead: subLeadsData?.[0],
           categories: categories?.slice(0, 3),
           employees: employees?.slice(0, 3),
-          stages: stages?.slice(0, 3),
           leadContacts: leadContacts?.slice(0, 3),
           categoriesCount: categories?.length || 0,
           employeeMapSize: employeeMap.size,
-          stageMapSize: stageMap.size,
           contactMapSize: contactMap.size,
           employeeMapKeys: Array.from(employeeMap.keys()).slice(0, 5), // Show first 5 keys
-          stageMapKeys: Array.from(stageMap.keys()).slice(0, 5), // Show first 5 stage keys
           contactMapKeys: Array.from(contactMap.keys()).slice(0, 5) // Show first 5 contact keys
         });
 
@@ -756,8 +753,7 @@ const MasterLeadPage: React.FC = () => {
           masterLead: !!masterLead,
           subLeadsCount: subLeadsData?.length || 0,
           categoriesCount: categories?.length || 0,
-          employeesCount: employees?.length || 0,
-          stagesCount: stages?.length || 0
+          employeesCount: employees?.length || 0
         });
 
         setSubLeads(processedSubLeads);

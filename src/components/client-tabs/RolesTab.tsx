@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
-import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, PencilSquareIcon, UserIcon, CheckIcon, XMarkIcon, CalendarIcon, UserCircleIcon, AcademicCapIcon, HandRaisedIcon, WrenchScrewdriverIcon, CogIcon, LockClosedIcon, LockOpenIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
@@ -40,6 +40,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const [isEditing, setIsEditing] = useState(false);
   const [originalRoles, setOriginalRoles] = useState<Role[]>([]);
+  const [isRolesLocked, setIsRolesLocked] = useState<boolean>(false);
 
   // Update roles when client data changes
   useEffect(() => {
@@ -168,6 +169,16 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     
     setRoles(updatedRoles);
     setOriginalRoles(updatedRoles);
+    
+    // Update locked status from client data
+    if (isLegacyLead) {
+      // For legacy leads, sales_roles_locked is text ('true' or 'false')
+      const lockedValue = (client as any).sales_roles_locked;
+      setIsRolesLocked(lockedValue === 'true' || lockedValue === true);
+    } else {
+      // For new leads, sales_roles_locked is boolean
+      setIsRolesLocked((client as any).sales_roles_locked === true);
+    }
   }, [client, isLegacyLead, allEmployees]);
 
   // Fetch all employees from tenants_employee table for dropdowns
@@ -383,6 +394,10 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   const handleStartEditing = () => {
+    if (isRolesLocked) {
+      toast.error('Roles are locked. Please unlock roles first.');
+      return;
+    }
     setIsEditing(true);
     // Initialize search terms with current assignees
     const initialSearchTerms: { [key: string]: string } = {};
@@ -392,7 +407,59 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setSearchTerms(initialSearchTerms);
   };
 
+  const handleToggleLock = async () => {
+    try {
+      const newLockStatus = !isRolesLocked;
+      const tableName = isLegacyLead ? 'leads_lead' : 'leads';
+      const idField = isLegacyLead ? 'id' : 'id';
+      const clientId = isLegacyLead 
+        ? client.id.toString().replace('legacy_', '') 
+        : client.id;
+      
+      const updateData: any = {};
+      
+      if (isLegacyLead) {
+        // For legacy leads, sales_roles_locked is text
+        updateData.sales_roles_locked = newLockStatus ? 'true' : 'false';
+      } else {
+        // For new leads, sales_roles_locked is boolean
+        updateData.sales_roles_locked = newLockStatus;
+      }
+      
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq(idField, isLegacyLead ? parseInt(clientId as string, 10) : clientId);
+      
+      if (error) {
+        console.error('Error toggling lock:', error);
+        throw error;
+      }
+      
+      setIsRolesLocked(newLockStatus);
+      toast.success(newLockStatus ? 'Roles locked' : 'Roles unlocked');
+      
+      // If locking, cancel any active editing
+      if (newLockStatus && isEditing) {
+        handleCancelEdit();
+      }
+      
+      // Refresh client data in parent component
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error: any) {
+      console.error('Error toggling roles lock:', error);
+      const errorMessage = error?.message || error?.details || 'Failed to toggle lock';
+      toast.error(`Failed to toggle lock: ${errorMessage}`);
+    }
+  };
+
   const handleSetMeAsCloser = async () => {
+    if (isRolesLocked) {
+      toast.error('Roles are locked. Please unlock roles first.');
+      return;
+    }
     try {
       // Get current user's employee info
       const actor = await fetchStageActorInfo();
@@ -489,48 +556,81 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <UserGroupIcon className="w-6 h-6 text-white" />
           </div>
           <div>
-            <h2 className="text-2xl font-bold">Roles</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold">Roles</h2>
+              {isRolesLocked && (
+                <LockClosedIcon className="w-5 h-5 text-gray-500" />
+              )}
+            </div>
             <p className="text-sm text-gray-500">
-              Manage team roles and assignments
+              {isRolesLocked ? 'Roles are locked and cannot be modified' : 'Manage team roles and assignments'}
             </p>
           </div>
         </div>
         
         {/* Action Buttons */}
         <div className="flex flex-row gap-2 sm:gap-4 flex-wrap">
-          {isEditing ? (
+          {/* Lock Button - Always visible */}
+          <button 
+            className={`btn gap-2 px-6 shadow-md hover:scale-105 transition-transform ${
+              isRolesLocked 
+                ? 'btn-error text-white' 
+                : 'btn-ghost border border-gray-300'
+            }`}
+            onClick={handleToggleLock}
+            title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}
+          >
+            {isRolesLocked ? (
+              <>
+                <LockClosedIcon className="w-5 h-5" />
+                Unlock Roles
+              </>
+            ) : (
+              <>
+                <LockOpenIcon className="w-5 h-5" />
+                Lock Roles
+              </>
+            )}
+          </button>
+          
+          {/* Set Roles and Set me as closer buttons - Hidden when locked */}
+          {!isRolesLocked && (
             <>
+              {isEditing ? (
+                <>
+                  <button 
+                    className="btn btn-primary gap-2 px-6 shadow-md hover:scale-105 transition-transform"
+                    onClick={handleSaveRoles}
+                  >
+                    <CheckIcon className="w-5 h-5" />
+                    Save Roles
+                  </button>
+                  <button 
+                    className="btn btn-ghost gap-2 px-6 border border-base-200 shadow-sm hover:bg-base-200/60 hover:scale-105 transition-transform"
+                    onClick={handleCancelEdit}
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button 
+                  className="btn btn-ghost border border-gray-300 gap-2 px-6 shadow-md hover:scale-105 transition-transform"
+                  onClick={handleStartEditing}
+                >
+                  <PencilSquareIcon className="w-5 h-5" />
+                  Set Roles
+                </button>
+              )}
               <button 
-                className="btn btn-primary gap-2 px-6 shadow-md hover:scale-105 transition-transform"
-                onClick={handleSaveRoles}
+                className="btn btn-ghost text-primary hover:bg-primary/10 gap-2 px-6 border border-primary/30 shadow-sm hover:scale-105 transition-transform"
+                onClick={handleSetMeAsCloser}
               >
-                <CheckIcon className="w-5 h-5" />
-                Save Roles
-              </button>
-              <button 
-                className="btn btn-ghost gap-2 px-6 border border-base-200 shadow-sm hover:bg-base-200/60 hover:scale-105 transition-transform"
-                onClick={handleCancelEdit}
-              >
-                <XMarkIcon className="w-5 h-5" />
-                Cancel
+                <UserIcon className="w-5 h-5" />
+                Set me as closer
               </button>
             </>
-          ) : (
-            <button 
-              className="btn btn-neutral gap-2 px-6 shadow-md hover:scale-105 transition-transform"
-              onClick={handleStartEditing}
-            >
-              <PencilSquareIcon className="w-5 h-5" />
-              Set Roles
-            </button>
           )}
-          <button 
-            className="btn btn-ghost text-primary hover:bg-primary/10 gap-2 px-6 border border-primary/30 shadow-sm hover:scale-105 transition-transform"
-            onClick={handleSetMeAsCloser}
-          >
-            <UserIcon className="w-5 h-5" />
-            Set me as closer
-          </button>
         </div>
       </div>
 
@@ -564,7 +664,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   
                   {/* Assignee Name */}
                   <div className="flex-1 relative">
-                    {isEditing ? (
+                    {isEditing && !isRolesLocked ? (
                       <div className="relative">
                         <input
                           type="text"

@@ -29,9 +29,12 @@ import {
   ChevronDownIcon,
   UserGroupIcon,
   LinkIcon,
+  MicrophoneIcon,
 } from '@heroicons/react/24/outline';
 import EmojiPicker from 'emoji-picker-react';
 import { FaWhatsapp } from 'react-icons/fa';
+import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
+import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
 
 interface WhatsAppLead {
   id: number;
@@ -57,6 +60,8 @@ interface WhatsAppLead {
   message_count: number;
   unread_count?: number;
   last_message_at: string;
+  profile_picture_url?: string | null; // WhatsApp profile picture URL
+  voice_note?: boolean; // True if this is a voice note (not regular audio)
 }
 
 const WhatsAppLeadsPage: React.FC = () => {
@@ -69,6 +74,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [showVoiceRecorder, setShowVoiceRecorder] = useState(false);
   const [uploadingMedia, setUploadingMedia] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [showChat, setShowChat] = useState(false);
@@ -989,17 +995,44 @@ const WhatsAppLeadsPage: React.FC = () => {
     }
   };
 
-  // Send media message
-  const handleSendMedia = async () => {
-    if (!selectedFile || !selectedLead || !currentUser) {
-      console.log('❌ Cannot send media - missing file, lead, or user:', { selectedFile, selectedLead, currentUser });
+  // Send media message (optionally with a specific file)
+  const handleSendMedia = async (fileOverride?: File) => {
+    const fileToSend = fileOverride || selectedFile;
+    
+    if (!fileToSend || !selectedLead || !currentUser) {
+      console.log('❌ Cannot send media - missing file, lead, or user:', { fileToSend, selectedFile, fileOverride, selectedLead, currentUser });
       return;
     }
 
+    // Validate file object
+    if (!(fileToSend instanceof File) && !(fileToSend instanceof Blob)) {
+      console.error('❌ Invalid file object:', fileToSend);
+      toast.error('Invalid file. Please try recording again.');
+      return;
+    }
+
+    // Check if file is WebM format (not supported by WhatsApp)
+    const isWebM = fileToSend.type?.includes('webm') || (fileToSend.name && fileToSend.name.endsWith('.webm'));
+    if (isWebM) {
+      const shouldContinue = window.confirm(
+        '⚠️ WebM audio format is not supported by WhatsApp.\n\n' +
+        'Your browser recorded in WebM format, which WhatsApp cannot accept.\n\n' +
+        'Options:\n' +
+        '1. Try recording again - your browser may use a supported format\n' +
+        '2. Use Firefox browser which supports OGG/Opus format\n' +
+        '3. Cancel and try a different approach\n\n' +
+        'Do you want to try sending anyway? (It will likely fail)'
+      );
+      if (!shouldContinue) {
+        if (!fileOverride) setSelectedFile(null);
+        return;
+      }
+    }
+
     console.log('📤 Starting to send media:', {
-      fileName: selectedFile.name,
-      fileSize: selectedFile.size,
-      fileType: selectedFile.type,
+      fileName: fileToSend.name,
+      fileSize: fileToSend.size,
+      fileType: fileToSend.type,
       leadId: selectedLead.id,
       leadName: selectedLead.sender_name
     });
@@ -1014,7 +1047,21 @@ const WhatsAppLeadsPage: React.FC = () => {
 
       // Create FormData for file upload
       const formData = new FormData();
-      formData.append('file', selectedFile);
+      
+      // Ensure we have a proper File object (not just a Blob)
+      let fileForUpload: File;
+      if (fileToSend instanceof File) {
+        fileForUpload = fileToSend;
+      } else if (fileToSend instanceof Blob) {
+        // Convert Blob to File if needed
+        const mimeType = fileToSend.type || 'audio/ogg;codecs=opus';
+        const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+        fileForUpload = new File([fileToSend], `voice_${Date.now()}.${extension}`, { type: mimeType });
+      } else {
+        throw new Error('Invalid file type');
+      }
+      
+      formData.append('file', fileForUpload);
       formData.append('leadId', selectedLead.lead_id || selectedLead.id.toString());
 
       // Upload media to WhatsApp
@@ -1030,7 +1077,13 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Send media message
-      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
+      // Determine media type: check if it's a voice message (audio/webm or audio/ogg) or regular audio
+      const isVoiceMessage = fileToSend.type.includes('webm') || fileToSend.type.includes('opus') || fileToSend.type.includes('ogg');
+      const mediaType = fileToSend.type.startsWith('image/') 
+        ? 'image' 
+        : fileToSend.type.startsWith('audio/') || isVoiceMessage
+          ? 'audio'
+          : 'document';
       const senderName = currentUser.full_name || currentUser.email;
       const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
         method: 'POST',
@@ -1043,7 +1096,8 @@ const WhatsAppLeadsPage: React.FC = () => {
           mediaType: mediaType,
           caption: newMessage.trim() || undefined,
           phoneNumber: phoneNumber,
-          sender_name: senderName
+          sender_name: senderName,
+          voiceNote: isVoiceMessage // Flag to indicate this is a voice note
         }),
       });
 
@@ -1062,19 +1116,24 @@ const WhatsAppLeadsPage: React.FC = () => {
         sender_id: currentUser.id,
         sender_name: senderName,
         direction: 'out',
-        message: newMessage.trim() || `${mediaType} message`,
+        message: newMessage.trim() || (isVoiceMessage ? 'Voice message' : `${mediaType} message`),
         sent_at: new Date().toISOString(),
         status: 'sent',
         message_type: mediaType as any,
         whatsapp_status: 'sent',
         whatsapp_message_id: result.messageId,
         media_url: uploadResult.mediaId,
-        caption: newMessage.trim() || undefined
+        media_id: uploadResult.mediaId, // Also set media_id for compatibility
+        caption: newMessage.trim() || undefined,
+        voice_note: isVoiceMessage
       };
 
       setMessages(prev => [...prev, newMsg]);
       setNewMessage('');
-      setSelectedFile(null);
+      if (!fileOverride) {
+        setSelectedFile(null);
+      }
+      setShowVoiceRecorder(false); // Close voice recorder if it was open
       toast.success('Media sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending media:', error);
@@ -2484,6 +2543,26 @@ const WhatsAppLeadsPage: React.FC = () => {
                             </div>
                           )}
 
+                          {/* Voice message */}
+                          {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
+                            <div className="mt-2">
+                              <VoiceMessagePlayer
+                                audioUrl={(message.media_url || message.media_id || '').startsWith('http') 
+                                  ? (message.media_url || message.media_id || '') 
+                                  : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
+                                className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
+                                senderName={message.sender_name || 'Unknown'}
+                                profilePictureUrl={message.profile_picture_url}
+                              />
+                              {message.caption && (
+                                <p className="text-base break-words mt-2">{message.caption}</p>
+                              )}
+                              {!message.caption && message.message && (
+                                <p className="text-base break-words mt-2">{message.message}</p>
+                              )}
+                            </div>
+                          )}
+
                           {/* Document message with WhatsApp-style design */}
                           {(message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && message.media_url && (
                             <div className="mb-2">
@@ -2775,6 +2854,34 @@ const WhatsAppLeadsPage: React.FC = () => {
                       </button>
                     )}
 
+                    {/* Voice Recorder */}
+                    {showVoiceRecorder && (
+                      <div className="w-full mb-2">
+                        <VoiceMessageRecorder
+                          onRecorded={(audioBlob) => {
+                            // Convert blob to File and set as selectedFile
+                            // Use the MIME type from the recorder (should be audio/ogg if supported)
+                            const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
+                            const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+                            const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
+                            
+                            // Set as selectedFile so the regular send button can handle it
+                            setSelectedFile(audioFile);
+                            
+                            // Close the recorder UI
+                            setShowVoiceRecorder(false);
+                            
+                            // Automatically send the voice message
+                            handleSendMedia(audioFile);
+                          }}
+                          onCancel={() => {
+                            setShowVoiceRecorder(false);
+                          }}
+                          className="w-full"
+                        />
+                      </div>
+                    )}
+
                     {/* Mobile Dropdown Button */}
                     {isMobile ? (
                       <div className="relative flex-shrink-0 mobile-dropdown-container">
@@ -2809,6 +2916,20 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 disabled={uploadingMedia || isLocked}
                               />
                             </label>
+                            
+                            {/* Voice message option */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowVoiceRecorder(!showVoiceRecorder);
+                                setShowMobileDropdown(false);
+                              }}
+                              disabled={isLocked}
+                              className="w-full flex items-center gap-2 p-2 rounded hover:bg-gray-100 text-left"
+                            >
+                              <MicrophoneIcon className="w-4 h-4 text-gray-600" />
+                              <span className="text-sm text-gray-700">Voice Message</span>
+                            </button>
                             
                             {/* Emoji option */}
                             <button
@@ -2887,6 +3008,17 @@ const WhatsAppLeadsPage: React.FC = () => {
                             disabled={uploadingMedia || isLocked}
                           />
                         </label>
+
+                        {/* Desktop Voice Message Button */}
+                        <button
+                          type="button"
+                          onClick={() => setShowVoiceRecorder(!showVoiceRecorder)}
+                          className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-red-500 hover:bg-red-50"
+                          disabled={isLocked}
+                          title="Record voice message"
+                        >
+                          <MicrophoneIcon className="w-5 h-5" />
+                        </button>
 
                         {/* Desktop Emoji Button */}
                         <div className="relative flex-shrink-0">
@@ -3002,7 +3134,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                     {selectedFile ? (
                       <button
                         type="button"
-                        onClick={handleSendMedia}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleSendMedia();
+                        }}
                         disabled={uploadingMedia}
                         className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
                       >

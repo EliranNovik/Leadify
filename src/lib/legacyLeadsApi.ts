@@ -50,6 +50,7 @@ export interface CombinedLead {
   lead_type: 'legacy' | 'new';
   unactivation_reason: string | null;
   deactivate_note: string | null;
+  status?: string | number | null; // For new leads: 'active' | 'inactive', for legacy leads: 1 (active) | 10 (inactive)
   isFuzzyMatch: boolean;
   isContact?: boolean; // True if this result is from a contact (not main contact)
   contactName?: string; // The contact's name if it's a contact

@@ -369,6 +369,7 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
     // Find the contact profile for this phone number from webhook contacts
     const contactProfile = webhookContacts.find(contact => contact.wa_id === phoneNumber);
     const profileName = contactProfile?.profile?.name;
+    const profilePictureUrl = contactProfile?.profile?.picture; // Extract profile picture URL
 
     // Log profile information for debugging
     console.log('🔍 WhatsApp message profile info:', {
@@ -376,9 +377,12 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       webhookContacts: webhookContacts.length,
       contactProfile: !!contactProfile,
       profileName,
+      profilePictureUrl: !!profilePictureUrl,
       leadFound: !!lead,
       leadName: lead?.name
     });
+
+    // Note: Profile picture update will happen after contactId is determined (see below)
 
     // Determine the best sender name to use
     let senderName;
@@ -474,6 +478,29 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     }
 
+    // Store profile picture in lead/contact if available (after contactId is determined)
+    if (profilePictureUrl) {
+      if (contactId) {
+        // Priority: Update contact's WhatsApp profile picture if contact is found
+        await supabase
+          .from('leads_contact')
+          .update({ whatsapp_profile_picture_url: profilePictureUrl })
+          .eq('id', contactId);
+        console.log('✅ Updated contact profile picture:', contactId);
+      } else if (lead) {
+        // Fallback: Update lead's WhatsApp profile picture if no contact found
+        await supabase
+          .from('leads')
+          .update({ whatsapp_profile_picture_url: profilePictureUrl })
+          .eq('id', lead.id);
+        console.log('✅ Updated lead profile picture:', lead.id);
+      } else if (legacyLead) {
+        // For legacy leads without contacts, we could store in a separate field if needed
+        // For now, legacy leads don't have a profile picture field
+        console.log('ℹ️ Legacy lead profile picture received but not stored (no field available)');
+      }
+    }
+
     // Prepare message data - handle both known and unknown leads
     let messageData = {
       lead_id: lead ? lead.id : null, // null for unknown leads
@@ -493,7 +520,9 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       media_filename: null,
       media_mime_type: null,
       media_size: null,
-      caption: null
+      caption: null,
+      profile_picture_url: profilePictureUrl || null, // Store profile picture URL from webhook
+      voice_note: false // Will be set for voice notes
     };
     
     // Update the lead's phone number if it's a known lead and doesn't match exactly
@@ -539,11 +568,19 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         break;
       
       case 'audio':
-        messageData.message = 'Audio message';
+        // Check if this is a voice note (WhatsApp voice notes typically have specific mime types or are short duration)
+        // Voice notes usually have mime_type 'audio/ogg; codecs=opus' or 'audio/aac' and are typically under 2 minutes
+        const isVoiceNote = audio.mime_type?.includes('ogg') || 
+                           audio.mime_type?.includes('opus') || 
+                           audio.mime_type?.includes('aac') ||
+                           (audio.voice === true); // WhatsApp sometimes includes a voice flag
+        
+        messageData.message = isVoiceNote ? 'Voice message' : 'Audio message';
         messageData.media_id = audio.id;
         messageData.media_url = audio.id; // Set media_url to WhatsApp media ID
         messageData.media_mime_type = audio.mime_type;
         messageData.media_size = audio.file_size;
+        messageData.voice_note = isVoiceNote; // Mark as voice note
         await downloadAndStoreMedia(audio.id, 'audio', mediaOwnerIdentifier);
         break;
       
@@ -1324,6 +1361,7 @@ const sendMedia = async (req, res) => {
       lead_id: isLegacyLead ? null : leadId, // Set to null for legacy leads
       legacy_id: isLegacyLead ? lead.id : null, // Set legacy_id for legacy leads
       contact_id: contactId || null, // Store contact_id if provided
+      phone_number: phoneNumber, // Store phone number
       sender_name: req.body.sender_name || 'You',
       direction: 'out',
       message: caption || `${mediaType} message`,
@@ -1332,7 +1370,9 @@ const sendMedia = async (req, res) => {
       whatsapp_status: 'pending', // Start as pending, will be updated by webhook
       message_type: mediaType,
       media_url: mediaUrl,
-      caption: caption
+      media_id: mediaUrl, // Also store as media_id for consistency
+      caption: caption,
+      voice_note: req.body.voiceNote || false // Store voice note flag
     };
 
     const { error: insertError } = await supabase
@@ -1441,6 +1481,8 @@ const uploadMedia = async (req, res) => {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
+    // Note: WebM files should now be converted to OGG on the frontend using OpusMediaRecorder
+    // If we still receive WebM, it means the conversion failed - we'll let WhatsApp API handle the error
     const fileName = `${leadId}_${Date.now()}_${file.originalname}`;
     const filePath = path.join(uploadsDir, fileName);
 
@@ -1570,17 +1612,30 @@ const getMedia = async (req, res) => {
         // Pipe the file stream to response
         fileResponse.data.pipe(res);
       } catch (error) {
-        console.error('Error getting media from WhatsApp API:', error.response?.data || error.message);
+        const errorData = error.response?.data;
+        const errorCode = errorData?.error?.code;
+        const errorSubcode = errorData?.error?.error_subcode;
+        const statusCode = error.response?.status;
         
-        // If it's a 400 error (media not found), return a proper error
-        if (error.response?.status === 400) {
+        // Handle Graph API errors (media expired, invalid, or missing permissions)
+        if (statusCode === 400 || statusCode === 404 || (errorCode === 100 && errorSubcode === 33)) {
+          // Media expired or doesn't exist - this is expected for old messages
+          // Log at info level, not error, since this is normal behavior
+          console.log(`ℹ️  Media ${mediaId} is no longer available (expired or invalid)`);
           return res.status(404).json({ 
             error: 'Media not found or no longer available',
-            details: error.response.data?.error?.message || 'Media ID does not exist'
+            message: 'This media has expired or is no longer accessible. WhatsApp media URLs are temporary.',
+            code: errorCode,
+            subcode: errorSubcode
           });
         }
         
-        return res.status(500).json({ error: 'Failed to get media from WhatsApp' });
+        // Log actual errors (network issues, auth problems, etc.)
+        console.error('Error getting media from WhatsApp API:', error.response?.data || error.message);
+        return res.status(500).json({ 
+          error: 'Failed to get media from WhatsApp',
+          message: errorData?.error?.message || error.message
+        });
       }
     }
 
