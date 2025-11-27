@@ -1,4 +1,6 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import { supabase } from '../lib/supabase';
+import { sendAgreementCelebrationNotification } from '../lib/pushNotificationService';
 
 interface CelebrationData {
   employeeName: string;
@@ -30,9 +32,46 @@ export const CelebrationProvider: React.FC<CelebrationProviderProps> = ({ childr
   const [celebrationData, setCelebrationData] = useState<CelebrationData | null>(null);
   const [isCelebrating, setIsCelebrating] = useState(false);
 
-  const showCelebration = (data: CelebrationData) => {
+  const showCelebration = async (data: CelebrationData) => {
     setCelebrationData(data);
     setIsCelebrating(true);
+    
+    // Send push notification for signed agreement
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        // Send to the employee who signed (if they have push enabled)
+        if (data.employeeId) {
+          // Get user ID for the employee
+          const { data: employeeUser } = await supabase
+            .from('tenants_employee')
+            .select('user_id')
+            .eq('id', data.employeeId)
+            .single();
+          
+          if (employeeUser?.user_id) {
+            await sendAgreementCelebrationNotification(
+              employeeUser.user_id,
+              data.employeeName,
+              data.employeeId
+            );
+          }
+        }
+        
+        // Also send to current user if they have push enabled
+        const pushEnabled = localStorage.getItem('pushNotifications') !== 'false';
+        if (pushEnabled) {
+          await sendAgreementCelebrationNotification(
+            user.id,
+            data.employeeName,
+            data.employeeId
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Error sending push notification for celebration:', error);
+      // Don't block celebration if push fails
+    }
     
     // Auto-close after 8 seconds
     setTimeout(() => {

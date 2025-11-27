@@ -144,24 +144,54 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
-// Handle push notifications (optional, for future use)
+// Handle push notifications
 self.addEventListener('push', (event) => {
-  if (event.data) {
-    const data = event.data.json();
-    const title = data.title || 'RMQ 2.0';
-    const options = {
-      body: data.body || 'You have a new notification',
-      icon: '/icon-192x192.png',
-      badge: '/icon-72x72.png',
-      vibrate: [200, 100, 200],
-      tag: 'rmq-notification',
-      requireInteraction: false
-    };
+  console.log('Push notification received:', event);
+  
+  let notificationData = {
+    title: 'RMQ 2.0',
+    body: 'You have a new notification',
+    icon: '/icon-192x192.png',
+    badge: '/icon-72x72.png',
+    tag: 'rmq-notification',
+    data: { url: '/' },
+    vibrate: [200, 100, 200],
+    requireInteraction: false,
+    silent: false
+  };
 
-    event.waitUntil(
-      self.registration.showNotification(title, options)
-    );
+  if (event.data) {
+    try {
+      const data = event.data.json();
+      notificationData = {
+        title: data.title || notificationData.title,
+        body: data.body || notificationData.body,
+        icon: data.icon || notificationData.icon,
+        badge: data.badge || notificationData.badge,
+        tag: data.tag || notificationData.tag,
+        data: {
+          url: data.url || notificationData.data.url,
+          type: data.type || 'notification',
+          id: data.id || null,
+        },
+        vibrate: data.vibrate || notificationData.vibrate,
+        requireInteraction: data.requireInteraction !== undefined ? data.requireInteraction : notificationData.requireInteraction,
+        silent: data.silent !== undefined ? data.silent : notificationData.silent,
+        // For iOS, add sound
+        sound: data.sound || '/notification.mp3',
+      };
+    } catch (e) {
+      console.error('Error parsing push notification data:', e);
+      // Fallback to text data
+      if (event.data.text) {
+        notificationData.body = event.data.text();
+      }
+    }
   }
+
+  event.waitUntil(
+    self.registration.showNotification(notificationData.title, notificationData)
+  );
 });
 
 // Handle notification clicks with deep linking
@@ -169,17 +199,28 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   
   const urlToOpen = event.notification.data?.url || '/';
+  const notificationType = event.notification.data?.type || 'notification';
+  const notificationId = event.notification.data?.id;
   
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true })
       .then((clientList) => {
-        // Check if there's already a window open
+        // Check if there's already a window/tab open
         for (const client of clientList) {
-          if (client.url === urlToOpen && 'focus' in client) {
-            return client.focus();
+          if ('focus' in client) {
+            // Focus existing window and send navigation message
+            client.focus();
+            client.postMessage({
+              type: 'NOTIFICATION_CLICK',
+              url: urlToOpen,
+              notificationType: notificationType,
+              notificationId: notificationId
+            });
+            return;
           }
         }
-        // Open new window if none exists
+        // If no window is open, open a new one
+        // For PWA on mobile, this will open the app
         if (clients.openWindow) {
           return clients.openWindow(urlToOpen);
         }

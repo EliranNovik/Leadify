@@ -19,7 +19,7 @@ import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIco
 import Dashboard from './components/Dashboard';
 import Clients from './components/Clients';
 import LeadSearchPage from './pages/LeadSearchPage';
-import { Routes, Route, useLocation } from 'react-router-dom';
+import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import ExpertPage from './components/ExpertPage';
 import CalendarPage from './components/CalendarPage';
 import WaitingForPriceOfferPage from './components/WaitingForPriceOfferPage';
@@ -97,6 +97,33 @@ const AppContentInner: React.FC = () => {
   } | null>(null);
   const [appJustLoggedIn, setAppJustLoggedIn] = useState(false);
   const prevUser = useRef<any>(null);
+  const navigate = useNavigate();
+
+  // Listen for notification clicks from service worker
+  useEffect(() => {
+    if ('serviceWorker' in navigator) {
+      const handleMessage = (event: MessageEvent) => {
+        if (event.data && event.data.type === 'NOTIFICATION_CLICK') {
+          const url = event.data.url || '/';
+          console.log('📱 Notification clicked, navigating to:', url);
+          
+          // Navigate to the URL
+          navigate(url);
+          
+          // If the app was in background, focus the window
+          if (window.document.hidden) {
+            window.focus();
+          }
+        }
+      };
+
+      navigator.serviceWorker.addEventListener('message', handleMessage);
+      
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', handleMessage);
+      };
+    }
+  }, [navigate]);
 
   const refreshClientData = useCallback(async (clientId: number | string) => {
     if (!clientId) return;

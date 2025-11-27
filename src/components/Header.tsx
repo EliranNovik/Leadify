@@ -6,6 +6,7 @@ import { supabase } from '../lib/supabase';
 import type { Lead } from '../lib/supabase';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { toast } from 'react-hot-toast';
+import { usePushNotifications } from '../hooks/usePushNotifications';
 import {
   Bars3Icon,
   MagnifyingGlassIcon,
@@ -131,6 +132,7 @@ interface RMQMessage {
 const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging }) => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { sendNotificationForNewMessage } = usePushNotifications();
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
@@ -1339,6 +1341,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       return () => clearInterval(interval);
     }
   }, [currentUser, fetchEmailUnreadCount, fetchEmailLeadMessages]);
+
+  // Send push notifications when new messages arrive
+  useEffect(() => {
+    if (currentUser && unreadCount > 0) {
+      sendNotificationForNewMessage(
+        unreadCount,
+        whatsappLeadsUnreadCount,
+        rmqUnreadCount,
+        whatsappLeadsMessages,
+        rmqMessages
+      );
+    }
+  }, [unreadCount, whatsappLeadsUnreadCount, rmqUnreadCount, whatsappLeadsMessages, rmqMessages, currentUser, sendNotificationForNewMessage]);
 
   useEffect(() => {
     if (!currentUser) {

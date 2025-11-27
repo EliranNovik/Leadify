@@ -17,6 +17,17 @@ import {
 import EmployeeAvailability from '../components/EmployeeAvailability';
 import EmployeeAvailabilityManager from '../components/EmployeeAvailabilityManager';
 import OutlookSignature from '../components/OutlookSignature';
+import {
+  isPushNotificationSupported,
+  getNotificationPermission,
+  requestNotificationPermission,
+  getPushSubscription,
+  unsubscribeFromPush,
+  savePushSubscription,
+  removePushSubscription,
+  sendTestNotification,
+} from '../lib/pushNotifications';
+import toast from 'react-hot-toast';
 
 interface SettingsSection {
   id: string;
@@ -39,6 +50,9 @@ interface SettingItem {
 const SettingsPage: React.FC = () => {
   const [activeSection, setActiveSection] = useState('appearance');
   const [activeCalendarTab, setActiveCalendarTab] = useState('availability');
+  const [pushNotificationPermission, setPushNotificationPermission] = useState<NotificationPermission>('default');
+  const [isPushSupported, setIsPushSupported] = useState(false);
+  const [isRequestingPermission, setIsRequestingPermission] = useState(false);
   const [settings, setSettings] = useState<Record<string, any>>({
     // Appearance Settings
     theme: localStorage.getItem('theme') || 'light',
@@ -111,39 +125,17 @@ const SettingsPage: React.FC = () => {
       icon: BellIcon,
       items: [
         {
-          id: 'emailNotifications',
-          label: 'Email Notifications',
-          description: 'Receive notifications via email',
-          type: 'toggle',
-          value: settings.emailNotifications
-        },
-        {
           id: 'pushNotifications',
           label: 'Push Notifications',
-          description: 'Browser push notifications',
+          description: isPushSupported
+            ? pushNotificationPermission === 'granted'
+              ? 'Push notifications are enabled'
+              : pushNotificationPermission === 'denied'
+              ? 'Permission denied. Enable in browser settings.'
+              : 'Enable browser push notifications for mobile'
+            : 'Not supported in this browser',
           type: 'toggle',
-          value: settings.pushNotifications
-        },
-        {
-          id: 'leadAlerts',
-          label: 'New Lead Alerts',
-          description: 'Get notified when new leads are created',
-          type: 'toggle',
-          value: settings.leadAlerts
-        },
-        {
-          id: 'meetingReminders',
-          label: 'Meeting Reminders',
-          description: 'Reminders before scheduled meetings',
-          type: 'toggle',
-          value: settings.meetingReminders
-        },
-        {
-          id: 'stageChangeAlerts',
-          label: 'Stage Change Alerts',
-          description: 'Notifications when lead stages change',
-          type: 'toggle',
-          value: settings.stageChangeAlerts
+          value: settings.pushNotifications && pushNotificationPermission === 'granted'
         }
       ]
     },
@@ -279,6 +271,33 @@ const SettingsPage: React.FC = () => {
     }
   ];
 
+  // Check push notification support and permission on mount
+  useEffect(() => {
+    const checkPushSupport = async () => {
+      const supported = isPushNotificationSupported();
+      setIsPushSupported(supported);
+      
+      if (supported) {
+        const permission = await getNotificationPermission();
+        setPushNotificationPermission(permission);
+        
+        // If permission is granted, ensure subscription exists
+        if (permission === 'granted') {
+          try {
+            const subscription = await getPushSubscription();
+            if (subscription) {
+              await savePushSubscription(subscription);
+            }
+          } catch (error) {
+            console.error('Error checking push subscription:', error);
+          }
+        }
+      }
+    };
+
+    checkPushSupport();
+  }, []);
+
   // Apply theme changes immediately
   useEffect(() => {
     const theme = settings.theme;
@@ -298,6 +317,61 @@ const SettingsPage: React.FC = () => {
 
     localStorage.setItem('theme', theme);
   }, [settings.theme]);
+
+  // Handle push notification toggle
+  const handlePushNotificationToggle = async (enabled: boolean) => {
+    if (!isPushSupported) {
+      toast.error('Push notifications are not supported in this browser');
+      return;
+    }
+
+    if (enabled) {
+      // Request permission
+      setIsRequestingPermission(true);
+      try {
+        const permission = await requestNotificationPermission();
+        setPushNotificationPermission(permission);
+
+        if (permission === 'granted') {
+          // Get or create subscription
+          const subscription = await getPushSubscription();
+          if (subscription) {
+            await savePushSubscription(subscription);
+            updateSetting('pushNotifications', true);
+            toast.success('Push notifications enabled!');
+          } else {
+            updateSetting('pushNotifications', false);
+            toast.error('Failed to set up push notifications');
+          }
+        } else if (permission === 'denied') {
+          updateSetting('pushNotifications', false);
+          toast.error('Notification permission denied. Please enable it in your browser settings.');
+        } else {
+          updateSetting('pushNotifications', false);
+        }
+      } catch (error: any) {
+        console.error('Error enabling push notifications:', error);
+        updateSetting('pushNotifications', false);
+        toast.error(error?.message || 'Failed to enable push notifications');
+      } finally {
+        setIsRequestingPermission(false);
+      }
+    } else {
+      // Disable push notifications
+      try {
+        const subscription = await getPushSubscription();
+        if (subscription) {
+          await unsubscribeFromPush();
+          await removePushSubscription(subscription.endpoint);
+        }
+        updateSetting('pushNotifications', false);
+        toast.success('Push notifications disabled');
+      } catch (error) {
+        console.error('Error disabling push notifications:', error);
+        toast.error('Failed to disable push notifications');
+      }
+    }
+  };
 
   const updateSetting = (settingId: string, value: any) => {
     setSettings(prev => ({ ...prev, [settingId]: value }));
@@ -328,11 +402,39 @@ const SettingsPage: React.FC = () => {
                 type="checkbox"
                 className={toggleClass}
                 checked={item.value}
-                onChange={(e) => updateSetting(item.id, e.target.checked)}
+                disabled={item.id === 'pushNotifications' && (isRequestingPermission || !isPushSupported || pushNotificationPermission === 'denied')}
+                onChange={(e) => {
+                  if (item.id === 'pushNotifications') {
+                    handlePushNotificationToggle(e.target.checked);
+                  } else {
+                    updateSetting(item.id, e.target.checked);
+                  }
+                }}
               />
-              <div>
-                <div className={`font-medium ${labelClass}`}>{item.label}</div>
+              <div className="flex-1">
+                <div className={`font-medium ${labelClass}`}>
+                  {item.label}
+                  {item.id === 'pushNotifications' && isRequestingPermission && (
+                    <span className="loading loading-spinner loading-xs ml-2"></span>
+                  )}
+                </div>
                 <div className={`text-sm ${descClass}`}>{item.description}</div>
+                {item.id === 'pushNotifications' && pushNotificationPermission === 'granted' && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await sendTestNotification();
+                        toast.success('Test notification sent!');
+                      } catch (error: any) {
+                        toast.error(error?.message || 'Failed to send test notification');
+                      }
+                    }}
+                    className="btn btn-xs btn-outline mt-2"
+                  >
+                    Send Test Notification
+                  </button>
+                )}
               </div>
             </label>
           </div>
@@ -613,8 +715,8 @@ const SettingsPage: React.FC = () => {
                 </div>
                 
                 <div className="space-y-4 sm:space-y-6">
-                  {/* Show "In progress..." for notifications, crm, security, and data sections */}
-                  {(activeSection === 'notifications' || activeSection === 'crm' || activeSection === 'security' || activeSection === 'data') ? (
+                  {/* Show "In progress..." for crm, security, and data sections */}
+                  {(activeSection === 'crm' || activeSection === 'security' || activeSection === 'data') ? (
                     <div className={`text-center py-8 ${mutedTextClass}`}>
                       <p className="text-lg">In progress...</p>
                     </div>
