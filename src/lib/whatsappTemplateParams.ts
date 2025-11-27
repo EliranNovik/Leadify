@@ -322,20 +322,42 @@ export async function getMeetingLink(
  * Returns formatted string like "January 15, 2025 at 10:00 AM"
  */
 export async function getMeetingDateTime(
-  clientId: string,
+  clientId: string | null | undefined,
   isLegacyLead: boolean
 ): Promise<string> {
   try {
+    // Return empty string if no client ID provided (for WhatsApp leads without a connected lead)
+    if (!clientId || clientId === null || clientId === undefined || clientId === '') {
+      console.log('⚠️ No client ID provided for meeting lookup, skipping');
+      return '';
+    }
+    
+    // Convert to string for validation
+    const clientIdStr = clientId.toString();
+    
     // Determine the correct ID for querying
     let queryId: string | number;
     let columnName: string;
     
     if (isLegacyLead) {
-      const legacyId = clientId.toString().replace('legacy_', '');
+      const legacyId = clientIdStr.replace('legacy_', '');
       queryId = parseInt(legacyId, 10);
+      // Validate that it's a valid number (not NaN and greater than 0)
+      if (isNaN(queryId) || queryId <= 0) {
+        console.warn(`⚠️ Invalid legacy ID format: ${legacyId}, skipping meeting lookup`);
+        return '';
+      }
       columnName = 'legacy_lead_id';
     } else {
-      queryId = clientId;
+      // For new leads, validate it looks like a UUID
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clientIdStr)) {
+        // If it doesn't match UUID format, it might be a number (like 39 from WhatsApp message ID)
+        // In that case, skip the lookup
+        console.warn(`⚠️ Invalid UUID format: ${clientIdStr}, skipping meeting lookup (this might be a WhatsApp message ID, not a lead ID)`);
+        return '';
+      }
+      queryId = clientIdStr;
       columnName = 'client_id';
     }
     
@@ -392,6 +414,104 @@ export async function getMeetingDateTime(
 }
 
 /**
+ * Get meeting time only (without date) for template parameters
+ * Returns formatted string like "10:00 AM"
+ */
+export async function getMeetingTime(
+  clientId: string | null | undefined,
+  isLegacyLead: boolean
+): Promise<string> {
+  try {
+    // Return empty string if no client ID provided
+    if (!clientId || clientId === null || clientId === undefined || clientId === '') {
+      console.log('⚠️ No client ID provided for meeting time lookup, skipping');
+      return '';
+    }
+    
+    // Convert to string for validation
+    const clientIdStr = clientId.toString();
+    
+    // Determine the correct ID for querying
+    let queryId: string | number;
+    let columnName: string;
+    
+    if (isLegacyLead) {
+      const legacyId = clientIdStr.replace('legacy_', '');
+      queryId = parseInt(legacyId, 10);
+      if (isNaN(queryId) || queryId <= 0) {
+        console.warn(`⚠️ Invalid legacy ID format: ${legacyId}, skipping meeting time lookup`);
+        return '';
+      }
+      columnName = 'legacy_lead_id';
+    } else {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(clientIdStr)) {
+        console.warn(`⚠️ Invalid UUID format: ${clientIdStr}, skipping meeting time lookup`);
+        return '';
+      }
+      queryId = clientIdStr;
+      columnName = 'client_id';
+    }
+    
+    // Fetch the most recent meeting
+    console.log(`🔍 Querying meeting time for ${columnName}=${queryId}`);
+    
+    const { data: meetings, error } = await supabase
+      .from('meetings')
+      .select('meeting_time, meeting_date, status')
+      .eq(columnName, queryId)
+      .or('status.is.null,status.neq.canceled')
+      .order('meeting_date', { ascending: false })
+      .order('meeting_time', { ascending: false })
+      .limit(1);
+    
+    if (error) {
+      console.error('❌ Error fetching meeting time:', error);
+      return '';
+    }
+    
+    if (!meetings || meetings.length === 0) {
+      console.log(`⚠️ No meetings found for ${columnName}=${queryId}`);
+      return '';
+    }
+    
+    const meeting = meetings[0];
+    if (!meeting.meeting_time) {
+      return '';
+    }
+    
+    // Format the time directly from meeting_time
+    // meeting_time is a TIME type, format: "HH:MM:SS" or "HH:MM"
+    const timeStr = meeting.meeting_time.toString();
+    
+    // Parse the time string (could be "10:00:00" or "10:00")
+    const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})(?::\d{2})?/);
+    if (!timeMatch) {
+      console.warn(`⚠️ Could not parse meeting time: ${timeStr}`);
+      return '';
+    }
+    
+    const hours = parseInt(timeMatch[1], 10);
+    const minutes = parseInt(timeMatch[2], 10);
+    
+    // Format as "10:00 AM" or "2:30 PM"
+    const date = new Date();
+    date.setHours(hours, minutes, 0, 0);
+    
+    const options: Intl.DateTimeFormatOptions = {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    };
+    
+    return date.toLocaleString('en-US', options);
+  } catch (error) {
+    console.error('Error formatting meeting time:', error);
+    return '';
+  }
+}
+
+/**
  * Generate template parameters array based on param count
  * Param 1 = Client/Contact name
  * Param 2 = Meeting date and time
@@ -420,22 +540,43 @@ export async function generateTemplateParameters(
   if (paramCount >= 2) {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     // Use lead_id if client is a contact, otherwise use client.id
-    const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+    let clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
     
-    console.log('🔍 Fetching meeting for param 2:', { clientIdForMeeting, isLegacyLead, clientId: client?.id, isContact: client?.isContact, lead_id: client?.lead_id });
+    // Validate that clientIdForMeeting is a valid UUID or legacy ID format
+    // Check if it's a pure number without "legacy_" prefix - this is likely a WhatsApp message ID, not a lead ID
+    const clientIdStr = clientIdForMeeting?.toString() || '';
+    const isPureNumber = /^\d+$/.test(clientIdStr);
+    const isLegacyFormat = clientIdStr.startsWith('legacy_');
+    const isUUIDFormat = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(clientIdStr);
     
-    const meetingDateTime = await getMeetingDateTime(clientIdForMeeting, isLegacyLead);
-    
-    // Always push a parameter, using placeholder if no meeting found
-    parameters.push({
-      type: 'text',
-      text: meetingDateTime || 'your scheduled appointment'
-    });
-    
-    if (!meetingDateTime) {
-      console.warn(`⚠️ No meeting found for client ${clientIdForMeeting}, using placeholder "your scheduled appointment"`);
+    // If client ID is null, undefined, empty, or an invalid format, skip meeting lookup
+    if (!clientIdForMeeting || 
+        clientIdForMeeting === null || 
+        clientIdForMeeting === undefined || 
+        clientIdForMeeting === '' ||
+        (isPureNumber && !isLegacyFormat)) { // Pure numbers without "legacy_" prefix are invalid (likely WhatsApp message IDs)
+      console.log('⚠️ No valid client ID for meeting lookup (ID:', clientIdForMeeting, 'format:', { isPureNumber, isLegacyFormat, isUUIDFormat },'), using placeholder');
+      const meetingDateTime = '';
+      parameters.push({
+        type: 'text',
+        text: meetingDateTime || 'your scheduled appointment'
+      });
     } else {
-      console.log(`✅ Found meeting date/time: ${meetingDateTime}`);
+      console.log('🔍 Fetching meeting for param 2:', { clientIdForMeeting, isLegacyLead, clientId: client?.id, isContact: client?.isContact, lead_id: client?.lead_id });
+      
+      const meetingDateTime = await getMeetingDateTime(clientIdForMeeting, isLegacyLead);
+      
+      // Always push a parameter, using placeholder if no meeting found
+      parameters.push({
+        type: 'text',
+        text: meetingDateTime || 'your scheduled appointment'
+      });
+      
+      if (!meetingDateTime) {
+        console.warn(`⚠️ No meeting found for client ${clientIdForMeeting}, using placeholder "your scheduled appointment"`);
+      } else {
+        console.log(`✅ Found meeting date/time: ${meetingDateTime}`);
+      }
     }
   }
   

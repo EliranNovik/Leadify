@@ -10,6 +10,7 @@ import { Color } from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
+import { generateJSON } from '@tiptap/html';
 import { CheckIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import { handleContractSigned } from '../lib/contractAutomation';
 import { getPricePerApplicant } from '../lib/contractPricing';
@@ -165,7 +166,8 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     result = result.replace(/{{client_email}}/g, client.email || '');
   }
 
-  result = result.replace(/{{date}}/g, new Date().toLocaleDateString());
+  // Don't replace {{date}} or {{date:ID}} - let renderTiptapContent handle them as date pickers
+  // They will only be replaced with formatted text after the contract is signed
   return result;
 }
 
@@ -290,33 +292,65 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
       // Handle pricing tiers
       if (customPricing.pricing_tiers) {
         const currency = customPricing.currency || 'USD';
-        const tierStructure = [
-          { key: '1', label: 'For one applicant' },
-          { key: '2', label: 'For 2 applicants' },
-          { key: '3', label: 'For 3 applicants' },
-          { key: '4-7', label: 'For 4-7 applicants' },
-          { key: '8-9', label: 'For 8-9 applicants' },
-          { key: '10-15', label: 'For 10-15 applicants' },
-          { key: '16+', label: 'For 16 applicants or more' }
-        ];
+        
+        // Find each {{price_per_applicant}} placeholder and replace it based on context
+        // Look backwards from the placeholder to find the tier number
+        while (text.includes('{{price_per_applicant}}')) {
+          const placeholderIndex = text.indexOf('{{price_per_applicant}}');
+          
+          // Get context before the placeholder - look at more text to catch tier labels
+          const contextBefore = text.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
+          
+          let tierKey: string | null = null;
+          
+          // Check for tier patterns in order of specificity (most specific first)
+          // Try to match patterns anywhere in the context before the placeholder
+          
+          // 16+ patterns
+          if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(contextBefore)) {
+            tierKey = '16+';
+          }
+          // 10-15 patterns - match "10-15 applicants:" or "10-15 applicant:" (more flexible)
+          else if (/10\s*[-–]\s*15\s+applicant/i.test(contextBefore)) {
+            tierKey = '10-15';
+          }
+          // 8-9 patterns - match "8-9 applicants:" or "8-9 applicant:"
+          else if (/8\s*[-–]\s*9\s+applicant/i.test(contextBefore)) {
+            tierKey = '8-9';
+          }
+          // 4-7 patterns - match "4-7 applicants:" or "4-7 applicant:"
+          else if (/4\s*[-–]\s*7\s+applicant/i.test(contextBefore)) {
+            tierKey = '4-7';
+          }
+          // Single numbers - check for exact matches
+          else if (/\b3\s+applicant/i.test(contextBefore)) {
+            tierKey = '3';
+          } else if (/\b2\s+applicant/i.test(contextBefore)) {
+            tierKey = '2';
+          } else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(contextBefore)) {
+            tierKey = '1';
+          }
+          
+          if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
+            const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
+            const replacement = `${currency} ${price}`;
+            text = text.replace('{{price_per_applicant}}', replacement);
+            console.log(`✅ fillPlaceholdersInTiptapContent: Replaced {{price_per_applicant}} for tier ${tierKey} with ${replacement}`);
+          } else {
+            // If no tier matched, log warning with full context
+            const recentContext = contextBefore.substring(contextBefore.length - 80);
+            console.warn('⚠️ fillPlaceholdersInTiptapContent: Could not determine tier for {{price_per_applicant}}. Recent context:', recentContext);
+            text = text.replace('{{price_per_applicant}}', `${currency} 0`);
+          }
+        }
 
-        // Handle {{price_per_applicant}} placeholders
-        tierStructure.forEach(tier => {
-          const lineRegex = new RegExp(`(${tier.label}[^\n]*?):?\s*\{\{price_per_applicant\}\}`, 'g');
-          text = text.replace(lineRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
-        });
-
-        // Also handle specific tier placeholders that might be in the template
-        tierStructure.forEach(tier => {
-          const placeholder = `{{price_${tier.key}}}`;
-          text = text.replace(new RegExp(placeholder, 'g'), `${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
-        });
-
-        // Handle any existing pricing lines that need to be updated
-        tierStructure.forEach(tier => {
-          // Replace lines that already have a price but need updating
-          const existingPriceRegex = new RegExp(`(${tier.label}[^\\n]*?):?\\s*[₪$]\\s*[\\d,]+`, 'g');
-          text = text.replace(existingPriceRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+        // Also handle specific tier placeholders like {{price_1}}, {{price_2}}, etc.
+        Object.keys(customPricing.pricing_tiers).forEach(tierKey => {
+          const placeholder = `{{price_${tierKey}}}`;
+          if (text.includes(placeholder)) {
+            const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
+            text = text.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `${currency} ${price}`);
+          }
         });
       }
     }
@@ -332,7 +366,8 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
       text = text.replace(/{{client_email}}/g, client.email || '');
     }
 
-    text = text.replace(/{{date}}/g, new Date().toLocaleDateString());
+    // Don't replace {{date}} - let renderTiptapContent handle date placeholders as date pickers
+    // text = text.replace(/{{date}}/g, new Date().toLocaleDateString());
 
     // Replace {{text}} and {{signature}} with styled placeholders for view mode
     if (!editing) {
@@ -401,8 +436,132 @@ function cleanTiptapContent(content: any): any {
   return content;
 }
 
+// Editor extensions for HTML to TipTap JSON conversion
+const editorExtensionsForConversion = [
+  StarterKit,
+  TextAlign.configure({ types: ['heading', 'paragraph'] }),
+  Highlight,
+  Color,
+  TextStyle,
+  FontFamily,
+  FontSize,
+];
+
+// Helper function to validate and normalize TipTap content
+function normalizeTiptapContent(content: any): any {
+  console.log('🔍 normalizeTiptapContent called with:', content);
+  console.log('🔍 Content type:', typeof content);
+  console.log('🔍 Is array:', Array.isArray(content));
+  if (content && typeof content === 'object') {
+    console.log('🔍 Content keys:', Object.keys(content));
+    console.log('🔍 Has html:', 'html' in content);
+    console.log('🔍 Has delta:', 'delta' in content);
+    console.log('🔍 Has type:', 'type' in content);
+    console.log('🔍 Type value:', content.type);
+  }
+  
+  // If content is null or undefined, return empty doc
+  if (!content) {
+    console.log('⚠️ Content is null/undefined, returning empty doc');
+    return { type: 'doc', content: [] };
+  }
+  
+  // If content is a string, try to parse it as JSON
+  if (typeof content === 'string') {
+    try {
+      const parsed = JSON.parse(content);
+      console.log('✅ Parsed string content to JSON:', parsed);
+      content = parsed;
+    } catch (e) {
+      console.log('⚠️ Content is a string but not JSON, treating as HTML');
+      // Try to convert HTML string to TipTap JSON
+      try {
+        const converted = generateJSON(content, editorExtensionsForConversion);
+        console.log('✅ Successfully converted HTML string to TipTap JSON');
+        return converted;
+      } catch (conversionError) {
+        console.error('❌ Failed to convert HTML string to TipTap JSON:', conversionError);
+        return { type: 'doc', content: [] };
+      }
+    }
+  }
+  
+  // Check if content has html/delta properties (Quill format - convert HTML to TipTap JSON)
+  if (content && typeof content === 'object' && ('html' in content || 'delta' in content)) {
+    console.log('🔧 Detected html/delta format, converting HTML to TipTap JSON...');
+    const htmlContent = content.html;
+    
+    if (htmlContent && typeof htmlContent === 'string') {
+      try {
+        const converted = generateJSON(htmlContent, editorExtensionsForConversion);
+        console.log('✅ Successfully converted HTML to TipTap JSON');
+        console.log('🔍 Converted structure:', {
+          type: converted?.type,
+          hasContent: !!converted?.content,
+          contentLength: converted?.content?.length || 0
+        });
+        return converted;
+      } catch (conversionError) {
+        console.error('❌ Failed to convert HTML to TipTap JSON:', conversionError);
+        console.error('❌ HTML content (first 500 chars):', htmlContent.substring(0, 500));
+        return { type: 'doc', content: [] };
+      }
+    } else {
+      console.error('❌ Content has html/delta but html is not a string:', typeof htmlContent);
+      return { type: 'doc', content: [] };
+    }
+  }
+  
+  // Check if content is a valid TipTap JSON structure (should have type: 'doc' at root)
+  if (content && typeof content === 'object' && content.type === 'doc') {
+    // Validate that it has a content array
+    if (Array.isArray(content.content)) {
+      console.log('✅ Valid TipTap JSON structure detected with content array');
+      return content;
+    } else {
+      console.warn('⚠️ TipTap doc structure but no content array, adding empty array');
+      return { type: 'doc', content: content.content || [] };
+    }
+  }
+  
+  // If content is an object but not a valid TipTap doc, try to wrap it
+  if (content && typeof content === 'object') {
+    // Check if it's already an array (might be content array directly)
+    if (Array.isArray(content)) {
+      console.log('⚠️ Content is an array, wrapping in doc');
+      return { type: 'doc', content: content };
+    }
+    
+    // Check if it looks like it might be a single node (has type property)
+    if (content.type && content.content !== undefined) {
+      // It might be a node, wrap it in a doc
+      console.log('⚠️ Content looks like a single node, wrapping in doc');
+      return { type: 'doc', content: [content] };
+    }
+    
+    // Check if it has a content property that's an array
+    if (content.content && Array.isArray(content.content)) {
+      console.log('⚠️ Content has content array but no type:doc, wrapping in doc');
+      return { type: 'doc', content: content.content };
+    }
+    
+    console.error('❌ Unknown content structure - cannot normalize');
+    console.error('❌ Content:', JSON.stringify(content, null, 2).substring(0, 500));
+    return { type: 'doc', content: [] };
+  }
+  
+  // Fallback: return empty doc
+  console.error('❌ Could not normalize content - unsupported type or structure');
+  console.error('❌ Content:', content);
+  return { type: 'doc', content: [] };
+}
+
 function preprocessTemplatePlaceholders(content: any): any {
   console.log('🔧 preprocessTemplatePlaceholders called with:', content);
+  
+  // First normalize the content to ensure it's valid TipTap JSON
+  const normalizedContent = normalizeTiptapContent(content);
+  
   let textId = 1;
   let signatureId = 1;
 
@@ -424,7 +583,7 @@ function preprocessTemplatePlaceholders(content: any): any {
     return content;
   }
 
-  const result = processContent(content);
+  const result = processContent(normalizedContent);
   console.log('🔧 preprocessTemplatePlaceholders result:', result);
   return result;
 }
@@ -476,43 +635,6 @@ function buildPaymentPlan(finalAmount: number, archivalFee: number) {
   return plan;
 }
 
-// Helper function to get currency from lead data
-const getLeadCurrency = async (client: any): Promise<string> => {
-  if (!client) return '₪'; // Default fallback
-  
-  const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
-  
-  if (isLegacyLead) {
-    // For legacy leads, fetch currency from accounting_currencies table
-    if (client.currency_id) {
-      try {
-        const { data: currencyData, error } = await supabase
-          .from('accounting_currencies')
-          .select('iso_code, name')
-          .eq('id', client.currency_id)
-          .single();
-        
-        if (!error && currencyData) {
-          // Return the symbol based on ISO code
-          const isoCode = currencyData.iso_code?.toUpperCase();
-          if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
-          if (isoCode === 'USD') return '$';
-          if (isoCode === 'EUR') return '€';
-          if (isoCode === 'GBP') return '£';
-          // Return the ISO code if no symbol match
-          return isoCode || currencyData.name || '₪';
-        }
-      } catch (error) {
-        console.error('Error fetching currency for legacy lead:', error);
-      }
-    }
-    // Fallback for legacy leads without currency_id
-    return '₪';
-  } else {
-    // For new leads, use balance_currency or proposal_currency
-    return client.balance_currency || client.proposal_currency || '₪';
-  }
-};
 
 const ContractPage: React.FC = () => {
   const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber?: string; contractId?: string }>();
@@ -528,7 +650,6 @@ const ContractPage: React.FC = () => {
   const [template, setTemplate] = useState<any>(null);
   const [client, setClient] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [leadCurrency, setLeadCurrency] = useState<string>('₪'); // Store the lead's currency
 
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
   const [editing, setEditing] = useState(false);
@@ -537,6 +658,16 @@ const ContractPage: React.FC = () => {
   // Editable right panel state
   const [customPricing, setCustomPricing] = useState<any>(null);
   const [renderKey, setRenderKey] = useState(0);
+  
+  // Currency selection state
+  const [currencyType, setCurrencyType] = useState<'USD' | 'NIS'>('USD'); // Main currency type (USD or NIS)
+  const [subCurrency, setSubCurrency] = useState<'USD' | 'GBP' | 'EUR'>('USD'); // Sub-currency for USD type
+  
+  // Template change modal state
+  const [showChangeTemplateModal, setShowChangeTemplateModal] = useState(false);
+  const [availableTemplates, setAvailableTemplates] = useState<any[]>([]);
+  const [templateSearchQuery, setTemplateSearchQuery] = useState('');
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
 
   // TipTap editor setup for editing - must be called before any early returns
   const editor = useEditor({
@@ -647,8 +778,6 @@ const ContractPage: React.FC = () => {
               balance_currency: currency, // Store currency for consistency
             };
             
-            // Set the lead currency
-            setLeadCurrency(currency);
           }
         } else {
           // For new leads, fetch from leads table
@@ -666,10 +795,6 @@ const ContractPage: React.FC = () => {
           }
 
           clientData = newClient;
-          
-          // Set currency from new lead
-          const currency = newClient.balance_currency || newClient.proposal_currency || '₪';
-          setLeadCurrency(currency);
         }
 
         console.log('ContractPage: fetchClient - setting client data:', clientData);
@@ -700,7 +825,10 @@ const ContractPage: React.FC = () => {
             contract_templates (
               id,
               name,
-              content
+              content,
+              default_pricing_tiers_usd,
+              default_pricing_tiers_nis,
+              default_pricing_tiers
             )
           `);
 
@@ -834,15 +962,64 @@ const ContractPage: React.FC = () => {
           clientLoaded = true;
         }
 
+        // Fetch template - check if it's a legacy template or new template
+        let templateData = contractData.contract_templates;
+        
+        // If no template from join, check if we need to fetch from misc_contracttemplate (legacy)
+        // This can happen if:
+        // 1. template_id is set but join didn't work
+        // 2. template_id is NULL and legacy_template_id is in custom_pricing (new scenario)
+        if (!templateData) {
+          // First check if template_id is set
+          if (contractData.template_id) {
+            console.log('ContractPage: No template from join, checking if legacy template:', contractData.template_id);
+            const isLegacyTemplate = !isNaN(Number(contractData.template_id)) || contractData.template_id.toString().startsWith('legacy_');
+            
+            if (isLegacyTemplate) {
+              const templateId = contractData.template_id.toString().replace('legacy_', '');
+              console.log('ContractPage: Fetching legacy template from misc_contracttemplate:', templateId);
+              const { data: legacyTemplate, error: legacyTemplateError } = await supabase
+                .from('misc_contracttemplate')
+                .select('*')
+                .eq('id', templateId)
+                .single();
+              
+              if (!legacyTemplateError && legacyTemplate) {
+                console.log('ContractPage: Found legacy template:', legacyTemplate);
+                templateData = legacyTemplate;
+              } else {
+                console.error('ContractPage: Error fetching legacy template:', legacyTemplateError);
+              }
+            }
+          }
+          // If template_id is NULL, check for legacy_template_id in custom_pricing
+          else if (contractData.custom_pricing?.legacy_template_id) {
+            const legacyTemplateId = contractData.custom_pricing.legacy_template_id;
+            console.log('ContractPage: template_id is NULL, fetching legacy template from custom_pricing.legacy_template_id:', legacyTemplateId);
+            const { data: legacyTemplate, error: legacyTemplateError } = await supabase
+              .from('misc_contracttemplate')
+              .select('*')
+              .eq('id', legacyTemplateId)
+              .single();
+            
+            if (!legacyTemplateError && legacyTemplate) {
+              console.log('ContractPage: Found legacy template from custom_pricing:', legacyTemplate);
+              templateData = legacyTemplate;
+            } else {
+              console.error('ContractPage: Error fetching legacy template from custom_pricing:', legacyTemplateError);
+            }
+          }
+        }
+
         // Set the template if available
-        if (contractData.contract_templates) {
-          console.log('Original template content:', contractData.contract_templates.content);
+        if (templateData) {
+          console.log('Original template content:', templateData.content);
           // Process template to add text and signature placeholders
           const processedTemplate = {
-            ...contractData.contract_templates,
-            content: contractData.contract_templates.content ?
-              preprocessTemplatePlaceholders(contractData.contract_templates.content) :
-              contractData.contract_templates.content
+            ...templateData,
+            content: templateData.content ?
+              preprocessTemplatePlaceholders(templateData.content) :
+              templateData.content
           };
           console.log('📋 Processed template content:', processedTemplate.content);
           console.log('📋 Setting template:', processedTemplate);
@@ -851,7 +1028,10 @@ const ContractPage: React.FC = () => {
           // Immediately set the editor content if editor is available
           if (editor && processedTemplate.content) {
             console.log('🎯 Setting editor content immediately:', processedTemplate.content);
-            let processedContent = JSON.parse(JSON.stringify(processedTemplate.content)); // Deep clone
+            
+            // Normalize content to ensure it's valid TipTap JSON
+            let processedContent = normalizeTiptapContent(processedTemplate.content);
+            processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
 
             if (customPricing && client) {
               // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
@@ -860,84 +1040,190 @@ const ContractPage: React.FC = () => {
 
             // Clean up any empty nodes
             processedContent = cleanTiptapContent(processedContent);
-            editor.commands.setContent(processedContent);
-            editor.setEditable(editing);
-          }
-        }
-
-        // Get currency from client if available, otherwise use contract's currency or default
-        let currencyToUse = leadCurrency || '₪';
-        if (!currencyToUse || currencyToUse === '₪') {
-          // If we don't have client currency yet, try to get it from the contract's client_id
-          if (contractData.client_id && !client) {
-            // Try to fetch client to get currency
+            
+            // Final validation before setting content
+            if (!processedContent || processedContent.type !== 'doc') {
+              console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
+              processedContent = { type: 'doc', content: [] };
+            }
+            
             try {
-              // Try new leads first
-              const { data: leadData } = await supabase
-                .from('leads')
-                .select('balance_currency, proposal_currency')
-                .eq('id', contractData.client_id)
-                .single();
-              
-              if (leadData) {
-                currencyToUse = leadData.balance_currency || leadData.proposal_currency || '₪';
-              } else {
-                // Try legacy leads
-                const legacyId = contractData.client_id.toString().replace('legacy_', '');
-                const { data: legacyData } = await supabase
-                  .from('leads_lead')
-                  .select(`
-                    currency_id,
-                    accounting_currencies!leads_lead_currency_id_fkey (
-                      iso_code,
-                      name
-                    )
-                  `)
-                  .eq('id', legacyId)
-                  .single();
-                
-                const currencyData = legacyData?.accounting_currencies 
-                  ? (Array.isArray(legacyData.accounting_currencies) 
-                      ? legacyData.accounting_currencies[0] 
-                      : legacyData.accounting_currencies)
-                  : null;
-                if (currencyData) {
-                  const isoCode = currencyData.iso_code?.toUpperCase();
-                  if (isoCode === 'ILS' || isoCode === 'NIS') currencyToUse = '₪';
-                  else if (isoCode === 'USD') currencyToUse = '$';
-                  else if (isoCode === 'EUR') currencyToUse = '€';
-                  else if (isoCode === 'GBP') currencyToUse = '£';
-                  else currencyToUse = isoCode || currencyData.name || '₪';
-                }
-              }
+              editor.commands.setContent(processedContent);
+              editor.setEditable(editing);
             } catch (error) {
-              console.error('Error fetching currency from contract client_id:', error);
+              console.error('❌ Error setting editor content:', error);
+              console.error('❌ Content that failed:', processedContent);
+              // Try with empty doc as fallback
+              editor.commands.setContent({ type: 'doc', content: [] });
+              editor.setEditable(editing);
             }
           }
         }
 
+        // Get currency symbol based on selection
+        const getCurrencySymbol = (type: 'USD' | 'NIS', sub?: 'USD' | 'GBP' | 'EUR') => {
+          if (type === 'NIS') return '₪';
+          if (sub === 'EUR') return '€';
+          if (sub === 'GBP') return '£';
+          return '$';
+        };
+        
         // Set the custom pricing if available
         if (contractData.custom_pricing) {
           console.log('ContractPage: Setting custom pricing:', contractData.custom_pricing);
-          // Update currency to match lead's currency
+          // Determine currency type from existing pricing (use contract's currency, not lead's)
+          const existingCurrency = contractData.custom_pricing.currency || templateData?.default_currency || '$';
+          const existingIsNIS = existingCurrency === '₪' || existingCurrency === 'ILS' || existingCurrency === 'NIS';
+          const existingCurrencyType = existingIsNIS ? 'NIS' : 'USD';
+          let existingSubCurrency: 'USD' | 'GBP' | 'EUR' = 'USD';
+          if (!existingIsNIS) {
+            if (existingCurrency === '€' || existingCurrency === 'EUR') existingSubCurrency = 'EUR';
+            else if (existingCurrency === '£' || existingCurrency === 'GBP') existingSubCurrency = 'GBP';
+            else existingSubCurrency = 'USD';
+          }
+          
+          setCurrencyType(existingCurrencyType);
+          if (!existingIsNIS) setSubCurrency(existingSubCurrency);
+          
+          // Refresh pricing tiers from template defaults while keeping user customizations
+          let refreshedPricingTiers: { [key: string]: number } = { ...contractData.custom_pricing.pricing_tiers };
+          
+          if (templateData) {
+            // Get fresh pricing tiers from template based on currency type
+            let templatePricingTiers: { [key: string]: number } = {};
+            if (existingCurrencyType === 'NIS' && templateData.default_pricing_tiers_nis) {
+              templatePricingTiers = templateData.default_pricing_tiers_nis;
+            } else if (existingCurrencyType === 'USD' && templateData.default_pricing_tiers_usd) {
+              templatePricingTiers = templateData.default_pricing_tiers_usd;
+            } else if (templateData.default_pricing_tiers) {
+              // Fallback to legacy default_pricing_tiers
+              templatePricingTiers = templateData.default_pricing_tiers;
+            }
+            
+            // Update pricing tiers with fresh template defaults
+            if (Object.keys(templatePricingTiers).length > 0) {
+              console.log('ContractPage: Refreshing pricing tiers from template defaults:', templatePricingTiers);
+              refreshedPricingTiers = { ...templatePricingTiers };
+            }
+          }
+          
+          // Recalculate totals if pricing tiers were updated
+          const applicantCount = contractData.custom_pricing.applicant_count || contractData.applicant_count || 1;
+          const getCurrentTierKey = (count: number) => {
+            if (count === 1) return '1';
+            if (count === 2) return '2';
+            if (count === 3) return '3';
+            if (count >= 4 && count <= 7) return '4-7';
+            if (count >= 8 && count <= 9) return '8-9';
+            if (count >= 10 && count <= 15) return '10-15';
+            return '16+';
+          };
+          
+          const currentTierKey = getCurrentTierKey(applicantCount);
+          const currentPricePerApplicant = refreshedPricingTiers[currentTierKey] || contractData.custom_pricing.pricing_tiers?.[currentTierKey] || 0;
+          
+          // Recalculate total_amount based on refreshed pricing tiers
+          const recalculatedTotal = currentPricePerApplicant * applicantCount;
+          
+          // Preserve user customizations but update pricing tiers and recalculated totals
           const pricingWithVat = {
             ...contractData.custom_pricing,
-            currency: currencyToUse, // Use lead's currency
+            pricing_tiers: refreshedPricingTiers, // Use fresh template defaults
+            total_amount: recalculatedTotal, // Recalculate based on fresh tiers
+            // Recalculate final_amount if no discount, otherwise preserve discount but update base
+            final_amount: contractData.custom_pricing.discount_percentage 
+              ? Math.round(recalculatedTotal * (1 - (contractData.custom_pricing.discount_percentage / 100)))
+              : recalculatedTotal,
+            discount_amount: contractData.custom_pricing.discount_percentage
+              ? Math.round(recalculatedTotal * (contractData.custom_pricing.discount_percentage / 100))
+              : 0,
             payment_plan: null // This will trigger the useEffect to recalculate with VAT
           };
+          
+          console.log('ContractPage: Updated pricing with fresh template defaults:', pricingWithVat);
           setCustomPricing(pricingWithVat);
+          
+          // Save refreshed pricing tiers to database to persist template defaults
+          // Save asynchronously to avoid blocking
+          (async () => {
+            try {
+              const { error } = await supabase
+                .from('contracts')
+                .update({ custom_pricing: pricingWithVat })
+                .eq('id', contractData.id);
+              if (error) {
+                console.error('ContractPage: Error saving refreshed pricing tiers:', error);
+              } else {
+                console.log('ContractPage: Successfully saved refreshed pricing tiers to database');
+                // Update local contract state to reflect saved pricing
+                setContract((prev: any) => ({ ...prev, custom_pricing: pricingWithVat }));
+              }
+            } catch (err) {
+              console.error('ContractPage: Exception saving refreshed pricing tiers:', err);
+            }
+          })();
         } else {
           console.log('ContractPage: No custom pricing found in contract data, initializing with defaults');
-          // Initialize with default pricing structure using lead's currency
+          
+          // Get currency from template (not from lead)
+          // Check if we have templateData (which could be from contract_templates or misc_contracttemplate)
+          const templateCurrency = templateData?.default_currency || '$';
+          const isNIS = templateCurrency === '₪' || templateCurrency === 'ILS' || templateCurrency === 'NIS';
+          const initialCurrencyType: 'USD' | 'NIS' = isNIS ? 'NIS' : 'USD';
+          let initialSubCurrency: 'USD' | 'GBP' | 'EUR' = 'USD';
+          if (!isNIS) {
+            if (templateCurrency === '€' || templateCurrency === 'EUR') initialSubCurrency = 'EUR';
+            else if (templateCurrency === '£' || templateCurrency === 'GBP') initialSubCurrency = 'GBP';
+            else initialSubCurrency = 'USD';
+          }
+          
+          // Set currency type and sub-currency state
+          setCurrencyType(initialCurrencyType);
+          if (!isNIS) {
+            setSubCurrency(initialSubCurrency);
+          }
+          
+          // Get pricing tiers from template based on currency type
+          // Works for both contract_templates and misc_contracttemplate
+          let pricingTiers: { [key: string]: number } = {};
+          
+          if (templateData) {
+            if (initialCurrencyType === 'NIS' && templateData.default_pricing_tiers_nis) {
+              pricingTiers = templateData.default_pricing_tiers_nis;
+            } else if (initialCurrencyType === 'USD' && templateData.default_pricing_tiers_usd) {
+              pricingTiers = templateData.default_pricing_tiers_usd;
+            } else if (templateData.default_pricing_tiers) {
+              // Fallback to legacy default_pricing_tiers
+              pricingTiers = templateData.default_pricing_tiers;
+            }
+          }
+          
+          // Calculate initial totals from pricing tiers
+          const applicantCount = contractData.applicant_count || 1;
+          const getCurrentTierKey = (count: number) => {
+            if (count === 1) return '1';
+            if (count === 2) return '2';
+            if (count === 3) return '3';
+            if (count >= 4 && count <= 7) return '4-7';
+            if (count >= 8 && count <= 9) return '8-9';
+            if (count >= 10 && count <= 15) return '10-15';
+            return '16+';
+          };
+          
+          const currentTierKey = getCurrentTierKey(applicantCount);
+          const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
+          const total = currentPricePerApplicant * applicantCount;
+          
+          // Initialize with default pricing structure using template pricing tiers
           const defaultPricing = {
-            applicant_count: contractData.applicant_count || 1,
-            pricing_tiers: {},
-            total_amount: 0,
+            applicant_count: applicantCount,
+            pricing_tiers: pricingTiers,
+            total_amount: total,
             discount_percentage: 0,
             discount_amount: 0,
-            final_amount: 0,
+            final_amount: total,
             payment_plan: [],
-            currency: currencyToUse, // Use lead's currency instead of client_country
+            currency: getCurrencySymbol(initialCurrencyType, initialSubCurrency),
             archival_research_fee: 0,
           };
           console.log('ContractPage: Setting default pricing with currency:', defaultPricing);
@@ -981,6 +1267,107 @@ const ContractPage: React.FC = () => {
       setLoading(false);
     }
   }, [leadNumber, contractId]);
+
+  // Fetch templates when modal opens
+  useEffect(() => {
+    if (showChangeTemplateModal) {
+      const fetchTemplates = async () => {
+        try {
+          const [newTemplatesResult, legacyTemplatesResult] = await Promise.all([
+            supabase
+              .from('contract_templates')
+              .select('id, name, content, active')
+              .eq('active', true)
+              .order('name', { ascending: true }),
+            supabase
+              .from('misc_contracttemplate')
+              .select('id, name, content, active')
+              .order('name', { ascending: true })
+          ]);
+
+          const allTemplates: any[] = [];
+
+          if (newTemplatesResult.data) {
+            allTemplates.push(...newTemplatesResult.data.map((t: any) => ({ ...t, id: String(t.id) })));
+          }
+
+          if (legacyTemplatesResult.data) {
+            const activeLegacy = legacyTemplatesResult.data.filter((t: any) => 
+              t.active === true || t.active === 't' || t.active === 1
+            );
+            allTemplates.push(...activeLegacy.map((t: any) => ({ ...t, id: String(t.id) })));
+          }
+
+          setAvailableTemplates(allTemplates);
+        } catch (error) {
+          console.error('Error fetching templates:', error);
+        }
+      };
+
+      fetchTemplates();
+    }
+  }, [showChangeTemplateModal]);
+
+  // Handle template change
+  const handleTemplateChange = async (newTemplateId: string) => {
+    if (!contract || !contractId) return;
+
+    try {
+      // Update contract template_id
+      const { error } = await supabase
+        .from('contracts')
+        .update({ template_id: newTemplateId })
+        .eq('id', contractId);
+
+      if (error) throw error;
+
+      // Fetch new template
+      const newTemplate = availableTemplates.find(t => t.id === newTemplateId);
+      if (newTemplate) {
+        // Fetch full template content
+        let fullTemplate;
+        const isLegacyTemplate = !isNaN(Number(newTemplateId)) || newTemplateId.startsWith('legacy_');
+        
+        if (isLegacyTemplate) {
+          const { data } = await supabase
+            .from('misc_contracttemplate')
+            .select('*')
+            .eq('id', newTemplateId)
+            .single();
+          fullTemplate = data;
+        } else {
+          const { data } = await supabase
+            .from('contract_templates')
+            .select('*')
+            .eq('id', newTemplateId)
+            .single();
+          fullTemplate = data;
+        }
+
+        if (fullTemplate) {
+          setTemplate(fullTemplate);
+          // Update editor content
+          if (editor && fullTemplate.content) {
+            const normalizedContent = normalizeTiptapContent(fullTemplate.content);
+            try {
+              editor.commands.setContent(normalizedContent);
+            } catch (error) {
+              console.error('❌ Error setting editor content after template change:', error);
+              editor.commands.setContent({ type: 'doc', content: [] });
+            }
+          }
+          // Refresh contract
+          window.location.reload();
+        }
+      }
+
+      setShowChangeTemplateModal(false);
+      setTemplateSearchQuery('');
+    } catch (error) {
+      console.error('Error changing template:', error);
+      alert('Failed to change template');
+    }
+  };
 
   // Set loading to false when both contract and client are loaded (for contractId-only routes)
   useEffect(() => {
@@ -1026,7 +1413,9 @@ const ContractPage: React.FC = () => {
       if (content) {
         // ALWAYS process the content the same way for both edit and view modes
         // This ensures consistent paragraph structure and spacing
-        let processedContent = JSON.parse(JSON.stringify(content)); // Deep clone
+        // First normalize to ensure valid TipTap JSON
+        let processedContent = normalizeTiptapContent(content);
+        processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
 
         if (customPricing && client) {
           // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
@@ -1035,8 +1424,21 @@ const ContractPage: React.FC = () => {
 
         // Clean up any empty nodes
         processedContent = cleanTiptapContent(processedContent);
+        
+        // Final validation before setting content
+        if (!processedContent || processedContent.type !== 'doc') {
+          console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
+          processedContent = { type: 'doc', content: [] };
+        }
+        
         console.log('🎯 Setting processed content for both modes:', processedContent);
-        editor.commands.setContent(processedContent);
+        try {
+          editor.commands.setContent(processedContent);
+        } catch (error) {
+          console.error('❌ Error setting editor content:', error);
+          console.error('❌ Content that failed:', processedContent);
+          editor.commands.setContent({ type: 'doc', content: [] });
+        }
       }
 
       // Set editability
@@ -1048,7 +1450,10 @@ const ContractPage: React.FC = () => {
   useEffect(() => {
     if (editor && template && template.content && !contract?.custom_content) {
       console.log('🎯 Initial template load - setting editor content:', template.content);
-      let processedContent = JSON.parse(JSON.stringify(template.content)); // Deep clone
+      
+      // First normalize to ensure valid TipTap JSON
+      let processedContent = normalizeTiptapContent(template.content);
+      processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
 
       if (customPricing && client) {
         // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
@@ -1057,21 +1462,25 @@ const ContractPage: React.FC = () => {
 
       // Clean up any empty nodes
       processedContent = cleanTiptapContent(processedContent);
-      editor.commands.setContent(processedContent);
-      editor.setEditable(editing);
+      
+      // Final validation before setting content
+      if (!processedContent || processedContent.type !== 'doc') {
+        console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
+        processedContent = { type: 'doc', content: [] };
+      }
+      
+      try {
+        editor.commands.setContent(processedContent);
+        editor.setEditable(editing);
+      } catch (error) {
+        console.error('❌ Error setting editor content on initial template load:', error);
+        console.error('❌ Content that failed:', processedContent);
+        editor.commands.setContent({ type: 'doc', content: [] });
+        editor.setEditable(editing);
+      }
     }
   }, [editor, template, contract?.custom_content, editing, customPricing, client, contract]);
 
-  // Update customPricing currency when leadCurrency changes
-  useEffect(() => {
-    if (leadCurrency && customPricing && customPricing.currency !== leadCurrency) {
-      console.log('ContractPage: Updating currency from', customPricing.currency, 'to', leadCurrency);
-      setCustomPricing((prev: any) => ({
-        ...prev,
-        currency: leadCurrency
-      }));
-    }
-  }, [leadCurrency, customPricing]);
 
   // Save handler for edited contract
   const handleSaveEdit = async () => {
@@ -1135,7 +1544,7 @@ const ContractPage: React.FC = () => {
     const archivalFee = customPricing.archival_research_fee || 0;
     const totalAmount = customPricing.total_amount || 0;
     const discountAmount = customPricing?.discount_amount || 0;
-    const currency = leadCurrency || customPricing?.currency || '₪';
+    const currency = customPricing?.currency || '₪';
     const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
 
     // Check if payment plan needs VAT calculation
@@ -1175,7 +1584,7 @@ const ContractPage: React.FC = () => {
   useEffect(() => {
     if (!customPricing || !customPricing.payment_plan) return;
     
-    const currency = leadCurrency || customPricing?.currency || '₪';
+    const currency = customPricing?.currency || '₪';
     const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
     const currentPaymentPlan = customPricing.payment_plan;
     
@@ -1192,7 +1601,7 @@ const ContractPage: React.FC = () => {
         _forceVatCalculation: Date.now() 
       }));
     }
-  }, [customPricing?.payment_plan, leadCurrency, customPricing?.currency]);
+  }, [customPricing?.payment_plan, customPricing?.currency]);
 
   // Discount options
   const discountOptions = [0, 5, 10, 15, 20];
@@ -1223,7 +1632,7 @@ const ContractPage: React.FC = () => {
     // Calculate final amount with VAT for payment plan calculations
     const archivalFee = customPricing?.archival_research_fee || 0;
     const baseTotal = total + archivalFee;
-    const currency = leadCurrency || customPricing?.currency || '₪';
+    const currency = customPricing?.currency || '₪';
     const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
 
     // Calculate VAT on the discounted amount (baseTotal - discountAmount)
@@ -1501,7 +1910,7 @@ const ContractPage: React.FC = () => {
     // Update local contract state
     setContract((prev: any) => ({ ...prev, client_country: newCountry }));
     // Recalculate pricing tiers and currency - use lead's currency instead
-    const currency = leadCurrency || '₪';
+    const currency = customPricing?.currency || '₪';
     const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
     // Rebuild pricing tiers
     const pricingTiers: { [key: string]: number } = {};
@@ -1537,27 +1946,22 @@ const ContractPage: React.FC = () => {
       }));
     }
     // Update customPricing
-    setCustomPricing((prev: any) => ({
-      ...prev,
+    const updatedPricing = {
+      ...customPricing,
       pricing_tiers: pricingTiers,
       currency,
       total_amount: total,
       discount_amount: discountAmount,
       final_amount: finalAmount,
       payment_plan: paymentPlan,
-    }));
+    };
+    setCustomPricing(updatedPricing);
+    setRenderKey(prev => prev + 1); // Force re-render of editor content
     // Save to DB
     await supabase.from('contracts').update({
-      custom_pricing: {
-        ...customPricing,
-        pricing_tiers: pricingTiers,
-        currency,
-        total_amount: total,
-        discount_amount: discountAmount,
-        final_amount: finalAmount,
-        payment_plan: paymentPlan,
-      }
+      custom_pricing: updatedPricing
     }).eq('id', contract.id);
+    setContract((prev: any) => ({ ...prev, custom_pricing: updatedPricing }));
   };
 
   // Helper to render TipTap JSON as React elements, with support for dynamic fields in 'View as Client' mode
@@ -1594,7 +1998,343 @@ const ContractPage: React.FC = () => {
     if (content.type === 'text') {
       let text = content.text;
 
-      // Always render {{text}} and {{signature}} as input fields and signature pads
+      // Check for date placeholders first - handle {{date:ID}} before other placeholders
+      if (text && /\{\{date:([^}]+)\}\}/.test(text)) {
+        const parts = [];
+        let lastIndex = 0;
+        const dateRegex = /\{\{date:([^}]+)\}\}/g;
+        let dateMatch;
+
+        while ((dateMatch = dateRegex.exec(text)) !== null) {
+          if (dateMatch.index > lastIndex) {
+            const normalText = text.slice(lastIndex, dateMatch.index);
+            parts.push(normalText);
+          }
+          const id = dateMatch[1];
+          const dateValue = clientInputs[id] || '';
+          
+          parts.push(
+            <span 
+              key={id}
+              className="inline-block relative field-wrapper"
+              style={{ verticalAlign: 'middle' }}
+              data-field-id={id}
+              data-field-type="date"
+            >
+              <input
+                type="date"
+                className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
+                value={dateValue ? (() => {
+                  // Ensure the value is in YYYY-MM-DD format for date inputs
+                  if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+                    return dateValue;
+                  }
+                  try {
+                    const date = new Date(dateValue);
+                    if (!isNaN(date.getTime())) {
+                      const year = date.getFullYear();
+                      const month = String(date.getMonth() + 1).padStart(2, '0');
+                      const day = String(date.getDate()).padStart(2, '0');
+                      return `${year}-${month}-${day}`;
+                    }
+                  } catch (e) {
+                  }
+                  return '';
+                })() : ''}
+                onChange={e => {
+                  const selectedDate = e.target.value;
+                  setClientInputs(inputs => ({ ...inputs, [id]: selectedDate }));
+                }}
+                disabled={isReadOnly}
+                required
+                aria-label="Select date (required)"
+                placeholder=""
+                readOnly={false}
+                autoComplete="off"
+                data-input-type="date"
+                style={{ 
+                  minWidth: 180, 
+                  display: 'inline-block', 
+                  verticalAlign: 'middle',
+                  color: '#111827',
+                  WebkitTextFillColor: '#111827',
+                  cursor: isReadOnly ? 'not-allowed' : 'pointer',
+                  appearance: 'auto',
+                  WebkitAppearance: 'menulist',
+                  MozAppearance: 'menulist'
+                }}
+              />
+            </span>
+          );
+          lastIndex = dateRegex.lastIndex;
+        }
+        if (lastIndex < text.length) {
+          parts.push(text.slice(lastIndex));
+        }
+        
+        // After handling date placeholders, process the rest of the text normally
+        // But first, let's recursively process any remaining placeholders
+        return parts.map((part, idx) => {
+          if (typeof part === 'string' && (part.includes('{{text}}') || part.includes('{{signature}}') || part.includes('{{'))) {
+            // If this part still has other placeholders, process it through the normal flow
+            // We'll handle this by creating a temporary text node
+            const tempContent = { type: 'text', text: part };
+            return <React.Fragment key={keyPrefix + '-date-part-' + idx}>
+              {renderTiptapContent(tempContent, keyPrefix + '-date-' + idx, asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
+            </React.Fragment>;
+          }
+          return part;
+        });
+      }
+
+      // First, handle payment plan row placeholders - MUST be before text:ID processing to avoid early return
+      if (text && text.includes('{{payment_plan_row}}') && customPricing && customPricing.payment_plan) {
+        if (!paymentPlanIndex) paymentPlanIndex = { current: 0 };
+        let result: (string | JSX.Element)[] = [];
+        let lastIdx = 0;
+        let match;
+        const regex = /\{\{payment_plan_row\}\}/g;
+        while ((match = regex.exec(text)) !== null) {
+          if (match.index > lastIdx) {
+            result.push(text.slice(lastIdx, match.index));
+          }
+          const rowIndex = paymentPlanIndex.current;
+          const row = customPricing.payment_plan[rowIndex];
+          paymentPlanIndex.current++;
+          if (row) {
+            // Handle the new value format "value + VAT" or just "value"
+            let displayValue = '0';
+            if (row.value) {
+              if (typeof row.value === 'string' && row.value.includes('+')) {
+                // Parse "value + VAT" format
+                const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
+                const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
+                displayValue = totalValue.toLocaleString();
+              } else {
+                // Handle numeric value or simple string
+                const numValue = parseFloat(row.value) || 0;
+                displayValue = numValue.toLocaleString();
+              }
+            }
+
+            result.push(
+              <span className="inline-block text-black font-medium border-b-2 border-black" key={keyPrefix + '-pprow-' + rowIndex}>
+                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {displayValue}
+              </span>
+            );
+          } else {
+            result.push('');
+          }
+          lastIdx = match.index + match[0].length;
+        }
+        if (lastIdx < text.length) {
+          result.push(text.slice(lastIdx));
+        }
+        // Recursively process any remaining placeholders in the result
+        if (result.length > 0) {
+          const processedResult = result.map((part, idx) => {
+            if (typeof part === 'string' && (part.includes('{{text') || part.includes('{{date') || part.includes('{{signature'))) {
+              // Process remaining placeholders in this text part
+              const tempContent = { type: 'text', text: part };
+              return renderTiptapContent(tempContent, keyPrefix + '-pprow-' + idx, asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex);
+            }
+            return part;
+          });
+          // Flatten the result in case recursive calls return arrays
+          return processedResult.flat().filter(item => item !== null && item !== undefined);
+        }
+      }
+
+      // Now handle {{text:ID}}, {{date:ID}}, and {{signature:ID}} placeholders (with IDs)
+      // Check specifically for placeholders WITH IDs (the :ID part is required)
+      if (text && /\{\{(text|date|signature):[^}]+\}\}/.test(text)) {
+        const parts = [];
+        let lastIndex = 0;
+        // Match ONLY placeholders with IDs (require the :ID part)
+        const regex = /({{text:[^}]+}}|{{date:[^}]+}}|{{signature:[^}]+}}|\n)/g;
+        let match;
+
+        while ((match = regex.exec(text)) !== null) {
+          if (match.index > lastIndex) {
+            const normalText = text.slice(lastIndex, match.index);
+            parts.push(normalText);
+          }
+          const placeholder = match[1];
+          
+          // Parse the placeholder - all these have IDs
+          const textMatch = placeholder.match(/^{{text:([^}]+)}}$/);
+          const dateMatch = placeholder.match(/^{{date:([^}]+)}}$/);
+          const sigMatch = placeholder.match(/^{{signature:([^}]+)}}$/);
+          
+          // Handle date fields first
+          if (dateMatch) {
+            const baseId = dateMatch[1];
+            const dateValue = clientInputs[baseId] || '';
+            
+            parts.push(
+              <span 
+                key={baseId}
+                className="inline-block relative field-wrapper"
+                style={{ verticalAlign: 'middle' }}
+                data-field-id={baseId}
+                data-field-type="date"
+              >
+                <input
+                  type="date"
+                  className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
+                  value={dateValue ? (() => {
+                    if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+                      return dateValue;
+                    }
+                    try {
+                      const date = new Date(dateValue);
+                      if (!isNaN(date.getTime())) {
+                        const year = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        return `${year}-${month}-${day}`;
+                      }
+                    } catch (e) {
+                    }
+                    return '';
+                  })() : ''}
+                  onChange={e => {
+                    const selectedDate = e.target.value;
+                    setClientInputs(inputs => ({ ...inputs, [baseId]: selectedDate }));
+                  }}
+                  disabled={isReadOnly}
+                  required
+                  aria-label="Select date (required)"
+                  placeholder=""
+                  readOnly={false}
+                  autoComplete="off"
+                  data-input-type="date"
+                  style={{ 
+                    minWidth: 180, 
+                    display: 'inline-block', 
+                    verticalAlign: 'middle',
+                    color: '#111827',
+                    WebkitTextFillColor: '#111827',
+                    cursor: isReadOnly ? 'not-allowed' : 'pointer',
+                    appearance: 'auto',
+                    WebkitAppearance: 'menulist',
+                    MozAppearance: 'menulist'
+                  }}
+                />
+              </span>
+            );
+            lastIndex = match.index + match[1].length;
+            continue;
+          }
+          
+          // Handle text fields with IDs
+          if (textMatch) {
+            // Extract base ID from placeholder (e.g., "applicant" from "{{text:applicant}}")
+            const baseId = textMatch[1];
+            const baseIdLower = baseId.toLowerCase();
+            
+            // Check if this is an applicant field
+            const isApplicantField = baseIdLower.startsWith('text:applicant') || 
+                                     baseIdLower.startsWith('applicant') ||
+                                     baseIdLower.includes('applicant');
+            
+            // For applicant fields, create unique instance ID to prevent state sharing
+            // Use match.index + keyPrefix for stable, unique IDs across renders
+            let id: string;
+            if (isApplicantField) {
+              const uniqueKey = `${keyPrefix}-${match.index}`.replace(/[^a-zA-Z0-9-]/g, '-');
+              id = `${baseId}-${uniqueKey}`;
+            } else {
+              id = baseId;
+            }
+            
+            parts.push(
+              <input
+                key={id}
+                className="input input-bordered input-lg mx-2 bg-white border-2 border-blue-300 focus:border-blue-500"
+                placeholder={isApplicantField ? 'Enter applicant name' : 'Enter text'}
+                style={{ minWidth: 150, display: 'inline-block' }}
+                value={clientInputs[id] || ''}
+                onChange={e => setClientInputs(inputs => ({ ...inputs, [id]: e.target.value }))}
+              />
+            );
+            lastIndex = match.index + match[1].length;
+            continue;
+          }
+          
+          // Handle signature fields with IDs
+          if (sigMatch) {
+            const baseId = sigMatch[1];
+            const signatureData = clientInputs[baseId];
+            
+            if (signatureData && signatureData.startsWith('data:image/')) {
+              parts.push(
+                <span key={baseId} className="inline-block mx-2">
+                  <img
+                    src={signatureData}
+                    alt="Signature"
+                    style={{ width: 200, height: 80, display: 'block', borderRadius: 8, border: '1px solid #ccc' }}
+                  />
+                </span>
+              );
+            } else {
+              parts.push(
+                <div
+                  key={baseId}
+                  className="inline-block mx-2 align-middle"
+                  style={{ minWidth: 220, minHeight: 100 }}
+                >
+                  <div className="border-2 border-blue-300 rounded-lg bg-gray-50 p-3">
+                    <SignaturePad
+                      ref={ref => {
+                        if (ref && signaturePads) signaturePads[baseId] = ref;
+                      }}
+                      penColor="#4c6fff"
+                      backgroundColor="transparent"
+                      canvasProps={{
+                        width: 200,
+                        height: 80,
+                        style: {
+                          display: 'block',
+                          borderRadius: 8,
+                          background: 'transparent',
+                        },
+                      }}
+                      onEnd={() => {
+                        if (signaturePads && signaturePads[baseId]) {
+                          const dataUrl = signaturePads[baseId].getTrimmedCanvas().toDataURL('image/png');
+                          setClientInputs(inputs => ({ ...inputs, [baseId]: dataUrl }));
+                        }
+                      }}
+                    />
+                    <div className="text-xs text-gray-500 text-center mt-2 font-medium">Sign here</div>
+                  </div>
+                </div>
+              );
+            }
+            lastIndex = match.index + match[1].length;
+            continue;
+          }
+          
+          // Handle newline
+          if (placeholder === '\n') {
+            parts.push(<br key={keyPrefix + '-br-' + match.index} />);
+          }
+          lastIndex = match.index + match[1].length;
+        }
+        
+        if (lastIndex < text.length) {
+          parts.push(text.slice(lastIndex));
+        }
+        
+        // If we processed placeholders with IDs, return the parts
+        // Otherwise, continue to process {{text}} and {{signature}} without IDs below
+        if (parts.length > 0) {
+          return parts;
+        }
+      }
+
+      // Always render {{text}} and {{signature}} as input fields and signature pads (placeholders without IDs)
       console.log('🎨 Checking for placeholders in text:', text);
       console.log('🎨 Has placeholders:', /\{\{(text|signature)\}\}/.test(text));
       if (text && /\{\{(text|signature)\}\}/.test(text)) {
@@ -1675,69 +2415,53 @@ const ContractPage: React.FC = () => {
       text = fillAllPlaceholders(text, customPricing, client, contract);
 
       // Robustly replace price_per_applicant for each tier row
-      if (text && customPricing && customPricing.pricing_tiers) {
+      if (text && customPricing && customPricing.pricing_tiers && text.includes('{{price_per_applicant}}')) {
         const currency = customPricing.currency || 'USD';
-        const tierStructure = [
-          { key: '1', label: 'For one applicant' },
-          { key: '2', label: 'For 2 applicants' },
-          { key: '3', label: 'For 3 applicants' },
-          { key: '4-7', label: 'For 4-7 applicants' },
-          { key: '8-9', label: 'For 8-9 applicants' },
-          { key: '10-15', label: 'For 10-15 applicants' },
-          { key: '16+', label: 'For 16 applicants or more' }
-        ];
-        tierStructure.forEach(tier => {
-          // Replace only in the correct line
-          const lineRegex = new RegExp(`(${tier.label}[^\n]*?):?\s*\{\{price_per_applicant\}\}`, 'g');
-          text = text.replace(lineRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
-        });
-      }
-
-      // Handle payment plan row placeholders in client view
-      if (text && text.includes('{{payment_plan_row}}') && customPricing && customPricing.payment_plan) {
-        if (!paymentPlanIndex) paymentPlanIndex = { current: 0 };
-        let result: (string | JSX.Element)[] = [];
-        let lastIdx = 0;
-        let match;
-        const regex = /\{\{payment_plan_row\}\}/g;
-        while ((match = regex.exec(text)) !== null) {
-          if (match.index > lastIdx) {
-            result.push(text.slice(lastIdx, match.index));
+        
+        // Find each {{price_per_applicant}} placeholder and replace it based on context
+        while (text.includes('{{price_per_applicant}}')) {
+          const placeholderIndex = text.indexOf('{{price_per_applicant}}');
+          const contextBefore = text.substring(Math.max(0, placeholderIndex - 150), placeholderIndex);
+          
+          let tierKey: string | null = null;
+          
+          // Check for tier patterns in order of specificity
+          const recentContext = contextBefore.substring(Math.max(0, contextBefore.length - 80));
+          
+          if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(recentContext)) {
+            tierKey = '16+';
+          } else if (/10\s*[-–]\s*15\s+applicant/i.test(recentContext)) {
+            tierKey = '10-15';
+          } else if (/8\s*[-–]\s*9\s+applicant/i.test(recentContext)) {
+            tierKey = '8-9';
+          } else if (/4\s*[-–]\s*7\s+applicant/i.test(recentContext)) {
+            tierKey = '4-7';
+          } else if (/\b3\s+applicant/i.test(recentContext)) {
+            tierKey = '3';
+          } else if (/\b2\s+applicant/i.test(recentContext)) {
+            tierKey = '2';
+          } else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(recentContext)) {
+            tierKey = '1';
           }
-          const rowIndex = paymentPlanIndex.current;
-          const row = customPricing.payment_plan[rowIndex];
-          paymentPlanIndex.current++;
-          if (row) {
-            // Handle the new value format "value + VAT" or just "value"
-            let displayValue = '0';
-            if (row.value) {
-              if (typeof row.value === 'string' && row.value.includes('+')) {
-                // Parse "value + VAT" format
-                const parts = row.value.split('+').map((part: string) => parseFloat(part.trim()) || 0);
-                const totalValue = parts.reduce((sum: number, part: number) => sum + part, 0);
-                displayValue = totalValue.toLocaleString();
-              } else {
-                // Handle numeric value or simple string
-                const numValue = parseFloat(row.value) || 0;
-                displayValue = numValue.toLocaleString();
-              }
-            }
-
-            result.push(
-              <span className="inline-block text-black font-medium border-b-2 border-black" key={keyPrefix + '-pprow-' + rowIndex}>
-                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {displayValue}
-              </span>
-            );
+          
+          // Debug logging
+          if (!tierKey) {
+            console.log('🔍 renderTiptapContent: Could not match tier. Recent context:', recentContext);
+          }
+          
+          if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
+            const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
+            text = text.replace('{{price_per_applicant}}', `${currency} ${price}`);
+            console.log(`✅ renderTiptapContent: Replaced {{price_per_applicant}} for tier ${tierKey} with ${currency} ${price}. Context:`, recentContext);
           } else {
-            result.push('');
+            console.warn('⚠️ renderTiptapContent: Could not determine tier. Recent context:', recentContext);
+            text = text.replace('{{price_per_applicant}}', `${currency} 0`);
           }
-          lastIdx = match.index + match[0].length;
         }
-        if (lastIdx < text.length) {
-          result.push(text.slice(lastIdx));
-        }
-        return result.length > 0 ? result : text;
       }
+
+      // Payment plan row placeholders are now handled at the top (line 2090)
+      // This duplicate handler is removed to avoid conflicts with early returns
 
       // Handle individual pricing tier placeholders
       if (text && customPricing && customPricing.pricing_tiers) {
@@ -1829,7 +2553,9 @@ const ContractPage: React.FC = () => {
         text = text.replace(/{{client_name}}/g, client?.name || '');
         text = text.replace(/{{client_phone}}/g, client?.phone || client?.mobile || '');
         text = text.replace(/{{client_email}}/g, client?.email || '');
-        text = text.replace(/{{date}}/g, new Date().toLocaleDateString());
+        // Don't replace {{date}} - it should be handled as a placeholder or date picker
+        // Only replace generic {{date}} if we're sure it's not meant to be a date picker
+        // text = text.replace(/{{date}}/g, new Date().toLocaleDateString());
       }
 
       // Apply text formatting
@@ -1919,8 +2645,10 @@ const ContractPage: React.FC = () => {
     }
     if (content.type === 'text' && content.text) {
       // Replace all {{text:ID}} and {{signature:ID}} with the value from clientInputs[ID]
+      // But preserve {{date:ID}} placeholders - they should be rendered as date pickers, not replaced with text
       let newText = content.text.replace(/\{\{text:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '')
         .replace(/\{\{signature:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '');
+      // Don't replace date placeholders here - they should remain as placeholders to be rendered as date pickers
       return { ...content, text: newText };
     }
     if (content.content) {
@@ -1967,9 +2695,34 @@ const ContractPage: React.FC = () => {
   const handleDeleteContract = async () => {
     if (!contract) return;
     if (!window.confirm('Are you sure you want to delete this contract? This action cannot be undone.')) return;
-    await supabase.from('contracts').delete().eq('id', contract.id);
-    alert('Contract deleted.');
-    navigate(`/clients/${leadNumber}`);
+    
+    try {
+      const { error } = await supabase
+        .from('contracts')
+        .delete()
+        .eq('id', contract.id);
+      
+      if (error) {
+        console.error('Error deleting contract:', error);
+        alert(`Failed to delete contract: ${error.message}`);
+        return;
+      }
+      
+      alert('Contract deleted successfully.');
+      
+      // Navigate back to client page
+      if (leadNumber) {
+        navigate(`/clients/${leadNumber}`);
+      } else if (client?.id) {
+        const clientLeadNumber = client.lead_number || client.id.toString().replace('legacy_', '');
+        navigate(`/clients/${clientLeadNumber}`);
+      } else {
+        navigate('/clients');
+      }
+    } catch (err: any) {
+      console.error('Exception deleting contract:', err);
+      alert(`Failed to delete contract: ${err.message || 'Unknown error'}`);
+    }
   };
 
   // Render signed contract content (already filled-in by client)
@@ -2419,9 +3172,10 @@ const ContractPage: React.FC = () => {
                     </div>
                   ) : (
                     // For non-signed contracts, use the SAME EditorContent component with identical styling
+                    // Key includes pricing tiers hash to force re-render when any tier price changes
                     <EditorContent
                       editor={editor}
-                      key={`readonly-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}
+                      key={`readonly-${renderKey}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}
                     />
                   )}
                 </div>
@@ -2468,8 +3222,22 @@ const ContractPage: React.FC = () => {
               {/* Contract Details */}
               <div className="bg-white rounded-lg shadow-lg border border-gray-200">
                 <div className="p-6">
-                  <h3 className="text-lg font-semibold mb-4 text-gray-900">Contract Details</h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Contract Details</h3>
+                    {status !== 'signed' && (
+                      <button
+                        onClick={() => setShowChangeTemplateModal(true)}
+                        className="btn btn-sm btn-outline btn-primary"
+                      >
+                        Change Template
+                      </button>
+                    )}
+                  </div>
                   <div className="space-y-3 text-sm">
+                    <div>
+                      <span className="font-medium text-gray-700">Template:</span>
+                      <span className="ml-2 text-gray-900">{template?.name || 'Unknown'}</span>
+                    </div>
                     <div>
                       <span className="font-medium text-gray-700">Status:</span>
                       <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
@@ -2487,6 +3255,99 @@ const ContractPage: React.FC = () => {
               <div className="bg-white rounded-lg shadow-lg border border-gray-200">
                 <div className="p-6 space-y-6">
                   <h3 className="text-lg font-semibold text-gray-900">Pricing & Payment Plan</h3>
+                  
+                  {/* Currency Selection */}
+                  {status !== 'signed' && (
+                    <div className="space-y-3 pb-4 border-b border-gray-200">
+                      <label className="font-medium text-gray-700">Currency Type:</label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className={`btn btn-sm flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={() => {
+                            setCurrencyType('USD');
+                            // Reload pricing tiers from template for USD
+                            if (template?.default_pricing_tiers_usd) {
+                              const pricingTiers = template.default_pricing_tiers_usd;
+                              const currentTierKey = customPricing?.applicant_count 
+                                ? (customPricing.applicant_count === 1 ? '1' :
+                                   customPricing.applicant_count === 2 ? '2' :
+                                   customPricing.applicant_count === 3 ? '3' :
+                                   customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
+                                   customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
+                                   customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
+                                : '1';
+                              const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
+                              const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
+                              setCustomPricing((prev: any) => ({
+                                ...prev,
+                                pricing_tiers: pricingTiers,
+                                currency: subCurrency === 'EUR' ? '€' : subCurrency === 'GBP' ? '£' : '$',
+                                total_amount: total,
+                                final_amount: total - (prev.discount_amount || 0)
+                              }));
+                            }
+                          }}
+                        >
+                          USD/GBP/EUR
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn btn-sm flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
+                          onClick={() => {
+                            setCurrencyType('NIS');
+                            // Reload pricing tiers from template for NIS
+                            if (template?.default_pricing_tiers_nis) {
+                              const pricingTiers = template.default_pricing_tiers_nis;
+                              const currentTierKey = customPricing?.applicant_count 
+                                ? (customPricing.applicant_count === 1 ? '1' :
+                                   customPricing.applicant_count === 2 ? '2' :
+                                   customPricing.applicant_count === 3 ? '3' :
+                                   customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
+                                   customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
+                                   customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
+                                : '1';
+                              const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
+                              const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
+                              setCustomPricing((prev: any) => ({
+                                ...prev,
+                                pricing_tiers: pricingTiers,
+                                currency: '₪',
+                                total_amount: total,
+                                final_amount: total - (prev.discount_amount || 0)
+                              }));
+                            }
+                          }}
+                        >
+                          NIS
+                        </button>
+                      </div>
+                      
+                      {/* Sub-currency selector for USD type */}
+                      {currencyType === 'USD' && (
+                        <div>
+                          <label className="font-medium text-gray-700 text-sm mb-2 block">Select Currency:</label>
+                          <select
+                            className="select select-bordered select-sm w-full"
+                            value={subCurrency}
+                            onChange={(e) => {
+                              const newSubCurrency = e.target.value as 'USD' | 'GBP' | 'EUR';
+                              setSubCurrency(newSubCurrency);
+                              const currencySymbol = newSubCurrency === 'EUR' ? '€' : newSubCurrency === 'GBP' ? '£' : '$';
+                              setCustomPricing((prev: any) => ({
+                                ...prev,
+                                currency: currencySymbol
+                              }));
+                            }}
+                          >
+                            <option value="USD">USD ($)</option>
+                            <option value="GBP">GBP (£)</option>
+                            <option value="EUR">EUR (€)</option>
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {customPricing ? (
                     <>
                       {/* Applicant Count */}
@@ -2818,6 +3679,70 @@ const ContractPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Change Template Modal */}
+      {showChangeTemplateModal && (
+        <div className="fixed inset-0 bg-white z-50 flex flex-col h-screen">
+          <div className="w-full h-full overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-gray-200 flex-shrink-0">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-gray-900">Change Contract Template</h2>
+                <button
+                  onClick={() => {
+                    setShowChangeTemplateModal(false);
+                    setTemplateSearchQuery('');
+                  }}
+                  className="btn btn-ghost btn-sm btn-circle"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="p-6 overflow-y-auto flex-1 min-h-0">
+              <div className="relative mb-4">
+                <input
+                  type="text"
+                  placeholder="Search templates..."
+                  className="input input-bordered w-full"
+                  value={
+                    contract?.template_id && !templateSearchQuery
+                      ? availableTemplates.find(t => t.id === contract.template_id)?.name || ''
+                      : templateSearchQuery
+                  }
+                  onChange={(e) => {
+                    setTemplateSearchQuery(e.target.value);
+                    setShowTemplateDropdown(true);
+                  }}
+                  onFocus={() => setShowTemplateDropdown(true)}
+                  onBlur={() => setTimeout(() => setShowTemplateDropdown(false), 200)}
+                />
+                {showTemplateDropdown && availableTemplates
+                  .filter(t => !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase()))
+                  .length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-96 overflow-y-auto">
+                    {availableTemplates
+                      .filter(t => !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase()))
+                      .map(t => (
+                        <div
+                          key={t.id}
+                          className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${
+                            contract?.template_id === t.id ? 'bg-blue-50' : ''
+                          }`}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleTemplateChange(t.id);
+                          }}
+                        >
+                          {t.name}
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

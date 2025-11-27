@@ -154,14 +154,13 @@ export async function generateParamsFromDefinitions(
         const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
         // Use lead_id if client is a contact, otherwise use client.id
         const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        const dateTime = await getMeetingDateTime(clientIdForMeeting, isLegacyLead);
-        // Extract just the time part, or use placeholder
-        if (dateTime) {
-          const parts = dateTime.split(' at ');
-          value = parts.length > 1 ? parts[1] : 'your scheduled appointment';
-        } else {
-          value = 'your scheduled appointment';
-        }
+        
+        // Use dedicated function to get meeting time directly from database
+        const { getMeetingTime } = await import('./whatsappTemplateParams');
+        const meetingTime = clientIdForMeeting ? await getMeetingTime(clientIdForMeeting, isLegacyLead) : '';
+        
+        // Use the time if available, otherwise use placeholder
+        value = meetingTime || 'your scheduled appointment';
         break;
       }
       case 'meeting_location': {

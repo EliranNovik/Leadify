@@ -701,6 +701,9 @@ const WhatsAppLeadsPage: React.FC = () => {
         templateName: selectedTemplate?.name360
       });
 
+      // Store filled template content separately so we can use it for the local message display
+      let filledTemplateContent: string | null = null;
+      
       // Build the message payload
       const messagePayload: any = {
         leadId: null, // No lead ID for new WhatsApp leads
@@ -727,19 +730,69 @@ const WhatsAppLeadsPage: React.FC = () => {
         // Generate parameters based on actual param count
         const paramCount = Number(selectedTemplate.params) || 0;
         if (paramCount > 0) {
-          // Import the helper function
-          const { generateTemplateParameters } = await import('../lib/whatsappTemplateParams');
-          messagePayload.templateParameters = await generateTemplateParameters(
-            paramCount,
-            selectedLead,
-            null // WhatsAppLeadsPage doesn't use contacts
-          );
-          messagePayload.message = selectedTemplate.content || 'Template sent';
+          // For WhatsApp leads, we need to construct a client-like object
+          // Use lead_id if available (UUID), or legacy_id if available (number)
+          // IMPORTANT: Do NOT use selectedLead.id (that's the WhatsApp message ID, not a lead ID)
+          const clientForParams: any = {
+            id: selectedLead.lead_id || (selectedLead.legacy_id ? `legacy_${selectedLead.legacy_id}` : undefined),
+            name: selectedLead.sender_name || 'Client',
+            lead_type: selectedLead.legacy_id ? 'legacy' : (selectedLead.lead_id ? 'new' : undefined),
+            // For WhatsApp leads, we might not have a lead yet, so skip meeting lookup
+            _isWhatsAppLead: true // Flag to indicate this is a WhatsApp lead without a proper lead
+          };
+          
+          // If no lead_id or legacy_id, explicitly set id to undefined (not null, not the message ID)
+          if (!selectedLead.lead_id && !selectedLead.legacy_id) {
+            clientForParams.id = undefined;
+            clientForParams.lead_type = undefined;
+          }
+          
+          // Try to get specific param definitions first, otherwise use generic
+          // This ensures phone, mobile, and email come from the user's data (same as WhatsAppPage)
+          let templateParams: Array<{ type: string; text: string }> = [];
+          
+          try {
+            const { getTemplateParamDefinitions, generateParamsFromDefinitions } = await import('../lib/whatsappTemplateParamMapping');
+            const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name360);
+            
+            if (paramDefinitions.length > 0) {
+              console.log('✅ Using template-specific param definitions (Leads)');
+              templateParams = await generateParamsFromDefinitions(paramDefinitions, clientForParams, null);
+            } else {
+              console.log('⚠️ No specific param definitions, using generic generation (Leads)');
+              // Fallback to generic param generation
+              const { generateTemplateParameters } = await import('../lib/whatsappTemplateParams');
+              templateParams = await generateTemplateParameters(paramCount, clientForParams, null);
+            }
+          } catch (error) {
+            console.error('❌ Error generating template parameters (Leads):', error);
+            // Fallback to generic param generation
+            const { generateTemplateParameters } = await import('../lib/whatsappTemplateParams');
+            templateParams = await generateTemplateParameters(paramCount, clientForParams, null);
+          }
+          
+          messagePayload.templateParameters = templateParams;
+          
+          // Generate the filled template content for display (replace {{1}}, {{2}}, etc. with actual values)
+          filledTemplateContent = selectedTemplate.content || '';
+          if (templateParams && templateParams.length > 0) {
+            templateParams.forEach((param, index) => {
+              if (param && param.text) {
+                // Replace placeholder with actual value
+                const value = param.text.trim() || `{{${index + 1}}}`;
+                filledTemplateContent = filledTemplateContent!.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), value);
+              }
+            });
+          }
+          
+          messagePayload.message = filledTemplateContent || selectedTemplate.content || 'Template sent';
           console.log(`📱 Template with ${paramCount} param(s) - auto-filled parameters:`, messagePayload.templateParameters);
+          console.log(`✅ Filled template content:`, filledTemplateContent);
         } else {
           // Template with no parameters
           messagePayload.templateParameters = [];
-          messagePayload.message = `TEMPLATE_MARKER:${selectedTemplate.title}`;
+          filledTemplateContent = selectedTemplate.content || null;
+          messagePayload.message = filledTemplateContent || `TEMPLATE_MARKER:${selectedTemplate.title}`;
         }
       }
 
@@ -759,19 +812,14 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Add message to local state
-      // Determine the message text to display
-      let displayMessage = newMessage.trim();
+      // Determine the message text to display - use the filled content that was sent
+      let displayMessage: string;
       if (selectedTemplate) {
-        if (selectedTemplate.params === '0' && selectedTemplate.content) {
-          // Template without parameters - show template content
-          displayMessage = selectedTemplate.content;
-        } else if (selectedTemplate.params === '1' && newMessage.trim()) {
-          // Template with parameters - show user input
-          displayMessage = newMessage.trim();
-        } else if (selectedTemplate.params === '1' && !newMessage.trim()) {
-          // Template with parameters but no user input - show template name
-          displayMessage = `Template: ${selectedTemplate.title}`;
-        }
+        // For templates, use the filledTemplateContent that was created above
+        displayMessage = filledTemplateContent || selectedTemplate.content || `Template: ${selectedTemplate.title}`;
+      } else {
+        // For regular messages, use newMessage
+        displayMessage = newMessage.trim();
       }
       
       const newMsg = {
@@ -784,7 +832,8 @@ const WhatsAppLeadsPage: React.FC = () => {
         status: 'sent',
         message_type: 'text',
         whatsapp_status: 'sent',
-        whatsapp_message_id: result.messageId
+        whatsapp_message_id: result.messageId,
+        template_id: selectedTemplate?.id || undefined // Include template_id for proper matching
       };
 
       setMessages(prev => [...prev, newMsg]);
@@ -1701,15 +1750,39 @@ const WhatsAppLeadsPage: React.FC = () => {
           console.log('✅ Found template by ID (Leads):', template.id, template.title);
           const paramCount = Number(template.params) || 0;
           if (paramCount === 0 && template.content) {
+            // Template without parameters - check if message already matches template content
+            if (message.message && message.message === template.content) {
+              return message; // Already correct
+            }
+            // Otherwise, use template content
             return { ...message, message: template.content };
           } else {
             // Template has parameters - check if message already has filled content
-            // If message doesn't contain template markers and has actual content, use it
-            if (message.message && !message.message.includes('TEMPLATE_MARKER:') && !message.message.includes('[Template:')) {
-              return message; // Already filled content
+            // Check if message has placeholders like {{1}}, {{2}} (not filled) vs actual text (filled)
+            const hasPlaceholders = message.message && /\{\{\d+\}\}/.test(message.message);
+            const hasTemplateMarkers = message.message && (message.message.includes('TEMPLATE_MARKER:') || message.message.includes('[Template:'));
+            
+            // PRIORITY 1: If message doesn't have template markers and doesn't have placeholders, it's already filled - use it
+            if (message.message && !hasTemplateMarkers && !hasPlaceholders) {
+              console.log('✅ Message already filled (Leads), using as-is');
+              return message; // Already filled content - use as-is
             }
-            // Otherwise, show the template content with placeholders
-            return { ...message, message: template.content || `Template: ${template.title}` };
+            
+            // PRIORITY 2: If message has template markers, replace with template content
+            if (hasTemplateMarkers) {
+              console.log('⚠️ Message has template markers (Leads), replacing with template content');
+              return { ...message, message: template.content || `Template: ${template.title}` };
+            }
+            
+            // PRIORITY 3: If message has placeholders but no markers, it means backend stored unfilled content
+            // We can't fill it without the original parameters, so return as-is (user will see placeholders)
+            if (hasPlaceholders) {
+              console.log('⚠️ Message has placeholders but no markers (Leads), returning as-is');
+              return message;
+            }
+            
+            // Fallback: return message as-is
+            return message;
           }
         }
       }

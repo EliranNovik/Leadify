@@ -118,9 +118,12 @@ interface ContractTemplate {
   id: string;
   name: string;
   content: any;
-  default_pricing_tiers?: { [key: string]: number };
+  default_pricing_tiers?: { [key: string]: number }; // Legacy
+  default_pricing_tiers_usd?: { [key: string]: number }; // USD/GBP/EUR pricing tiers
+  default_pricing_tiers_nis?: { [key: string]: number }; // NIS pricing tiers
   default_currency?: string;
   default_country?: string;
+  sourceTable?: 'contract_templates' | 'misc_contracttemplate'; // Track which table template came from
 }
 
 // Helper to render TipTap JSON as React elements, with support for dynamic fields in 'View as Client' mode
@@ -269,6 +272,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     selectedTemplateId: '',
     contactId: null as number | null,
   });
+  const [templateSearchQuery, setTemplateSearchQuery] = useState('');
+  const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
 
   // State to track contract status
   const [contractStatuses, setContractStatuses] = useState<{ [id: string]: { status: string; signed_at?: string } }>({});
@@ -278,6 +283,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Add state for archival research option
   const [archivalResearch, setArchivalResearch] = useState<'none' | 'with'>('none');
+  // Add state for VAT inclusion
+  const [includeVAT, setIncludeVAT] = useState<boolean>(false);
 
   // Add state for currencies from database
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
@@ -1241,10 +1248,71 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Fetch contract templates and currencies when component mounts
   useEffect(() => {
-    // Fetch contract templates
-    supabase.from('contract_templates').select('id, name, content, default_pricing_tiers, default_currency, default_country').then(({ data }) => {
-      if (data) setContractTemplates(data);
-    });
+    const fetchTemplates = async () => {
+      try {
+        // Fetch contract templates from both tables
+        const [newTemplatesResult, legacyTemplatesResult] = await Promise.all([
+          supabase
+            .from('contract_templates')
+            .select('id, name, content, default_pricing_tiers, default_pricing_tiers_usd, default_pricing_tiers_nis, default_currency, default_country, active')
+            .eq('active', true)
+            .order('name', { ascending: true }),
+          supabase
+            .from('misc_contracttemplate')
+            .select('id, name, content, default_pricing_tiers_usd, default_pricing_tiers_nis, active')
+            .order('name', { ascending: true })
+        ]);
+
+        const newTemplates: ContractTemplate[] = [];
+        const legacyTemplates: ContractTemplate[] = [];
+
+        // Process new templates
+        if (newTemplatesResult.error) {
+          console.error('Error fetching contract_templates:', newTemplatesResult.error);
+        } else if (newTemplatesResult.data) {
+          newTemplates.push(...newTemplatesResult.data.map((template: any) => ({
+            ...template,
+            id: String(template.id), // Ensure ID is string for consistency
+            sourceTable: 'contract_templates' as const // Track source table
+          })));
+          console.log(`✅ Loaded ${newTemplates.length} templates from contract_templates`);
+        }
+
+        // Process legacy templates
+        if (legacyTemplatesResult.error) {
+          console.error('Error fetching misc_contracttemplate:', legacyTemplatesResult.error);
+        } else if (legacyTemplatesResult.data) {
+          // Filter for active templates - handle both boolean true and string 't'
+          const activeLegacyTemplates = legacyTemplatesResult.data.filter((template: any) => {
+            // Handle boolean true, string 't', or truthy values
+            return template.active === true || template.active === 't' || template.active === 1 || (template.active !== false && template.active !== 'f' && template.active !== 0);
+          });
+          
+          legacyTemplates.push(...activeLegacyTemplates.map((template: any) => ({
+            ...template,
+            id: String(template.id), // Convert numeric ID to string for consistency
+            default_currency: null, // misc_contracttemplate doesn't have default_currency
+            default_country: null, // misc_contracttemplate doesn't have default_country
+            default_pricing_tiers: null, // misc_contracttemplate doesn't have this column, only _usd and _nis
+            default_pricing_tiers_usd: template.default_pricing_tiers_usd || null,
+            default_pricing_tiers_nis: template.default_pricing_tiers_nis || null,
+            sourceTable: 'misc_contracttemplate' as const // Track source table
+          })));
+          console.log(`✅ Loaded ${legacyTemplates.length} active templates from misc_contracttemplate (out of ${legacyTemplatesResult.data.length} total)`);
+          console.log('Legacy templates:', legacyTemplates.map(t => ({ id: t.id, name: t.name })));
+        }
+
+        // Combine both template arrays
+        const allTemplates = [...newTemplates, ...legacyTemplates];
+        console.log(`✅ Total templates loaded: ${allTemplates.length} (${newTemplates.length} new + ${legacyTemplates.length} legacy)`);
+        setContractTemplates(allTemplates);
+      } catch (error) {
+        console.error('Error fetching contract templates:', error);
+        setContractTemplates([]);
+      }
+    };
+
+    fetchTemplates();
 
     // Fetch currencies from database
     supabase.from('currencies').select('id, front_name, iso_code, name').eq('is_active', true).order('order_value').then(({ data, error }) => {
@@ -2145,7 +2213,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
       
       // Initialize customPricing with correct currency based on selected currency
-      const isIsraeli = contractForm.selectedCurrency.iso_code === 'ILS';
+      const isIsraeliCurrency = contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS' || contractForm.selectedCurrency.name === '₪';
       const currency = contractForm.selectedCurrency.name;
       
       // Initialize pricing tiers - use template defaults if available, otherwise use system defaults
@@ -2160,13 +2228,31 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         { key: '16+', label: 'For 16 applicants or more', count: 16 }
       ];
       
-      // Use template default pricing tiers if available, otherwise use system defaults
-      if (selectedTemplate?.default_pricing_tiers) {
-        Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers);
+      // Use template default pricing tiers based on currency selection
+      // USD/GBP/EUR share the same pricing tiers, NIS has separate tiers
+      if (contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS') {
+        // NIS currency - use NIS pricing tiers
+        if (selectedTemplate?.default_pricing_tiers_nis) {
+          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers_nis);
+        } else if (selectedTemplate?.default_pricing_tiers) {
+          // Fallback to legacy
+          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers);
+        }
       } else {
+        // USD/GBP/EUR currencies - use USD pricing tiers
+        if (selectedTemplate?.default_pricing_tiers_usd) {
+          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers_usd);
+        } else if (selectedTemplate?.default_pricing_tiers) {
+          // Fallback to legacy
+          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers);
+        }
+      }
+      
+      // If no template pricing tiers, use system defaults
+      if (Object.keys(pricingTiers).length === 0) {
         tierStructure.forEach(tier => {
-          const priceTier = getPricePerApplicant(tier.count, isIsraeli);
-          const pricePerApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
+          const priceTier = getPricePerApplicant(tier.count, isIsraeliCurrency);
+          const pricePerApplicant = isIsraeliCurrency && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
           pricingTiers[tier.key] = pricePerApplicant;
         });
       }
@@ -2180,9 +2266,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       const finalAmount = total;
       
       // Calculate archivalFee before paymentPlan
-      const archivalFee = archivalResearch === 'with'
-        ? (contractForm.selectedCurrency.name === '₪' ? 1650 : contractForm.selectedCurrency.name === '$' ? 850 : 0)
-        : 0;
+      // 850 for USD/GBP/EUR, 1650 for NIS
+      let archivalFee = 0;
+      if (archivalResearch === 'with' && contractForm.selectedCurrency) {
+        const isoCode = contractForm.selectedCurrency.iso_code?.toUpperCase();
+        const currencyName = contractForm.selectedCurrency.name;
+        
+        // Check for NIS (1650)
+        if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === '₪') {
+          archivalFee = 1650;
+        }
+        // Check for USD/GBP/EUR (850)
+        else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR' 
+                 || currencyName === '$' || currencyName === '£' || currencyName === '€') {
+          archivalFee = 850;
+        }
+      }
 
       // Calculate due dates
       const today = new Date();
@@ -2192,28 +2291,39 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         return d.toISOString().split('T')[0];
       };
 
+      // Calculate VAT rate (17% for NIS, 0% for others)
+      const vatRate = includeVAT && isIsraeliCurrency ? 0.17 : 0;
+
       let paymentPlan;
       if (archivalResearch === 'with' && archivalFee > 0) {
         // First payment: 100% of archival research fee
         // Remaining: default plan for the rest
         const restAmount = total - archivalFee;
+        const archivalFeeVAT = Math.round(archivalFee * vatRate);
         paymentPlan = [
-          { percent: 100, due_date: addDays(0), value: archivalFee, value_vat: 0, payment_order: 'Archival Research', notes: '', currency },
+          { percent: 100, due_date: addDays(0), value: archivalFee, value_vat: archivalFeeVAT, payment_order: 'Archival Research', notes: '', currency },
         ];
         if (restAmount > 0) {
+          const restAmount50 = Math.round(restAmount * 0.5);
+          const restAmount25 = Math.round(restAmount * 0.25);
           paymentPlan = paymentPlan.concat([
-            { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
-            { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
-            { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
+            { percent: 50, due_date: addDays(0), value: restAmount50, value_vat: Math.round(restAmount50 * vatRate), payment_order: 'First Payment', notes: '', currency },
+            { percent: 25, due_date: addDays(30), value: restAmount25, value_vat: Math.round(restAmount25 * vatRate), payment_order: 'Intermediate Payment', notes: '', currency },
+            { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: Math.round(Math.round(restAmount * 0.25) * vatRate), payment_order: 'Final Payment', notes: '', currency },
           ]);
         }
       } else {
+        const payment50 = Math.round(finalAmount * 0.5);
+        const payment25 = Math.round(finalAmount * 0.25);
         paymentPlan = [
-          { percent: 50, due_date: addDays(0), value: Math.round(finalAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
-          { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
-          { percent: 25, due_date: addDays(60), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
+          { percent: 50, due_date: addDays(0), value: payment50, value_vat: Math.round(payment50 * vatRate), payment_order: 'First Payment', notes: '', currency },
+          { percent: 25, due_date: addDays(30), value: payment25, value_vat: Math.round(payment25 * vatRate), payment_order: 'Intermediate Payment', notes: '', currency },
+          { percent: 25, due_date: addDays(60), value: payment25, value_vat: Math.round(payment25 * vatRate), payment_order: 'Final Payment', notes: '', currency },
         ];
       }
+      
+      // Check if template is from legacy table (misc_contracttemplate) - these have numeric IDs, not UUIDs
+      const isLegacyTemplate = selectedTemplate?.sourceTable === 'misc_contracttemplate';
       
       const initialCustomPricing = {
         applicant_count: contractForm.applicantCount,
@@ -2225,6 +2335,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         payment_plan: paymentPlan,
         currency,
         archival_research_fee: archivalFee,
+        include_vat: includeVAT,
+        // Store legacy template ID in custom_pricing for future reference
+        ...(isLegacyTemplate && { legacy_template_id: contractForm.selectedTemplateId }),
       };
 
       // Check if this is a legacy lead
@@ -2255,7 +2368,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       
       // Create contract data with contact association
       const contractData: any = {
-        template_id: contractForm.selectedTemplateId,
+        // For legacy templates, template_id must be NULL since contracts.template_id is UUID type
+        // Legacy template ID is stored in custom_pricing.legacy_template_id
+        template_id: isLegacyTemplate ? null : contractForm.selectedTemplateId,
         status: 'draft',
         contact_id: contractForm.contactId, // Associate with specific contact
         contact_name: contactName, // Save the actual contact name
@@ -2264,7 +2379,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contact_mobile: contactMobile, // Save contact mobile
         applicant_count: contractForm.applicantCount,
         client_country: contractForm.selectedCurrency.name,
-        custom_pricing: initialCustomPricing, // Save initial customPricing with correct currency
+        custom_pricing: initialCustomPricing, // Save initial customPricing with legacy_template_id if needed
       };
       
       // Set the appropriate ID field based on lead type
@@ -2310,6 +2425,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       });
 
       setShowContractCreation(false);
+      setTemplateSearchQuery(''); // Reset search when closing
+      setShowTemplateDropdown(false); // Close dropdown when closing
       setContractForm({
         applicantCount: 1,
         selectedCurrency: null,
@@ -2486,7 +2603,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             .maybeSingle();
           
           // If contract belongs to master lead, use master lead number in URL
-          if (masterLead?.id === contractData.client_id) {
+          if (masterLead && masterLead.id === contractData.client_id && masterLead.lead_number) {
             targetLeadNumber = masterLead.lead_number;
             console.log('🔍 Contract belongs to master lead, using master lead number:', targetLeadNumber);
           }
@@ -3029,9 +3146,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       {/* Contract Creation Modal */}
       {showContractCreation && typeof window !== 'undefined' && createPortal(
         <>
-          <div className="fixed inset-0 bg-black/30 transition-opacity duration-300 z-[9999]" onClick={() => setShowContractCreation(false)} />
+          <div className="fixed inset-0 bg-black/30 transition-opacity duration-300 z-[9999]" onClick={() => {
+            setShowContractCreation(false);
+      setTemplateSearchQuery(''); // Reset search when closing
+      setShowTemplateDropdown(false); // Close dropdown when closing
+            setTemplateSearchQuery(''); // Reset search when closing
+          }} />
           <div className="fixed top-0 right-0 h-screen w-full max-w-md bg-white shadow-2xl p-8 flex flex-col animate-slideInRight z-[10000]" style={{ minHeight: '100vh' }}>
-            <button className="btn btn-ghost btn-circle absolute top-4 right-4" onClick={() => setShowContractCreation(false)}>
+            <button className="btn btn-ghost btn-circle absolute top-4 right-4" onClick={() => {
+              setShowContractCreation(false);
+      setTemplateSearchQuery(''); // Reset search when closing
+      setShowTemplateDropdown(false); // Close dropdown when closing
+              setTemplateSearchQuery(''); // Reset search when closing
+            }}>
               <XMarkIcon className="w-6 h-6" />
             </button>
             <h2 className="text-2xl font-bold mb-2">Create Contract</h2>
@@ -3082,112 +3209,228 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 {(() => {
                   if (!contractForm.selectedTemplateId || !contractForm.selectedCurrency) {
                     // No template or currency selected: show zeroes
-                    const currency = contractForm.selectedCurrency?.iso_code || 'USD';
+                    const currencySymbol = contractForm.selectedCurrency?.name || '$';
                     return (
                       <div className="space-y-2">
                         <div className="flex justify-between">
                           <span className="text-gray-600">Per applicant:</span>
-                          <span className="font-semibold">{currency} 0</span>
+                          <span className="font-semibold">{currencySymbol} 0</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-gray-600">Total ({contractForm.applicantCount} applicants):</span>
-                          <span className="font-bold text-lg text-primary">{currency} 0</span>
+                          <span className="font-bold text-lg text-primary">{currencySymbol} 0</span>
                         </div>
                       </div>
                     );
                   }
                   // Template selected: use its pricing tiers if available
                   const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
-                  const isIsraeli = contractForm.selectedCurrency.iso_code === 'ILS';
+                  const isIsraeli = contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS';
                   let perApplicant = 0;
-                  let currency = contractForm.selectedCurrency.iso_code;
-                  if (selectedTemplate?.default_currency) {
-                    currency = selectedTemplate.default_currency;
+                  let currencySymbol = contractForm.selectedCurrency.name; // Use currency symbol from selected currency
+                  
+                  // Get pricing tiers based on selected currency
+                  let pricingTiers: { [key: string]: number } | null = null;
+                  
+                  if (isIsraeli) {
+                    // NIS currency - use NIS pricing tiers
+                    if (selectedTemplate?.default_pricing_tiers_nis) {
+                      pricingTiers = selectedTemplate.default_pricing_tiers_nis;
+                    } else if (selectedTemplate?.default_pricing_tiers) {
+                      // Fallback to legacy
+                      pricingTiers = selectedTemplate.default_pricing_tiers;
+                    }
+                  } else {
+                    // USD/GBP/EUR currencies - use USD pricing tiers
+                    if (selectedTemplate?.default_pricing_tiers_usd) {
+                      pricingTiers = selectedTemplate.default_pricing_tiers_usd;
+                    } else if (selectedTemplate?.default_pricing_tiers) {
+                      // Fallback to legacy
+                      pricingTiers = selectedTemplate.default_pricing_tiers;
+                    }
                   }
-                  if (selectedTemplate?.default_pricing_tiers) {
+                  
+                  if (pricingTiers) {
                     // Use template's pricing tiers
                     const tierKey = getCurrentTierKey(contractForm.applicantCount);
-                    perApplicant = selectedTemplate.default_pricing_tiers[tierKey] || 0;
+                    perApplicant = pricingTiers[tierKey] || 0;
                   } else {
                     // Fallback to system pricing
                     const priceTier = getPricePerApplicant(contractForm.applicantCount, isIsraeli);
                     perApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
                   }
+                  
                   const total = perApplicant * contractForm.applicantCount;
                   const discount = 0;
                   const discountAmount = 0;
                   const finalAmount = total;
 
-                  // Add state for archival research option
-                  const archivalFee = archivalResearch === 'with'
-                    ? (contractForm.selectedCurrency?.name === '₪' ? 1650 : contractForm.selectedCurrency?.name === '$' ? 850 : 0)
-                    : 0;
-
-                  // Calculate due dates
-                  const today = new Date();
-                  const addDays = (days: number) => {
-                    const d = new Date(today);
-                    d.setDate(d.getDate() + days);
-                    return d.toISOString().split('T')[0];
-                  };
-
-                  let paymentPlan;
-                  if (archivalResearch === 'with' && archivalFee > 0) {
-                    // First payment: 100% of archival research fee
-                    // Remaining: default plan for the rest
-                    const restAmount = total - archivalFee;
-                    paymentPlan = [
-                      { percent: 100, due_date: addDays(0), value: archivalFee, value_vat: 0, payment_order: 'Archival Research', notes: '', currency },
-                    ];
-                    if (restAmount > 0) {
-                      paymentPlan = paymentPlan.concat([
-                        { percent: 50, due_date: addDays(0), value: Math.round(restAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
-                        { percent: 25, due_date: addDays(30), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
-                        { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
-                      ]);
+                  // Calculate archival fee based on selected currency
+                  // 850 for USD/GBP/EUR, 1650 for NIS
+                  let archivalFee = 0;
+                  if (archivalResearch === 'with' && contractForm.selectedCurrency) {
+                    const isoCode = contractForm.selectedCurrency.iso_code?.toUpperCase();
+                    const currencyName = contractForm.selectedCurrency.name;
+                    
+                    // Check for NIS (1650)
+                    if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === '₪') {
+                      archivalFee = 1650;
                     }
-                  } else {
-                    paymentPlan = [
-                      { percent: 50, due_date: addDays(0), value: Math.round(finalAmount * 0.5), value_vat: 0, payment_order: 'First Payment', notes: '', currency },
-                      { percent: 25, due_date: addDays(30), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Intermediate Payment', notes: '', currency },
-                      { percent: 25, due_date: addDays(60), value: Math.round(finalAmount * 0.25), value_vat: 0, payment_order: 'Final Payment', notes: '', currency },
-                    ];
+                    // Check for USD/GBP/EUR (850)
+                    else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR' 
+                             || currencyName === '$' || currencyName === '£' || currencyName === '€') {
+                      archivalFee = 850;
+                    }
                   }
                   
                   return (
                     <div className="space-y-2">
                       <div className="flex justify-between">
                         <span className="text-gray-600">Per applicant:</span>
-                        <span className="font-semibold">{currency} {perApplicant.toLocaleString()}</span>
+                        <span className="font-semibold">{currencySymbol} {perApplicant.toLocaleString()}</span>
                       </div>
                       <div className="flex justify-between">
                         <span className="text-gray-600">Total ({contractForm.applicantCount} applicants):</span>
-                        <span className="font-bold text-lg text-primary">{currency} {total.toLocaleString()}</span>
+                        <span className="font-bold text-lg text-primary">{currencySymbol} {total.toLocaleString()}</span>
                       </div>
-                      {archivalResearch === 'with' && (
+                      {archivalResearch === 'with' && archivalFee > 0 && (
                         <div className="flex justify-between">
                           <span className="text-gray-600">Archival Research:</span>
-                          <span className="font-semibold">{contractForm.selectedCurrency?.name || '$'} {archivalFee.toLocaleString()}</span>
+                          <span className="font-semibold">{currencySymbol} {archivalFee.toLocaleString()}</span>
                         </div>
                       )}
+                      {includeVAT && (() => {
+                        const isIsraeli = contractForm.selectedCurrency?.iso_code === 'ILS' || contractForm.selectedCurrency?.iso_code === 'NIS' || contractForm.selectedCurrency?.name === '₪';
+                        if (isIsraeli) {
+                          const totalWithArchival = total + (archivalResearch === 'with' ? archivalFee : 0);
+                          const vatAmount = Math.round(totalWithArchival * 0.17);
+                          return (
+                            <>
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">VAT (17%):</span>
+                                <span className="font-semibold">{currencySymbol} {vatAmount.toLocaleString()}</span>
+                              </div>
+                              <div className="flex justify-between pt-2 border-t border-gray-200">
+                                <span className="text-gray-900 font-semibold">Total with VAT:</span>
+                                <span className="font-bold text-lg text-primary">{currencySymbol} {(totalWithArchival + vatAmount).toLocaleString()}</span>
+                              </div>
+                            </>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                   );
                 })()}
               </div>
 
               {/* Template Selection */}
-              <div>
+              <div className="relative">
                 <label className="block text-sm font-medium text-gray-700 mb-2">Contract Template</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={contractForm.selectedTemplateId}
-                  onChange={(e) => setContractForm(prev => ({ ...prev, selectedTemplateId: e.target.value }))}
-                >
-                  <option value="">Select a template</option>
-                  {contractTemplates.map(template => (
-                    <option key={template.id} value={template.id}>{template.name}</option>
-                  ))}
-                </select>
+                
+                {/* Searchable Input with Dropdown */}
+                <div className="relative">
+                  <input
+                    type="text"
+                    placeholder="Search and select a template..."
+                    className="input input-bordered w-full"
+                    value={
+                      contractForm.selectedTemplateId && !templateSearchQuery
+                        ? contractTemplates.find(t => t.id === contractForm.selectedTemplateId)?.name || ''
+                        : templateSearchQuery
+                    }
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setTemplateSearchQuery(value);
+                      setShowTemplateDropdown(true);
+                      // Clear selected template if user starts typing
+                      if (contractForm.selectedTemplateId) {
+                        setContractForm(prev => ({ ...prev, selectedTemplateId: '' }));
+                      }
+                    }}
+                    onFocus={(e) => {
+                      setShowTemplateDropdown(true);
+                      // If template is selected, select all text for easy replacement
+                      if (contractForm.selectedTemplateId && !templateSearchQuery) {
+                        e.target.select();
+                      }
+                    }}
+                    onBlur={() => {
+                      // Delay closing to allow click on dropdown item
+                      setTimeout(() => setShowTemplateDropdown(false), 200);
+                    }}
+                  />
+                  
+                  {/* Dropdown Arrow */}
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm"
+                    onClick={() => setShowTemplateDropdown(!showTemplateDropdown)}
+                  >
+                    <svg 
+                      className={`w-4 h-4 transition-transform ${showTemplateDropdown ? 'rotate-180' : ''}`} 
+                      fill="none" 
+                      stroke="currentColor" 
+                      viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                    </svg>
+                  </button>
+                  
+                  {/* Dropdown Menu */}
+                  {showTemplateDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                      {contractTemplates
+                        .filter(template => {
+                          if (!templateSearchQuery.trim()) return true;
+                          const searchLower = templateSearchQuery.toLowerCase();
+                          return template.name.toLowerCase().includes(searchLower);
+                        })
+                        .length === 0 ? (
+                          <div className="p-3 text-sm text-gray-500">
+                            No templates found matching "{templateSearchQuery}"
+                          </div>
+                        ) : (
+                          contractTemplates
+                            .filter(template => {
+                              if (!templateSearchQuery.trim()) return true;
+                              const searchLower = templateSearchQuery.toLowerCase();
+                              return template.name.toLowerCase().includes(searchLower);
+                            })
+                            .map(template => (
+                              <div
+                                key={template.id}
+                                className={`px-4 py-2 cursor-pointer hover:bg-gray-100 ${
+                                  contractForm.selectedTemplateId === template.id ? 'bg-blue-50' : ''
+                                }`}
+                                onMouseDown={(e) => {
+                                  e.preventDefault(); // Prevent input blur
+                                  setContractForm(prev => ({ ...prev, selectedTemplateId: template.id }));
+                                  setTemplateSearchQuery('');
+                                  setShowTemplateDropdown(false);
+                                }}
+                              >
+                                {template.name}
+                              </div>
+                            ))
+                        )}
+                    </div>
+                  )}
+                </div>
+                
+                {/* Clear button if template is selected */}
+                {contractForm.selectedTemplateId && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs mt-2"
+                    onClick={() => {
+                      setContractForm(prev => ({ ...prev, selectedTemplateId: '' }));
+                      setTemplateSearchQuery('');
+                    }}
+                  >
+                    Clear selection
+                  </button>
+                )}
               </div>
 
               {/* Archival Research Option */}
@@ -3201,6 +3444,33 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   <option value="none">Without archival research</option>
                   <option value="with">With archival research</option>
                 </select>
+              </div>
+
+              {/* VAT Option */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">VAT</label>
+                <div className="flex items-center gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="vat"
+                      checked={!includeVAT}
+                      onChange={() => setIncludeVAT(false)}
+                      className="radio radio-primary"
+                    />
+                    <span>Exclude VAT</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="vat"
+                      checked={includeVAT}
+                      onChange={() => setIncludeVAT(true)}
+                      className="radio radio-primary"
+                    />
+                    <span>Include VAT</span>
+                  </label>
+                </div>
               </div>
             </div>
 

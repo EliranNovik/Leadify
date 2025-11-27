@@ -3302,6 +3302,37 @@ useEffect(() => {
       // For both new and legacy leads, create meeting record in meetings table
       const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
       
+      // Helper function to convert display name to employee ID
+      const getEmployeeIdFromDisplayName = (displayName: string | null | undefined): number | null => {
+        if (!displayName || displayName === '---' || displayName.trim() === '') return null;
+        
+        // Try exact match first
+        let employee = allEmployees.find((emp: any) => 
+          emp.display_name && emp.display_name.trim() === displayName.trim()
+        );
+        
+        // If not found, try case-insensitive match
+        if (!employee) {
+          employee = allEmployees.find((emp: any) => 
+            emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
+          );
+        }
+        
+        if (!employee) {
+          console.warn(`Employee not found for display name: "${displayName}"`);
+          return null;
+        }
+        
+        // Ensure ID is a number (bigint)
+        const employeeId = typeof employee.id === 'string' ? parseInt(employee.id, 10) : Number(employee.id);
+        if (isNaN(employeeId)) {
+          console.error(`Invalid employee ID for "${displayName}":`, employee.id);
+          return null;
+        }
+        
+        return employeeId;
+      };
+
       // Resolve collection manager employee ID (used mainly for paid meetings but safe for all)
       let collectionEmployeeId: string | number | null = null;
       if (meetingFormData.collection_manager) {
@@ -3312,6 +3343,10 @@ useEffect(() => {
           collectionEmployeeId = collectionEmp.id;
         }
       }
+
+      // Resolve manager and helper employee IDs
+      const managerEmployeeId = getEmployeeIdFromDisplayName(meetingFormData.manager);
+      const helperEmployeeId = getEmployeeIdFromDisplayName(meetingFormData.helper);
 
       // Resolve paid-meeting category (subcategory) if selected
       let paidCategoryId: string | null = null;
@@ -3423,6 +3458,14 @@ useEffect(() => {
           stage_changed_at: stageTimestamp,
         };
 
+        // Update manager and helper for legacy leads
+        if (managerEmployeeId !== null) {
+          updatePayload.meeting_manager_id = managerEmployeeId;
+        }
+        if (helperEmployeeId !== null) {
+          updatePayload.meeting_lawyer_id = helperEmployeeId;
+        }
+
         // For paid meetings, persist meeting_total and category/currency on legacy lead
         if (meetingType === 'paid') {
           if (meetingFormData.meeting_total) {
@@ -3460,6 +3503,14 @@ useEffect(() => {
           stage_changed_by: stageActor.fullName,
           stage_changed_at: stageTimestamp,
         };
+
+        // Update manager and helper for new leads (as employee IDs)
+        if (managerEmployeeId !== null) {
+          updatePayload.manager = managerEmployeeId;
+        }
+        if (helperEmployeeId !== null) {
+          updatePayload.helper = helperEmployeeId;
+        }
 
         // For paid meetings, persist meeting_total and category/currency on new lead
         if (meetingType === 'paid') {

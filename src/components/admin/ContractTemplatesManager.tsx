@@ -35,8 +35,18 @@ const DYNAMIC_FIELDS = [
 ];
 
 const FIELD_TYPES = [
-  { label: 'Text Field', tag: '{{text}}' },
+  { label: 'Text Field (Generic)', tag: '{{text}}' },
+  { label: 'Applicant Name', tag: '{{text:applicant}}' },
+  { label: 'Document Name', tag: '{{text:document}}' },
+  { label: 'Country', tag: '{{text:country}}' },
+  { label: 'Address', tag: '{{text:address}}' },
+  { label: 'City', tag: '{{text:city}}' },
+  { label: 'Postal Code', tag: '{{text:postal}}' },
+  { label: 'Notes', tag: '{{text:notes}}' },
+  { label: 'Reference Number', tag: '{{text:reference}}' },
+  { label: 'Other Text', tag: '{{text:other}}' },
   { label: 'Signature Field', tag: '{{signature}}' },
+  { label: 'Date Field', tag: '{{date}}' },
 ];
 
 // New field types for the custom_pricing system
@@ -153,7 +163,9 @@ interface Template {
   sourceTable: 'contract_templates' | 'misc_contracttemplate';
   active?: boolean;
   firm_id?: number;
-  default_pricing_tiers?: any;
+  default_pricing_tiers?: any; // Legacy - kept for backward compatibility
+  default_pricing_tiers_usd?: any; // New: Pricing tiers for USD, GBP, EUR
+  default_pricing_tiers_nis?: any; // New: Pricing tiers for NIS
   default_currency?: string;
   default_country?: string;
   category_id?: string | number | null;
@@ -200,6 +212,25 @@ const ContractTemplatesManager: React.FC = () => {
       '16+': 1900
     }
   });
+  // Separate state for USD and NIS pricing tiers
+  const [usdPricingTiers, setUsdPricingTiers] = useState({
+    '1': 2500,
+    '2': 2400,
+    '3': 2300,
+    '4-7': 2200,
+    '8-9': 2100,
+    '10-15': 2000,
+    '16+': 1900
+  });
+  const [nisPricingTiers, setNisPricingTiers] = useState({
+    '1': 9000,
+    '2': 8500,
+    '3': 8000,
+    '4-7': 7500,
+    '8-9': 7000,
+    '10-15': 6500,
+    '16+': 6000
+  });
   const [dynamicFields, setDynamicFields] = useState<{ [key: string]: string }>({});
   const [signatureData, setSignatureData] = useState<{ [key: string]: string }>({});
   const signatureRefs = React.useRef<{ [key: string]: SignatureCanvas | null }>({});
@@ -242,9 +273,10 @@ const ContractTemplatesManager: React.FC = () => {
         .limit(10000); // High limit to fetch all templates
       
       // Fetch from misc_contracttemplate
+      // Note: misc_contracttemplate does NOT have default_pricing_tiers column, only default_pricing_tiers_usd and default_pricing_tiers_nis
       const { data: miscTemplatesData, error: miscTemplatesError } = await supabase
         .from('misc_contracttemplate')
-        .select('*')
+        .select('id, name, content, active, firm_id, language_id, category_id, default_pricing_tiers_usd, default_pricing_tiers_nis')
         .order('name', { ascending: true })
         .limit(10000); // High limit to fetch all templates
       
@@ -266,7 +298,9 @@ const ContractTemplatesManager: React.FC = () => {
             sourceTable: 'contract_templates',
             active: template.active !== undefined ? template.active : true, // Default to true if not set
             firm_id: template.firm_id,
-            default_pricing_tiers: template.default_pricing_tiers,
+            default_pricing_tiers: template.default_pricing_tiers, // Legacy
+            default_pricing_tiers_usd: template.default_pricing_tiers_usd,
+            default_pricing_tiers_nis: template.default_pricing_tiers_nis,
             default_currency: template.default_currency,
             default_country: template.default_country,
             category_id: template.category_id,
@@ -465,6 +499,10 @@ const ContractTemplatesManager: React.FC = () => {
             active: template.active !== undefined ? template.active : true, // Default to true if not set
             firm_id: template.firm_id,
             category_id: template.category_id,
+            // misc_contracttemplate does NOT have default_pricing_tiers column, only _usd and _nis
+            default_pricing_tiers: null, // Not available for legacy templates
+            default_pricing_tiers_usd: template.default_pricing_tiers_usd,
+            default_pricing_tiers_nis: template.default_pricing_tiers_nis,
           });
         });
       }
@@ -771,11 +809,27 @@ const ContractTemplatesManager: React.FC = () => {
     setCategoryId(selectedTemplate.category_id || null);
     setActive(selectedTemplate.active !== undefined ? selectedTemplate.active : true);
     
-    // Load default pricing tiers if they exist (only for contract_templates)
-    if (selectedTemplate.sourceTable === 'contract_templates' && selectedTemplate.default_pricing_tiers) {
+    // Load default pricing tiers if they exist (for both contract_templates and misc_contracttemplate)
+    if (selectedTemplate.sourceTable === 'contract_templates' || selectedTemplate.sourceTable === 'misc_contracttemplate') {
+      // Load USD pricing tiers (new structure)
+      if (selectedTemplate.default_pricing_tiers_usd) {
+        setUsdPricingTiers(selectedTemplate.default_pricing_tiers_usd);
+      } else if (selectedTemplate.sourceTable === 'contract_templates' && selectedTemplate.default_pricing_tiers) {
+        // Fallback to legacy default_pricing_tiers only for contract_templates (misc_contracttemplate doesn't have this column)
+        setUsdPricingTiers(selectedTemplate.default_pricing_tiers);
+      }
+      
+      // Load NIS pricing tiers (new structure)
+      if (selectedTemplate.default_pricing_tiers_nis) {
+        setNisPricingTiers(selectedTemplate.default_pricing_tiers_nis);
+      } else if (selectedTemplate.sourceTable === 'contract_templates' && selectedTemplate.default_pricing_tiers) {
+        // Fallback to legacy default_pricing_tiers only for contract_templates
+        setNisPricingTiers(selectedTemplate.default_pricing_tiers);
+      }
+      
       setPreviewData(prev => ({
         ...prev,
-        pricing_tiers: selectedTemplate.default_pricing_tiers,
+        pricing_tiers: selectedTemplate.default_pricing_tiers_usd || (selectedTemplate.sourceTable === 'contract_templates' ? selectedTemplate.default_pricing_tiers : null) || prev.pricing_tiers,
         currency: selectedTemplate.default_currency || prev.currency,
         client_country: selectedTemplate.default_country || prev.client_country,
         discount_percentage: prev.discount_percentage
@@ -807,7 +861,9 @@ const ContractTemplatesManager: React.FC = () => {
           const templateData: any = {
             name: name.trim(),
             content,
-            default_pricing_tiers: previewData.pricing_tiers,
+            default_pricing_tiers_usd: usdPricingTiers,
+            default_pricing_tiers_nis: nisPricingTiers,
+            default_pricing_tiers: usdPricingTiers, // Keep legacy for backward compatibility
             default_currency: previewData.currency,
             default_country: previewData.client_country,
             language_id: languageId || null,
@@ -830,7 +886,10 @@ const ContractTemplatesManager: React.FC = () => {
             content: content, // Save as JSON object directly (JSONB column)
             language_id: languageId || null,
             category_id: categoryId || null,
-            active: active
+            active: active,
+            default_pricing_tiers_usd: usdPricingTiers,
+            default_pricing_tiers_nis: nisPricingTiers,
+            // Note: misc_contracttemplate does NOT have default_pricing_tiers column
           };
           
           console.log('💾 Template data to save:', templateData);
@@ -854,7 +913,9 @@ const ContractTemplatesManager: React.FC = () => {
           id,
           name: name.trim(),
           content,
-          default_pricing_tiers: previewData.pricing_tiers,
+          default_pricing_tiers_usd: usdPricingTiers,
+          default_pricing_tiers_nis: nisPricingTiers,
+          default_pricing_tiers: usdPricingTiers, // Keep legacy for backward compatibility
           default_currency: previewData.currency,
           default_country: previewData.client_country,
           language_id: languageId || null,
@@ -1811,11 +1872,18 @@ const ContractTemplatesManager: React.FC = () => {
                   ))}
                 </ul>
               </div>
-              <div className="dropdown dropdown-bottom">
-                <button className="btn btn-sm btn-outline">Input Fields</button>
-                <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+              <div className="dropdown dropdown-bottom dropdown-end">
+                <button className="btn btn-sm btn-outline">Input Fields ({FIELD_TYPES.length})</button>
+                <ul className="dropdown-content menu p-2 shadow-lg bg-base-100 rounded-box w-64 z-[100] max-h-[400px] overflow-y-auto border border-gray-200">
                   {FIELD_TYPES.map(f => (
-                    <li key={f.tag}><button onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                    <li key={f.tag}>
+                      <button 
+                        className="text-left w-full py-2 px-3 hover:bg-base-200 rounded"
+                        onClick={() => insertField(f.tag)}
+                      >
+                        {f.label}
+                      </button>
+                    </li>
                   ))}
                 </ul>
               </div>
@@ -1879,20 +1947,40 @@ const ContractTemplatesManager: React.FC = () => {
                         />
                       </div>
                       
-                      {/* Pricing Tiers */}
+                      {/* Pricing Tiers - Separate tabs for USD and NIS */}
+                      <div className="tabs tabs-boxed mb-4">
+                        <button 
+                          className={`tab flex-1 ${previewData.currency === 'USD' ? 'tab-active' : ''}`}
+                          onClick={() => setPreviewData(prev => ({ ...prev, currency: 'USD', pricing_tiers: usdPricingTiers }))}
+                        >
+                          USD/GBP/EUR
+                        </button>
+                        <button 
+                          className={`tab flex-1 ${previewData.currency === 'NIS' ? 'tab-active' : ''}`}
+                          onClick={() => setPreviewData(prev => ({ ...prev, currency: 'NIS', pricing_tiers: nisPricingTiers }))}
+                        >
+                          NIS
+                        </button>
+                      </div>
+                      
                       <div>
                         <label className="label">
-                          <span className="label-text">Pricing Tiers (Price per applicant)</span>
+                          <span className="label-text">
+                            Pricing Tiers - {previewData.currency === 'USD' ? 'USD/GBP/EUR (same pricing)' : 'NIS'}
+                          </span>
                         </label>
                         <div className="space-y-2">
                           {(() => {
                             // Define the correct order for pricing tiers
                             const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
+                            const currentTiers = previewData.currency === 'USD' ? usdPricingTiers : nisPricingTiers;
+                            const currencySymbol = previewData.currency === 'USD' ? '$' : '₪';
+                            
                             return tierOrder.map(tierKey => {
-                              const price = previewData.pricing_tiers[tierKey as keyof typeof previewData.pricing_tiers] || 0;
+                              const price = currentTiers[tierKey as keyof typeof currentTiers] || 0;
                               return (
                                 <div key={tierKey} className="flex items-center gap-2">
-                                  <span className="text-xs text-gray-600 w-16">
+                                  <span className="text-xs text-gray-600 w-20">
                                     {tierKey === '1' ? '1 applicant' :
                                      tierKey === '2' ? '2 applicants' :
                                      tierKey === '3' ? '3 applicants' :
@@ -1908,14 +1996,18 @@ const ContractTemplatesManager: React.FC = () => {
                                     value={price}
                                     onChange={e => {
                                       const newPrice = Number(e.target.value);
-                                      const newPricingTiers = { ...previewData.pricing_tiers, [tierKey]: newPrice };
-                                      setPreviewData(prev => ({ 
-                                        ...prev, 
-                                        pricing_tiers: newPricingTiers
-                                      }));
+                                      if (previewData.currency === 'USD') {
+                                        const newTiers = { ...usdPricingTiers, [tierKey]: newPrice };
+                                        setUsdPricingTiers(newTiers);
+                                        setPreviewData(prev => ({ ...prev, pricing_tiers: newTiers }));
+                                      } else {
+                                        const newTiers = { ...nisPricingTiers, [tierKey]: newPrice };
+                                        setNisPricingTiers(newTiers);
+                                        setPreviewData(prev => ({ ...prev, pricing_tiers: newTiers }));
+                                      }
                                     }}
                                   />
-                                  <span className="text-xs text-gray-600">{previewData.currency}</span>
+                                  <span className="text-xs text-gray-600">{currencySymbol}</span>
                                 </div>
                               );
                             });
