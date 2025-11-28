@@ -96,13 +96,14 @@ const buildWhatsappNotificationPreview = (messageData, senderName, phoneNumber, 
 };
 
 /**
- * Find user IDs who have roles assigned to a lead
+ * Find user IDs (UUIDs) who have roles assigned to a lead
+ * Uses users.employee_id → tenants_employee.id relationship
  * @param {Object} lead - The lead object (new lead)
  * @param {Object} legacyLead - The legacy lead object
- * @returns {Promise<string[]>} Array of user IDs
+ * @returns {Promise<string[]>} Array of user UUIDs from users table
  */
 const findUsersWithRolesForLead = async (lead, legacyLead) => {
-  const userIds = new Set();
+  const employeeIds = new Set();
 
   try {
     if (lead) {
@@ -120,13 +121,13 @@ const findUsersWithRolesForLead = async (lead, legacyLead) => {
         // Find employees with matching display names
         const { data: employees, error: empError } = await supabase
           .from('tenants_employee')
-          .select('id, display_name, user_id')
+          .select('id, display_name')
           .in('display_name', textRoleValues);
 
         if (!empError && employees) {
           employees.forEach(emp => {
-            if (emp.user_id) {
-              userIds.add(emp.user_id);
+            if (emp.id) {
+              employeeIds.add(emp.id);
             }
           });
         }
@@ -144,19 +145,8 @@ const findUsersWithRolesForLead = async (lead, legacyLead) => {
         .filter(id => id !== null && id !== undefined && id !== '');
 
       if (numericRoleIds.length > 0) {
-        // Find employees with matching IDs
-        const { data: employees, error: empError } = await supabase
-          .from('tenants_employee')
-          .select('id, user_id')
-          .in('id', numericRoleIds);
-
-        if (!empError && employees) {
-          employees.forEach(emp => {
-            if (emp.user_id) {
-              userIds.add(emp.user_id);
-            }
-          });
-        }
+        // Add employee IDs directly from numeric fields
+        numericRoleIds.forEach(id => employeeIds.add(id));
       }
     } else if (legacyLead) {
       // For legacy leads: roles are stored as employee IDs (bigint) in leads_lead table
@@ -173,26 +163,38 @@ const findUsersWithRolesForLead = async (lead, legacyLead) => {
         .filter(id => id !== null && id !== undefined && id !== '');
 
       if (roleIds.length > 0) {
-        // Find employees with matching IDs
-        const { data: employees, error: empError } = await supabase
-          .from('tenants_employee')
-          .select('id, user_id')
-          .in('id', roleIds);
-
-        if (!empError && employees) {
-          employees.forEach(emp => {
-            if (emp.user_id) {
-              userIds.add(emp.user_id);
-            }
-          });
-        }
+        // Add employee IDs directly
+        roleIds.forEach(id => employeeIds.add(id));
       }
     }
+
+    // Now find users where employee_id matches the employee IDs we found
+    // users.employee_id → tenants_employee.id
+    const userIds = new Set();
+    
+    if (employeeIds.size > 0) {
+      const employeeIdsArray = Array.from(employeeIds);
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, employee_id')
+        .in('employee_id', employeeIdsArray);
+
+      if (!usersError && users) {
+        users.forEach(user => {
+          if (user.id) {
+            userIds.add(user.id); // user.id is the UUID from users table
+          }
+        });
+      } else if (usersError) {
+        console.error('Error fetching users by employee_id:', usersError);
+      }
+    }
+
+    return Array.from(userIds);
   } catch (error) {
     console.error('Error finding users with roles for lead:', error);
+    return [];
   }
-
-  return Array.from(userIds);
 };
 
 const pickPreferredLeadLink = (links = []) => {
