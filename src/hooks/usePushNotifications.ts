@@ -36,6 +36,7 @@ export function usePushNotifications() {
           title: '💬 New WhatsApp Message',
           body: `${senderName}: ${latestMessage.latest_message?.substring(0, 50) || 'New message'}...`,
           url: '/whatsapp-leads',
+          icon: '/whatsapp-icon.svg',
         });
       }
 

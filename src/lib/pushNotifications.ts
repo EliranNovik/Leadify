@@ -2,7 +2,14 @@ import { supabase } from './supabase';
 
 // VAPID public key - This should be generated and stored securely
 // For production, you'll need to generate your own VAPID keys
-const VAPID_PUBLIC_KEY = import.meta.env.VITE_VAPID_PUBLIC_KEY || '';
+const VAPID_PUBLIC_KEY = (import.meta.env.VITE_VAPID_PUBLIC_KEY || '').trim();
+
+// Log for debugging (only first 20 chars for security)
+if (VAPID_PUBLIC_KEY) {
+  console.log('✅ VAPID public key loaded:', `${VAPID_PUBLIC_KEY.substring(0, 20)}... (length: ${VAPID_PUBLIC_KEY.length})`);
+} else {
+  console.warn('⚠️  VAPID public key not found. Set VITE_VAPID_PUBLIC_KEY in your .env file');
+}
 
 export interface PushSubscriptionData {
   endpoint: string;
@@ -57,7 +64,13 @@ export async function getPushSubscription(): Promise<PushSubscription | null> {
   // Check if VAPID key is configured
   if (!VAPID_PUBLIC_KEY || VAPID_PUBLIC_KEY.trim() === '') {
     console.error('VAPID public key is not configured. Please set VITE_VAPID_PUBLIC_KEY in your environment variables.');
-    throw new Error('VAPID public key is not configured. Please contact your administrator.');
+    throw new Error('VAPID public key is not configured. Please set VITE_VAPID_PUBLIC_KEY in your environment variables.');
+  }
+
+  // Validate VAPID key format (should be base64 URL encoded, typically 87 characters)
+  if (VAPID_PUBLIC_KEY.length < 80 || VAPID_PUBLIC_KEY.length > 100) {
+    console.error('VAPID public key appears to be invalid length:', VAPID_PUBLIC_KEY.length);
+    throw new Error('Invalid VAPID public key format. Please check your VITE_VAPID_PUBLIC_KEY.');
   }
 
   try {
@@ -67,15 +80,26 @@ export async function getPushSubscription(): Promise<PushSubscription | null> {
     if (!subscription) {
       // Create new subscription
       try {
+        // Convert VAPID key to Uint8Array
+        const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
+        
+        // Validate the converted key (should be 65 bytes for P256)
+        if (applicationServerKey.length !== 65) {
+          console.error('Invalid VAPID key length after conversion:', applicationServerKey.length, 'Expected: 65');
+          throw new Error('Invalid VAPID public key. The key must be a valid P256 public key.');
+        }
+
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+          applicationServerKey: applicationServerKey,
         });
       } catch (subscribeError: any) {
         console.error('Error subscribing to push:', subscribeError);
+        console.error('VAPID_PUBLIC_KEY value:', VAPID_PUBLIC_KEY ? `${VAPID_PUBLIC_KEY.substring(0, 20)}...` : 'empty');
+        
         // Provide more specific error messages
-        if (subscribeError.message?.includes('Invalid key')) {
-          throw new Error('Invalid VAPID key. Please check your configuration.');
+        if (subscribeError.message?.includes('Invalid key') || subscribeError.message?.includes('P256')) {
+          throw new Error('Invalid VAPID public key. Please check that VITE_VAPID_PUBLIC_KEY is set correctly in your .env file.');
         } else if (subscribeError.message?.includes('permission')) {
           throw new Error('Notification permission is required. Please grant permission and try again.');
         } else {
@@ -128,14 +152,25 @@ export async function savePushSubscription(
     };
 
     // Get current user
-    const { data: { user } } = await supabase.auth.getUser();
+    const { data: { user }, error: userError } = await supabase.auth.getUser();
+    if (userError) {
+      console.error('Error getting user:', userError);
+      throw new Error(`Authentication error: ${userError.message}`);
+    }
+    
     if (!user) {
       console.error('No user logged in');
-      return false;
+      throw new Error('You must be logged in to enable push notifications');
     }
 
+    console.log('💾 Saving push subscription:', {
+      userId: user.id,
+      endpoint: subscriptionData.endpoint.substring(0, 50) + '...',
+      hasKeys: !!subscriptionData.keys.p256dh && !!subscriptionData.keys.auth
+    });
+
     // Save subscription to database
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('push_subscriptions')
       .upsert(
         {
@@ -148,17 +183,36 @@ export async function savePushSubscription(
         {
           onConflict: 'user_id,endpoint',
         }
-      );
+      )
+      .select();
 
     if (error) {
-      console.error('Error saving push subscription:', error);
-      return false;
+      console.error('❌ Error saving push subscription:', error);
+      console.error('Error details:', {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint
+      });
+      
+      // Provide more specific error messages
+      if (error.code === '42P01') {
+        throw new Error('Push subscriptions table does not exist. Please run the database migration.');
+      } else if (error.code === '42501') {
+        throw new Error('Permission denied. Please check database permissions.');
+      } else if (error.message?.includes('violates foreign key')) {
+        throw new Error('Invalid user ID. Please log out and log back in.');
+      } else {
+        throw new Error(`Database error: ${error.message || 'Unknown error'}`);
+      }
     }
 
+    console.log('✅ Push subscription saved successfully:', data);
     return true;
-  } catch (error) {
-    console.error('Error saving push subscription:', error);
-    return false;
+  } catch (error: any) {
+    console.error('❌ Error saving push subscription:', error);
+    // Re-throw with the error message so it can be displayed to the user
+    throw error;
   }
 }
 
@@ -214,16 +268,35 @@ export async function sendTestNotification(): Promise<void> {
  * Convert VAPID key from base64 URL to Uint8Array
  */
 function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
+  if (!base64String || typeof base64String !== 'string') {
+    throw new Error('VAPID key must be a non-empty string');
   }
-  return outputArray;
+
+  try {
+    // Remove any whitespace
+    const cleaned = base64String.trim();
+    
+    // Add padding if needed
+    const padding = '='.repeat((4 - (cleaned.length % 4)) % 4);
+    
+    // Convert URL-safe base64 to standard base64
+    const base64 = (cleaned + padding)
+      .replace(/-/g, '+')
+      .replace(/_/g, '/');
+
+    // Decode base64
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    
+    return outputArray;
+  } catch (error) {
+    console.error('Error converting VAPID key:', error);
+    throw new Error(`Invalid VAPID key format: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }
 
 /**

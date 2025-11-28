@@ -4,6 +4,7 @@ const pushNotificationController = require('../controllers/pushNotificationContr
 
 // Send push notification
 router.post('/push/send', pushNotificationController.sendPushNotification);
+router.post('/push/rmq/send', pushNotificationController.sendRmqNotification);
 
 module.exports = router;
 

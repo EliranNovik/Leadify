@@ -335,15 +335,25 @@ const SettingsPage: React.FC = () => {
         if (permission === 'granted') {
           // Get or create subscription
           try {
+            // Debug: Check if VAPID key is available
+            const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY;
+            console.log('🔍 Debug - VAPID key check:', {
+              exists: !!vapidKey,
+              length: vapidKey?.length || 0,
+              firstChars: vapidKey ? `${vapidKey.substring(0, 20)}...` : 'empty',
+              fullKey: vapidKey // Log full key for debugging (remove in production)
+            });
+
             const subscription = await getPushSubscription();
             if (subscription) {
-              const saved = await savePushSubscription(subscription);
-              if (saved) {
+              try {
+                await savePushSubscription(subscription);
                 updateSetting('pushNotifications', true);
                 toast.success('Push notifications enabled!');
-              } else {
+              } catch (saveError: any) {
+                console.error('Save subscription error:', saveError);
                 updateSetting('pushNotifications', false);
-                toast.error('Failed to save push subscription. Please try again.');
+                toast.error(saveError?.message || 'Failed to save push subscription. Please check the console for details.');
               }
             } else {
               updateSetting('pushNotifications', false);
@@ -351,6 +361,11 @@ const SettingsPage: React.FC = () => {
             }
           } catch (subscriptionError: any) {
             console.error('Subscription error:', subscriptionError);
+            console.error('Full error details:', {
+              message: subscriptionError?.message,
+              stack: subscriptionError?.stack,
+              name: subscriptionError?.name
+            });
             updateSetting('pushNotifications', false);
             toast.error(subscriptionError?.message || 'Failed to set up push notifications');
           }

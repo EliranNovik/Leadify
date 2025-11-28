@@ -68,38 +68,38 @@ const ASSIGNMENT_ROLE_FIELDS = [
   {
     label: 'Handler',
     legacyField: 'case_handler_id',
-    newNumericField: 'case_handler_id',
-    newTextField: 'handler'
+    newNumericField: 'case_handler_id', // May be used for handler
+    newTextField: 'handler' // Primary field for handler in new leads
   },
   {
     label: 'Manager',
     legacyField: 'meeting_manager_id',
-    newNumericField: 'meeting_manager_id',
-    newTextField: 'manager'
+    newNumericField: 'meeting_manager_id', // Only field used for manager in new leads
+    newTextField: null // NOT used - manager is saved as ID, not text
   },
   {
     label: 'Helper',
     legacyField: 'meeting_lawyer_id',
-    newNumericField: 'meeting_lawyer_id',
-    newTextField: 'helper'
+    newNumericField: 'meeting_lawyer_id', // Only field used for helper in new leads
+    newTextField: null // NOT used - helper is saved as ID, not text
   },
   {
     label: 'Scheduler',
     legacyField: 'meeting_scheduler_id',
-    newNumericField: 'meeting_scheduler_id',
-    newTextField: 'scheduler'
+    newNumericField: null, // NOT used - scheduler is saved as text, not ID
+    newTextField: 'scheduler' // Only field used for scheduler in new leads
   },
   {
     label: 'Expert',
     legacyField: 'expert_id',
-    newNumericField: 'expert_id',
-    newTextField: 'expert'
+    newNumericField: 'expert_id', // Only field used for expert in new leads
+    newTextField: null // NOT used - expert is saved as ID, not text
   },
   {
     label: 'Closer',
     legacyField: 'closer_id',
-    newNumericField: 'closer_id',
-    newTextField: 'closer'
+    newNumericField: null, // NOT used - closer is saved as text, not ID
+    newTextField: 'closer' // Only field used for closer in new leads
   },
 ] as const;
 
@@ -1107,7 +1107,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (newLeadIds.length > 0) {
         const { data: newLeads, error: newLeadsError } = await supabase
           .from('leads')
-          .select('id, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
+          .select('id, closer, scheduler, handler, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
           .in('id', newLeadIds);
 
         if (!newLeadsError && newLeads) {
@@ -1115,18 +1115,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const fullName = userFullName?.trim().toLowerCase();
 
           newLeads.forEach((lead: any) => {
-            // Check text fields
+            // Check text fields (scheduler, closer, handler are saved as display names)
             if (fullName) {
-              const textFields = [lead.closer, lead.scheduler, lead.handler, lead.manager, lead.helper, lead.expert];
+              const textFields = [lead.closer, lead.scheduler, lead.handler];
               if (textFields.some(field => field && typeof field === 'string' && field.trim().toLowerCase() === fullName)) {
                 matchingLeadIds.add(String(lead.id));
                 return;
               }
             }
             
-            // Check numeric fields
+            // Check numeric fields (manager, expert, helper are saved as employee IDs)
+            // Also check case_handler_id for handler role
             if (employeeId) {
-              const numericFields = [lead.closer_id, lead.meeting_scheduler_id, lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
+              const numericFields = [lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
               if (numericFields.some(field => field && String(field) === String(employeeId))) {
                 matchingLeadIds.add(String(lead.id));
               }
@@ -1844,6 +1845,12 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             }
 
             if (!match && table === 'new') {
+              // For new leads, check fields based on how they're saved in RolesTab:
+              // - manager, expert, helper: saved as numeric IDs only
+              // - scheduler, closer, handler: saved as text (display names) only
+              // - handler: may also have case_handler_id
+              
+              // Check numeric field first (for manager, expert, helper, and potentially handler)
               if (newNumericField) {
                 const value = row[newNumericField];
                 if (value !== null && value !== undefined) {
@@ -1855,6 +1862,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   }
                 }
               }
+              // Check text field (for scheduler, closer, handler)
               if (!match && newTextField) {
                 const value = row[newTextField];
                 if (value !== null && value !== undefined) {

@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
+const pushNotificationService = require('../services/pushNotificationService');
 
 // Initialize Supabase client
 const supabase = createClient(
@@ -26,6 +27,26 @@ console.log('PHONE_NUMBER_ID:', PHONE_NUMBER_ID ? 'SET' : 'NOT SET');
 console.log('ACCESS_TOKEN:', ACCESS_TOKEN ? 'SET' : 'NOT SET');
 console.log('isDevelopmentMode:', isDevelopmentMode);
 
+// In-memory cache to track which message IDs have already sent notifications
+// This prevents duplicate notifications in race conditions
+const notificationSentCache = new Set();
+const NOTIFICATION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Helper to check and mark notification as sent
+const markNotificationSent = (messageId) => {
+  if (!messageId) return false;
+  const key = `whatsapp_${messageId}`;
+  if (notificationSentCache.has(key)) {
+    return true; // Already sent
+  }
+  notificationSentCache.add(key);
+  // Auto-cleanup after TTL to prevent memory leaks
+  setTimeout(() => {
+    notificationSentCache.delete(key);
+  }, NOTIFICATION_CACHE_TTL);
+  return false; // Not sent yet
+};
+
 // Helper utilities
 const normalizePhone = (phone) => {
   if (!phone || phone === null || phone === '') return '';
@@ -46,6 +67,132 @@ const parseAdditionalPhones = (value) => {
     // Not JSON, fall back to string parsing
   }
   return value.split(/[,;|\s]+/).map(item => item.trim()).filter(Boolean);
+};
+
+const buildWhatsappNotificationPreview = (messageData, senderName, phoneNumber, messageType) => {
+  const displayName = senderName || phoneNumber || 'Unknown contact';
+  const prefix = `${displayName}: `;
+
+  if (messageData.voice_note || messageType === 'audio' || messageType === 'voice') {
+    return `${prefix}Sent a voice message`;
+  }
+
+  if (messageType === 'image' || messageType === 'video') {
+    if (messageData.caption && messageData.caption.trim()) {
+      return `${prefix}${messageData.caption.trim().substring(0, 80)}`;
+    }
+    return `${prefix}Sent a ${messageType} message`;
+  }
+
+  if (messageData.message && messageData.message.trim()) {
+    return `${prefix}${messageData.message.trim().substring(0, 80)}`;
+  }
+
+  if (messageData.caption && messageData.caption.trim()) {
+    return `${prefix}${messageData.caption.trim().substring(0, 80)}`;
+  }
+
+  return `${prefix}Sent a ${messageType || 'message'}`;
+};
+
+/**
+ * Find user IDs who have roles assigned to a lead
+ * @param {Object} lead - The lead object (new lead)
+ * @param {Object} legacyLead - The legacy lead object
+ * @returns {Promise<string[]>} Array of user IDs
+ */
+const findUsersWithRolesForLead = async (lead, legacyLead) => {
+  const userIds = new Set();
+
+  try {
+    if (lead) {
+      // For new leads: roles are stored differently:
+      // - scheduler, closer, handler: stored as display names (text fields)
+      // - manager, expert, helper: stored as employee IDs (numeric fields: meeting_manager_id, expert_id, meeting_lawyer_id)
+      
+      // Check text role fields (scheduler, closer, handler)
+      const textRoleFields = ['scheduler', 'closer', 'handler'];
+      const textRoleValues = textRoleFields
+        .map(field => lead[field])
+        .filter(value => value && value !== '---' && value !== null && value !== '');
+
+      if (textRoleValues.length > 0) {
+        // Find employees with matching display names
+        const { data: employees, error: empError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, user_id')
+          .in('display_name', textRoleValues);
+
+        if (!empError && employees) {
+          employees.forEach(emp => {
+            if (emp.user_id) {
+              userIds.add(emp.user_id);
+            }
+          });
+        }
+      }
+
+      // Check numeric role fields (manager, expert, helper)
+      const numericRoleFields = [
+        'meeting_manager_id',  // manager
+        'expert_id',            // expert
+        'meeting_lawyer_id',    // helper
+        'case_handler_id'       // handler (also has numeric field)
+      ];
+      const numericRoleIds = numericRoleFields
+        .map(field => lead[field])
+        .filter(id => id !== null && id !== undefined && id !== '');
+
+      if (numericRoleIds.length > 0) {
+        // Find employees with matching IDs
+        const { data: employees, error: empError } = await supabase
+          .from('tenants_employee')
+          .select('id, user_id')
+          .in('id', numericRoleIds);
+
+        if (!empError && employees) {
+          employees.forEach(emp => {
+            if (emp.user_id) {
+              userIds.add(emp.user_id);
+            }
+          });
+        }
+      }
+    } else if (legacyLead) {
+      // For legacy leads: roles are stored as employee IDs (bigint) in leads_lead table
+      const roleFields = [
+        'meeting_scheduler_id',
+        'meeting_manager_id',
+        'meeting_lawyer_id',
+        'expert_id',
+        'closer_id',
+        'case_handler_id'
+      ];
+      const roleIds = roleFields
+        .map(field => legacyLead[field])
+        .filter(id => id !== null && id !== undefined && id !== '');
+
+      if (roleIds.length > 0) {
+        // Find employees with matching IDs
+        const { data: employees, error: empError } = await supabase
+          .from('tenants_employee')
+          .select('id, user_id')
+          .in('id', roleIds);
+
+        if (!empError && employees) {
+          employees.forEach(emp => {
+            if (emp.user_id) {
+              userIds.add(emp.user_id);
+            }
+          });
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error finding users with roles for lead:', error);
+  }
+
+  return Array.from(userIds);
 };
 
 const pickPreferredLeadLink = (links = []) => {
@@ -155,7 +302,7 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
       if (preferredLink && preferredLink.newlead_id) {
         const { data: newLead } = await supabase
           .from('leads')
-          .select('id, name, lead_number, phone, mobile')
+          .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
           .eq('id', preferredLink.newlead_id)
           .maybeSingle();
         if (newLead) {
@@ -167,7 +314,7 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
       if (!leadData && preferredLink && preferredLink.lead_id) {
         const { data: legacyLead } = await supabase
           .from('leads_lead')
-          .select('id, name')
+          .select('id, name, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
           .eq('id', preferredLink.lead_id)
           .maybeSingle();
         if (legacyLead) {
@@ -179,7 +326,7 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
       if (!leadData && contact.newlead_id) {
         const { data: fallbackLead } = await supabase
           .from('leads')
-          .select('id, name, lead_number, phone, mobile')
+          .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
           .eq('id', contact.newlead_id)
           .maybeSingle();
         if (fallbackLead) {
@@ -294,6 +441,20 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       interactive
     } = message;
 
+    // Check for duplicate messages early to avoid unnecessary processing
+    if (whatsappMessageId) {
+      const { data: existingMessages, error: checkError } = await supabase
+        .from('whatsapp_messages')
+        .select('id, whatsapp_message_id')
+        .eq('whatsapp_message_id', whatsappMessageId)
+        .limit(1);
+      
+      if (!checkError && existingMessages && existingMessages.length > 0) {
+        console.log(`⚠️ Duplicate message detected: whatsapp_message_id ${whatsappMessageId} already exists. Skipping.`);
+        return; // Exit early to prevent duplicate processing
+      }
+    }
+
     // Find lead by phone number (handle various formats)
     const phoneWithoutCountry = phoneNumber.replace(/^972/, '');
     const phoneWithCountry = phoneNumber.startsWith('972') ? phoneNumber : `972${phoneNumber}`;
@@ -316,9 +477,10 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
 
     
     // Get all leads and find by normalized phone number
+    // Include both text role fields (scheduler, closer, handler) and numeric role fields (meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id)
     const { data: allLeads, error: allLeadsError } = await supabase
       .from('leads')
-      .select('id, name, lead_number, phone, mobile')
+      .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
       .not('phone', 'is', null)
       .not('phone', 'eq', '');
     
@@ -327,41 +489,178 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       return;
     }
     
-    // Find lead by normalized phone number comparison
-    let lead = null;
-    let legacyLead = null;
+    // Find ALL matching leads by normalized phone number comparison
+    const matchingLeads = [];
     for (const potentialLead of allLeads) {
       const leadPhoneNormalized = normalizePhone(potentialLead.phone);
       const leadMobileNormalized = normalizePhone(potentialLead.mobile);
       
       // Check if any variation matches
       let foundMatch = false;
-      let matchType = '';
       
       for (const variation of incomingVariations) {
         if (leadPhoneNormalized === variation || leadMobileNormalized === variation) {
           foundMatch = true;
-          matchType = leadPhoneNormalized === variation ? 'phone' : 'mobile';
           break;
         }
       }
       
       if (foundMatch) {
-        lead = potentialLead;
-        break;
+        matchingLeads.push({ type: 'new', data: potentialLead });
       }
     }
 
-    // Attempt to match contact/lead relationship by contact phone if direct lead lookup failed
-    let contactId = null;
-    if (!lead) {
-      const contactMatch = await findLeadAndContactByPhone(phoneNumber, incomingVariations, incomingNormalized);
-      if (contactMatch) {
-        contactId = contactMatch.contactId;
-        if (contactMatch.leadType === 'new' && contactMatch.leadData) {
-          lead = contactMatch.leadData;
-        } else if (contactMatch.leadType === 'legacy' && contactMatch.leadData) {
-          legacyLead = contactMatch.leadData;
+    // Also check legacy leads
+    const { data: allLegacyLeads, error: allLegacyLeadsError } = await supabase
+      .from('leads_lead')
+      .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
+      .not('phone', 'is', null)
+      .not('phone', 'eq', '');
+    
+    if (!allLegacyLeadsError && allLegacyLeads) {
+      for (const potentialLegacyLead of allLegacyLeads) {
+        const leadPhoneNormalized = normalizePhone(potentialLegacyLead.phone || '');
+        const leadMobileNormalized = normalizePhone(potentialLegacyLead.mobile || '');
+        
+        let foundMatch = false;
+        for (const variation of incomingVariations) {
+          if (leadPhoneNormalized === variation || leadMobileNormalized === variation) {
+            foundMatch = true;
+            break;
+          }
+        }
+        
+        if (foundMatch) {
+          matchingLeads.push({ type: 'legacy', data: potentialLegacyLead });
+        }
+      }
+    }
+
+    // Find ALL matching contacts and their associated leads
+    const matchingContacts = [];
+    const matchingContactsWithLeads = [];
+    
+    // Find all contacts that match the phone number
+    // Use multiple queries since Supabase doesn't support complex OR with IN
+    const contactQueries = [
+      supabase
+        .from('leads_contact')
+        .select('id, name, phone, mobile, additional_phones, newlead_id, lead_leadcontact(lead_id, newlead_id, main)')
+        .in('phone', incomingVariations),
+      supabase
+        .from('leads_contact')
+        .select('id, name, phone, mobile, additional_phones, newlead_id, lead_leadcontact(lead_id, newlead_id, main)')
+        .in('mobile', incomingVariations)
+    ];
+    
+    const contactResults = await Promise.all(contactQueries);
+    const allContactsMap = new Map();
+    
+    contactResults.forEach(result => {
+      if (!result.error && result.data) {
+        result.data.forEach(contact => {
+          if (!allContactsMap.has(contact.id)) {
+            allContactsMap.set(contact.id, contact);
+          }
+        });
+      }
+    });
+    
+    const allContacts = Array.from(allContactsMap.values());
+    const contactsError = contactResults.find(r => r.error)?.error;
+    
+    if (!contactsError && allContacts) {
+      for (const contact of allContacts) {
+        const contactPhones = [
+          contact.phone,
+          contact.mobile,
+          ...parseAdditionalPhones(contact.additional_phones || '')
+        ].filter(Boolean);
+        
+        const contactNormalizedPhones = contactPhones
+          .map(normalizePhone)
+          .filter(Boolean);
+        
+        // Check if any normalized contact phone matches any variation
+        const hasMatch = contactNormalizedPhones.some(number => 
+          incomingVariations.some(variation => normalizePhone(variation) === number)
+        );
+        
+        if (hasMatch) {
+          matchingContacts.push(contact.id);
+          
+          // Find all leads associated with this contact
+          const contactLinks = contact.lead_leadcontact || [];
+          let leadsAddedFromContact = 0;
+          
+          for (const link of contactLinks) {
+            if (link.newlead_id) {
+              // Check if this lead is already in matchingLeads
+              const existingLead = matchingLeads.find(ml => ml.type === 'new' && ml.data.id === link.newlead_id);
+              if (!existingLead) {
+                const { data: newLead, error: leadError } = await supabase
+                  .from('leads')
+                  .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
+                  .eq('id', link.newlead_id)
+                  .maybeSingle();
+                if (newLead) {
+                  matchingLeads.push({ type: 'new', data: newLead });
+                  leadsAddedFromContact++;
+                  console.log(`✅ Added new lead ${newLead.id} (${newLead.name}) from contact ${contact.id}`);
+                } else if (leadError) {
+                  console.error(`❌ Error fetching new lead ${link.newlead_id} for contact ${contact.id}:`, leadError);
+                }
+              } else {
+                console.log(`ℹ️ Lead ${link.newlead_id} already in matchingLeads (from contact ${contact.id})`);
+              }
+            }
+            if (link.lead_id) {
+              // Check if this legacy lead is already in matchingLeads
+              const existingLead = matchingLeads.find(ml => ml.type === 'legacy' && ml.data.id === link.lead_id);
+              if (!existingLead) {
+                const { data: legacyLead, error: legacyError } = await supabase
+                  .from('leads_lead')
+                  .select('id, name, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
+                  .eq('id', link.lead_id)
+                  .maybeSingle();
+                if (legacyLead) {
+                  matchingLeads.push({ type: 'legacy', data: legacyLead });
+                  leadsAddedFromContact++;
+                  console.log(`✅ Added legacy lead ${legacyLead.id} (${legacyLead.name || legacyLead.id}) from contact ${contact.id}`);
+                } else if (legacyError) {
+                  console.error(`❌ Error fetching legacy lead ${link.lead_id} for contact ${contact.id}:`, legacyError);
+                }
+              } else {
+                console.log(`ℹ️ Legacy lead ${link.lead_id} already in matchingLeads (from contact ${contact.id})`);
+              }
+            }
+          }
+          
+          // Also check contact's direct newlead_id
+          if (contact.newlead_id) {
+            const existingLead = matchingLeads.find(ml => ml.type === 'new' && ml.data.id === contact.newlead_id);
+            if (!existingLead) {
+              const { data: newLead, error: directLeadError } = await supabase
+                .from('leads')
+                .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
+                .eq('id', contact.newlead_id)
+                .maybeSingle();
+              if (newLead) {
+                matchingLeads.push({ type: 'new', data: newLead });
+                leadsAddedFromContact++;
+                console.log(`✅ Added new lead ${newLead.id} (${newLead.name}) from contact ${contact.id} (direct newlead_id)`);
+              } else if (directLeadError) {
+                console.error(`❌ Error fetching direct newlead_id ${contact.newlead_id} for contact ${contact.id}:`, directLeadError);
+              }
+            }
+          }
+          
+          console.log(`📋 Contact ${contact.id} matched: added ${leadsAddedFromContact} lead(s) to matchingLeads`);
+          
+          matchingContactsWithLeads.push({
+            contactId: contact.id,
+            contactLinks: contactLinks
+          });
         }
       }
     }
@@ -378,18 +677,29 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       contactProfile: !!contactProfile,
       profileName,
       profilePictureUrl: !!profilePictureUrl,
-      leadFound: !!lead,
-      leadName: lead?.name
+      matchingLeadsCount: matchingLeads.length,
+      matchingContactsCount: matchingContacts.length
     });
 
-    // Note: Profile picture update will happen after contactId is determined (see below)
+    // Log summary of all matches found
+    console.log(`📊 Match Summary for ${phoneNumber}:`, {
+      directLeads: matchingLeads.filter(ml => {
+        // Check if this lead was found directly (not through contacts)
+        // We can't easily distinguish, but we'll log the total
+        return true;
+      }).length,
+      totalMatchingLeads: matchingLeads.length,
+      matchingContacts: matchingContacts.length,
+      newLeads: matchingLeads.filter(ml => ml.type === 'new').length,
+      legacyLeads: matchingLeads.filter(ml => ml.type === 'legacy').length,
+      leadIds: matchingLeads.map(ml => `${ml.type}:${ml.data.id}`).join(', ')
+    });
 
     // Determine the best sender name to use
     let senderName;
-    if (lead) {
-      senderName = lead.name || 'Unknown Client';
-    } else if (legacyLead) {
-      senderName = legacyLead.name || 'Unknown Client';
+    if (matchingLeads.length > 0) {
+      // Use the first matching lead's name
+      senderName = matchingLeads[0].data.name || 'Unknown Client';
     } else {
       // For unknown leads, try to get the WhatsApp profile name from webhook
       if (profileName) {
@@ -403,109 +713,30 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     }
 
-    // Find contact by phone number if not already determined
-    if ((lead || legacyLead) && !contactId) {
-      const isLegacyLead = !!legacyLead && !lead;
-      const leadIdForQuery = isLegacyLead ? legacyLead.id : lead.id;
-
-      // First, get all contacts for this lead
-      let leadContactsQuery = supabase
-        .from('lead_leadcontact')
-        .select('contact_id, main');
-      
-      if (isLegacyLead) {
-        leadContactsQuery = leadContactsQuery.eq('lead_id', leadIdForQuery);
-      } else {
-        leadContactsQuery = leadContactsQuery.eq('newlead_id', leadIdForQuery);
-      }
-      
-      const { data: leadContacts, error: leadContactsError } = await leadContactsQuery;
-      
-      if (!leadContactsError && leadContacts && leadContacts.length > 0) {
-        const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
-        
-        // Get contact details
-        const { data: contacts, error: contactsError } = await supabase
-          .from('leads_contact')
-          .select('id, phone, mobile')
-          .in('id', contactIds);
-        
-        if (!contactsError && contacts && contacts.length > 0) {
-          // Find the contact that matches the phone number
-          for (const contact of contacts) {
-            const contactPhoneNormalized = normalizePhone(contact.phone || '');
-            const contactMobileNormalized = normalizePhone(contact.mobile || '');
-            
-            for (const variation of incomingVariations) {
-              if (contactPhoneNormalized === variation || contactMobileNormalized === variation) {
-                contactId = contact.id;
-                console.log(`✅ Found matching contact ${contact.id} for phone ${phoneNumber}`);
-                break;
-              }
-            }
-            if (contactId) break;
-          }
-        }
-        
-        // If no contact found by phone match, try matching by last 4 digits (fallback)
-        if (!contactId && contacts && contacts.length > 0) {
-          const incomingLast4 = incomingNormalized.slice(-4);
-          if (incomingLast4.length >= 4) {
-            for (const contact of contacts) {
-              const contactPhoneNormalized = normalizePhone(contact.phone || '');
-              const contactMobileNormalized = normalizePhone(contact.mobile || '');
-              const contactPhoneLast4 = contactPhoneNormalized.slice(-4);
-              const contactMobileLast4 = contactMobileNormalized.slice(-4);
-              
-              if ((contactPhoneLast4 === incomingLast4 && contactPhoneLast4.length >= 4) ||
-                  (contactMobileLast4 === incomingLast4 && contactMobileLast4.length >= 4)) {
-                contactId = contact.id;
-                console.log(`✅ Found matching contact ${contact.id} by last 4 digits (${incomingLast4}) for phone ${phoneNumber}`);
-                break;
-              }
-            }
-          }
-        }
-        
-        // If still no contact found, use the main contact
-        if (!contactId) {
-          const mainContactRel = leadContacts.find(lc => lc.main === true || lc.main === 't');
-          if (mainContactRel) {
-            contactId = mainContactRel.contact_id;
-            console.log(`✅ Using main contact ${contactId} for lead ${leadIdForQuery}`);
-          }
-        }
-      }
-    }
-
-    // Store profile picture in lead/contact if available (after contactId is determined)
+    // Store profile picture in all matching leads/contacts if available
     if (profilePictureUrl) {
-      if (contactId) {
-        // Priority: Update contact's WhatsApp profile picture if contact is found
+      // Update all matching contacts
+      if (matchingContacts.length > 0) {
         await supabase
           .from('leads_contact')
           .update({ whatsapp_profile_picture_url: profilePictureUrl })
-          .eq('id', contactId);
-        console.log('✅ Updated contact profile picture:', contactId);
-      } else if (lead) {
-        // Fallback: Update lead's WhatsApp profile picture if no contact found
+          .in('id', matchingContacts);
+        console.log(`✅ Updated ${matchingContacts.length} contact profile pictures`);
+      }
+      
+      // Update all matching new leads (if no contacts found)
+      const newLeads = matchingLeads.filter(ml => ml.type === 'new').map(ml => ml.data.id);
+      if (newLeads.length > 0 && matchingContacts.length === 0) {
         await supabase
           .from('leads')
           .update({ whatsapp_profile_picture_url: profilePictureUrl })
-          .eq('id', lead.id);
-        console.log('✅ Updated lead profile picture:', lead.id);
-      } else if (legacyLead) {
-        // For legacy leads without contacts, we could store in a separate field if needed
-        // For now, legacy leads don't have a profile picture field
-        console.log('ℹ️ Legacy lead profile picture received but not stored (no field available)');
+          .in('id', newLeads);
+        console.log(`✅ Updated ${newLeads.length} lead profile pictures`);
       }
     }
 
-    // Prepare message data - handle both known and unknown leads
-    let messageData = {
-      lead_id: lead ? lead.id : null, // null for unknown leads
-      legacy_id: legacyLead ? legacyLead.id : null,
-      contact_id: contactId, // Add contact_id
+    // Prepare base message data (without lead_id/legacy_id/contact_id - will be added per match)
+    const baseMessageData = {
       sender_name: senderName,
       phone_number: phoneNumber, // Store the original phone number from WhatsApp
       direction: 'in',
@@ -524,45 +755,53 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       profile_picture_url: profilePictureUrl || null, // Store profile picture URL from webhook
       voice_note: false // Will be set for voice notes
     };
+
+    const isUnknownLeadMessage = matchingLeads.length === 0;
     
-    // Update the lead's phone number if it's a known lead and doesn't match exactly
-    if (lead && lead.phone !== phoneNumber && lead.mobile !== phoneNumber) {
+    // Update phone numbers for all matching new leads if they don't match exactly
+    const newLeadsToUpdate = matchingLeads
+      .filter(ml => ml.type === 'new')
+      .map(ml => ml.data)
+      .filter(lead => lead.phone !== phoneNumber && lead.mobile !== phoneNumber);
+    
+    if (newLeadsToUpdate.length > 0) {
+      const leadIdsToUpdate = newLeadsToUpdate.map(l => l.id);
       await supabase
         .from('leads')
         .update({ phone: phoneNumber })
-        .eq('id', lead.id);
+        .in('id', leadIdsToUpdate);
+      console.log(`✅ Updated phone number for ${leadIdsToUpdate.length} leads`);
     }
 
-    const mediaOwnerIdentifier = lead
-      ? lead.id
-      : legacyLead
-        ? `legacy_${legacyLead.id}`
-        : phoneNumber;
+    // Use first matching lead for media owner identifier (or phone number if no matches)
+    const mediaOwnerIdentifier = matchingLeads.length > 0
+      ? (matchingLeads[0].type === 'new' ? matchingLeads[0].data.id : `legacy_${matchingLeads[0].data.id}`)
+      : phoneNumber;
 
     // Handle different message types
     switch (type) {
       case 'text':
-        messageData.message = text.body;
+        baseMessageData.message = text.body;
         break;
       
       case 'image':
-        messageData.message = image.caption || '';
-        messageData.media_id = image.id;
-        messageData.media_url = image.id; // Set media_url to WhatsApp media ID
-        messageData.media_mime_type = image.mime_type;
-        messageData.media_size = image.file_size;
-        messageData.caption = image.caption;
+        baseMessageData.message = image.caption || '';
+        baseMessageData.media_id = image.id;
+        baseMessageData.media_url = image.id; // Set media_url to WhatsApp media ID
+        baseMessageData.media_mime_type = image.mime_type;
+        baseMessageData.media_size = image.file_size;
+        baseMessageData.caption = image.caption;
         // Download and store image (use phone number as fallback for unknown leads)
         await downloadAndStoreMedia(image.id, 'image', mediaOwnerIdentifier);
         break;
       
       case 'document':
-        messageData.message = document.filename;
-        messageData.media_id = document.id;
-        messageData.media_url = document.id; // Set media_url to WhatsApp media ID
-        messageData.media_filename = document.filename;
-        messageData.media_mime_type = document.mime_type;
-        messageData.media_size = document.file_size;
+        baseMessageData.message = document.filename;
+        baseMessageData.media_id = document.id;
+        baseMessageData.media_url = document.id; // Set media_url to WhatsApp media ID
+        baseMessageData.media_filename = document.filename;
+        baseMessageData.media_mime_type = document.mime_type;
+        baseMessageData.media_size = document.file_size;
         // Download and store document (use phone number as fallback for unknown leads)
         await downloadAndStoreMedia(document.id, 'document', mediaOwnerIdentifier);
         break;
@@ -575,97 +814,346 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
                            audio.mime_type?.includes('aac') ||
                            (audio.voice === true); // WhatsApp sometimes includes a voice flag
         
-        messageData.message = isVoiceNote ? 'Voice message' : 'Audio message';
-        messageData.media_id = audio.id;
-        messageData.media_url = audio.id; // Set media_url to WhatsApp media ID
-        messageData.media_mime_type = audio.mime_type;
-        messageData.media_size = audio.file_size;
-        messageData.voice_note = isVoiceNote; // Mark as voice note
+        baseMessageData.message = isVoiceNote ? 'Voice message' : 'Audio message';
+        baseMessageData.media_id = audio.id;
+        baseMessageData.media_url = audio.id; // Set media_url to WhatsApp media ID
+        baseMessageData.media_mime_type = audio.mime_type;
+        baseMessageData.media_size = audio.file_size;
+        baseMessageData.voice_note = isVoiceNote; // Mark as voice note
         await downloadAndStoreMedia(audio.id, 'audio', mediaOwnerIdentifier);
         break;
       
       case 'video':
-        messageData.message = video.caption || 'Video message';
-        messageData.media_id = video.id;
-        messageData.media_url = video.id; // Set media_url to WhatsApp media ID
-        messageData.media_mime_type = video.mime_type;
-        messageData.media_size = video.file_size;
-        messageData.caption = video.caption;
+        baseMessageData.message = video.caption || 'Video message';
+        baseMessageData.media_id = video.id;
+        baseMessageData.media_url = video.id; // Set media_url to WhatsApp media ID
+        baseMessageData.media_mime_type = video.mime_type;
+        baseMessageData.media_size = video.file_size;
+        baseMessageData.caption = video.caption;
         await downloadAndStoreMedia(video.id, 'video', mediaOwnerIdentifier);
         break;
       
       case 'location':
-        messageData.message = `Location: ${location.latitude}, ${location.longitude}`;
-        messageData.message_type = 'location';
+        baseMessageData.message = `Location: ${location.latitude}, ${location.longitude}`;
+        baseMessageData.message_type = 'location';
         break;
       
       case 'contacts':
-        messageData.message = 'Contact shared';
-        messageData.message_type = 'contact';
+        baseMessageData.message = 'Contact shared';
+        baseMessageData.message_type = 'contact';
         break;
       
       case 'button':
         // Handle button response from template message
-        messageData.message = `Button clicked: ${button.payload}`;
-        messageData.message_type = 'button_response';
+        baseMessageData.message = `Button clicked: ${button.payload}`;
+        baseMessageData.message_type = 'button_response';
         console.log('🔘 Button response received:', {
           buttonId: button.id,
           payload: button.payload,
           phoneNumber,
-          leadName: lead?.name
+          matchingLeadsCount: matchingLeads.length
         });
         
         // Handle specific button actions based on payload
         if (button.payload === 'RESCHEDULE' || button.payload === 'reschedule') {
-          messageData.message = '📅 Client clicked "Reschedule" button';
-          console.log('📅 Reschedule request from:', lead?.name || phoneNumber);
-          
-          // You can add custom logic here, such as:
-          // - Creating a meeting/call scheduled event
-          // - Sending a notification to the case manager
-          // - Updating the lead status
+          baseMessageData.message = '📅 Client clicked "Reschedule" button';
+          console.log('📅 Reschedule request from:', senderName || phoneNumber);
         }
         break;
       
       case 'interactive':
         // Handle interactive messages (buttons, lists)
         if (interactive?.type === 'button_reply') {
-          messageData.message = `Button clicked: ${interactive.button_reply.title}`;
-          messageData.message_type = 'button_response';
+          baseMessageData.message = `Button clicked: ${interactive.button_reply.title}`;
+          baseMessageData.message_type = 'button_response';
           console.log('🔘 Interactive button clicked:', {
             buttonText: interactive.button_reply.title,
             buttonId: interactive.button_reply.id,
-            phoneNumber,
-            leadName: lead?.name
+            phoneNumber
           });
         } else if (interactive?.type === 'list_reply') {
-          messageData.message = `List option selected: ${interactive.list_reply.title}`;
-          messageData.message_type = 'list_response';
+          baseMessageData.message = `List option selected: ${interactive.list_reply.title}`;
+          baseMessageData.message_type = 'list_response';
           console.log('📋 List option selected:', {
             optionText: interactive.list_reply.title,
             optionId: interactive.list_reply.id,
-            phoneNumber,
-            leadName: lead?.name
+            phoneNumber
           });
         }
         break;
     }
 
-    // Save message to database
+    // Create message records for all matching leads and contacts
+    const messagesToInsert = [];
+    
+    if (matchingLeads.length === 0 && matchingContacts.length === 0) {
+      // Unknown lead - save one record with no lead_id/legacy_id/contact_id
+      messagesToInsert.push({
+        ...baseMessageData,
+        lead_id: null,
+        legacy_id: null,
+        contact_id: null
+      });
+    } else {
+      // For each matching lead, create a message record
+      for (const matchingLead of matchingLeads) {
+        if (matchingLead.type === 'new') {
+          messagesToInsert.push({
+            ...baseMessageData,
+            lead_id: matchingLead.data.id,
+            legacy_id: null,
+            contact_id: null // Will be updated if contact matches
+          });
+        } else {
+          messagesToInsert.push({
+            ...baseMessageData,
+            lead_id: null,
+            legacy_id: matchingLead.data.id,
+            contact_id: null // Will be updated if contact matches
+          });
+        }
+      }
+      
+      // For each matching contact, create a message record (if not already created for its lead)
+      for (const contactWithLeads of matchingContactsWithLeads) {
+        const contactId = contactWithLeads.contactId;
+        const contactLinks = contactWithLeads.contactLinks;
+        
+        // Check if we already have a message for this contact's leads
+        for (const link of contactLinks) {
+          let alreadyExists = false;
+          
+          if (link.newlead_id) {
+            alreadyExists = messagesToInsert.some(msg => msg.lead_id === link.newlead_id);
+            if (!alreadyExists) {
+              messagesToInsert.push({
+                ...baseMessageData,
+                lead_id: link.newlead_id,
+                legacy_id: null,
+                contact_id: contactId
+              });
+            } else {
+              // Update existing message to include contact_id
+              const existingMsg = messagesToInsert.find(msg => msg.lead_id === link.newlead_id);
+              if (existingMsg) {
+                existingMsg.contact_id = contactId;
+              }
+            }
+          }
+          
+          if (link.lead_id) {
+            alreadyExists = messagesToInsert.some(msg => msg.legacy_id === link.lead_id);
+            if (!alreadyExists) {
+              messagesToInsert.push({
+                ...baseMessageData,
+                lead_id: null,
+                legacy_id: link.lead_id,
+                contact_id: contactId
+              });
+            } else {
+              // Update existing message to include contact_id
+              const existingMsg = messagesToInsert.find(msg => msg.legacy_id === link.lead_id);
+              if (existingMsg) {
+                existingMsg.contact_id = contactId;
+              }
+            }
+          }
+        }
+        
+        // Also handle contact's direct newlead_id
+        if (contactWithLeads.contactId && !contactLinks.some(link => link.newlead_id)) {
+          // Check if contact has a direct newlead_id that we haven't handled
+          const { data: contactData } = await supabase
+            .from('leads_contact')
+            .select('newlead_id')
+            .eq('id', contactWithLeads.contactId)
+            .maybeSingle();
+          
+          if (contactData?.newlead_id) {
+            const alreadyExists = messagesToInsert.some(msg => msg.lead_id === contactData.newlead_id);
+            if (!alreadyExists) {
+              messagesToInsert.push({
+                ...baseMessageData,
+                lead_id: contactData.newlead_id,
+                legacy_id: null,
+                contact_id: contactId
+              });
+            } else {
+              const existingMsg = messagesToInsert.find(msg => msg.lead_id === contactData.newlead_id);
+              if (existingMsg) {
+                existingMsg.contact_id = contactId;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Save all messages to database
     const { error: insertError } = await supabase
       .from('whatsapp_messages')
-      .insert([messageData]);
+      .insert(messagesToInsert);
 
     if (insertError) {
       console.error('Error saving incoming message:', insertError);
     } else {
-      if (lead) {
-        console.log(`✅ Saved message from known lead: ${lead.name} (${phoneNumber})`);
-      } else if (legacyLead) {
-        console.log(`✅ Saved message from legacy lead: ${legacyLead.name || legacyLead.id} (${phoneNumber})`);
-      } else {
-        console.log(`🆕 Saved message from NEW LEAD: ${senderName} (${phoneNumber}) - This will appear on WhatsApp Leads page!`);
+      // Log all saved messages
+      const newLeadsCount = messagesToInsert.filter(msg => msg.lead_id).length;
+      const legacyLeadsCount = messagesToInsert.filter(msg => msg.legacy_id).length;
+      const unknownCount = messagesToInsert.filter(msg => !msg.lead_id && !msg.legacy_id).length;
+      
+      console.log(`✅ Saved ${messagesToInsert.length} message record(s):`, {
+        newLeads: newLeadsCount,
+        legacyLeads: legacyLeadsCount,
+        unknown: unknownCount,
+        phoneNumber
+      });
+      
+      if (matchingLeads.length > 0) {
+        matchingLeads.forEach(ml => {
+          console.log(`  - ${ml.type === 'new' ? 'New' : 'Legacy'} lead: ${ml.data.name || ml.data.id}`);
+        });
       }
+      if (matchingContacts.length > 0) {
+        console.log(`  - ${matchingContacts.length} matching contact(s)`);
+      }
+      if (isUnknownLeadMessage) {
+        console.log(`🆕 NEW LEAD: ${senderName} (${phoneNumber}) - This will appear on WhatsApp Leads page!`);
+      }
+
+      // Send push notifications (non-blocking - don't await to avoid delaying webhook response)
+      // Use setImmediate to send notifications asynchronously after the webhook response
+      setImmediate(async () => {
+        try {
+          // Check in-memory cache to prevent duplicate notifications (handles race conditions)
+          if (whatsappMessageId && markNotificationSent(whatsappMessageId)) {
+            console.log(`⚠️ Duplicate notification prevented: whatsapp_message_id ${whatsappMessageId} notification already sent. Skipping.`);
+            return; // Exit early to prevent duplicate notifications
+          }
+
+          // Also double-check database to be extra safe
+          if (whatsappMessageId) {
+            const { data: existingMessages, error: checkError } = await supabase
+              .from('whatsapp_messages')
+              .select('id, whatsapp_message_id')
+              .eq('whatsapp_message_id', whatsappMessageId)
+              .limit(1);
+            
+            if (!checkError && existingMessages && existingMessages.length > 0) {
+              // If message exists and we're here, it means we're processing the first webhook
+              // But if multiple webhooks arrived simultaneously, the cache will catch duplicates
+              console.log(`✅ Processing notification for whatsapp_message_id ${whatsappMessageId}`);
+            }
+          }
+
+          const notificationStartTime = Date.now();
+          const previewText = buildWhatsappNotificationPreview(baseMessageData, senderName, phoneNumber, type);
+          // Use whatsapp_message_id in tag for browser-level deduplication
+          const notificationTag = baseMessageData.whatsapp_message_id 
+            ? `whatsapp-msg-${baseMessageData.whatsapp_message_id}`
+            : `whatsapp-${phoneNumber || Date.now()}`;
+          const notificationPayload = {
+            title: '💬 New WhatsApp Message',
+            body: previewText,
+            icon: '/whatsapp-icon.svg',
+            badge: '/icon-72x72.png',
+            url: phoneNumber ? `/whatsapp-leads?phone=${encodeURIComponent(phoneNumber)}` : '/whatsapp-leads',
+            tag: notificationTag, // Browser will deduplicate notifications with the same tag
+            id: baseMessageData.whatsapp_message_id || phoneNumber || Date.now(),
+            type: 'notification',
+            vibrate: [200, 100, 200],
+          };
+
+          // Log notification decision
+          console.log(`📱 Notification decision:`, {
+            isUnknownLeadMessage,
+            matchingLeadsCount: matchingLeads.length,
+            matchingContactsCount: matchingContacts.length,
+            phoneNumber,
+            whatsappMessageId
+          });
+
+          if (isUnknownLeadMessage) {
+            // For unknown leads, send to all users
+            const result = await pushNotificationService.sendNotificationToAll(notificationPayload);
+            const duration = Date.now() - notificationStartTime;
+            console.log(`📱 Sent push notifications to all users (${result.sent}/${result.total}) in ${duration}ms`);
+          } else if (matchingLeads.length > 0) {
+            // For existing leads (including those found through contacts), send notifications to users with assigned roles
+            // This includes:
+            // - Leads matched directly by phone number
+            // - Leads found through matching contacts
+            console.log(`📱 Processing notifications for ${matchingLeads.length} matching lead(s):`, 
+              matchingLeads.map(ml => ({
+                type: ml.type,
+                id: ml.data.id,
+                name: ml.data.name || 'Unknown'
+              }))
+            );
+            
+            // Parallelize role lookups for all leads
+            const roleLookupStartTime = Date.now();
+            const roleLookupPromises = matchingLeads.map(matchingLead => {
+              const lead = matchingLead.type === 'new' ? matchingLead.data : null;
+              const legacyLead = matchingLead.type === 'legacy' ? matchingLead.data : null;
+              return findUsersWithRolesForLead(lead, legacyLead);
+            });
+            
+            const roleLookupResults = await Promise.all(roleLookupPromises);
+            const roleLookupDuration = Date.now() - roleLookupStartTime;
+            
+            // Combine all user IDs from all matching leads
+            const allUserIds = new Set();
+            roleLookupResults.forEach((userIds, index) => {
+              const matchingLead = matchingLeads[index];
+              console.log(`  - ${matchingLead.type === 'new' ? 'New' : 'Legacy'} lead ${matchingLead.data.id}: ${userIds.length} user(s) with roles`);
+              userIds.forEach(userId => allUserIds.add(userId));
+            });
+            
+            if (allUserIds.size > 0) {
+              const sendStartTime = Date.now();
+              const sendResults = await Promise.allSettled(
+                Array.from(allUserIds).map(userId =>
+                  pushNotificationService.sendNotificationToUser(userId, notificationPayload)
+                )
+              );
+              
+              const successful = sendResults.filter(r => r.status === 'fulfilled').length;
+              const sendDuration = Date.now() - sendStartTime;
+              const totalDuration = Date.now() - notificationStartTime;
+              
+              console.log(`📱 ✅ Sent push notifications to ${successful}/${allUserIds.size} user(s) for ${matchingLeads.length} matching lead(s)`, {
+                roleLookupTime: `${roleLookupDuration}ms`,
+                sendTime: `${sendDuration}ms`,
+                totalTime: `${totalDuration}ms`,
+                leads: matchingLeads.map(ml => `${ml.type}:${ml.data.id}`).join(', ')
+              });
+              
+              // Log any failures
+              sendResults.forEach((result, index) => {
+                if (result.status === 'rejected') {
+                  const userId = Array.from(allUserIds)[index];
+                  console.error(`❌ Failed to send notification to user ${userId}:`, result.reason);
+                }
+              });
+            } else {
+              console.log(`ℹ️ No assigned users found for ${matchingLeads.length} matching lead(s), not sending WhatsApp notification.`, {
+                leads: matchingLeads.map(ml => `${ml.type}:${ml.data.id}`).join(', ')
+              });
+            }
+          } else {
+            // This should not happen if contact matching worked correctly
+            // But log it as a warning in case contacts were found but leads weren't added
+            console.warn(`⚠️ No matching leads found but contacts=${matchingContacts.length}. This might indicate an issue with contact-to-lead linking.`, {
+              phoneNumber,
+              whatsappMessageId,
+              matchingContactsCount: matchingContacts.length
+            });
+          }
+        } catch (notificationError) {
+          console.error('Error sending push notification for WhatsApp message:', notificationError);
+        }
+      });
     }
 
   } catch (error) {

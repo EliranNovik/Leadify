@@ -20,6 +20,7 @@ const syncRoutes = require('./src/routes/syncRoutes');
 const pushNotificationRoutes = require('./src/routes/pushNotificationRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
 const accessLogger = require('./src/middleware/accessLogger');
+const { notifyConversationParticipants } = require('./src/services/rmqNotificationService');
 
 const app = express();
 const server = http.createServer(app);
@@ -103,6 +104,16 @@ io.on("connection", (socket) => {
     
     io.to(roomName).emit('new_message', messageData);
     console.log(`📨 Broadcasting message to conversation ${conversation_id} (${roomSize} participants): ${content}`);
+
+    notifyConversationParticipants({
+      conversationId: conversation_id,
+      senderId: sender_id,
+      content,
+      messageType: message_type,
+      attachmentName: attachment_name,
+    }).catch((err) => {
+      console.error('❌ Error sending RMQ push notification:', err);
+    });
   });
 
   // Mark as read

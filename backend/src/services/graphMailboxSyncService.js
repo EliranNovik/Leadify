@@ -2,6 +2,7 @@ const mailboxTokenService = require('./mailboxTokenService');
 const mailboxStateService = require('./mailboxStateService');
 const graphAuthService = require('./graphAuthService');
 const supabase = require('../config/supabase');
+const pushNotificationService = require('./pushNotificationService');
 
 const EMAIL_HEADERS_TABLE = process.env.EMAIL_HEADERS_TABLE || 'emails';
 const EMAIL_BODIES_TABLE = process.env.EMAIL_BODIES_TABLE || 'email_bodies';
@@ -571,6 +572,41 @@ class GraphMailboxSyncService {
     if (error) {
       console.error('❌ Failed to store email headers:', error.message || error);
       throw new Error('Unable to store email headers');
+    }
+
+    const newLeadEmails = rows.filter((row) => {
+      // Only include emails that are new leads (no client_id or legacy_id)
+      if (row.client_id || row.legacy_id) return false;
+      
+      // Only send push notification if recipient email is office@lawoffice.org.il
+      const recipientList = (row.recipient_list || '').toLowerCase();
+      const targetEmail = 'office@lawoffice.org.il';
+      return recipientList.includes(targetEmail.toLowerCase());
+    });
+    
+    if (newLeadEmails.length) {
+      await Promise.all(
+        newLeadEmails.map(async (emailRow) => {
+          const senderLabel = emailRow.sender_name || emailRow.sender_email || 'Email lead';
+          const preview = stripHtml(emailRow.body_preview || emailRow.body_html || '').substring(0, 120);
+
+          try {
+            await pushNotificationService.sendNotificationToAll({
+              title: '✉️ New Email Lead',
+              body: preview ? `${senderLabel}: ${preview}` : `${senderLabel} sent a message`,
+              icon: '/icon-192x192.png',
+              badge: '/icon-72x72.png',
+              url: '/email-leads',
+              tag: `email-lead-${emailRow.message_id}`,
+              id: emailRow.message_id,
+              type: 'notification',
+              vibrate: [200, 100, 200],
+            });
+          } catch (notificationError) {
+            console.error('⚠️  Failed to send email lead notification:', notificationError);
+          }
+        })
+      );
     }
 
     // After storing headers, fetch full bodies for messages that need them

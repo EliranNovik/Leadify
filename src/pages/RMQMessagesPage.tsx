@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import websocketService, { MessageData, TypingData } from '../lib/websocket';
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
 import EmojiPicker from 'emoji-picker-react';
 import {
   ChatBubbleLeftRightIcon,
@@ -1824,6 +1826,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .single();
       
       if (error) throw error;
+
+      // If WebSocket is not connected, trigger push notifications via backend API
+      if (!websocketService.isSocketConnected()) {
+        try {
+          await fetch(`${BACKEND_URL}/api/push/rmq/send`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              conversationId: selectedConversation.id,
+              senderId: currentUser.id,
+              content: file.name,
+              messageType: messageType,
+              attachmentName: file.name,
+            }),
+          });
+        } catch (pushError) {
+          console.error('Error sending RMQ push notification:', pushError);
+          // Don't throw - this is a background operation
+        }
+      }
       
       // Only add message to local state if WebSocket is NOT connected
       if (!websocketService.isSocketConnected()) {
@@ -1904,6 +1928,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .single();
 
       if (error) throw error;
+
+      // If WebSocket is not connected, trigger push notifications via backend API
+      if (!websocketService.isSocketConnected()) {
+        try {
+          await fetch(`${BACKEND_URL}/api/push/rmq/send`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              conversationId: selectedConversation.id,
+              senderId: currentUser.id,
+              content: newMessage.trim(),
+              messageType: 'text',
+            }),
+          });
+        } catch (pushError) {
+          console.error('Error sending RMQ push notification:', pushError);
+          // Don't throw - this is a background operation
+        }
+      }
 
       // Only add message to local state if WebSocket is NOT connected
       // If WebSocket is connected, the message will come through the WebSocket handler

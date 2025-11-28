@@ -65,12 +65,13 @@ export async function sendBellNotification(
     title: string;
     body: string;
     url?: string;
+    icon?: string;
   }
 ): Promise<void> {
   await sendPushNotification(userId, {
     title: notification.title,
     body: notification.body,
-    icon: '/icon-192x192.png',
+    icon: notification.icon || '/icon-192x192.png',
     badge: '/icon-72x72.png',
     tag: `notification-${notification.id}`,
     url: notification.url || '/',
