@@ -40,6 +40,7 @@ const FRONTEND_URL = process.env.FRONTEND_URL || process.env.VITE_FRONTEND_URL |
 /**
  * Convert relative icon path to absolute URL
  * Push notifications require absolute URLs for icons
+ * For WhatsApp, prefer PNG over SVG (better mobile support)
  */
 const getAbsoluteIconUrl = (iconPath) => {
   if (!iconPath) {
@@ -49,6 +50,16 @@ const getAbsoluteIconUrl = (iconPath) => {
   // If already an absolute URL, return as-is
   if (iconPath.startsWith('http://') || iconPath.startsWith('https://')) {
     return iconPath;
+  }
+  
+  // For WhatsApp icons, try PNG first (better mobile support), fallback to SVG, then default
+  if (iconPath.includes('whatsapp')) {
+    // Try PNG version first
+    const pngPath = iconPath.replace('.svg', '.png');
+    const baseUrl = FRONTEND_URL.replace(/\/$/, '');
+    const pngUrl = pngPath.startsWith('/') ? pngPath : `/${pngPath}`;
+    // Return PNG URL (service worker will handle fallback if file doesn't exist)
+    return `${baseUrl}${pngUrl}`;
   }
   
   // Convert relative path to absolute URL

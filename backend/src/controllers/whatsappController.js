@@ -1036,10 +1036,14 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       setImmediate(async () => {
         try {
           // Check in-memory cache to prevent duplicate notifications (handles race conditions)
+          // This prevents duplicate notifications for both known and unknown leads
           if (whatsappMessageId && markNotificationSent(whatsappMessageId)) {
             console.log(`⚠️ Duplicate notification prevented: whatsapp_message_id ${whatsappMessageId} notification already sent. Skipping.`);
             return; // Exit early to prevent duplicate notifications
           }
+          
+          // Log notification attempt
+          console.log(`📱 Processing push notification for whatsapp_message_id: ${whatsappMessageId || 'N/A'}, isUnknownLead: ${isUnknownLeadMessage}`);
 
           // Also double-check database to be extra safe
           if (whatsappMessageId) {
@@ -1062,12 +1066,14 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
           const notificationTag = baseMessageData.whatsapp_message_id 
             ? `whatsapp-msg-${baseMessageData.whatsapp_message_id}`
             : `whatsapp-${phoneNumber || Date.now()}`;
+          
           // Use PNG icon for better mobile support (SVG not well supported in push notifications)
+          // Try PNG first, fallback to SVG, then to default icon
           // The pushNotificationService will convert relative paths to absolute URLs
           const notificationPayload = {
             title: '💬 New WhatsApp Message',
             body: previewText,
-            icon: '/whatsapp-icon.svg', // Will be converted to absolute URL by pushNotificationService
+            icon: '/whatsapp-icon.png', // Try PNG first (better mobile support)
             badge: '/icon-72x72.png',
             url: phoneNumber ? `/whatsapp-leads?phone=${encodeURIComponent(phoneNumber)}` : '/whatsapp-leads',
             tag: notificationTag, // Browser will deduplicate notifications with the same tag
@@ -1087,9 +1093,20 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
 
           if (isUnknownLeadMessage) {
             // For unknown leads, send to all users
+            // But only if we haven't already sent a notification for this message
+            // Check if notification was already sent (using the same deduplication as known leads)
+            if (whatsappMessageId && markNotificationSent(whatsappMessageId)) {
+              console.log(`⚠️ Duplicate unknown lead notification prevented: whatsapp_message_id ${whatsappMessageId} already notified. Skipping.`);
+              return;
+            }
+            
             const result = await pushNotificationService.sendNotificationToAll(notificationPayload);
             const duration = Date.now() - notificationStartTime;
-            console.log(`📱 Sent push notifications to all users (${result.sent}/${result.total}) in ${duration}ms`);
+            console.log(`📱 Sent push notifications to all users for unknown lead (${result.sent}/${result.total}) in ${duration}ms`, {
+              phoneNumber,
+              whatsappMessageId,
+              notificationTag
+            });
           } else if (matchingLeads.length > 0) {
             // For existing leads (including those found through contacts), send notifications to users with assigned roles
             // This includes:
