@@ -574,7 +574,28 @@ class GraphMailboxSyncService {
       throw new Error('Unable to store email headers');
     }
 
+    // Check which emails are actually new (not already in database)
+    // This prevents sending duplicate notifications for emails that were already synced
+    const messageIds = rows.map(row => row.message_id).filter(Boolean);
+    let existingMessageIds = new Set();
+    
+    if (messageIds.length > 0) {
+      const { data: existingEmails, error: checkError } = await supabase
+        .from(EMAIL_HEADERS_TABLE)
+        .select('message_id')
+        .in('message_id', messageIds);
+      
+      if (!checkError && existingEmails) {
+        existingMessageIds = new Set(existingEmails.map(e => e.message_id));
+      }
+    }
+
     const newLeadEmails = rows.filter((row) => {
+      // Only include emails that are NEW (not already in database)
+      if (existingMessageIds.has(row.message_id)) {
+        return false; // Skip emails that already exist
+      }
+      
       // Only include emails that are new leads (no client_id or legacy_id)
       if (row.client_id || row.legacy_id) return false;
       
@@ -585,6 +606,7 @@ class GraphMailboxSyncService {
     });
     
     if (newLeadEmails.length) {
+      console.log(`📧 Sending push notifications for ${newLeadEmails.length} new email lead(s)`);
       await Promise.all(
         newLeadEmails.map(async (emailRow) => {
           const senderLabel = emailRow.sender_name || emailRow.sender_email || 'Email lead';
@@ -597,7 +619,7 @@ class GraphMailboxSyncService {
               icon: '/icon-192x192.png',
               badge: '/icon-72x72.png',
               url: '/email-leads',
-              tag: `email-lead-${emailRow.message_id}`,
+              tag: `email-lead-${emailRow.message_id}`, // Browser will deduplicate by tag
               id: emailRow.message_id,
               type: 'notification',
               vibrate: [200, 100, 200],
@@ -607,6 +629,8 @@ class GraphMailboxSyncService {
           }
         })
       );
+    } else {
+      console.log(`ℹ️  No new email leads to notify (${rows.length} emails processed, ${existingMessageIds.size} already existed)`);
     }
 
     // After storing headers, fetch full bodies for messages that need them

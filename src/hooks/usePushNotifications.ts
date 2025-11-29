@@ -4,11 +4,13 @@ import { sendBellNotification } from '../lib/pushNotificationService';
 
 /**
  * Hook to send push notifications for bell icon notifications
+ * Only sends notifications for NEW messages that arrive AFTER the app loads
  */
 export function usePushNotifications() {
-  const previousUnreadCountRef = useRef(0);
-  const previousWhatsappCountRef = useRef(0);
-  const previousRmqCountRef = useRef(0);
+  const previousUnreadCountRef = useRef<number | null>(null); // null = not initialized
+  const previousWhatsappCountRef = useRef<number | null>(null);
+  const previousRmqCountRef = useRef<number | null>(null);
+  const isInitializedRef = useRef(false);
 
   const sendNotificationForNewMessage = async (
     unreadCount: number,
@@ -24,8 +26,19 @@ export function usePushNotifications() {
       const pushEnabled = localStorage.getItem('pushNotifications') !== 'false';
       if (!pushEnabled) return;
 
-      // Check if there are new WhatsApp messages
-      if (whatsappCount > previousWhatsappCountRef.current && whatsappMessages.length > 0) {
+      // On first call, initialize refs with current counts to prevent notifications for existing messages
+      if (!isInitializedRef.current) {
+        previousUnreadCountRef.current = unreadCount;
+        previousWhatsappCountRef.current = whatsappCount;
+        previousRmqCountRef.current = rmqCount;
+        isInitializedRef.current = true;
+        return; // Don't send notifications for messages that were already there
+      }
+
+      // Check if there are new WhatsApp messages (count increased)
+      if (previousWhatsappCountRef.current !== null && 
+          whatsappCount > previousWhatsappCountRef.current && 
+          whatsappMessages.length > 0) {
         const latestMessage = whatsappMessages[0];
         const senderName = latestMessage.sender_name && latestMessage.sender_name !== latestMessage.phone_number
           ? latestMessage.sender_name
@@ -40,8 +53,10 @@ export function usePushNotifications() {
         });
       }
 
-      // Check if there are new RMQ messages
-      if (rmqCount > previousRmqCountRef.current && rmqMessages.length > 0) {
+      // Check if there are new RMQ messages (count increased)
+      if (previousRmqCountRef.current !== null && 
+          rmqCount > previousRmqCountRef.current && 
+          rmqMessages.length > 0) {
         const latestMessage = rmqMessages[0];
         const senderName = latestMessage.sender?.full_name || 'Someone';
 

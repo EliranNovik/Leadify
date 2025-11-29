@@ -1115,29 +1115,61 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
             if (allUserIds.size > 0) {
               const sendStartTime = Date.now();
               const sendResults = await Promise.allSettled(
-                Array.from(allUserIds).map(userId =>
-                  pushNotificationService.sendNotificationToUser(userId, notificationPayload)
-                )
+                Array.from(allUserIds).map(async (userId) => {
+                  try {
+                    const result = await pushNotificationService.sendNotificationToUser(userId, notificationPayload);
+                    return { userId, result, success: true };
+                  } catch (error) {
+                    return { userId, error: error.message || error, success: false };
+                  }
+                })
               );
               
-              const successful = sendResults.filter(r => r.status === 'fulfilled').length;
               const sendDuration = Date.now() - sendStartTime;
               const totalDuration = Date.now() - notificationStartTime;
               
-              console.log(`📱 ✅ Sent push notifications to ${successful}/${allUserIds.size} user(s) for ${matchingLeads.length} matching lead(s)`, {
+              // Count actually sent notifications (check result.sent > 0)
+              let totalSent = 0;
+              let totalSubscriptions = 0;
+              const userIdsArray = Array.from(allUserIds);
+              
+              sendResults.forEach((result, index) => {
+                if (result.status === 'fulfilled' && result.value.success) {
+                  const { result: notificationResult } = result.value;
+                  if (notificationResult && notificationResult.sent !== undefined) {
+                    totalSent += notificationResult.sent || 0;
+                    totalSubscriptions += notificationResult.total || 0;
+                  } else {
+                    // Fallback: if result doesn't have sent/total, assume it succeeded
+                    totalSent += 1;
+                    totalSubscriptions += 1;
+                  }
+                } else {
+                  const userId = userIdsArray[index];
+                  const error = result.status === 'rejected' 
+                    ? result.reason 
+                    : (result.value?.error || 'Unknown error');
+                  console.error(`❌ Failed to send notification to user ${userId}:`, error);
+                }
+              });
+              
+              console.log(`📱 ✅ Push notification results for ${matchingLeads.length} matching lead(s):`, {
+                usersWithRoles: allUserIds.size,
+                notificationsSent: totalSent,
+                subscriptionsTotal: totalSubscriptions,
                 roleLookupTime: `${roleLookupDuration}ms`,
                 sendTime: `${sendDuration}ms`,
                 totalTime: `${totalDuration}ms`,
-                leads: matchingLeads.map(ml => `${ml.type}:${ml.data.id}`).join(', ')
+                leads: matchingLeads.map(ml => `${ml.type}:${ml.data.id}`).join(', '),
+                userIds: Array.from(allUserIds)
               });
               
-              // Log any failures
-              sendResults.forEach((result, index) => {
-                if (result.status === 'rejected') {
-                  const userId = Array.from(allUserIds)[index];
-                  console.error(`❌ Failed to send notification to user ${userId}:`, result.reason);
-                }
-              });
+              if (totalSent === 0 && allUserIds.size > 0) {
+                console.warn(`⚠️ No push notifications were actually sent. Users may not have active subscriptions.`, {
+                  userIds: Array.from(allUserIds),
+                  notificationTag: notificationPayload.tag
+                });
+              }
             } else {
               console.log(`ℹ️ No assigned users found for ${matchingLeads.length} matching lead(s), not sending WhatsApp notification.`, {
                 leads: matchingLeads.map(ml => `${ml.type}:${ml.data.id}`).join(', ')
