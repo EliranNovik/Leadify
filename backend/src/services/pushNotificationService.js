@@ -34,11 +34,35 @@ if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
   console.warn('⚠️  VAPID keys not configured. Push notifications will not work.');
 }
 
+// Get frontend URL from environment or default
+const FRONTEND_URL = process.env.FRONTEND_URL || process.env.VITE_FRONTEND_URL || 'https://rmq-crm.app';
+
+/**
+ * Convert relative icon path to absolute URL
+ * Push notifications require absolute URLs for icons
+ */
+const getAbsoluteIconUrl = (iconPath) => {
+  if (!iconPath) {
+    return `${FRONTEND_URL}/icon-192x192.png`;
+  }
+  
+  // If already an absolute URL, return as-is
+  if (iconPath.startsWith('http://') || iconPath.startsWith('https://')) {
+    return iconPath;
+  }
+  
+  // Convert relative path to absolute URL
+  const baseUrl = FRONTEND_URL.replace(/\/$/, ''); // Remove trailing slash
+  const iconUrl = iconPath.startsWith('/') ? iconPath : `/${iconPath}`;
+  
+  return `${baseUrl}${iconUrl}`;
+};
+
 const buildNotificationPayload = (payload = {}) => ({
   title: payload.title || 'RMQ 2.0',
   body: payload.body || 'You have a new notification',
-  icon: payload.icon || '/icon-192x192.png',
-  badge: payload.badge || '/icon-72x72.png',
+  icon: getAbsoluteIconUrl(payload.icon) || `${FRONTEND_URL}/icon-192x192.png`,
+  badge: getAbsoluteIconUrl(payload.badge) || `${FRONTEND_URL}/icon-72x72.png`,
   tag: payload.tag || 'rmq-notification',
   data: {
     url: payload.url || '/',
@@ -61,12 +85,23 @@ const fetchSubscriptions = async (filter = {}) => {
 
   if (filter.userId) {
     query = query.eq('user_id', filter.userId);
+    console.log(`🔍 Querying push subscriptions for user_id: ${filter.userId}`);
+  } else {
+    console.log(`🔍 Querying all push subscriptions`);
   }
 
   const { data, error } = await query;
 
   if (error) {
+    console.error(`❌ Error fetching push subscriptions:`, error);
     throw new Error(error.message || 'Failed to fetch push subscriptions');
+  }
+
+  const count = data ? data.length : 0;
+  if (filter.userId) {
+    console.log(`📋 Found ${count} push subscription(s) for user ${filter.userId}`);
+  } else {
+    console.log(`📋 Found ${count} total push subscription(s)`);
   }
 
   return data || [];
@@ -128,12 +163,22 @@ const sendNotificationToUser = async (userId, payload = {}) => {
     throw new Error('Missing userId for push notification');
   }
 
+  console.log(`📤 Attempting to send push notification to user: ${userId}`);
   const subscriptions = await fetchSubscriptions({ userId });
+  
   if (subscriptions.length === 0) {
+    console.warn(`⚠️ No push subscriptions found for user ${userId}. User may need to enable push notifications in settings.`);
     return { success: true, sent: 0, total: 0, message: 'No push subscriptions for user' };
   }
 
+  console.log(`✅ Found ${subscriptions.length} subscription(s) for user ${userId}, sending notifications...`);
   const result = await sendNotificationToSubscriptions(subscriptions, payload);
+  console.log(`📱 Notification send result for user ${userId}:`, {
+    sent: result.sent,
+    total: result.total,
+    success: result.sent > 0
+  });
+  
   return {
     success: true,
     ...result,

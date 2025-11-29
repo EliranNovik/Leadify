@@ -1344,8 +1344,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [currentUser, fetchEmailUnreadCount, fetchEmailLeadMessages]);
 
   // Send push notifications when new messages arrive
+  // Only trigger on count changes, not on message array reference changes
+  // The hook internally tracks message IDs to prevent duplicates
   useEffect(() => {
-    if (currentUser && unreadCount > 0) {
+    if (currentUser) {
       sendNotificationForNewMessage(
         unreadCount,
         whatsappLeadsUnreadCount,
@@ -1354,7 +1356,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         rmqMessages
       );
     }
-  }, [unreadCount, whatsappLeadsUnreadCount, rmqUnreadCount, whatsappLeadsMessages, rmqMessages, currentUser, sendNotificationForNewMessage]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unreadCount, whatsappLeadsUnreadCount, rmqUnreadCount, currentUser, sendNotificationForNewMessage]);
+  // Note: whatsappLeadsMessages and rmqMessages are intentionally excluded from deps
+  // to prevent re-triggering on array reference changes. The hook tracks message IDs internally.
 
   useEffect(() => {
     if (!currentUser) {

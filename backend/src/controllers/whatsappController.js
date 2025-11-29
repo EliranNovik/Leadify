@@ -170,19 +170,27 @@ const findUsersWithRolesForLead = async (lead, legacyLead) => {
 
     // Now find users where employee_id matches the employee IDs we found
     // users.employee_id → tenants_employee.id
+    // IMPORTANT: push_subscriptions.user_id references auth.users.id, not users.id
+    // So we need to get auth_id from users table (which is auth.users.id)
     const userIds = new Set();
     
     if (employeeIds.size > 0) {
       const employeeIdsArray = Array.from(employeeIds);
       const { data: users, error: usersError } = await supabase
         .from('users')
-        .select('id, employee_id')
+        .select('id, employee_id, auth_id')
         .in('employee_id', employeeIdsArray);
 
       if (!usersError && users) {
         users.forEach(user => {
-          if (user.id) {
-            userIds.add(user.id); // user.id is the UUID from users table
+          // Use auth_id (auth.users.id) instead of id (users.id)
+          // because push_subscriptions.user_id references auth.users.id
+          const authUserId = user.auth_id || user.id;
+          if (authUserId) {
+            userIds.add(authUserId);
+            if (user.id !== authUserId) {
+              console.log(`🔄 Mapped user.id ${user.id} to auth_id ${authUserId} for push notifications`);
+            }
           }
         });
       } else if (usersError) {
@@ -1054,15 +1062,17 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
           const notificationTag = baseMessageData.whatsapp_message_id 
             ? `whatsapp-msg-${baseMessageData.whatsapp_message_id}`
             : `whatsapp-${phoneNumber || Date.now()}`;
+          // Use PNG icon for better mobile support (SVG not well supported in push notifications)
+          // The pushNotificationService will convert relative paths to absolute URLs
           const notificationPayload = {
             title: '💬 New WhatsApp Message',
             body: previewText,
-            icon: '/whatsapp-icon.svg',
+            icon: '/whatsapp-icon.svg', // Will be converted to absolute URL by pushNotificationService
             badge: '/icon-72x72.png',
             url: phoneNumber ? `/whatsapp-leads?phone=${encodeURIComponent(phoneNumber)}` : '/whatsapp-leads',
             tag: notificationTag, // Browser will deduplicate notifications with the same tag
             id: baseMessageData.whatsapp_message_id || phoneNumber || Date.now(),
-            type: 'notification',
+            type: 'whatsapp', // Set type to 'whatsapp' for better identification
             vibrate: [200, 100, 200],
           };
 
@@ -1169,6 +1179,29 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
                   userIds: Array.from(allUserIds),
                   notificationTag: notificationPayload.tag
                 });
+                
+                // Diagnostic: Check if subscriptions exist in database
+                try {
+                  const { data: subscriptionCheck, error: checkError } = await supabase
+                    .from('push_subscriptions')
+                    .select('id, user_id, endpoint, created_at')
+                    .in('user_id', Array.from(allUserIds));
+                  
+                  if (!checkError && subscriptionCheck) {
+                    if (subscriptionCheck.length === 0) {
+                      console.warn(`📋 Diagnostic: No push subscriptions found in database for user(s): ${Array.from(allUserIds).join(', ')}`);
+                      console.warn(`💡 Users need to enable push notifications in Settings > Notifications tab`);
+                    } else {
+                      console.log(`📋 Diagnostic: Found ${subscriptionCheck.length} subscription(s) in database:`, 
+                        subscriptionCheck.map(s => ({ userId: s.user_id, endpoint: s.endpoint?.substring(0, 50) + '...', createdAt: s.created_at }))
+                      );
+                    }
+                  } else if (checkError) {
+                    console.error(`❌ Error checking subscriptions:`, checkError);
+                  }
+                } catch (diagError) {
+                  console.error(`❌ Error running subscription diagnostic:`, diagError);
+                }
               }
             } else {
               console.log(`ℹ️ No assigned users found for ${matchingLeads.length} matching lead(s), not sending WhatsApp notification.`, {

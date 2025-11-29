@@ -163,11 +163,27 @@ self.addEventListener('push', (event) => {
   if (event.data) {
     try {
       const data = event.data.json();
+      
+      // Convert relative icon paths to absolute URLs if needed
+      let iconUrl = data.icon || notificationData.icon;
+      if (iconUrl && !iconUrl.startsWith('http://') && !iconUrl.startsWith('https://')) {
+        // If it's a relative path, make it absolute using the current origin
+        iconUrl = self.location.origin + (iconUrl.startsWith('/') ? iconUrl : '/' + iconUrl);
+      }
+      
+      // For WhatsApp notifications, ensure we use the WhatsApp icon
+      // If SVG doesn't work, fallback to a default icon
+      if (data.type === 'whatsapp' && iconUrl && iconUrl.endsWith('.svg')) {
+        // Try to use the SVG, but browsers may fallback to default
+        // For better mobile support, consider using a PNG version
+        console.log('📱 WhatsApp notification with SVG icon:', iconUrl);
+      }
+      
       notificationData = {
         title: data.title || notificationData.title,
         body: data.body || notificationData.body,
-        icon: data.icon || notificationData.icon,
-        badge: data.badge || notificationData.badge,
+        icon: iconUrl, // Use the absolute URL
+        badge: data.badge ? (data.badge.startsWith('http') ? data.badge : self.location.origin + (data.badge.startsWith('/') ? data.badge : '/' + data.badge)) : notificationData.badge,
         tag: data.tag || notificationData.tag,
         data: {
           url: data.url || notificationData.data.url,
