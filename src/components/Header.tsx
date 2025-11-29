@@ -467,12 +467,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setIsSearching(true);
       searchTimeoutRef.current = setTimeout(async () => {
         try {
-          console.log('[Header] search start', { searchValue, searchId });
           const results = await searchLeads(searchValue);
           
           // Only set results if this is still the current search
           if (searchId === currentSearchIdRef.current) {
-            console.log('[Header] search results', { count: results.length, first: results[0]?.lead_number, searchId });
             setSearchResults(results);
             setIsSearching(false);
           }
@@ -484,7 +482,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             setIsSearching(false);
           }
         }
-      }, 50); // Reduced to 50ms for much faster response
+      }, 300); // Increased to 300ms to reduce redundant queries
     }
 
     return () => {
@@ -1346,15 +1344,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   // Send push notifications when new messages arrive
   // Only trigger on count changes, not on message array reference changes
   // The hook internally tracks message IDs to prevent duplicates
+  // Use a ref to debounce rapid count changes
+  const lastNotificationCheckRef = useRef<{ whatsapp: number; rmq: number }>({ whatsapp: 0, rmq: 0 });
+  
   useEffect(() => {
     if (currentUser) {
-      sendNotificationForNewMessage(
-        unreadCount,
-        whatsappLeadsUnreadCount,
-        rmqUnreadCount,
-        whatsappLeadsMessages,
-        rmqMessages
-      );
+      // Only call if counts actually changed (not just re-render)
+      const whatsappChanged = whatsappLeadsUnreadCount !== lastNotificationCheckRef.current.whatsapp;
+      const rmqChanged = rmqUnreadCount !== lastNotificationCheckRef.current.rmq;
+      
+      if (whatsappChanged || rmqChanged) {
+        sendNotificationForNewMessage(
+          unreadCount,
+          whatsappLeadsUnreadCount,
+          rmqUnreadCount,
+          whatsappLeadsMessages,
+          rmqMessages
+        );
+        
+        // Update refs
+        lastNotificationCheckRef.current = {
+          whatsapp: whatsappLeadsUnreadCount,
+          rmq: rmqUnreadCount
+        };
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unreadCount, whatsappLeadsUnreadCount, rmqUnreadCount, currentUser, sendNotificationForNewMessage]);
@@ -1783,10 +1796,14 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     
     ASSIGNMENT_ROLE_FIELDS.forEach(role => {
       addNumericCondition(legacyConditions, role.legacyField, numericEmployeeId);
-      addNumericCondition(newConditions, role.newNumericField, numericEmployeeId);
-      sanitizedStringIdentifiers.forEach((identifier: string) => {
-        addStringCondition(newConditions, role.newTextField, identifier);
-      });
+      if (role.newNumericField) {
+        addNumericCondition(newConditions, role.newNumericField, numericEmployeeId);
+      }
+      if (role.newTextField) {
+        sanitizedStringIdentifiers.forEach((identifier: string) => {
+          addStringCondition(newConditions, role.newTextField!, identifier);
+        });
+      }
     });
 
     const legacyOrFilter = legacyConditions.length ? legacyConditions.join(',') : null;

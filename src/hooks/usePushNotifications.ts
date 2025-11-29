@@ -36,8 +36,11 @@ export function usePushNotifications() {
         previousRmqCountRef.current = rmqCount;
         
         // Mark all existing WhatsApp messages as already notified
+        // Use stable message IDs - prefer database ID, fallback to phone + sent_at
         whatsappMessages.forEach((msg: any) => {
-          const messageId = msg.id || msg.whatsapp_message_id || `${msg.phone_number}-${msg.latest_message}`;
+          const messageId = msg.id || 
+                           msg.whatsapp_message_id || 
+                           `${msg.phone_number}-${msg.sent_at || msg.latest_message_time || msg.latest_message}`;
           if (messageId) {
             notifiedWhatsappMessageIdsRef.current.add(String(messageId));
           }
@@ -59,63 +62,72 @@ export function usePushNotifications() {
         return; // Don't send notifications for messages that were already there
       }
 
-      // Check if there are new WhatsApp messages (count increased OR new message IDs)
+      // Check if there are new WhatsApp messages (count increased AND new message IDs)
       if (whatsappMessages.length > 0) {
         const latestMessage = whatsappMessages[0];
-        const messageId = latestMessage.id || latestMessage.whatsapp_message_id || `${latestMessage.phone_number}-${latestMessage.latest_message}`;
+        // Use a more stable message ID - prefer database ID, fallback to phone + sent_at
+        const messageId = latestMessage.id || 
+                         latestMessage.whatsapp_message_id || 
+                         `${latestMessage.phone_number}-${latestMessage.sent_at || latestMessage.latest_message_time}`;
         const messageIdStr = String(messageId);
         
-        // Only send notification if this is a new message (not already notified)
-        if (!notifiedWhatsappMessageIdsRef.current.has(messageIdStr)) {
-          // Also check if count increased (additional safety check)
-          const countIncreased = previousWhatsappCountRef.current !== null && 
-                                 whatsappCount > previousWhatsappCountRef.current;
-          
-          if (countIncreased || previousWhatsappCountRef.current === null) {
-            const senderName = latestMessage.sender_name && latestMessage.sender_name !== latestMessage.phone_number
-              ? latestMessage.sender_name
-              : latestMessage.phone_number;
+        // Only send notification if:
+        // 1. This is a new message (not already notified)
+        // 2. Count actually increased (not just initialized)
+        const countIncreased = previousWhatsappCountRef.current !== null && 
+                               whatsappCount > previousWhatsappCountRef.current;
+        
+        if (!notifiedWhatsappMessageIdsRef.current.has(messageIdStr) && countIncreased) {
+          const senderName = latestMessage.sender_name && latestMessage.sender_name !== latestMessage.phone_number
+            ? latestMessage.sender_name
+            : latestMessage.phone_number;
 
-            await sendBellNotification(user.id, {
-              id: `whatsapp-${messageIdStr}`,
-              title: '💬 New WhatsApp Message',
-              body: `${senderName}: ${latestMessage.latest_message?.substring(0, 50) || 'New message'}...`,
-              url: '/whatsapp-leads',
-              icon: '/whatsapp-icon.svg',
-            });
-            
-            // Mark this message as notified
-            notifiedWhatsappMessageIdsRef.current.add(messageIdStr);
-            console.log('📱 Sent WhatsApp push notification for message:', messageIdStr);
-          }
+          await sendBellNotification(user.id, {
+            id: `whatsapp-${messageIdStr}`,
+            title: '💬 New WhatsApp Message',
+            body: `${senderName}: ${latestMessage.latest_message?.substring(0, 50) || 'New message'}...`,
+            url: '/whatsapp-leads',
+            icon: '/whatsapp-icon.svg',
+            type: 'whatsapp',
+          });
+          
+          // Mark this message as notified
+          notifiedWhatsappMessageIdsRef.current.add(messageIdStr);
+          console.log('📱 Sent WhatsApp push notification for message:', messageIdStr);
+        } else if (!notifiedWhatsappMessageIdsRef.current.has(messageIdStr)) {
+          // Mark as notified even if count didn't increase (to prevent future notifications)
+          notifiedWhatsappMessageIdsRef.current.add(messageIdStr);
         }
       }
 
-      // Check if there are new RMQ messages (count increased OR new message IDs)
+      // Check if there are new RMQ messages (count increased AND new message IDs)
       if (rmqMessages.length > 0) {
         const latestMessage = rmqMessages[0];
         const messageId = String(latestMessage.id || latestMessage.id);
         
-        // Only send notification if this is a new message (not already notified)
-        if (!notifiedRmqMessageIdsRef.current.has(messageId)) {
-          // Also check if count increased (additional safety check)
-          const countIncreased = previousRmqCountRef.current !== null && 
-                                 rmqCount > previousRmqCountRef.current;
-          
-          if (countIncreased || previousRmqCountRef.current === null) {
-            const senderName = latestMessage.sender?.full_name || 'Someone';
+        // Only send notification if:
+        // 1. This is a new message (not already notified)
+        // 2. Count actually increased (not just initialized)
+        const countIncreased = previousRmqCountRef.current !== null && 
+                               rmqCount > previousRmqCountRef.current;
+        
+        if (!notifiedRmqMessageIdsRef.current.has(messageId) && countIncreased) {
+          const senderName = latestMessage.sender?.full_name || 'Someone';
 
-            await sendBellNotification(user.id, {
-              id: `rmq-${messageId}`,
-              title: '💬 New Message',
-              body: `${senderName}: ${latestMessage.content?.substring(0, 50) || 'New message'}...`,
-              url: '/messaging',
-            });
-            
-            // Mark this message as notified
-            notifiedRmqMessageIdsRef.current.add(messageId);
-            console.log('📱 Sent RMQ push notification for message:', messageId);
-          }
+          await sendBellNotification(user.id, {
+            id: `rmq-${messageId}`,
+            title: '💬 New Message',
+            body: `${senderName}: ${latestMessage.content?.substring(0, 50) || 'New message'}...`,
+            url: '/messaging',
+            type: 'rmq',
+          });
+          
+          // Mark this message as notified
+          notifiedRmqMessageIdsRef.current.add(messageId);
+          console.log('📱 Sent RMQ push notification for message:', messageId);
+        } else if (!notifiedRmqMessageIdsRef.current.has(messageId)) {
+          // Mark as notified even if count didn't increase (to prevent future notifications)
+          notifiedRmqMessageIdsRef.current.add(messageId);
         }
       }
 

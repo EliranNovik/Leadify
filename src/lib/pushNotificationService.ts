@@ -7,7 +7,7 @@ export interface PushNotificationPayload {
   badge?: string;
   tag?: string;
   url?: string;
-  type?: 'notification' | 'celebration' | 'lead' | 'meeting' | 'agreement';
+  type?: 'notification' | 'celebration' | 'lead' | 'meeting' | 'agreement' | 'whatsapp' | 'rmq';
   id?: string | number;
   vibrate?: number[];
   requireInteraction?: boolean;
@@ -66,16 +66,18 @@ export async function sendBellNotification(
     body: string;
     url?: string;
     icon?: string;
+    type?: 'whatsapp' | 'rmq' | 'notification';
   }
 ): Promise<void> {
+  const notificationType = notification.type || 'notification';
   await sendPushNotification(userId, {
     title: notification.title,
     body: notification.body,
-    icon: notification.icon || '/icon-192x192.png',
-    badge: '/icon-72x72.png',
+    icon: notification.icon || (notificationType === 'whatsapp' ? '/whatsapp-icon.svg' : '/icon-192x192.png'),
+    badge: notificationType === 'whatsapp' ? '/whatsapp-icon.svg' : '/icon-72x72.png',
     tag: `notification-${notification.id}`,
     url: notification.url || '/',
-    type: 'notification',
+    type: notificationType,
     id: notification.id,
     vibrate: [200, 100, 200],
   });
