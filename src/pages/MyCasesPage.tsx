@@ -3,6 +3,9 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
+import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import toast from 'react-hot-toast';
+import { updateLeadStageWithHistory, fetchStageActorInfo } from '../lib/leadStageManager';
 
 interface Case {
   id: string;
@@ -15,6 +18,12 @@ interface Case {
   applicants_count: number | null;
   value: number | null;
   currency: string | null;
+  stageId?: number; // For filtering by stage ID
+  isFirstPaymentPaid?: boolean; // Payment status for new cases
+  isNewLead?: boolean; // Whether this is a new lead or legacy lead
+  hasReadyToPay?: boolean; // Whether any payment has been marked as ready to pay
+  hasUnpaidPayment?: boolean; // Whether there are any unpaid payments
+  hasPaymentPlan?: boolean; // Whether the lead has any payment plans
 }
 
 // Helper function to get contrasting text color based on background
@@ -40,7 +49,8 @@ const MyCasesPage: React.FC = () => {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [newCases, setNewCases] = useState<Case[]>([]);
-  const [otherCases, setOtherCases] = useState<Case[]>([]);
+  const [activeCases, setActiveCases] = useState<Case[]>([]);
+  const [closedCases, setClosedCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -58,12 +68,12 @@ const MyCasesPage: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      // Get current user's employee ID from users table
+      // Get current user's employee ID and full name from users table
       console.log('🔍 MyCases - Current user ID:', user?.id);
       
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('employee_id')
+        .select('employee_id, full_name')
         .eq('auth_id', user?.id)
         .single();
 
@@ -75,79 +85,186 @@ const MyCasesPage: React.FC = () => {
       }
 
       const employeeId = userData.employee_id;
-      console.log('🔍 MyCases - Employee ID found:', employeeId);
+      const userFullName = userData.full_name;
+      console.log('🔍 MyCases - Employee ID found:', employeeId, 'Full name:', userFullName);
 
-      // Calculate date 1 week ago
-      const oneWeekAgo = new Date();
-      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      const oneWeekAgoISO = oneWeekAgo.toISOString().split('T')[0];
-
-      console.log('🔍 MyCases - Fetching leads with case_handler_id:', employeeId);
-      
-      // Use a targeted approach - only last 6 months for better performance
-      const sixMonthsAgo = new Date();
-      sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-      const sixMonthsAgoISO = sixMonthsAgo.toISOString().split('T')[0];
-      
-      console.log('🔍 MyCases - Date range:', { sixMonthsAgoISO });
-      
-      // Let's check what case_handler_id values exist in the database
-      const { data: allCaseHandlers, error: handlersError } = await supabase
-        .from('leads_lead')
-        .select('case_handler_id')
-        .not('case_handler_id', 'is', null)
-        .limit(20);
-      
-      console.log('🔍 MyCases - Sample case_handler_id values in database:', { 
-        allCaseHandlers: allCaseHandlers?.map(l => l.case_handler_id),
-        handlersError 
-      });
-      
-      // First, let's check if there are ANY leads with this case_handler_id
-      const { data: testLeads, error: testError } = await supabase
-        .from('leads_lead')
-        .select('id, case_handler_id, cdate')
-        .eq('case_handler_id', employeeId)
-        .limit(5);
-      
-      console.log('🔍 MyCases - Test query (any leads with this case_handler_id):', { 
-        testLeads, 
-        testError,
-        count: testLeads?.length || 0 
-      });
-      
-      const { data: leadsData, error: leadsError } = await supabase
-        .from('leads_lead')
-        .select(`
-          id,
-          manual_id,
-          name,
-          stage,
-          category_id,
-          cdate,
-          no_of_applicants,
-          total,
-          currency_id,
-          accounting_currencies!leads_lead_currency_id_fkey (
+      // Fetch both new leads and legacy leads in parallel
+      const [newLeadsResult, legacyLeadsResult] = await Promise.all([
+        // New leads: check handler (text) or case_handler_id (numeric)
+        supabase
+          .from('leads')
+          .select(`
+            id,
+            lead_number,
             name,
-            iso_code
+            stage,
+            category_id,
+            created_at,
+            balance,
+            balance_currency,
+            handler,
+            case_handler_id
+          `)
+          .or(
+            userFullName
+              ? `handler.eq.${userFullName},case_handler_id.eq.${employeeId}`
+              : `case_handler_id.eq.${employeeId}`
           )
-        `)
-        .eq('case_handler_id', employeeId)
-        // Remove status filter - let's see all leads assigned to this handler
-        // Remove date filter - let's see all leads regardless of date
-        .order('cdate', { ascending: false })
-        .limit(100); // Increased limit since we have proper indexes now
+          .order('created_at', { ascending: false })
+          .limit(200),
+        
+        // Legacy leads: check case_handler_id (numeric)
+        supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            manual_id,
+            name,
+            stage,
+            category_id,
+            cdate,
+            no_of_applicants,
+            total,
+            currency_id,
+            accounting_currencies!leads_lead_currency_id_fkey (
+              name,
+              iso_code
+            )
+          `)
+          .eq('case_handler_id', employeeId)
+          .order('cdate', { ascending: false })
+          .limit(200)
+      ]);
 
-      console.log('🔍 MyCases - Leads query result:', { 
-        leadsData, 
-        leadsError,
-        count: leadsData?.length || 0 
+      // Fetch payment information for new leads
+      const newLeadIds = (newLeadsResult.data || []).map(lead => lead.id);
+      const newLeadsPaymentMap = new Map<string, boolean>();
+      const newLeadsReadyToPayMap = new Map<string, boolean>();
+      const newLeadsUnpaidPaymentMap = new Map<string, boolean>();
+      const newLeadsHasPaymentPlanMap = new Map<string, boolean>();
+      
+      if (newLeadIds.length > 0) {
+        const { data: newPayments } = await supabase
+          .from('payment_plans')
+          .select('lead_id, paid, ready_to_pay, cancel_date')
+          .in('lead_id', newLeadIds)
+          .is('cancel_date', null);
+        
+        // Group by lead_id and check payment statuses
+        const paymentsByLead = new Map<string, any[]>();
+        (newPayments || []).forEach((payment: any) => {
+          if (!paymentsByLead.has(payment.lead_id)) {
+            paymentsByLead.set(payment.lead_id, []);
+          }
+          paymentsByLead.get(payment.lead_id)!.push(payment);
+        });
+        
+        // Mark all leads that have payments
+        paymentsByLead.forEach((payments, leadId) => {
+          newLeadsHasPaymentPlanMap.set(leadId, true);
+        });
+        
+        // Mark leads without payments
+        newLeadIds.forEach(leadId => {
+          if (!newLeadsHasPaymentPlanMap.has(leadId)) {
+            newLeadsHasPaymentPlanMap.set(leadId, false);
+          }
+        });
+        
+        paymentsByLead.forEach((payments, leadId) => {
+          // Check if ANY payment has paid = TRUE
+          const hasPaidPayment = payments.some((payment: any) => payment.paid === true);
+          newLeadsPaymentMap.set(leadId, hasPaidPayment);
+          
+          // Check if ANY payment has ready_to_pay = TRUE
+          const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
+          newLeadsReadyToPayMap.set(leadId, hasReadyToPay);
+          
+          // Check if there are any unpaid payments
+          const hasUnpaidPayment = payments.some((payment: any) => payment.paid !== true);
+          newLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
+        });
+      } else {
+        // If no leads, mark all as having no payment plan
+        newLeadIds.forEach(leadId => {
+          newLeadsHasPaymentPlanMap.set(leadId, false);
+        });
+      }
+
+      // Fetch payment information for legacy leads
+      const legacyLeadIds = (legacyLeadsResult.data || []).map(lead => String(lead.id));
+      const legacyLeadsPaymentMap = new Map<string, boolean>();
+      const legacyLeadsReadyToPayMap = new Map<string, boolean>();
+      const legacyLeadsUnpaidPaymentMap = new Map<string, boolean>();
+      const legacyLeadsHasPaymentPlanMap = new Map<string, boolean>();
+      
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyPayments } = await supabase
+          .from('finances_paymentplanrow')
+          .select('lead_id, actual_date, ready_to_pay, cancel_date')
+          .in('lead_id', legacyLeadIds)
+          .is('cancel_date', null);
+        
+        // Group by lead_id and check payment statuses
+        const paymentsByLead = new Map<string, any[]>();
+        (legacyPayments || []).forEach((payment: any) => {
+          const leadId = String(payment.lead_id);
+          if (!paymentsByLead.has(leadId)) {
+            paymentsByLead.set(leadId, []);
+          }
+          paymentsByLead.get(leadId)!.push(payment);
+        });
+        
+        // Mark all leads that have payments
+        paymentsByLead.forEach((payments, leadId) => {
+          legacyLeadsHasPaymentPlanMap.set(leadId, true);
+        });
+        
+        // Mark leads without payments
+        legacyLeadIds.forEach(leadId => {
+          if (!legacyLeadsHasPaymentPlanMap.has(leadId)) {
+            legacyLeadsHasPaymentPlanMap.set(leadId, false);
+          }
+        });
+        
+        paymentsByLead.forEach((payments, leadId) => {
+          // Check if ANY payment has actual_date (not null and not empty)
+          const hasPaidPayment = payments.some((payment: any) => 
+            payment.actual_date != null && payment.actual_date !== ''
+          );
+          legacyLeadsPaymentMap.set(leadId, hasPaidPayment);
+          
+          // Check if ANY payment has ready_to_pay = TRUE
+          const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
+          legacyLeadsReadyToPayMap.set(leadId, hasReadyToPay);
+          
+          // Check if there are any unpaid payments
+          const hasUnpaidPayment = payments.some((payment: any) => 
+            payment.actual_date == null || payment.actual_date === ''
+          );
+          legacyLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
+        });
+      } else {
+        // If no leads, mark all as having no payment plan
+        legacyLeadIds.forEach(leadId => {
+          legacyLeadsHasPaymentPlanMap.set(leadId, false);
+        });
+      }
+
+      console.log('🔍 MyCases - New leads query result:', { 
+        newLeadsData: newLeadsResult.data, 
+        newLeadsError: newLeadsResult.error,
+        count: newLeadsResult.data?.length || 0 
       });
 
-      if (leadsError) throw leadsError;
+      console.log('🔍 MyCases - Legacy leads query result:', { 
+        legacyLeadsData: legacyLeadsResult.data, 
+        legacyLeadsError: legacyLeadsResult.error,
+        count: legacyLeadsResult.data?.length || 0 
+      });
 
-      console.log('🔍 MyCases - Leads fetched:', leadsData?.length || 0);
+      if (newLeadsResult.error) throw newLeadsResult.error;
+      if (legacyLeadsResult.error) throw legacyLeadsResult.error;
 
       // Fetch stage names and colors separately (since foreign key relationship doesn't exist yet)
       const { data: stages } = await supabase
@@ -249,44 +366,104 @@ const MyCasesPage: React.FC = () => {
         return fallbackMap[currencyId] || '₪';
       };
 
-      // Process the data with proper lookups
-      const processedCases: Case[] = (leadsData || []).map(lead => {
+      // Process new leads
+      const processedNewLeads: Case[] = (newLeadsResult.data || []).map(lead => {
+        const stageId = typeof lead.stage === 'string' ? parseInt(lead.stage, 10) : lead.stage;
+        const stage = stageMap.get(String(lead.stage)) || String(lead.stage) || 'Unknown';
+        const stageColour = stageColourMap.get(String(lead.stage)) || getStageColour(String(lead.stage)) || null;
+        const category = getCategoryName(lead.category_id);
+        const value = lead.balance ? parseFloat(String(lead.balance)) : null;
+        const currency = lead.balance_currency || '₪';
+        const isFirstPaymentPaid = newLeadsPaymentMap.get(lead.id) || false;
+        const hasReadyToPay = newLeadsReadyToPayMap.get(lead.id) || false;
+        const hasUnpaidPayment = newLeadsUnpaidPaymentMap.get(lead.id) || false;
+        const hasPaymentPlan = newLeadsHasPaymentPlanMap.get(lead.id) || false;
+
+        return {
+          id: lead.id,
+          lead_number: lead.lead_number || String(lead.id),
+          client_name: lead.name || 'Unknown',
+          category,
+          stage,
+          stage_colour: stageColour,
+          assigned_date: lead.created_at,
+          applicants_count: null,
+          value,
+          currency,
+          stageId: stageId, // Store numeric stage ID for filtering
+          isFirstPaymentPaid: isFirstPaymentPaid,
+          isNewLead: true,
+          hasReadyToPay: hasReadyToPay,
+          hasUnpaidPayment: hasUnpaidPayment,
+          hasPaymentPlan: hasPaymentPlan
+        };
+      });
+
+      // Process legacy leads
+      const processedLegacyLeads: Case[] = (legacyLeadsResult.data || []).map(lead => {
         const leadNumber = lead.manual_id || lead.id;
         const category = getCategoryName(lead.category_id);
         const stage = stageMap.get(String(lead.stage)) || String(lead.stage) || 'Unknown';
         const stageColour = stageColourMap.get(String(lead.stage)) || getStageColour(String(lead.stage)) || null;
         const value = lead.total || null;
         const currency = getCurrencySymbol(lead.currency_id, lead.accounting_currencies);
+        const stageId = typeof lead.stage === 'string' ? parseInt(lead.stage, 10) : lead.stage;
+        const isFirstPaymentPaid = legacyLeadsPaymentMap.get(String(lead.id)) || false;
+        const hasReadyToPay = legacyLeadsReadyToPayMap.get(String(lead.id)) || false;
+        const hasUnpaidPayment = legacyLeadsUnpaidPaymentMap.get(String(lead.id)) || false;
+        const hasPaymentPlan = legacyLeadsHasPaymentPlanMap.get(String(lead.id)) || false;
 
         return {
-          id: lead.id,
-          lead_number: String(leadNumber), // Keep the full lead number including sub-leads for display
+          id: String(lead.id),
+          lead_number: String(leadNumber),
           client_name: lead.name || 'Unknown',
           category,
           stage,
-          stage_colour: stageColour, // Add stage colour to the case object
+          stage_colour: stageColour,
           assigned_date: lead.cdate,
           applicants_count: lead.no_of_applicants,
           value,
-          currency
+          currency,
+          stageId: stageId, // Store numeric stage ID for filtering
+          isFirstPaymentPaid: isFirstPaymentPaid,
+          isNewLead: false,
+          hasReadyToPay: hasReadyToPay,
+          hasUnpaidPayment: hasUnpaidPayment,
+          hasPaymentPlan: hasPaymentPlan
         };
       });
 
-      // Separate into new and other cases
-      const newCasesList = processedCases.filter(caseItem => 
-        new Date(caseItem.assigned_date) >= new Date(oneWeekAgoISO)
-      );
-      const otherCasesList = processedCases.filter(caseItem => 
-        new Date(caseItem.assigned_date) < new Date(oneWeekAgoISO)
-      );
+      // Combine all cases
+      const allProcessedCases = [...processedNewLeads, ...processedLegacyLeads];
+
+      // Separate into new, active, and closed cases
+      // New cases: stage <= 105 (up to and including "handler set")
+      const newCasesList = allProcessedCases.filter(caseItem => {
+        const stageId = (caseItem as any).stageId;
+        return stageId !== undefined && stageId !== null && stageId <= 105;
+      });
+      
+      // Closed cases: stage === 200 (case closed)
+      const closedCasesList = allProcessedCases.filter(caseItem => {
+        const stageId = (caseItem as any).stageId;
+        return stageId === 200;
+      });
+      
+      // Active cases: stage >= 110 (from "handler started" and beyond) and stage !== 200 (not closed)
+      const activeCasesList = allProcessedCases.filter(caseItem => {
+        const stageId = (caseItem as any).stageId;
+        return stageId !== undefined && stageId !== null && stageId >= 110 && stageId !== 200;
+      });
 
       console.log('🔍 MyCases - Cases separated:', {
         newCases: newCasesList.length,
-        otherCases: otherCasesList.length
+        activeCases: activeCasesList.length,
+        closedCases: closedCasesList.length
       });
 
       setNewCases(newCasesList);
-      setOtherCases(otherCasesList);
+      setActiveCases(activeCasesList);
+      setClosedCases(closedCasesList);
 
     } catch (err) {
       console.error('Error fetching my cases:', err);
@@ -297,10 +474,149 @@ const MyCasesPage: React.FC = () => {
   };
 
   const handleCaseClick = (caseItem: Case) => {
-    // Navigate using the actual database ID, not the manual_id
-    // The manual_id (like "150667/3") is just for display
-    // The actual lead ID (like "172517") is used for navigation
-    navigate(`/clients/${caseItem.id}`);
+    // Navigate using the appropriate identifier
+    // For legacy leads, use the numeric ID directly (no legacy_ prefix)
+    // For new leads, use the lead_number
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}`);
+  };
+
+  const handleStartCase = async (caseItem: Case, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent row click navigation
+    
+    try {
+      const actor = await fetchStageActorInfo();
+      const timestamp = new Date().toISOString();
+      const handlerStartedStageId = 110; // Handler Started stage ID
+      
+      // Create a minimal lead object for the update function
+      const lead: any = {
+        id: caseItem.isNewLead ? caseItem.id : `legacy_${caseItem.id}`,
+        lead_type: caseItem.isNewLead ? 'new' : 'legacy',
+      };
+      
+      if (caseItem.isNewLead) {
+        // Update new lead
+        const { error } = await supabase
+          .from('leads')
+          .update({
+            stage: handlerStartedStageId,
+            stage_changed_by: actor.fullName,
+            stage_changed_at: timestamp,
+          })
+          .eq('id', caseItem.id);
+        
+        if (error) throw error;
+      } else {
+        // Update legacy lead
+        const legacyId = caseItem.id;
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({
+            stage: handlerStartedStageId,
+            stage_changed_by: actor.fullName,
+            stage_changed_at: timestamp,
+          })
+          .eq('id', legacyId);
+        
+        if (error) throw error;
+      }
+      
+      // Record stage change history
+      await updateLeadStageWithHistory({
+        lead,
+        stage: handlerStartedStageId,
+        actor,
+        timestamp,
+      });
+      
+      toast.success('Case started successfully!');
+      
+      // Refresh the cases list
+      await fetchMyCases();
+    } catch (error: any) {
+      console.error('Error starting case:', error);
+      toast.error('Failed to start case. Please try again.');
+    }
+  };
+
+  const handleMarkAsReadyToPay = async (caseItem: Case, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent row click navigation
+    
+    try {
+      const currentDate = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
+      
+      if (caseItem.isNewLead) {
+        // For new leads, find the first unpaid payment
+        const { data: payments, error: fetchError } = await supabase
+          .from('payment_plans')
+          .select('id, paid, cancel_date')
+          .eq('lead_id', caseItem.id)
+          .eq('paid', false)
+          .is('cancel_date', null)
+          .order('due_date', { ascending: true })
+          .limit(1);
+        
+        if (fetchError) throw fetchError;
+        
+        if (!payments || payments.length === 0) {
+          toast.error('No unpaid payments found for this lead');
+          return;
+        }
+        
+        const firstUnpaidPayment = payments[0];
+        
+        // Update the first unpaid payment
+        const { error } = await supabase
+          .from('payment_plans')
+          .update({ 
+            ready_to_pay: true,
+            due_date: currentDate
+          })
+          .eq('id', firstUnpaidPayment.id);
+        
+        if (error) throw error;
+      } else {
+        // For legacy leads, find the first unpaid payment
+        const { data: payments, error: fetchError } = await supabase
+          .from('finances_paymentplanrow')
+          .select('id, actual_date, cancel_date')
+          .eq('lead_id', caseItem.id)
+          .is('actual_date', null)
+          .is('cancel_date', null)
+          .order('date', { ascending: true })
+          .limit(1);
+        
+        if (fetchError) throw fetchError;
+        
+        if (!payments || payments.length === 0) {
+          toast.error('No unpaid payments found for this lead');
+          return;
+        }
+        
+        const firstUnpaidPayment = payments[0];
+        
+        // Update the first unpaid payment
+        const { error } = await supabase
+          .from('finances_paymentplanrow')
+          .update({ 
+            ready_to_pay: true,
+            date: currentDate,
+            due_date: currentDate
+          })
+          .eq('id', firstUnpaidPayment.id);
+        
+        if (error) throw error;
+      }
+      
+      toast.success('Payment marked as ready to pay! Due date set to today. It will now appear in the collection page.');
+      
+      // Refresh the cases list
+      await fetchMyCases();
+    } catch (error: any) {
+      console.error('Error marking payment as ready to pay:', error);
+      toast.error('Failed to mark payment as ready to pay');
+    }
   };
 
   // Fuzzy search function
@@ -342,10 +658,11 @@ const MyCasesPage: React.FC = () => {
   };
 
   const filteredNewCases = filterCases(newCases);
-  const filteredOtherCases = filterCases(otherCases);
+  const filteredActiveCases = filterCases(activeCases);
+  const filteredClosedCases = filterCases(closedCases);
 
   // Get unique stages and categories from all cases
-  const allCases = [...newCases, ...otherCases];
+  const allCases = [...newCases, ...activeCases, ...closedCases];
   const uniqueStages = Array.from(new Set(allCases.map(c => c.stage))).sort();
   const uniqueCategories = Array.from(new Set(allCases.map(c => c.category))).sort();
 
@@ -359,7 +676,7 @@ const MyCasesPage: React.FC = () => {
     setSelectedCategory('');
   };
 
-  const renderTable = (cases: Case[], title: string, emptyMessage: string) => (
+  const renderTable = (cases: Case[], title: string, emptyMessage: string, isNewCases: boolean = false) => (
     <div className="bg-white rounded-lg shadow-sm border">
       <div className="px-3 sm:px-6 py-2 sm:py-4 border-b">
         <h2 className="text-base sm:text-lg font-semibold text-gray-900">{title}</h2>
@@ -392,6 +709,9 @@ const MyCasesPage: React.FC = () => {
                 <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
                   Stage
                 </th>
+                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
@@ -402,9 +722,29 @@ const MyCasesPage: React.FC = () => {
                   onClick={() => handleCaseClick(caseItem)}
                 >
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
-                    <span className="text-black font-medium text-xs sm:text-sm">
-                      {caseItem.lead_number}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {/* Document icon for all cases */}
+                      <svg className="w-4 h-4 sm:w-5 sm:h-5 text-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      {/* Payment status icon for new cases only */}
+                      {isNewCases && (
+                        <div className="flex-shrink-0">
+                          {caseItem.isFirstPaymentPaid ? (
+                            <svg className="w-4 h-4 sm:w-5 sm:h-5 text-green-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                          ) : (
+                            <svg className="w-4 h-4 sm:w-5 sm:h-5 text-red-500" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                            </svg>
+                          )}
+                        </div>
+                      )}
+                      <span className="text-black font-medium text-xs sm:text-sm">
+                        {caseItem.lead_number}
+                      </span>
+                    </div>
                   </td>
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
                     <div className="whitespace-nowrap">
@@ -437,24 +777,64 @@ const MyCasesPage: React.FC = () => {
                     )}
                   </td>
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right">
-                    {caseItem.stage_colour ? (() => {
-                      const badgeTextColour = getContrastingTextColor(caseItem.stage_colour);
-                      return (
-                        <span 
-                          className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1" 
-                          style={{ 
-                            backgroundColor: caseItem.stage_colour, 
-                            color: badgeTextColour 
-                          }}
-                        >
+                    <div className="flex items-center justify-end gap-2">
+                      {caseItem.stage_colour ? (() => {
+                        const badgeTextColour = getContrastingTextColor(caseItem.stage_colour);
+                        return (
+                          <span 
+                            className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1" 
+                            style={{ 
+                              backgroundColor: caseItem.stage_colour, 
+                              color: badgeTextColour 
+                            }}
+                          >
+                            {caseItem.stage}
+                          </span>
+                        );
+                      })() : (
+                        <span className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1 bg-gray-100 text-gray-800">
                           {caseItem.stage}
                         </span>
-                      );
-                    })() : (
-                      <span className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1 bg-gray-100 text-gray-800">
-                        {caseItem.stage}
-                      </span>
-                    )}
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
+                    <div className="flex items-center justify-end gap-2">
+                      {/* Missing Payment Plan button - show if no payment plan exists */}
+                      {!caseItem.hasPaymentPlan && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+                            navigate(`/clients/${navigationId}`);
+                          }}
+                          className="btn btn-sm btn-error p-1.5 sm:p-2 rounded animate-pulse"
+                          title="Missing Payment Rows - Click to create finance plan"
+                        >
+                          <ExclamationTriangleIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      )}
+                      {/* Start Case button - only show in new cases, when payment is paid (green checkmark), and stage is exactly Handler Set (105) */}
+                      {isNewCases && caseItem.isFirstPaymentPaid && caseItem.stageId === 105 && (
+                        <button
+                          onClick={(e) => handleStartCase(caseItem, e)}
+                          className="btn btn-sm btn-primary p-1.5 sm:p-2 rounded animate-pulse"
+                          title="Start Case"
+                        >
+                          <PlayIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      )}
+                      {/* Sent to Finances button - show if not paid, has unpaid payments, and hasn't been marked as ready to pay */}
+                      {!caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan && (
+                        <button
+                          onClick={(e) => handleMarkAsReadyToPay(caseItem, e)}
+                          className="btn btn-sm btn-warning p-1.5 sm:p-2 rounded animate-pulse"
+                          title="Mark as Ready to Pay"
+                        >
+                          <PaperAirplaneIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -590,14 +970,24 @@ const MyCasesPage: React.FC = () => {
           {renderTable(
             filteredNewCases, 
             `New Cases (${filteredNewCases.length}${hasActiveFilters ? ` of ${newCases.length}` : ''})`, 
-            hasActiveFilters ? "No matching new cases found." : "No new cases assigned in the last week."
+            hasActiveFilters ? "No matching new cases found." : "No new cases assigned in the last week.",
+            true // isNewCases = true
           )}
 
-          {/* Other Cases Table */}
+          {/* Active Cases Table */}
           {renderTable(
-            filteredOtherCases, 
-            `Other Cases (${filteredOtherCases.length}${hasActiveFilters ? ` of ${otherCases.length}` : ''})`, 
-            hasActiveFilters ? "No matching cases found." : "No other cases found."
+            filteredActiveCases, 
+            `Active Cases (${filteredActiveCases.length}${hasActiveFilters ? ` of ${activeCases.length}` : ''})`, 
+            hasActiveFilters ? "No matching active cases found." : "No active cases found.",
+            false // isNewCases = false
+          )}
+
+          {/* Closed Cases Table */}
+          {renderTable(
+            filteredClosedCases, 
+            `Closed Cases (${filteredClosedCases.length}${hasActiveFilters ? ` of ${closedCases.length}` : ''})`, 
+            hasActiveFilters ? "No matching closed cases found." : "No closed cases found.",
+            false // isNewCases = false
           )}
         </div>
       </div>

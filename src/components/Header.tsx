@@ -362,8 +362,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           filterDropdownRef.current &&
           !filterDropdownRef.current.contains(event.target as Node)
         ) {
-          // Only close search bar if filter dropdown is not open, no search value/results, and mouse is not over search area
-          if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0 && !isMouseOverSearchRef.current) {
+          // Only close search bar if filter dropdown is not open, no search value/results, not searching, and mouse is not over search area
+          if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0 && !isSearching && !isMouseOverSearchRef.current) {
             setIsSearchActive(false);
             setSearchResults([]);
             setSearchValue('');
@@ -457,7 +457,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
     // Clear results immediately when search value changes
     setSearchResults([]);
-    setIsSearching(false);
     
     // Increment search ID to invalidate any pending searches
     const searchId = Date.now(); // Use timestamp for unique ID
@@ -465,7 +464,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
     if (searchValue.trim()) {
       setIsSearching(true);
-      // Reduced debounce to 100ms for instant fuzzy results as user types
+      // Add debounce (300ms) to prevent too many requests, especially for slow legacy searches
       searchTimeoutRef.current = setTimeout(async () => {
         try {
           const results = await searchLeads(searchValue);
@@ -483,7 +482,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             setIsSearching(false);
           }
         }
-      }, 0); // No debounce - instant results as user types
+      }, 300); // 300ms debounce to reduce requests for slow legacy searches
+    } else {
+      // Only set isSearching to false if search value is empty
+      setIsSearching(false);
     }
 
     return () => {
@@ -2422,8 +2424,8 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             } : undefined}
             onMouseLeave={!isMobile ? () => {
               isMouseOverSearchRef.current = false;
-              // Only close on mouse leave if filter dropdown is not open and no search value/results
-              if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0) {
+              // Only close on mouse leave if filter dropdown is not open, no search value/results, and not searching
+              if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0 && !isSearching) {
                 setTimeout(() => {
                   // Double check that mouse is still not over search area
                   if (!isMouseOverSearchRef.current) {
@@ -2456,8 +2458,8 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                 onChange={handleSearchChange}
                 onFocus={handleSearchFocus}
                 onBlur={isMobile ? () => {
-                  // On mobile, close search if no value and no results
-                  if (!searchValue.trim() && searchResults.length === 0) {
+                  // On mobile, close search if no value, no results, and not searching
+                  if (!searchValue.trim() && searchResults.length === 0 && !isSearching) {
                     setTimeout(() => setIsSearchActive(false), 150);
                   }
                 } : undefined}
@@ -2515,8 +2517,8 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             top: searchDropdownStyle.top,
             left: searchDropdownStyle.left,
           }}>
-            {/* Search Results - only show if there are results, searching, or filters applied */}
-            {((searchValue.trim() && (searchResults.length > 0 || isSearching)) || isAdvancedSearching || hasAppliedFilters) && (
+            {/* Search Results - show if there's a search value (always show when searching or has value), or filters applied */}
+            {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) && (
               <div
                 ref={searchDropdownRef}
                 className="bg-white rounded-xl shadow-xl border border-gray-200 max-h-96 overflow-y-auto"

@@ -26,6 +26,7 @@ interface Meeting {
   brief: string;
   stage?: string | number;
   leadManager?: string;
+  isStaffMeeting?: boolean; // Flag to identify staff meetings
 }
 
 interface MeetingRecord {
@@ -154,12 +155,14 @@ const Meetings: React.FC = () => {
   useEffect(() => {
     const fetchMeetings = async () => {
       try {
-        // First, fetch current user's employee_id and display name
+        // First, fetch current user's employee_id, display name, and email
         const { data: { user } } = await supabase.auth.getUser();
         let userEmployeeId: number | null = null;
         let userDisplayName: string | null = null;
+        let userEmail: string | null = null;
         
         if (user) {
+          userEmail = user.email || null; // Get user email for staff meetings
           const { data: userData } = await supabase
             .from('users')
             .select(`
@@ -252,54 +255,67 @@ const Meetings: React.FC = () => {
         }
 
         // Fetch employee names for ID mapping
-        const employeeIds = new Set<string>();
+        // Only collect numeric IDs for database query (string names are already display names)
+        const employeeIds = new Set<number>();
         meetings.forEach(meeting => {
-          // Helper function to add valid IDs only
-          const addValidId = (id: any) => {
-            if (id && id !== '---' && id !== '' && id !== null && id !== undefined) {
-              employeeIds.add(id.toString());
+          // Helper function to add valid numeric IDs only
+          const addValidNumericId = (id: any) => {
+            if (id != null && id !== '' && id !== '---' && id !== undefined) {
+              const numId = typeof id === 'number' ? id : Number(id);
+              // Only add if it's a valid number and not NaN
+              if (!isNaN(numId) && numId > 0) {
+                employeeIds.add(numId);
+              }
             }
           };
           
-          addValidId(meeting.legacy_lead?.meeting_manager_id);
-          addValidId(meeting.legacy_lead?.meeting_lawyer_id);
-          addValidId(meeting.legacy_lead?.meeting_scheduler_id);
-          addValidId(meeting.legacy_lead?.expert_id);
-          addValidId(meeting.legacy_lead?.case_handler_id);
-          addValidId(meeting.expert);
-          addValidId(meeting.meeting_manager);
-          addValidId(meeting.helper);
-          // For new leads, scheduler, helper, closer, manager, handler might be IDs
+          // Legacy lead IDs (should be numeric)
+          addValidNumericId(meeting.legacy_lead?.meeting_manager_id);
+          addValidNumericId(meeting.legacy_lead?.meeting_lawyer_id);
+          addValidNumericId(meeting.legacy_lead?.meeting_scheduler_id);
+          addValidNumericId(meeting.legacy_lead?.expert_id);
+          addValidNumericId(meeting.legacy_lead?.case_handler_id);
+          
+          // Meeting-level fields (might be numeric IDs)
+          addValidNumericId(meeting.expert);
+          addValidNumericId(meeting.meeting_manager);
+          addValidNumericId(meeting.helper);
+          
+          // New lead fields - only add if they're numeric
           if (meeting.lead?.scheduler && !isNaN(Number(meeting.lead.scheduler))) {
-            addValidId(meeting.lead.scheduler);
+            addValidNumericId(meeting.lead.scheduler);
           }
           if (meeting.lead?.helper && !isNaN(Number(meeting.lead.helper))) {
-            addValidId(meeting.lead.helper);
+            addValidNumericId(meeting.lead.helper);
           }
           if (meeting.lead?.closer && !isNaN(Number(meeting.lead.closer))) {
-            addValidId(meeting.lead.closer);
+            addValidNumericId(meeting.lead.closer);
           }
           if (meeting.lead?.expert && !isNaN(Number(meeting.lead.expert))) {
-            addValidId(meeting.lead.expert);
+            addValidNumericId(meeting.lead.expert);
           }
           if (meeting.lead?.manager && !isNaN(Number(meeting.lead.manager))) {
-            addValidId(meeting.lead.manager);
+            addValidNumericId(meeting.lead.manager);
           }
           if (meeting.lead?.handler && !isNaN(Number(meeting.lead.handler))) {
-            addValidId(meeting.lead.handler);
+            addValidNumericId(meeting.lead.handler);
           }
         });
 
         let employeeNameMap: Record<string, string> = {};
         if (employeeIds.size > 0) {
+          // Convert Set to array of numbers for the query
+          const numericIds = Array.from(employeeIds);
           const { data: employees, error: employeeError } = await supabase
             .from('tenants_employee')
             .select('id, display_name')
-            .in('id', Array.from(employeeIds));
+            .in('id', numericIds);
           
           if (!employeeError && employees) {
             employeeNameMap = employees.reduce((acc, emp) => {
+              // Map both numeric and string versions of the ID
               acc[emp.id.toString()] = emp.display_name;
+              acc[String(emp.id)] = emp.display_name;
               return acc;
             }, {} as Record<string, string>);
           }
@@ -592,8 +608,170 @@ const Meetings: React.FC = () => {
           };
         });
 
-        setTodayMeetings(transformedMeetings.filter(m => m.date === todayStr));
-        setTomorrowMeetings(transformedMeetings.filter(m => m.date === tomorrowStr));
+        // Fetch staff meetings from outlook_teams_meetings where user is in attendees
+        let staffMeetingsToday: Meeting[] = [];
+        let staffMeetingsTomorrow: Meeting[] = [];
+        
+        if (userEmail) {
+          // First, fetch employees and users to create email-to-name mapping
+          const [employeesResult, usersResult] = await Promise.all([
+            supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .not('display_name', 'is', null),
+            supabase
+              .from('users')
+              .select('employee_id, email')
+              .not('email', 'is', null)
+          ]);
+
+          // Create email-to-name mapping
+          const emailToNameMap = new Map<string, string>();
+          
+          if (employeesResult.data && usersResult.data) {
+            // Create employee_id to email mapping
+            const employeeIdToEmail = new Map<number, string>();
+            usersResult.data.forEach((user: any) => {
+              if (user.employee_id && user.email) {
+                employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
+              }
+            });
+
+            // Map emails to display names
+            employeesResult.data.forEach((emp: any) => {
+              const email = employeeIdToEmail.get(emp.id);
+              if (email && emp.display_name) {
+                emailToNameMap.set(email, emp.display_name);
+              }
+              // Also try the pattern from CalendarPage: display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il'
+              const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+              emailToNameMap.set(patternEmail, emp.display_name);
+            });
+          }
+
+          const todayStart = new Date(today);
+          todayStart.setHours(0, 0, 0, 0);
+          const todayEnd = new Date(today);
+          todayEnd.setHours(23, 59, 59, 999);
+          
+          const tomorrowStart = new Date(tomorrow);
+          tomorrowStart.setHours(0, 0, 0, 0);
+          const tomorrowEnd = new Date(tomorrow);
+          tomorrowEnd.setHours(23, 59, 59, 999);
+
+          const { data: outlookMeetings, error: outlookError } = await supabase
+            .from('outlook_teams_meetings')
+            .select('*')
+            .gte('start_date_time', todayStart.toISOString())
+            .lte('start_date_time', tomorrowEnd.toISOString())
+            .or('status.is.null,status.neq.cancelled');
+          
+          if (!outlookError && outlookMeetings) {
+            const filteredStaffMeetings = outlookMeetings.filter((meeting: any) => {
+              if (!meeting.attendees || !Array.isArray(meeting.attendees)) return false;
+              // Check if user's email is in the attendees array
+              return meeting.attendees.some((attendee: any) => {
+                const attendeeEmail = typeof attendee === 'string' 
+                  ? attendee.toLowerCase() 
+                  : (attendee.email || '').toLowerCase();
+                return attendeeEmail === userEmail?.toLowerCase();
+              });
+            });
+
+            // Process staff meetings to match Meeting interface
+            const processedStaffMeetings = filteredStaffMeetings.map((staffMeeting: any) => {
+              const startDate = new Date(staffMeeting.start_date_time);
+              const meetingDate = startDate.toISOString().split('T')[0];
+              const timeStr = startDate.toTimeString().substring(0, 5); // HH:MM format
+              
+              // Extract attendees and map emails to employee names for client column
+              let attendeesText = 'Staff Meeting';
+              if (staffMeeting.attendees && Array.isArray(staffMeeting.attendees) && staffMeeting.attendees.length > 0) {
+                const attendeeNames = staffMeeting.attendees.map((attendee: any) => {
+                  let attendeeEmail: string | null = null;
+                  
+                  // Extract email from attendee (could be string or object)
+                  if (typeof attendee === 'string') {
+                    attendeeEmail = attendee.toLowerCase();
+                  } else if (attendee && typeof attendee === 'object') {
+                    attendeeEmail = (attendee.email || '').toLowerCase();
+                  }
+                  
+                  // Try to get name from email mapping, otherwise use name/displayName from object
+                  if (attendeeEmail && emailToNameMap.has(attendeeEmail)) {
+                    return emailToNameMap.get(attendeeEmail)!;
+                  } else if (attendee && typeof attendee === 'object') {
+                    // Fallback to name/displayName from object if available
+                    return attendee.name || attendee.displayName || attendeeEmail || 'Unknown';
+                  } else if (attendeeEmail) {
+                    // If it's just an email string and we couldn't map it, use the email
+                    return attendeeEmail;
+                  }
+                  
+                  return 'Unknown';
+                }).filter(Boolean);
+                
+                if (attendeeNames.length > 0) {
+                  attendeesText = attendeeNames.join(', ');
+                }
+              }
+              
+              // Use subject/title for info column (like in calendar page)
+              const infoText = staffMeeting.subject || staffMeeting.title || 'Staff Meeting';
+              
+              return {
+                id: staffMeeting.id,
+                lead: 'Staff Meeting',
+                info: infoText,
+                expert: '--',
+                helper: '--',
+                scheduler: '--',
+                date: meetingDate,
+                time: timeStr,
+                value: '--',
+                location: staffMeeting.location || 'Teams',
+                staff: ['--'],
+                name: attendeesText, // Client column shows employee names (not emails)
+                topic: staffMeeting.description || 'Internal Meeting',
+                link: staffMeeting.teams_join_url || staffMeeting.teams_meeting_url || '',
+                manager: '--',
+                brief: staffMeeting.description || '',
+                stage: 'N/A',
+                leadManager: '--',
+                isStaffMeeting: true, // Mark as staff meeting
+              } as Meeting;
+            });
+
+            // Separate today and tomorrow staff meetings
+            staffMeetingsToday = processedStaffMeetings.filter(m => m.date === todayStr);
+            staffMeetingsTomorrow = processedStaffMeetings.filter(m => m.date === tomorrowStr);
+          }
+        }
+
+        // Combine client meetings and staff meetings
+        const allTodayMeetings = [
+          ...transformedMeetings.filter(m => m.date === todayStr),
+          ...staffMeetingsToday
+        ];
+        const allTomorrowMeetings = [
+          ...transformedMeetings.filter(m => m.date === tomorrowStr),
+          ...staffMeetingsTomorrow
+        ];
+
+        // Sort by time
+        allTodayMeetings.sort((a, b) => {
+          const timeA = a.time || '00:00';
+          const timeB = b.time || '00:00';
+          return timeA.localeCompare(timeB);
+        });
+        allTomorrowMeetings.sort((a, b) => {
+          const timeA = a.time || '00:00';
+          const timeB = b.time || '00:00';
+          return timeA.localeCompare(timeB);
+        });
+
+        setTodayMeetings(allTodayMeetings);
+        setTomorrowMeetings(allTomorrowMeetings);
         setError(null);
       } catch (err) {
         console.error('Error in fetchMeetings:', err);

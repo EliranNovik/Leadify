@@ -1923,10 +1923,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
         if (lead) {
           const leadData = lead as any;
           const departmentName = leadData.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
-          console.log(`🔍 Meeting ${meeting.id} department structure:`, {
-            misc_category: lead.misc_category,
-            departmentName: departmentName
-          });
           departmentCounts.set(departmentName, (departmentCounts.get(departmentName) || 0) + 1);
         }
       });
@@ -1965,7 +1961,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       if (!employee) return;
       
       console.log(`📊 Fetching contracts graph data for employee ${employee.display_name} (ID: ${employee.id}) (${year}, months ${startMonth}-${endMonth})`);
-      console.log(`🔍 Employee object:`, { id: employee.id, display_name: employee.display_name, email: employee.email, department: employee.department });
       
       const { supabase } = await import('../lib/supabase');
       
@@ -2060,10 +2055,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
               // Track department for contracts
               const leadData = lead as any;
               const departmentName = leadData.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unknown';
-              console.log(`🔍 Lead ${lead.id} department structure:`, {
-                misc_category: lead.misc_category,
-                departmentName: departmentName
-              });
               contractsByDept.set(departmentName, (contractsByDept.get(departmentName) || 0) + 1);
             }
           });
@@ -2100,43 +2091,10 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const processPerformanceData = (signedLeads: any[], proformaInvoices: any[], employee: Employee, expertData?: any, closerData?: any) => {
     const employeeId = employee.id;
     const employeeIdNum = Number(employeeId); // Convert to number for comparison
-    console.log('🔍 Processing performance data for employee:', employee.display_name, 'ID:', employeeId, 'ID as number:', employeeIdNum);
-    console.log('🔍 Employee ID type:', typeof employeeId, 'Employee ID number type:', typeof employeeIdNum);
-    console.log('🔍 Employee object:', employee);
-    console.log('🔍 Signed leads to process:', signedLeads.length);
-    console.log('🔍 Sample signed lead:', signedLeads[0]);
-    console.log('🔍 First 3 lead IDs for comparison:', signedLeads.slice(0, 3).map(lead => ({
-      leadId: lead.id,
-      case_handler_id: lead.case_handler_id,
-      case_handler_type: typeof lead.case_handler_id,
-      closer_id: lead.closer_id,
-      closer_type: typeof lead.closer_id,
-      expert_id: lead.expert_id,
-      expert_type: typeof lead.expert_id,
-      meeting_scheduler_id: lead.meeting_scheduler_id,
-      meeting_manager_id: lead.meeting_manager_id,
-      meeting_lawyer_id: lead.meeting_lawyer_id
-    })));
     
     // Let's also check if there are any matches at all with detailed comparison
     let hasAnyMatches = false;
     signedLeads.slice(0, 10).forEach((lead, index) => {
-      console.log(`🔍 Lead ${index + 1} (ID: ${lead.id}) comparison:`, {
-        employeeIdNum,
-        case_handler_id: lead.case_handler_id,
-        closer_id: lead.closer_id,
-        expert_id: lead.expert_id,
-        meeting_scheduler_id: lead.meeting_scheduler_id,
-        meeting_manager_id: lead.meeting_manager_id,
-        meeting_lawyer_id: lead.meeting_lawyer_id,
-        caseHandlerMatch: Number(lead.case_handler_id) === employeeIdNum,
-        closerMatch: Number(lead.closer_id) === employeeIdNum,
-        expertMatch: Number(lead.expert_id) === employeeIdNum,
-        schedulerMatch: Number(lead.meeting_scheduler_id) === employeeIdNum,
-        managerMatch: Number(lead.meeting_manager_id) === employeeIdNum,
-        lawyerMatch: Number(lead.meeting_lawyer_id) === employeeIdNum
-      });
-      
       if (Number(lead.case_handler_id) === employeeIdNum || 
           Number(lead.closer_id) === employeeIdNum || 
           Number(lead.expert_id) === employeeIdNum || 
@@ -2144,10 +2102,8 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
           Number(lead.meeting_manager_id) === employeeIdNum || 
           Number(lead.meeting_lawyer_id) === employeeIdNum) {
         hasAnyMatches = true;
-        console.log('🎯 FOUND MATCH in first 10 leads:', lead.id);
       }
     });
-    console.log('🔍 Has any matches in first 10 leads:', hasAnyMatches);
     
     const roleMetrics: any = {
       handler: { signed: 0, total: 0, invoiced: 0, cases: 0, applicants: 0 },
@@ -2162,26 +2118,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     signedLeads.forEach((lead, index) => {
       const leadTotal = parseFloat(lead.total) || 0; // Convert string to number
       const leadTotalInNIS = convertToNIS(leadTotal, lead.meeting_total_currency_id); // Convert to NIS
-      
-      // Debug currency conversion
-      console.log(`🔍 EmployeeModal Lead ${lead.id}:`, {
-        originalAmount: leadTotal,
-        currencyId: lead.meeting_total_currency_id,
-        convertedAmount: leadTotalInNIS,
-        conversionRate: leadTotal > 0 ? leadTotalInNIS / leadTotal : 1
-      });
-      
-      console.log(`🔍 Lead ${index + 1}:`, {
-        id: lead.id,
-        name: lead.name,
-        case_handler_id: lead.case_handler_id,
-        closer_id: lead.closer_id,
-        expert_id: lead.expert_id,
-        meeting_scheduler_id: lead.meeting_scheduler_id,
-        meeting_manager_id: lead.meeting_manager_id,
-        meeting_lawyer_id: lead.meeting_lawyer_id,
-        total: leadTotal
-      });
       
       // Check each role and add to metrics if employee has that role
       if (Number(lead.case_handler_id) === employeeIdNum) {
@@ -2255,16 +2191,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       const correspondingInvoice = proformaInvoices.find(inv => inv.lead_id === lead.id);
       const invoiceAmount = correspondingInvoice ? (parseFloat(correspondingInvoice.total) || 0) : 0;
       const invoiceAmountInNIS = convertToNIS(invoiceAmount, correspondingInvoice?.currency_id);
-      
-      // Debug total revenue calculation
-      console.log(`🔍 EmployeeModal Total Revenue - Lead ${lead.id}:`, {
-        leadTotal: leadTotal,
-        leadCurrencyId: lead.meeting_total_currency_id,
-        leadTotalInNIS: leadTotalInNIS,
-        invoiceAmount: invoiceAmount,
-        invoiceCurrencyId: correspondingInvoice?.currency_id,
-        invoiceAmountInNIS: invoiceAmountInNIS
-      });
       
       // Use signed total if available, otherwise use due total (invoice amount)
       if (leadTotal > 0) {
@@ -2355,19 +2281,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       signedLeads: signedLeads // Include signed leads for role filtering
     };
     
-    console.log('🔍 Final role metrics:', result.roleMetrics);
-    console.log('🔍 Total signed leads:', result.totalSigned);
-    console.log('🔍 Total invoiced:', result.totalInvoiced);
-    console.log('🔍 Employee ID being matched:', employeeIdNum);
-    console.log('🔍 Sample lead for ID matching:', signedLeads[0] ? {
-      leadId: signedLeads[0].id,
-      case_handler_id: signedLeads[0].case_handler_id,
-      closer_id: signedLeads[0].closer_id,
-      expert_id: signedLeads[0].expert_id,
-      meeting_scheduler_id: signedLeads[0].meeting_scheduler_id,
-      meeting_manager_id: signedLeads[0].meeting_manager_id,
-      meeting_lawyer_id: signedLeads[0].meeting_lawyer_id
-    } : 'No leads');
     
     // CRITICAL DEBUG: Check if employee ID matching is working
     console.log('🚨 CRITICAL DEBUG - Employee ID Matching Issue:');
@@ -2421,21 +2334,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   }, [showContractsGraph, graphYear, graphStartMonth, graphEndMonth, employee]);
 
   if (!employee) return null;
-
-  console.log('🔍 EmployeeModal UI - Employee data received:', {
-    employeeId: employee.id,
-    employeeIdType: typeof employee.id,
-    employeeDisplayName: employee.display_name,
-    employeeObject: employee
-  });
-
-  console.log('🔍 EmployeeModal UI - performanceData state:', {
-    performanceData: performanceData,
-    hasPerformanceData: !!performanceData,
-    roleMetrics: performanceData?.roleMetrics,
-    totalSigned: performanceData?.totalSigned,
-    totalInvoiced: performanceData?.totalInvoiced
-  });
 
   const metrics = employee.performance_metrics || {
     total_meetings: 0,
@@ -2498,18 +2396,8 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
       // No need to apply additional date filtering
       const filteredRoleLeads = roleLeads;
       
-      console.log(`🔍 Using ${filteredRoleLeads.length} leads for role ${role} (already filtered by date range)`);
-
       // Format the leads for display
       const formattedLeads = filteredRoleLeads.map(lead => {
-        console.log('🔍 Formatting lead for display:', {
-          id: lead.id,
-          name: lead.name,
-          total: lead.total,
-          meeting_total_currency_id: lead.meeting_total_currency_id,
-          currency_symbol: getCurrencySymbol(lead.meeting_total_currency_id)
-        });
-        
         return {
           lead_number: lead.id, // Use id as lead_number for legacy leads
           name: lead.name,
@@ -2520,11 +2408,6 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
           total: (() => {
             const originalAmount = parseFloat(lead.total) || 0;
             const convertedAmount = convertToNIS(originalAmount, lead.meeting_total_currency_id);
-            console.log(`🔍 EmployeeModal Role Leads - Lead ${lead.id}:`, {
-              originalAmount: originalAmount,
-              currencyId: lead.meeting_total_currency_id,
-              convertedAmount: convertedAmount
-            });
             return convertedAmount;
           })(), // Convert to NIS
           balance: lead.balance || 0,

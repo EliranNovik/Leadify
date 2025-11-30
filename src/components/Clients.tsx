@@ -1436,11 +1436,9 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
     try {
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       // Check unactivation status based on status column
-      // For legacy leads, status might be a number or string, so we need to handle both
+      // Only show unactivated box for new leads (not legacy leads)
       const statusValue = (selectedClient as any).status;
-      const isUnactivated = isLegacy
-        ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
-        : (statusValue === 'inactive');
+      const isUnactivated = !isLegacy && (statusValue === 'inactive');
 
       console.log('🔍 useEffect: Checking unactivation status', {
         currentClientId,
@@ -1851,6 +1849,11 @@ useEffect(() => {
             unactivation_reason,
             no_of_applicants,
             potential_total,
+            status,
+            sales_roles_locked,
+            reason_id,
+            unactivated_by,
+            unactivated_at,
             misc_language!leads_lead_language_id_fkey (
               name
             ),
@@ -1926,6 +1929,11 @@ useEffect(() => {
                 : 'Not assigned',
             unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
             potential_total: data.potential_total || null, // Include potential_total for legacy leads
+            status: data.status || null, // Include status field for unactivation check
+            sales_roles_locked: data.sales_roles_locked || null, // Include sales_roles_locked for roles tab
+            reason_id: data.reason_id || null, // Include reason_id for fallback unactivation reason
+            unactivated_by: data.unactivated_by || null, // Include unactivated_by
+            unactivated_at: data.unactivated_at || null, // Include unactivated_at
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
           console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
@@ -2095,172 +2103,129 @@ useEffect(() => {
   useEffect(() => {
     let isMounted = true;
     const fetchEssentialData = async () => {
-      console.log('🚀 fetchEssentialData STARTED');
       setLocalLoading(true);
-      console.log('🔍 fetchEssentialData called with lead_number:', lead_number);
-        console.log('🔍 fullLeadNumber:', fullLeadNumber);
-        const numericLeadCandidate = fullLeadNumber.replace(/^[LC]/i, '');
       if (lead_number) {
-        console.log('Fetching essential client data with lead_number:', fullLeadNumber);
-        
-        // Try to find the lead in both tables
+        // Try to find the lead in both tables - run queries in parallel for faster loading
         let clientData = null;
         
         const isManualIdCandidate = /^\d+$/.test(fullLeadNumber);
-        console.log('🔍 Treating as manual_id candidate:', isManualIdCandidate, 'requestedLeadNumber:', requestedLeadNumber);
+        const isLegacyLeadId = /^\d+$/.test(fullLeadNumber);
+        
+        // Run all possible queries in parallel to find the lead faster
+        const queries = [];
         
         if (isManualIdCandidate) {
-          console.log('🔍 Querying new leads by manual_id:', fullLeadNumber);
-          const { data: manualResults, error: manualError } = await supabase
+          queries.push(
+            supabase
+              .from('leads')
+              .select('*')
+              .eq('manual_id', fullLeadNumber)
+              .then(({ data, error }) => ({ type: 'manual', data, error }))
+          );
+        }
+        
+        if (isLegacyLeadId) {
+          queries.push(
+            supabase
+              .from('leads_lead')
+              .select(`
+                *,
+                accounting_currencies!leads_lead_currency_id_fkey (
+                  name,
+                  iso_code
+                ),
+                misc_language!leads_lead_language_id_fkey (
+                  name
+                )
+              `)
+              .eq('id', parseInt(fullLeadNumber))
+              .single()
+              .then(({ data, error }) => ({ type: 'legacy', data, error }))
+          );
+        }
+        
+        // Also try by lead_number for new leads
+        queries.push(
+          supabase
             .from('leads')
             .select('*')
-            .eq('manual_id', fullLeadNumber);
-
-          if (manualError) {
-            console.error('❌ Error querying leads by manual_id:', manualError);
-          } else if (manualResults && manualResults.length > 0) {
-            console.log('✅ Found leads with matching manual_id:', manualResults.length);
-            let chosenLead = null;
-
-            if (requestedLeadNumber) {
-              chosenLead = manualResults.find(lead => lead.lead_number === requestedLeadNumber);
-              console.log('🔍 Requested lead_number match:', {
-                requestedLeadNumber,
-                found: !!chosenLead,
-              });
-            }
-
-            if (!chosenLead) {
-              // Prefer master lead (with /1 suffix) but only if it exists
-              const masterLead = manualResults.find(lead => typeof lead.lead_number === 'string' && lead.lead_number.includes('/1'));
-              if (masterLead) {
-                chosenLead = masterLead;
-                console.log('🔍 Defaulting to master lead with /1 suffix:', chosenLead.lead_number);
-              } else {
-                // If no master lead, use the first one but sort by lead_number to ensure consistency
-                const sortedLeads = [...manualResults].sort((a, b) => {
+            .eq('lead_number', fullLeadNumber)
+            .single()
+            .then(({ data, error }) => ({ type: 'lead_number', data, error }))
+        );
+        
+        // Wait for all queries to complete
+        const results = await Promise.allSettled(queries);
+        
+        // Process results in priority order: manual_id > legacy > lead_number
+        for (const result of results) {
+          if (result.status === 'fulfilled') {
+            const { type, data, error } = result.value;
+            
+            if (type === 'manual' && data && data.length > 0) {
+              let chosenLead = null;
+              if (requestedLeadNumber) {
+                chosenLead = data.find((lead: any) => lead.lead_number === requestedLeadNumber);
+              }
+              if (!chosenLead) {
+                const masterLead = data.find((lead: any) => typeof lead.lead_number === 'string' && lead.lead_number.includes('/1'));
+                chosenLead = masterLead || data.sort((a: any, b: any) => {
                   const aNum = typeof a.lead_number === 'string' ? a.lead_number : '';
                   const bNum = typeof b.lead_number === 'string' ? b.lead_number : '';
                   return aNum.localeCompare(bNum);
-                });
-                chosenLead = sortedLeads[0];
-                console.log('🔍 Defaulting to first lead (sorted) for manual_id:', chosenLead?.id, chosenLead?.lead_number);
+                })[0];
               }
-            }
-
-            if (chosenLead) {
-              const categoryName = getCategoryName(chosenLead.category_id, chosenLead.category);
-              const chosenStageId = resolveStageId(chosenLead.stage);
+              
+              if (chosenLead) {
+                const categoryName = getCategoryName(chosenLead.category_id, chosenLead.category);
+                const chosenStageId = resolveStageId(chosenLead.stage);
+                clientData = {
+                  ...chosenLead,
+                  category: categoryName,
+                  stage: chosenStageId ?? (typeof chosenLead.stage === 'number' ? chosenLead.stage : null),
+                  emails: [],
+                  handler:
+                    (chosenLead.handler && chosenLead.handler.trim() !== '' && chosenLead.handler !== 'Not assigned')
+                      ? chosenLead.handler
+                      : (chosenLead.case_handler_id !== null && chosenLead.case_handler_id !== undefined
+                          ? getEmployeeDisplayName(String(chosenLead.case_handler_id))
+                          : 'Not assigned'),
+                };
+                break; // Found it, stop searching
+              }
+            } else if (type === 'legacy' && data && !error) {
+              // Process legacy lead
+              const legacyLead = data;
+              const legacyCurrencyRecord = Array.isArray(legacyLead.accounting_currencies)
+                ? legacyLead.accounting_currencies[0]
+                : legacyLead.accounting_currencies;
+              const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
+                ? legacyLead.misc_language[0]
+                : legacyLead.misc_language;
+              
+              // Get scheduler name if available (defer to avoid blocking)
+              let schedulerName = '---';
+              if (legacyLead.meeting_scheduler_id) {
+                schedulerName = getEmployeeDisplayName(String(legacyLead.meeting_scheduler_id));
+              }
+              
+              const legacyStageId = resolveStageId(legacyLead.stage);
               clientData = {
-                ...chosenLead,
-                category: categoryName,
-                stage: chosenStageId ?? (typeof chosenLead.stage === 'number' ? chosenLead.stage : null),
-                emails: [],
-                handler:
-                  (chosenLead.handler && chosenLead.handler.trim() !== '' && chosenLead.handler !== 'Not assigned')
-                    ? chosenLead.handler
-                    : (chosenLead.case_handler_id !== null && chosenLead.case_handler_id !== undefined
-                        ? getEmployeeDisplayName(String(chosenLead.case_handler_id))
-                        : 'Not assigned'),
-              };
-              console.log('✅ Selected client from manual_id lookup:', {
-                id: clientData.id,
-                manual_id: clientData.manual_id,
-                lead_number: clientData.lead_number,
-              });
-            }
-          }
-        }
-        
-        // Check if this looks like a legacy lead ID (numeric)
-        const isLegacyLeadId = /^\d+$/.test(fullLeadNumber);
-        console.log('🔍 isLegacyLeadId:', isLegacyLeadId);
-        
-        if (!clientData && isLegacyLeadId) {
-          // For numeric IDs, try legacy table first
-          console.log('🔍 Querying legacy table for ID:', parseInt(fullLeadNumber));
-          const { data: legacyLead, error: legacyError } = await supabase
-            .from('leads_lead')
-            .select(`
-              *,
-              accounting_currencies!leads_lead_currency_id_fkey (
-                name,
-                iso_code
-              ),
-              misc_language!leads_lead_language_id_fkey (
-                name
-              )
-            `)
-            .eq('id', parseInt(fullLeadNumber))
-            .single();
-          
-                    console.log('🔍 Legacy query result:', { legacyLead, legacyError });
-          console.log('🔍 Legacy lead data:', legacyLead);
-          console.log('🔍 Legacy lead stage:', legacyLead?.stage);
-          console.log('🔍 Legacy lead unactivation_reason:', legacyLead?.unactivation_reason);
-          
-          if (!legacyError && legacyLead) {
-              console.log('🔍 Legacy lead found:', legacyLead);
-              console.log('🔍 Legacy lead stage:', legacyLead.stage);
-              console.log('🔍 Legacy lead unactivation_reason:', legacyLead.unactivation_reason);
-            // Transform legacy lead to match new lead structure
-            
-            // Get scheduler name if meeting_scheduler_id exists
-            let schedulerName = null;
-            if (legacyLead.meeting_scheduler_id) {
-              try {
-                const { data: schedulerData, error: schedulerError } = await supabase
-                  .from('tenants_employee')
-                  .select('name')
-                  .eq('id', legacyLead.meeting_scheduler_id)
-                  .single();
-                
-                if (!schedulerError && schedulerData?.name) {
-                  schedulerName = schedulerData.name;
-                }
-              } catch (error) {
-                console.log('Could not fetch scheduler name:', error);
-              }
-            }
-            
-            const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
-              ? legacyLead.misc_language[0]
-              : legacyLead.misc_language;
-            const legacyCurrencyRecord = Array.isArray(legacyLead.accounting_currencies)
-              ? legacyLead.accounting_currencies[0]
-              : legacyLead.accounting_currencies;
-
-            const legacyFallbackStageId = resolveStageId(legacyLead.stage);
-            clientData = {
-              ...legacyLead,
-              id: `legacy_${legacyLead.id}`,
-              lead_number: formatLegacyLeadNumber(legacyLead), // Format lead number with /1 for master, /X for sub-leads
-              stage: legacyFallbackStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
-              source: String(legacyLead.source_id || ''),
-              created_at: legacyLead.cdate,
-              updated_at: legacyLead.udate,
-              notes: legacyLead.notes || '',
-              special_notes: legacyLead.special_notes || '',
-              next_followup: legacyLead.next_followup || '',
-              probability: String(legacyLead.probability || ''),
-                    category: (() => {
-                      console.log('🔍 Processing legacy lead category - raw data:', { 
-                        category_id: legacyLead.category_id, 
-                        category: legacyLead.category,
-                        allCategoriesLoaded: allCategories.length > 0
-                      });
-                      const categoryName = getCategoryName(legacyLead.category_id, legacyLead.category);
-                      console.log('🔍 Processing legacy lead category result:', { category_id: legacyLead.category_id, category_name: categoryName });
-                      return categoryName;
-                    })(),
-              language: legacyLanguageRecord?.name || String(legacyLead.language_id || ''), // Get language name from joined table
-              balance: String(legacyLead.total || ''), // Map total to balance
-              balance_currency: (() => {
-                // Use accounting_currencies name if available, otherwise fallback
-                if (legacyCurrencyRecord?.name) {
-                  return legacyCurrencyRecord.name;
-                } else {
-                  // Fallback currency mapping based on currency_id
+                ...legacyLead,
+                id: `legacy_${legacyLead.id}`,
+                lead_number: formatLegacyLeadNumber(legacyLead),
+                stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
+                source: String(legacyLead.source_id || ''),
+                created_at: legacyLead.cdate,
+                updated_at: legacyLead.udate,
+                notes: legacyLead.notes || '',
+                special_notes: legacyLead.special_notes || '',
+                next_followup: legacyLead.next_followup || '',
+                probability: String(legacyLead.probability || ''),
+                category: getCategoryName(legacyLead.category_id, legacyLead.category),
+                language: legacyLanguageRecord?.name || String(legacyLead.language_id || ''),
+                balance: String(legacyLead.total || ''),
+                balance_currency: legacyCurrencyRecord?.name || (() => {
                   switch (legacyLead.currency_id) {
                     case 1: return '₪';
                     case 2: return '€';
@@ -2268,190 +2233,136 @@ useEffect(() => {
                     case 4: return '£';
                     default: return '₪';
                   }
-                }
-              })(),
-              lead_type: 'legacy',
-              // Add missing fields with defaults
-              client_country: null,
-              emails: [],
-              closer: legacyLead.closer_id, // Use closer_id from legacy table
-              handler:
-                (legacyLead.handler && legacyLead.handler.trim() !== '' && legacyLead.handler !== 'Not assigned')
-                  ? legacyLead.handler
-                  : (legacyLead.case_handler_id !== null && legacyLead.case_handler_id !== undefined
-                      ? getEmployeeDisplayName(String(legacyLead.case_handler_id))
-                      : 'Not assigned'),
-              scheduler: schedulerName, // Use resolved scheduler name
-              unactivation_reason: legacyLead.unactivation_reason || null,
-              unactivated_by: legacyLead.unactivated_by || null,
-              unactivated_at: legacyLead.unactivated_at || null,
-              status: legacyLead.status || null, // Add status field for unactivation check
-              sales_roles_locked: legacyLead.sales_roles_locked || null, // Add sales_roles_locked for roles tab
-              reason_id: legacyLead.reason_id || null, // Add reason_id for fallback unactivation reason
-            };
-            console.log('🔍 Transformed clientData:', clientData);
-            console.log('🔍 clientData.stage:', clientData.stage);
-            console.log('🔍 clientData.unactivation_reason:', clientData.unactivation_reason);
-            console.log('🔍 Legacy lead stage after transformation:', clientData.stage);
-            console.log('🔍 Legacy lead stage type after transformation:', typeof clientData.stage);
-          }
-        } else if (!clientData) {
-          // For non-numeric IDs, try new leads table first
-          const { data: newLead, error: newError } = await supabase
-            .from('leads')
-            .select('*')
-            .eq('lead_number', fullLeadNumber)
-            .single();
-
-          if (!newError && newLead) {
-            // Transform new lead to include category name
-            console.log('🔍 Processing new lead lookup category - raw data:', { 
-              category_id: newLead.category_id, 
-              category: newLead.category,
-              allCategoriesLoaded: allCategories.length > 0,
-              allCategories: allCategories.map(cat => ({ id: cat.id, name: cat.name }))
-            });
-            const categoryName = getCategoryName(newLead.category_id, newLead.category);
-            console.log('🔍 Processing new lead lookup category result:', { category_id: newLead.category_id, category_name: categoryName });
-            clientData = {
-              ...newLead,
-              category: categoryName,
-              stage: resolveStageId(newLead.stage) ?? (typeof newLead.stage === 'number' ? newLead.stage : null),
-              emails: [],
-              handler:
-                (newLead.handler && newLead.handler.trim() !== '' && newLead.handler !== 'Not assigned')
-                  ? newLead.handler
-                  : (newLead.case_handler_id !== null && newLead.case_handler_id !== undefined
-                      ? getEmployeeDisplayName(String(newLead.case_handler_id))
-                      : 'Not assigned'),
-            };
-          } else {
-            if (newError) {
-              console.error('❌ Error fetching lead by lead_number:', { fullLeadNumber, error: newError });
+                })(),
+                lead_type: 'legacy',
+                client_country: null,
+                emails: [],
+                closer: legacyLead.closer_id,
+                handler:
+                  legacyLead.case_handler_id !== null && legacyLead.case_handler_id !== undefined
+                    ? getEmployeeDisplayName(String(legacyLead.case_handler_id))
+                    : 'Not assigned',
+                scheduler: schedulerName,
+                unactivation_reason: legacyLead.unactivation_reason || null,
+                unactivated_by: legacyLead.unactivated_by || null,
+                unactivated_at: legacyLead.unactivated_at || null,
+                status: legacyLead.status || null,
+                sales_roles_locked: legacyLead.sales_roles_locked || null,
+                reason_id: legacyLead.reason_id || null,
+              };
+              break; // Found it, stop searching
+            } else if (type === 'lead_number' && data && !error) {
+              // Process new lead by lead_number
+              const newLead = data;
+              const categoryName = getCategoryName(newLead.category_id, newLead.category);
+              const newStageId = resolveStageId(newLead.stage);
+              clientData = {
+                ...newLead,
+                category: categoryName,
+                stage: newStageId ?? (typeof newLead.stage === 'number' ? newLead.stage : null),
+                emails: [],
+                handler:
+                  (newLead.handler && newLead.handler.trim() !== '' && newLead.handler !== 'Not assigned')
+                    ? newLead.handler
+                    : (newLead.case_handler_id !== null && newLead.case_handler_id !== undefined
+                        ? getEmployeeDisplayName(String(newLead.case_handler_id))
+                        : 'Not assigned'),
+              };
+              break; // Found it, stop searching
             }
+          }
+        }
+        
+        // If no client found from parallel queries, try fallback lookup
+        if (!clientData) {
+          const numericLeadCandidate = fullLeadNumber.replace(/^[LC]/i, '');
+          if (numericLeadCandidate && /^\d+$/.test(numericLeadCandidate)) {
+            const { data: leadsByManualId, error: manualLookupError } = await supabase
+              .from('leads')
+              .select('*')
+              .eq('manual_id', numericLeadCandidate)
+              .order('created_at', { ascending: false })
+              .limit(1);
 
-            if (!newError && !newLead && numericLeadCandidate && /^\d+$/.test(numericLeadCandidate)) {
-              console.log('🔍 No lead found by lead_number, falling back to manual_id lookup:', numericLeadCandidate);
-              const { data: leadsByManualId, error: manualLookupError } = await supabase
-                .from('leads')
-                .select('*')
-                .eq('manual_id', numericLeadCandidate)
-                .order('created_at', { ascending: false })
-                .limit(1);
-
-              if (manualLookupError) {
-                console.error('❌ Error during manual_id fallback lookup:', {
-                  manualId: numericLeadCandidate,
-                  error: manualLookupError,
-                });
-              }
-
-              const leadByManualId = leadsByManualId?.[0];
-
-              if (leadByManualId) {
-                const categoryName = getCategoryName(leadByManualId.category_id, leadByManualId.category);
+            if (!manualLookupError && leadsByManualId?.[0]) {
+              const leadByManualId = leadsByManualId[0];
+              const categoryName = getCategoryName(leadByManualId.category_id, leadByManualId.category);
               const manualStageId = resolveStageId(leadByManualId.stage);
-                console.log('✅ Fallback manual_id lookup succeeded:', {
-                  manualId: numericLeadCandidate,
-                  leadId: leadByManualId.id,
-                });
-                clientData = {
-                  ...leadByManualId,
-                  category: categoryName,
+              clientData = {
+                ...leadByManualId,
+                category: categoryName,
                 stage: manualStageId ?? (typeof leadByManualId.stage === 'number' ? leadByManualId.stage : null),
-                  emails: [],
-                  handler:
-                    (leadByManualId.handler && leadByManualId.handler.trim() !== '' && leadByManualId.handler !== 'Not assigned')
-                      ? leadByManualId.handler
-                      : (leadByManualId.case_handler_id !== null && leadByManualId.case_handler_id !== undefined
-                          ? getEmployeeDisplayName(String(leadByManualId.case_handler_id))
-                          : 'Not assigned'),
-                };
-              }
+                emails: [],
+                handler:
+                  (leadByManualId.handler && leadByManualId.handler.trim() !== '' && leadByManualId.handler !== 'Not assigned')
+                    ? leadByManualId.handler
+                    : (leadByManualId.case_handler_id !== null && leadByManualId.case_handler_id !== undefined
+                        ? getEmployeeDisplayName(String(leadByManualId.case_handler_id))
+                        : 'Not assigned'),
+              };
             }
           }
         }
 
-        console.log('Database query result:', { clientData });
-        if (!clientData) {
-          console.error('Client not found in either table', {
-            leadNumberParam: lead_number,
-            fullLeadNumber,
-          });
-          // Only navigate to latest lead if we're not already loading and no lead_number was provided
-          // This prevents navigation loops
-          if (!lead_number && isMounted) {
-            console.log('🔍 No lead_number provided and no client found, fetching latest lead');
-            const allLeads = await fetchAllLeads();
-            if (allLeads.length > 0 && isMounted) {
-              const latestLead = allLeads[0];
-              const latestManualId = (latestLead as any)?.manual_id;
-              const latestLeadNumber = (latestLead as any)?.lead_number;
-              // Only navigate if we're not already on this route
-              const currentRoute = buildClientRoute(latestManualId, latestLeadNumber);
-              if (location.pathname !== currentRoute) {
-                navigate(currentRoute);
-                // Set flag to prevent useEffect from interfering
-                isSettingUpClientRef.current = true;
-                
-                // Set unactivated view BEFORE setting selectedClient
-                const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
-                // Check unactivation status based on status column
-                // For legacy leads, handle both number and string types
-                const statusValue = (latestLead as any).status;
-                const isUnactivated = isLegacy
-                  ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
-                  : (statusValue === 'inactive');
-                console.log('🔍 fetchEssentialData (latest lead): Setting isUnactivatedView BEFORE setSelectedClient', {
-                  isLegacy,
-                  statusValue,
-                  isUnactivated,
-                  userManuallyExpanded
-                });
-                setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
-                
-                // Now set the client
-                setSelectedClient(normalizeClientStage(latestLead));
-                
-                // Clear flag after a brief delay
-                setTimeout(() => {
-                  isSettingUpClientRef.current = false;
-                }, 100);
-              }
-            }
-          }
-        } else if (isMounted) {
-          // Set flag to prevent useEffect from interfering
-          isSettingUpClientRef.current = true;
-          
-          // Set unactivated view BEFORE setting selectedClient to avoid race condition
+        // Set client data and stop loading as soon as we have it
+        if (clientData && isMounted) {
+          // Set unactivated view BEFORE setting selectedClient
           try {
             const isLegacy = clientData.lead_type === 'legacy' || clientData.id?.toString().startsWith('legacy_');
-            // Check unactivation status based on status column
-            // For legacy leads, handle both number and string types
             const statusValue = (clientData as any).status;
-            const isUnactivated = isLegacy
-              ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
-              : (statusValue === 'inactive');
-            console.log('🔍 fetchEssentialData: Setting isUnactivatedView BEFORE setSelectedClient', {
-              isLegacy,
-              statusValue,
-              isUnactivated,
-              userManuallyExpanded
-            });
+            const isUnactivated = !isLegacy && (statusValue === 'inactive');
             setIsUnactivatedView(!!(clientData && isUnactivated && !userManuallyExpanded));
           } catch (error) {
             console.error('Error checking unactivation status:', error);
             setIsUnactivatedView(false);
           }
           
-          // Now set the client - this will trigger useEffect but it will be skipped due to flag
-          setSelectedClient(normalizeClientStage(clientData));
+          // Set flag to prevent useEffect from interfering
+          isSettingUpClientRef.current = true;
           
-          // Clear flag after a brief delay to allow state to settle
+          // Set the client immediately for faster rendering
+          setSelectedClient(normalizeClientStage(clientData));
+          setLocalLoading(false); // Stop loading immediately - don't wait for anything else
+          
+          // Clear flag after a brief delay
           setTimeout(() => {
             isSettingUpClientRef.current = false;
           }, 100);
+        } else if (!clientData) {
+          // If still no client found, try to get latest lead
+          if (!lead_number && isMounted) {
+            const allLeads = await fetchAllLeads();
+            if (allLeads.length > 0 && isMounted) {
+              const latestLead = allLeads[0];
+              const latestManualId = (latestLead as any)?.manual_id;
+              const latestLeadNumber = (latestLead as any)?.lead_number;
+              const targetRoute = buildClientRoute(latestManualId, latestLeadNumber);
+              if (location.pathname !== targetRoute) {
+                navigate(targetRoute);
+              }
+              // Set flag to prevent useEffect from interfering
+              isSettingUpClientRef.current = true;
+              
+              // Set unactivated view BEFORE setting selectedClient
+              const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
+              const statusValue = (latestLead as any).status;
+              const isUnactivated = !isLegacy && (statusValue === 'inactive');
+              setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
+              
+              // Set the client
+              setSelectedClient(normalizeClientStage(latestLead));
+              setLocalLoading(false); // Stop loading immediately
+              
+              // Clear flag after a brief delay
+              setTimeout(() => {
+                isSettingUpClientRef.current = false;
+              }, 100);
+            } else {
+              setLocalLoading(false);
+            }
+          } else {
+            setLocalLoading(false);
+          }
         }
       } else {
         // Get the most recent lead from either table
@@ -2472,11 +2383,9 @@ useEffect(() => {
           // Set unactivated view BEFORE setting selectedClient
           const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
           // Check unactivation status based on status column
-          // For legacy leads, handle both number and string types
+          // Only show unactivated box for new leads (not legacy leads)
           const statusValue = (latestLead as any).status;
-          const isUnactivated = isLegacy
-            ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
-            : (statusValue === 'inactive');
+          const isUnactivated = !isLegacy && (statusValue === 'inactive');
           console.log('🔍 fetchEssentialData (no lead_number): Setting isUnactivatedView BEFORE setSelectedClient', {
             isLegacy,
             statusValue,
@@ -2487,14 +2396,16 @@ useEffect(() => {
           
           // Now set the client
           setSelectedClient(normalizeClientStage(latestLead));
+          setLocalLoading(false); // Stop loading immediately
           
           // Clear flag after a brief delay
           setTimeout(() => {
             isSettingUpClientRef.current = false;
           }, 100);
+        } else {
+          setLocalLoading(false);
         }
       }
-      if (isMounted) setLocalLoading(false);
     };
 
     fetchEssentialData();
@@ -3707,6 +3618,12 @@ useEffect(() => {
       // Resolve manager and helper employee IDs
       const managerEmployeeId = getEmployeeIdFromDisplayName(meetingFormData.manager);
       const helperEmployeeId = getEmployeeIdFromDisplayName(meetingFormData.helper);
+      
+      // Resolve scheduler employee ID (for legacy leads, need numeric ID)
+      const schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+      
+      // Resolve expert employee ID (for legacy leads, need numeric ID)
+      const expertEmployeeId = getEmployeeIdFromDisplayName(selectedClient.expert);
 
       // Resolve paid-meeting category (subcategory) if selected
       let paidCategoryId: string | null = null;
@@ -3813,10 +3730,14 @@ useEffect(() => {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         const updatePayload: any = { 
           stage: mainLeadStageId,
-          meeting_scheduler_id: currentUserFullName,
           stage_changed_by: stageActor.fullName,
           stage_changed_at: stageTimestamp,
         };
+
+        // Update scheduler for legacy leads (must be numeric employee ID, not display name)
+        if (schedulerEmployeeId !== null) {
+          updatePayload.meeting_scheduler_id = schedulerEmployeeId;
+        }
 
         // Update manager and helper for legacy leads
         if (managerEmployeeId !== null) {
@@ -3824,6 +3745,11 @@ useEffect(() => {
         }
         if (helperEmployeeId !== null) {
           updatePayload.meeting_lawyer_id = helperEmployeeId;
+        }
+        
+        // Update expert for legacy leads (must be numeric employee ID, not display name)
+        if (expertEmployeeId !== null) {
+          updatePayload.expert_id = expertEmployeeId;
         }
 
         // For paid meetings, persist meeting_total and category/currency on legacy lead
@@ -4288,6 +4214,9 @@ useEffect(() => {
     if (!selectedClient) return;
     setIsSavingMeetingEnded(true);
 
+    // Check if this is a legacy lead
+    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+
     // If proposalTotal is changed, update balance as well
     const proposalTotal = parseFloat(meetingEndedData.proposalTotal);
     const waitingStageId = getStageIdOrWarn('waiting_for_mtng_sum');
@@ -4297,32 +4226,34 @@ useEffect(() => {
       return;
     }
 
-    const updateData: Record<string, any> = {
-      probability: meetingEndedData.probability,
-      meeting_brief: meetingEndedData.meetingBrief,
-      number_of_applicants_meeting: meetingEndedData.numberOfApplicants,
-      potential_applicants_meeting: meetingEndedData.potentialApplicants,
-      proposal_total: proposalTotal,
-      proposal_currency: meetingEndedData.proposalCurrency,
-      balance: proposalTotal, // Sync balance to proposal_total
-      balance_currency: meetingEndedData.proposalCurrency,
-      stage: waitingStageId,
-    };
-
     try {
       const actor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
-      updateData.stage_changed_by = actor.fullName;
-      updateData.stage_changed_at = stageTimestamp;
-      updateData.stage = waitingStageId;
 
       // First, find the most recent meeting to update it
-      const { data: meetings, error: meetingsError } = await supabase
-        .from('meetings')
-        .select('id')
-        .eq('client_id', selectedClient.id)
-        .order('meeting_date', { ascending: false })
-        .limit(1);
+      let meetings: any[] = [];
+      let meetingsError: any = null;
+      
+      if (isLegacyLead) {
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        const { data, error } = await supabase
+          .from('meetings')
+          .select('id')
+          .eq('legacy_lead_id', legacyId)
+          .order('meeting_date', { ascending: false })
+          .limit(1);
+        meetings = data || [];
+        meetingsError = error;
+      } else {
+        const { data, error } = await supabase
+          .from('meetings')
+          .select('id')
+          .eq('client_id', selectedClient.id)
+          .order('meeting_date', { ascending: false })
+          .limit(1);
+        meetings = data || [];
+        meetingsError = error;
+      }
 
       if (meetingsError) throw meetingsError;
 
@@ -4341,12 +4272,61 @@ useEffect(() => {
         if (meetingUpdateError) throw meetingUpdateError;
       }
 
-      const { error } = await supabase
-        .from('leads')
-        .update(updateData)
-        .eq('id', selectedClient.id);
-      
-      if (error) throw error;
+      // Update the lead based on type
+      if (isLegacyLead) {
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        
+        // Helper function to convert currency name to currency_id for legacy leads
+        const currencyNameToId = (currencyName: string): number | null => {
+          switch (currencyName) {
+            case '₪': return 1; // NIS
+            case '€': return 2; // EUR  
+            case '$': return 3; // USD
+            case '£': return 4; // GBP
+            default: return 1; // Default to NIS
+          }
+        };
+        
+        const updateData: Record<string, any> = {
+          probability: meetingEndedData.probability ? Number(meetingEndedData.probability) : null,
+          meeting_brief: meetingEndedData.meetingBrief,
+          no_of_applicants: meetingEndedData.numberOfApplicants ? Number(meetingEndedData.numberOfApplicants) : null,
+          potential_total: proposalTotal ? String(proposalTotal) : null,
+          total: proposalTotal ? String(proposalTotal) : null, // Sync total to proposal_total
+          currency_id: currencyNameToId(meetingEndedData.proposalCurrency),
+          stage: waitingStageId,
+          stage_changed_by: actor.fullName,
+          stage_changed_at: stageTimestamp,
+        };
+
+        const { error } = await supabase
+          .from('leads_lead')
+          .update(updateData)
+          .eq('id', legacyId);
+        
+        if (error) throw error;
+      } else {
+        const updateData: Record<string, any> = {
+          probability: meetingEndedData.probability,
+          meeting_brief: meetingEndedData.meetingBrief,
+          number_of_applicants_meeting: meetingEndedData.numberOfApplicants,
+          potential_applicants_meeting: meetingEndedData.potentialApplicants,
+          proposal_total: proposalTotal,
+          proposal_currency: meetingEndedData.proposalCurrency,
+          balance: proposalTotal, // Sync balance to proposal_total
+          balance_currency: meetingEndedData.proposalCurrency,
+          stage: waitingStageId,
+          stage_changed_by: actor.fullName,
+          stage_changed_at: stageTimestamp,
+        };
+
+        const { error } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', selectedClient.id);
+        
+        if (error) throw error;
+      }
 
       await recordLeadStageChange({
         lead: selectedClient,
@@ -7668,10 +7648,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
   // This must be checked immediately to prevent flickering and ensure badge is always shown
   const isLegacyForView = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
   const statusValue = selectedClient ? (selectedClient as any).status : null;
-  const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined
-    ? (isLegacyForView
-        ? (statusValue === 10 || statusValue === '10' || Number(statusValue) === 10)
-        : (statusValue === 'inactive'))
+  // Only show unactivated box for new leads (not legacy leads)
+  const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined && !isLegacyForView
+    ? (statusValue === 'inactive')
     : false;
   
   console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
@@ -7847,13 +7826,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 return null;
               })()}
 
-              {/* Unactivation Details */}
+              {/* Unactivation Details - Only for new leads (not legacy) */}
               {(() => {
                 const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                // Check unactivation status based on status column
-                const isUnactivated = isLegacy
-                  ? (selectedClient.status === 10)
-                  : (selectedClient.status === 'inactive');
+                // Only show unactivated box for new leads (not legacy leads)
+                const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
                 return isUnactivated;
               })() && (
                 <div className="pt-3 border-t border-gray-100 space-y-2">
@@ -9118,7 +9095,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
               {/* Tabs: Regular vs Paid meeting */}
-              <div className="mb-4">
+              {/* <div className="mb-4">
                 <div className="inline-flex rounded-lg bg-base-200 p-1">
                   <button
                     type="button"
@@ -9143,7 +9120,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     Paid meeting
                   </button>
                 </div>
-              </div>
+              </div> */}
 
               <div className="flex flex-col gap-4">
               {/* Location */}
@@ -9275,10 +9252,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </datalist>
               </div>
 
-              {/* Extra fields only for Paid meeting */}
-              {meetingType === 'paid' && (
+              {/* Extra fields only for Paid meeting - COMMENTED OUT */}
+              {/* {meetingType === 'paid' && (
                 <>
-                  {/* Meeting collection manager */}
                   <div>
                     <label className="block font-semibold mb-1">Meeting collection manager</label>
                     <input
@@ -9298,7 +9274,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </datalist>
                   </div>
 
-                  {/* Paid meeting category (only subcategories related to paid meetings) */}
                   <div>
                     <label className="block font-semibold mb-1">Paid meeting category</label>
                     <select
@@ -9314,7 +9289,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           const labelLower = opt.label.toLowerCase();
                           const mainName =
                             (opt.raw as any)?.misc_maincategory?.name?.toLowerCase?.() || '';
-                          // Heuristic: only categories whose main category or label mentions "paid"
                           return (
                             labelLower.includes('paid meeting') ||
                             mainName.includes('paid meeting') ||
@@ -9330,7 +9304,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </select>
                   </div>
 
-                  {/* Paid meeting currency */}
                   <div>
                     <label className="block font-semibold mb-1">Paid meeting currency</label>
                     <select
@@ -9349,7 +9322,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </select>
                   </div>
 
-                  {/* Meeting total */}
                   <div>
                     <label className="block font-semibold mb-1">Meeting total</label>
                     <input
@@ -9368,7 +9340,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     />
                   </div>
                 </>
-              )}
+              )} */}
 
               {/* Meeting Brief (Optional) */}
               <div>

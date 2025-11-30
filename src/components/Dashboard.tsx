@@ -357,12 +357,14 @@ const Dashboard: React.FC = () => {
     const fetchMeetings = async () => {
       setMeetingsLoading(true);
       try {
-        // First, fetch current user's employee_id and display name
+        // First, fetch current user's employee_id, display name, and email
         const { data: { user } } = await supabase.auth.getUser();
         let userEmployeeId: number | null = null;
         let userDisplayName: string | null = null;
+        let userEmail: string | null = null;
         
         if (user) {
+          userEmail = user.email || null; // Get user email for staff meetings
           const { data: userData } = await supabase
             .from('users')
             .select(`
@@ -392,6 +394,10 @@ const Dashboard: React.FC = () => {
         
         const today = new Date();
         const todayStr = today.toISOString().split('T')[0];
+        const todayStart = new Date(today);
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date(today);
+        todayEnd.setHours(23, 59, 59, 999);
         
         // Fetch all meetings with proper joins to both leads and leads_lead tables
         const { data: meetings, error } = await supabase
@@ -418,6 +424,31 @@ const Dashboard: React.FC = () => {
           .eq('meeting_date', todayStr)
           .not('teams_meeting_url', 'is', null)
           .or('status.is.null,status.neq.canceled');
+        
+        // Fetch staff meetings from outlook_teams_meetings where user is in attendees
+        let staffMeetings: any[] = [];
+        if (userEmail) {
+          const { data: outlookMeetings, error: outlookError } = await supabase
+            .from('outlook_teams_meetings')
+            .select('*')
+            .gte('start_date_time', todayStart.toISOString())
+            .lte('start_date_time', todayEnd.toISOString())
+            .or('status.is.null,status.neq.cancelled');
+          
+          if (!outlookError && outlookMeetings) {
+            // Filter staff meetings where user's email is in attendees array
+            staffMeetings = outlookMeetings.filter((meeting: any) => {
+              if (!meeting.attendees || !Array.isArray(meeting.attendees)) return false;
+              // Check if user's email is in the attendees array
+              return meeting.attendees.some((attendee: any) => {
+                const attendeeEmail = typeof attendee === 'string' 
+                  ? attendee.toLowerCase() 
+                  : (attendee.email || '').toLowerCase();
+                return attendeeEmail === userEmail?.toLowerCase();
+              });
+            });
+          }
+        }
           
         if (!error && meetings) {
           // Fetch employee names for ID mapping
@@ -581,9 +612,8 @@ const Dashboard: React.FC = () => {
             };
           });
           
-          // Calculate meetings in next hour
+          // Calculate meetings in next hour (will be recalculated later with staff meetings)
           const now = new Date();
-          const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
           
           // Store processed meetings first
           const processedMeetingsList = processedMeetings.map((meeting: any) => {
@@ -700,26 +730,68 @@ const Dashboard: React.FC = () => {
             };
           });
 
-          setTodayMeetings(processedMeetingsList);
+          // Process staff meetings
+          const processedStaffMeetings = staffMeetings.map((staffMeeting: any) => {
+            const startDate = new Date(staffMeeting.start_date_time);
+            const timeStr = startDate.toTimeString().substring(0, 5);
+            return {
+              id: `staff-${staffMeeting.id}`,
+              lead: 'Staff Meeting',
+              name: staffMeeting.subject || 'Staff Meeting',
+              topic: staffMeeting.description || 'Staff Meeting',
+              expert: '---',
+              scheduler: '---',
+              helper: '---',
+              stage: 'N/A',
+              time: timeStr,
+              location: staffMeeting.location || 'Teams',
+              manager: '---',
+              value: 'N/A',
+              link: staffMeeting.teams_join_url || staffMeeting.teams_meeting_url || '',
+              isStaffMeeting: true,
+              meetingDateTime: startDate
+            };
+          });
+          
+          // Combine client meetings and staff meetings
+          const allMeetings = [...processedMeetingsList, ...processedStaffMeetings];
+          
+          // Sort all meetings by time
+          allMeetings.sort((a: any, b: any) => {
+            const timeA = a.time || '00:00';
+            const timeB = b.time || '00:00';
+            return timeA.localeCompare(timeB);
+          });
+          
+          setTodayMeetings(allMeetings);
           
           // Calculate meetings in next hour
-          const meetingsInNextHourList = processedMeetingsList
+          const nowForNextHour = new Date();
+          const oneHourLater = new Date(nowForNextHour.getTime() + 60 * 60 * 1000);
+          
+          const meetingsInNextHourList = allMeetings
             .map((meeting: any) => {
-              if (!meeting.time) return null;
+              if (!meeting.time && !meeting.meetingDateTime) return null;
               
-              // Parse meeting time (format: HH:MM or HH:MM:SS)
-              const timeParts = meeting.time.split(':');
-              if (timeParts.length < 2) return null;
-              
-              const meetingHour = parseInt(timeParts[0], 10);
-              const meetingMinute = parseInt(timeParts[1], 10);
-              
-              // Create meeting datetime for today
-              const meetingDateTime = new Date(now);
-              meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
+              let meetingDateTime: Date;
+              if (meeting.meetingDateTime) {
+                // Staff meeting already has meetingDateTime
+                meetingDateTime = meeting.meetingDateTime;
+              } else {
+                // Parse meeting time (format: HH:MM or HH:MM:SS)
+                const timeParts = meeting.time.split(':');
+                if (timeParts.length < 2) return null;
+                
+                const meetingHour = parseInt(timeParts[0], 10);
+                const meetingMinute = parseInt(timeParts[1], 10);
+                
+                // Create meeting datetime for today
+                meetingDateTime = new Date(nowForNextHour);
+                meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
+              }
               
               // Check if meeting is between now and one hour from now
-              if (meetingDateTime >= now && meetingDateTime <= oneHourLater) {
+              if (meetingDateTime >= nowForNextHour && meetingDateTime <= oneHourLater) {
                 return {
                   ...meeting,
                   meetingDateTime
@@ -733,7 +805,30 @@ const Dashboard: React.FC = () => {
           setMeetingsInNextHour(meetingsInNextHourList.length);
           setNextHourMeetings(meetingsInNextHourList);
         } else {
-          setTodayMeetings([]);
+          // Even if client meetings fail, try to show staff meetings
+          const processedStaffMeetings = staffMeetings.map((staffMeeting: any) => {
+            const startDate = new Date(staffMeeting.start_date_time);
+            const timeStr = startDate.toTimeString().substring(0, 5);
+            return {
+              id: `staff-${staffMeeting.id}`,
+              lead: 'Staff Meeting',
+              name: staffMeeting.subject || 'Staff Meeting',
+              topic: staffMeeting.description || 'Staff Meeting',
+              expert: '---',
+              scheduler: '---',
+              helper: '---',
+              stage: 'N/A',
+              time: timeStr,
+              location: staffMeeting.location || 'Teams',
+              manager: '---',
+              value: 'N/A',
+              link: staffMeeting.teams_join_url || staffMeeting.teams_meeting_url || '',
+              isStaffMeeting: true,
+              meetingDateTime: startDate
+            };
+          });
+          
+          setTodayMeetings(processedStaffMeetings);
           setMeetingsInNextHour(0);
           setNextHourMeetings([]);
         }
@@ -755,16 +850,20 @@ const Dashboard: React.FC = () => {
     const fetchMeetings = async () => {
       setMeetingsLoading(true);
       try {
-        // First, fetch current user's employee_id and display name
+        // First, fetch current user's employee_id, display name, and email
         const { data: { user } } = await supabase.auth.getUser();
         let userEmployeeId: number | null = null;
         let userDisplayName: string | null = null;
+        let userEmail: string | null = null;
         
         if (user) {
+          userEmail = user.email || null;
+          
           const { data: userData } = await supabase
             .from('users')
             .select(`
               employee_id,
+              email,
               tenants_employee!employee_id(
                 id,
                 display_name
@@ -775,6 +874,11 @@ const Dashboard: React.FC = () => {
           
           if (userData?.employee_id) {
             userEmployeeId = userData.employee_id;
+          }
+          
+          // Use email from userData if available, otherwise use auth email
+          if (userData?.email) {
+            userEmail = userData.email;
           }
           
           // Get display name from employee relationship
@@ -790,8 +894,12 @@ const Dashboard: React.FC = () => {
         
         const today = new Date();
         const todayStr = today.toISOString().split('T')[0];
+        const todayStart = new Date(today);
+        todayStart.setHours(0, 0, 0, 0);
+        const todayEnd = new Date(today);
+        todayEnd.setHours(23, 59, 59, 999);
         
-        // Fetch all meetings with proper joins to both leads and leads_lead tables
+        // Fetch client meetings with proper joins to both leads and leads_lead tables
         const { data: meetings, error } = await supabase
           .from('meetings')
           .select(`
@@ -816,6 +924,31 @@ const Dashboard: React.FC = () => {
           .eq('meeting_date', todayStr)
           .not('teams_meeting_url', 'is', null)
           .or('status.is.null,status.neq.canceled');
+        
+        // Fetch staff meetings from outlook_teams_meetings where user is in attendees
+        let staffMeetings: any[] = [];
+        if (userEmail) {
+          const { data: outlookMeetings, error: outlookError } = await supabase
+            .from('outlook_teams_meetings')
+            .select('*')
+            .gte('start_date_time', todayStart.toISOString())
+            .lte('start_date_time', todayEnd.toISOString())
+            .or('status.is.null,status.neq.cancelled');
+          
+          if (!outlookError && outlookMeetings) {
+            // Filter staff meetings where user's email is in attendees array
+            staffMeetings = outlookMeetings.filter((meeting: any) => {
+              if (!meeting.attendees || !Array.isArray(meeting.attendees)) return false;
+              // Check if user's email is in the attendees array
+              return meeting.attendees.some((attendee: any) => {
+                const attendeeEmail = typeof attendee === 'string' 
+                  ? attendee.toLowerCase() 
+                  : (attendee.email || '').toLowerCase();
+                return attendeeEmail === userEmail?.toLowerCase();
+              });
+            });
+          }
+        }
           
         if (!error && meetings) {
           // Fetch employee names for ID mapping
@@ -979,10 +1112,6 @@ const Dashboard: React.FC = () => {
             };
           });
           
-          // Calculate meetings in next hour
-          const now = new Date();
-          const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
-          
           // Store processed meetings first
           const processedMeetingsList = processedMeetings.map((meeting: any) => {
             // Determine expert name
@@ -1097,26 +1226,70 @@ const Dashboard: React.FC = () => {
             };
           });
 
-          setTodayMeetings(processedMeetingsList);
+          // Process staff meetings to match the same structure
+          const processedStaffMeetings = staffMeetings.map((staffMeeting: any) => {
+            // Extract time from start_date_time
+            const startDate = new Date(staffMeeting.start_date_time);
+            const timeStr = startDate.toTimeString().substring(0, 5); // HH:MM format
+            
+            return {
+              id: `staff-${staffMeeting.id}`,
+              lead: 'Staff Meeting',
+              name: staffMeeting.subject || 'Staff Meeting',
+              topic: staffMeeting.description || 'Staff Meeting',
+              expert: '---',
+              scheduler: '---',
+              helper: '---',
+              stage: 'N/A',
+              time: timeStr,
+              location: staffMeeting.location || 'Teams',
+              manager: '---',
+              value: 'N/A',
+              link: staffMeeting.teams_join_url || staffMeeting.teams_meeting_url || '',
+              isStaffMeeting: true,
+              meetingDateTime: startDate
+            };
+          });
+          
+          // Combine client meetings and staff meetings
+          const allMeetings = [...processedMeetingsList, ...processedStaffMeetings];
+          
+          // Sort all meetings by time
+          allMeetings.sort((a: any, b: any) => {
+            const timeA = a.time || '00:00';
+            const timeB = b.time || '00:00';
+            return timeA.localeCompare(timeB);
+          });
+          
+          setTodayMeetings(allMeetings);
           
           // Calculate meetings in next hour
-          const meetingsInNextHourList = processedMeetingsList
+          const nowForNextHour = new Date();
+          const oneHourLater = new Date(nowForNextHour.getTime() + 60 * 60 * 1000);
+          
+          const meetingsInNextHourList = allMeetings
             .map((meeting: any) => {
-              if (!meeting.time) return null;
+              if (!meeting.time && !meeting.meetingDateTime) return null;
               
-              // Parse meeting time (format: HH:MM or HH:MM:SS)
-              const timeParts = meeting.time.split(':');
-              if (timeParts.length < 2) return null;
-              
-              const meetingHour = parseInt(timeParts[0], 10);
-              const meetingMinute = parseInt(timeParts[1], 10);
-              
-              // Create meeting datetime for today
-              const meetingDateTime = new Date(now);
-              meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
+              let meetingDateTime: Date;
+              if (meeting.meetingDateTime) {
+                // Staff meeting already has meetingDateTime
+                meetingDateTime = meeting.meetingDateTime;
+              } else {
+                // Parse meeting time (format: HH:MM or HH:MM:SS)
+                const timeParts = meeting.time.split(':');
+                if (timeParts.length < 2) return null;
+                
+                const meetingHour = parseInt(timeParts[0], 10);
+                const meetingMinute = parseInt(timeParts[1], 10);
+                
+                // Create meeting datetime for today
+                meetingDateTime = new Date(nowForNextHour);
+                meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
+              }
               
               // Check if meeting is between now and one hour from now
-              if (meetingDateTime >= now && meetingDateTime <= oneHourLater) {
+              if (meetingDateTime >= nowForNextHour && meetingDateTime <= oneHourLater) {
                 return {
                   ...meeting,
                   meetingDateTime
@@ -1130,7 +1303,58 @@ const Dashboard: React.FC = () => {
           setMeetingsInNextHour(meetingsInNextHourList.length);
           setNextHourMeetings(meetingsInNextHourList);
         } else {
-          setTodayMeetings([]);
+          // Even if client meetings fail, try to show staff meetings
+          let staffMeetingsFallback: any[] = [];
+          if (userEmail) {
+            const today = new Date();
+            const todayStart = new Date(today);
+            todayStart.setHours(0, 0, 0, 0);
+            const todayEnd = new Date(today);
+            todayEnd.setHours(23, 59, 59, 999);
+            
+            const { data: outlookMeetings, error: outlookError } = await supabase
+              .from('outlook_teams_meetings')
+              .select('*')
+              .gte('start_date_time', todayStart.toISOString())
+              .lte('start_date_time', todayEnd.toISOString())
+              .or('status.is.null,status.neq.cancelled');
+            
+            if (!outlookError && outlookMeetings) {
+              staffMeetingsFallback = outlookMeetings.filter((meeting: any) => {
+                if (!meeting.attendees || !Array.isArray(meeting.attendees)) return false;
+                return meeting.attendees.some((attendee: any) => {
+                  const attendeeEmail = typeof attendee === 'string' 
+                    ? attendee.toLowerCase() 
+                    : (attendee.email || '').toLowerCase();
+                  return attendeeEmail === userEmail?.toLowerCase();
+                });
+              });
+            }
+          }
+          
+          const processedStaffMeetings = staffMeetingsFallback.map((staffMeeting: any) => {
+            const startDate = new Date(staffMeeting.start_date_time);
+            const timeStr = startDate.toTimeString().substring(0, 5);
+            return {
+              id: `staff-${staffMeeting.id}`,
+              lead: 'Staff Meeting',
+              name: staffMeeting.subject || 'Staff Meeting',
+              topic: staffMeeting.description || 'Staff Meeting',
+              expert: '---',
+              scheduler: '---',
+              helper: '---',
+              stage: 'N/A',
+              time: timeStr,
+              location: staffMeeting.location || 'Teams',
+              manager: '---',
+              value: 'N/A',
+              link: staffMeeting.teams_join_url || staffMeeting.teams_meeting_url || '',
+              isStaffMeeting: true,
+              meetingDateTime: startDate
+            };
+          });
+          
+          setTodayMeetings(processedStaffMeetings);
           setMeetingsInNextHour(0);
           setNextHourMeetings([]);
         }
