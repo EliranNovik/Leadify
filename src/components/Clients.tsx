@@ -51,6 +51,7 @@ import {
   ChartBarIcon,
   CheckIcon,
   PlayIcon,
+  EyeIcon,
 } from '@heroicons/react/24/outline';
 import InfoTab from './client-tabs/InfoTab';
 import RolesTab from './client-tabs/RolesTab';
@@ -396,11 +397,14 @@ const Clients: React.FC<ClientsProps> = ({
         contactEmail: string | null;
         contactPhone: string | null;
         contactMobile: string | null;
+        contactCountry: string | null;
         leadId: string | number;
         leadNumber: string;
         leadName: string;
         leadType: 'new' | 'legacy';
         matchingFields: string[];
+        stage: string | number | null;
+        category: string | null;
       }> = [];
 
       for (const currentContact of currentContacts) {
@@ -440,7 +444,7 @@ const Clients: React.FC<ClientsProps> = ({
         // Build OR query properly for Supabase
         let duplicateQuery = supabase
           .from('leads_contact')
-          .select('id, name, email, phone, mobile');
+          .select('id, name, email, phone, mobile, country_id, misc_country!country_id(id, name)');
         
         if (filters.length > 0) {
           duplicateQuery = duplicateQuery.or(filters.join(','));
@@ -471,12 +475,13 @@ const Clients: React.FC<ClientsProps> = ({
           .map(r => r.lead_id)
           .filter(Boolean) as number[];
 
-        // Fetch new leads
+        // Fetch new leads (excluding subleads - those with master_id)
         if (newLeadIds.length > 0) {
           const { data: newLeads } = await supabase
             .from('leads')
-            .select('id, lead_number, name')
-            .in('id', newLeadIds);
+            .select('id, lead_number, name, stage, category, master_id')
+            .in('id', newLeadIds)
+            .is('master_id', null); // Only get main leads, exclude subleads
 
           if (newLeads) {
             for (const duplicateContact of duplicateContacts) {
@@ -506,17 +511,27 @@ const Clients: React.FC<ClientsProps> = ({
                     }
 
                     if (matchingFields.length > 0) {
+                      // Get category name for new lead (category is already text in new leads table)
+                      const categoryName = lead.category || null;
+                      // Get stage name from stage ID
+                      const stageName = lead.stage ? getStageName(String(lead.stage)) : null;
+                      // Get country name from the contact
+                      const countryName = (duplicateContact.misc_country as any)?.name || null;
+                      
                       duplicateMatches.push({
                         contactId: duplicateContact.id,
                         contactName: duplicateContact.name || 'Unknown',
                         contactEmail: duplicateContact.email,
                         contactPhone: duplicateContact.phone,
                         contactMobile: duplicateContact.mobile,
+                        contactCountry: countryName,
                         leadId: lead.id,
                         leadNumber: lead.lead_number || String(lead.id),
                         leadName: lead.name || 'Unknown',
                         leadType: 'new',
                         matchingFields,
+                        stage: stageName, // Use stage name instead of ID
+                        category: categoryName,
                       });
                     }
                   }
@@ -526,12 +541,13 @@ const Clients: React.FC<ClientsProps> = ({
           }
         }
 
-        // Fetch legacy leads
+        // Fetch legacy leads (excluding subleads - those with master_id)
         if (legacyLeadIds.length > 0) {
           const { data: legacyLeads } = await supabase
             .from('leads_lead')
-            .select('id, name')
-            .in('id', legacyLeadIds);
+            .select('id, name, stage, category_id, master_id')
+            .in('id', legacyLeadIds)
+            .is('master_id', null); // Only get main leads, exclude subleads
 
           if (legacyLeads) {
             for (const duplicateContact of duplicateContacts) {
@@ -561,17 +577,28 @@ const Clients: React.FC<ClientsProps> = ({
                     }
 
                     if (matchingFields.length > 0) {
+                      // Get category name for legacy lead
+                      const categoryName = lead.category_id ? getCategoryName(lead.category_id) : null;
+                      // Get stage name from stage ID
+                      const stageName = lead.stage ? getStageName(String(lead.stage)) : null;
+                      
+                      // Get country name from the contact
+                      const countryName = (duplicateContact.misc_country as any)?.name || null;
+                      
                       duplicateMatches.push({
                         contactId: duplicateContact.id,
                         contactName: duplicateContact.name || 'Unknown',
                         contactEmail: duplicateContact.email,
                         contactPhone: duplicateContact.phone,
                         contactMobile: duplicateContact.mobile,
+                        contactCountry: countryName,
                         leadId: `legacy_${lead.id}`,
                         leadNumber: String(lead.id),
                         leadName: lead.name || 'Unknown',
                         leadType: 'legacy',
                         matchingFields,
+                        stage: stageName, // Use stage name instead of ID
+                        category: categoryName,
                       });
                     }
                   }
@@ -582,10 +609,11 @@ const Clients: React.FC<ClientsProps> = ({
         }
       }
 
-      // Deduplicate by contactId + leadId combination
+      // Deduplicate by leadNumber to ensure each lead appears only once
+      // If the same lead has multiple matching contacts, we'll keep the first one
       const uniqueMatches = Array.from(
         new Map(
-          duplicateMatches.map(m => [`${m.contactId}-${m.leadId}`, m])
+          duplicateMatches.map(m => [m.leadNumber, m])
         ).values()
       );
 
@@ -754,11 +782,14 @@ const Clients: React.FC<ClientsProps> = ({
     contactEmail: string | null;
     contactPhone: string | null;
     contactMobile: string | null;
+    contactCountry: string | null;
     leadId: string | number;
     leadNumber: string;
     leadName: string;
     leadType: 'new' | 'legacy';
     matchingFields: string[];
+    stage: string | number | null;
+    category: string | null;
   }>>([]);
   const [isDuplicateModalOpen, setIsDuplicateModalOpen] = useState(false);
   const [isDuplicateDropdownOpen, setIsDuplicateDropdownOpen] = useState(false);
@@ -8349,6 +8380,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       >
                         <div className="font-semibold text-gray-800">{dup.contactName}</div>
                         <div className="text-sm text-gray-600">Lead {dup.leadNumber}: {dup.leadName}</div>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          {dup.stage && (
+                            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                              Stage: {dup.stage}
+                            </span>
+                          )}
+                          {dup.category && (
+                            <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
+                              {dup.category}
+                            </span>
+                          )}
+                        </div>
                         <div className="text-xs text-gray-500 mt-1">
                           Matches: {dup.matchingFields.join(', ')}
                         </div>
@@ -10749,12 +10792,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
 
       {/* Duplicate Contacts Modal */}
       {isDuplicateModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-0 md:p-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-0">
           <div
             className="fixed inset-0 bg-black/50"
             onClick={() => setIsDuplicateModalOpen(false)}
           />
-          <div className="bg-white rounded-none md:rounded-2xl shadow-2xl p-4 md:p-8 max-w-4xl w-full h-full md:h-auto md:mx-4 z-10 md:max-h-[90vh] overflow-y-auto">
+          <div className="bg-white rounded-none shadow-2xl p-4 md:p-8 w-full h-full z-10 overflow-y-auto">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl md:text-2xl font-bold text-gray-900">Duplicate Contacts</h3>
               <button 
@@ -10770,97 +10813,161 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 The following contacts have matching data (email, name, phone, or mobile) and are associated with other leads:
               </p>
               
-              <div className="space-y-3">
-                {duplicateContacts.map((dup, idx) => (
-                  <div
-                    key={`${dup.contactId}-${dup.leadId}-${idx}`}
-                    className="border border-gray-200 rounded-lg p-3 md:p-4 hover:bg-gray-50 transition-colors"
-                  >
-                    <div className="flex items-start justify-between flex-col md:flex-row gap-3">
-                      <div className="flex-1 w-full">
-                        <div className="flex items-center gap-3 mb-2">
-                          <h4 className="text-base md:text-lg font-semibold text-gray-900">{dup.contactName}</h4>
-                        </div>
-                        
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs md:text-sm text-gray-600 mb-3">
-                          <div>
-                            <span className="font-medium">Lead Number:</span>{' '}
-                            <button
-                              onClick={() => {
-                                navigate(`/clients/${dup.leadNumber}`);
-                                setIsDuplicateModalOpen(false);
-                              }}
-                              className="text-blue-600 hover:text-blue-800 underline"
-                            >
-                              {dup.leadNumber}
-                            </button>
-                          </div>
-                          <div>
-                            <span className="font-medium">Lead Name:</span> {dup.leadName}
-                          </div>
-                          {dup.contactEmail && (
-                            <div>
-                              <span className="font-medium">Email:</span> {dup.contactEmail}
-                            </div>
-                          )}
-                          {dup.contactPhone && (
-                            <div>
-                              <span className="font-medium">Phone:</span> {dup.contactPhone}
-                            </div>
-                          )}
-                          {dup.contactMobile && (
-                            <div>
-                              <span className="font-medium">Mobile:</span> {dup.contactMobile}
-                            </div>
-                          )}
-                        </div>
-                        
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-medium text-gray-500">Matching Fields:</span>
-                          <div className="flex flex-wrap gap-1">
-                            {dup.matchingFields.map((field, fieldIdx) => (
-                              <span
-                                key={fieldIdx}
-                                className="badge badge-sm badge-info"
-                              >
-                                {field}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
+              {/* Mobile: horizontal scroll, Desktop: 3-column grid */}
+              <div className="overflow-x-auto md:overflow-x-visible -mx-2 sm:-mx-4 md:-mx-0 px-2 sm:px-4 md:px-0">
+                <div className="flex md:grid md:grid-cols-3 gap-3 sm:gap-4 min-w-max md:min-w-0 pb-4">
+                  {duplicateContacts.map((dup, idx) => {
+                    // Helper to get stage badge
+                    const getStageBadgeForDuplicate = (stage: string | number | null) => {
+                      if (!stage && stage !== 0) {
+                        return <span className="badge badge-outline">No Stage</span>;
+                      }
+                      const stageStr = String(stage);
+                      const stageColour = getStageColour(stageStr);
+                      const badgeTextColour = getContrastingTextColor(stageColour);
+                      const backgroundColor = stageColour || '#3f28cd';
+                      const textColor = stageColour ? badgeTextColour : '#ffffff';
                       
-                      <div className="flex flex-col gap-2 w-full md:w-auto md:ml-4">
-                        <button
-                          onClick={() => {
+                      return (
+                        <span
+                          className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+                          style={{
+                            backgroundColor,
+                            borderColor: backgroundColor,
+                            color: textColor,
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            display: 'inline-block',
+                          }}
+                          title={stageStr}
+                        >
+                          {stageStr}
+                        </span>
+                      );
+                    };
+                    
+                    return (
+                      <div key={`${dup.contactId}-${dup.leadId}-${idx}`} className="flex-shrink-0 w-80 md:w-auto md:flex-shrink h-[380px]">
+                        <div 
+                          className="card shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group h-full flex flex-col bg-base-100"
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
                             navigate(`/clients/${dup.leadNumber}`);
                             setIsDuplicateModalOpen(false);
                           }}
-                          className="btn btn-sm btn-primary w-full"
                         >
-                          View Lead
-                        </button>
-                        <button
-                          onClick={() => handleCopyDuplicateContact(dup)}
-                          disabled={copyingContactId === dup.contactId}
-                          className="btn btn-sm btn-outline btn-success w-full"
-                        >
-                          {copyingContactId === dup.contactId ? (
-                            <>
-                              <span className="loading loading-spinner loading-xs"></span>
-                              Copying...
-                            </>
-                          ) : (
-                            <>
-                              <Square2StackIcon className="w-4 h-4" />
-                              Copy to Current Lead
-                            </>
-                          )}
-                        </button>
+                          <div className="card-body p-4 flex flex-col flex-1">
+                            <div className="flex justify-between items-start mb-2">
+                              <div className="flex items-center gap-2 min-w-0 flex-1">
+                                <h2 className="card-title text-lg font-bold group-hover:text-primary transition-colors truncate">
+                                  {dup.leadName}
+                                </h2>
+                              </div>
+                              <div className="flex-shrink-0">
+                                {getStageBadgeForDuplicate(dup.stage)}
+                              </div>
+                            </div>
+                            
+                            <p className="text-sm text-base-content/60 font-mono mb-1 truncate">#{dup.leadNumber}</p>
+                            
+                            <div className="text-xs text-base-content/70 mb-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-medium">Contact:</span>
+                                <span className="truncate">{dup.contactName}</span>
+                                {dup.category && (
+                                  <>
+                                    <span className="text-base-content/40">•</span>
+                                    <span className="truncate text-xs px-2 py-0.5 bg-base-200 rounded">{dup.category}</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="divider my-1"></div>
+
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm mt-2">
+                              {dup.contactEmail && (
+                                <div className="flex items-center gap-2 min-w-0" title="Email">
+                                  <EnvelopeIcon className="h-4 w-4 text-base-content/50 flex-shrink-0" />
+                                  <span className="truncate text-xs">{dup.contactEmail}</span>
+                                </div>
+                              )}
+                              {dup.contactPhone && (
+                                <div className="flex items-center gap-2 min-w-0" title="Phone">
+                                  <PhoneIcon className="h-4 w-4 text-base-content/50 flex-shrink-0" />
+                                  <span className="truncate text-xs">{dup.contactPhone}</span>
+                                </div>
+                              )}
+                              {dup.contactMobile && (
+                                <div className="flex items-center gap-2 min-w-0" title="Mobile">
+                                  <PhoneIcon className="h-4 w-4 text-base-content/50 flex-shrink-0" />
+                                  <span className="truncate text-xs">{dup.contactMobile}</span>
+                                </div>
+                              )}
+                              {dup.contactCountry && (
+                                <div className="flex items-center gap-2 min-w-0" title="Country">
+                                  <MapPinIcon className="h-4 w-4 text-base-content/50 flex-shrink-0" />
+                                  <span className="truncate text-xs">{dup.contactCountry}</span>
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="mt-3 pt-3 border-t border-base-200/50 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap mb-2">
+                                <span className="text-xs font-medium text-base-content/70">Matching:</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {dup.matchingFields.map((field, fieldIdx) => (
+                                    <span
+                                      key={fieldIdx}
+                                      className="badge badge-xs badge-info"
+                                    >
+                                      {field}
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 pt-3 border-t border-base-200/50 flex justify-between items-center flex-shrink-0">
+                              <button
+                                className="btn btn-xs btn-outline btn-success"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleCopyDuplicateContact(dup);
+                                }}
+                                disabled={copyingContactId === dup.contactId}
+                              >
+                                {copyingContactId === dup.contactId ? (
+                                  <>
+                                    <span className="loading loading-spinner loading-xs"></span>
+                                    Copying...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Square2StackIcon className="w-3 h-3" />
+                                    Copy
+                                  </>
+                                )}
+                              </button>
+                              <button
+                                className="btn btn-ghost btn-xs btn-circle"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  navigate(`/clients/${dup.leadNumber}`);
+                                  setIsDuplicateModalOpen(false);
+                                }}
+                                title="View Lead"
+                              >
+                                <EyeIcon className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  </div>
-                ))}
+                    );
+                  })}
+                </div>
               </div>
             </div>
             

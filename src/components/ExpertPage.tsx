@@ -76,6 +76,38 @@ const ExpertPage: React.FC = () => {
   const [highlightedLeads, setHighlightedLeads] = useState<LeadForExpert[]>([]);
   const [highlightPanelOpen, setHighlightPanelOpen] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [topExpertName, setTopExpertName] = useState<string>('N/A');
+
+  // Fetch categories on component mount
+  useEffect(() => {
+    const fetchCategories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_category')
+          .select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          `)
+          .order('name', { ascending: true });
+        
+        if (error) {
+          console.error('Error fetching categories:', error);
+        } else {
+          setAllCategories(data || []);
+        }
+      } catch (error) {
+        console.error('Error fetching categories:', error);
+      }
+    };
+    
+    fetchCategories();
+  }, []);
 
   useEffect(() => {
     const fetchLeads = async () => {
@@ -150,6 +182,8 @@ const ExpertPage: React.FC = () => {
             created_at,
             expert,
             topic,
+            category_id,
+            category,
             handler_notes,
             meetings (
               meeting_date
@@ -161,17 +195,27 @@ const ExpertPage: React.FC = () => {
             number_of_applicants_meeting,
             expert_page_comments,
             expert_page_label,
-            expert_page_highlighted_by
+            expert_page_highlighted_by,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name
+              )
+            )
           `)
           .or('eligibility_status.is.null,eligibility_status.eq.""')
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
           .lt('stage', 60) // Exclude leads that have already passed stage 60 (Client signed agreement)
           .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
 
-        // Filter new leads by expert field if we have user's full name
-        if (currentUserFullName) {
-          newLeadsQuery = newLeadsQuery.eq('expert', currentUserFullName);
-          console.log('Filtering new leads by expert:', currentUserFullName);
+        // Filter new leads by expert field if we have user's employee ID
+        // Note: For new leads, the 'expert' field stores an employee ID (number), not a display name
+        if (currentUserEmployeeId) {
+          newLeadsQuery = newLeadsQuery.eq('expert', currentUserEmployeeId);
+          console.log('Filtering new leads by expert (employee ID):', currentUserEmployeeId);
         }
 
         const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
@@ -190,6 +234,8 @@ const ExpertPage: React.FC = () => {
             cdate,
             expert_id,
             topic,
+            category_id,
+            category,
             handler_notes,
             expert_notes,
             stage,
@@ -200,7 +246,16 @@ const ExpertPage: React.FC = () => {
             expert_examination,
             expert_page_comments,
             expert_page_label,
-            expert_page_highlighted_by
+            expert_page_highlighted_by,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name
+              )
+            )
           `)
           .eq('expert_examination', 0) // Only fetch leads where expert_examination is 0
           .gte('meeting_date', '2025-01-01') // Only fetch leads with meeting dates from 2025 onwards
@@ -243,15 +298,80 @@ const ExpertPage: React.FC = () => {
           }
         }
 
+        // Helper function to get category name from category_id
+        const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
+          if (!categoryId || categoryId === '---') {
+            // If no category_id but we have a fallback category, try to find it in the loaded categories
+            if (fallbackCategory && fallbackCategory.trim() !== '') {
+              const foundCategory = allCategories.find((cat: any) => 
+                cat.name.toLowerCase().trim() === fallbackCategory.toLowerCase().trim()
+              );
+              
+              if (foundCategory) {
+                // Return category name with main category in parentheses
+                if (foundCategory.misc_maincategory?.name) {
+                  return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
+                } else {
+                  return foundCategory.name;
+                }
+              } else {
+                return fallbackCategory;
+              }
+            }
+            return 'N/A';
+          }
+          
+          // If allCategories is not loaded yet, return the original value
+          if (!allCategories || allCategories.length === 0) {
+            return String(categoryId);
+          }
+          
+          // First try to find by ID
+          const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+          if (categoryById) {
+            // Return category name with main category in parentheses
+            if (categoryById.misc_maincategory?.name) {
+              return `${categoryById.name} (${categoryById.misc_maincategory.name})`;
+            } else {
+              return categoryById.name;
+            }
+          }
+          
+          return String(categoryId);
+        };
+
         // Process new leads
-        const processedNewLeads = (newLeadsData || []).map(lead => ({
-          ...lead,
-          meetings: lead.meetings || [],
-          expert_comments: lead.expert_page_comments || [],
-          label: lead.expert_page_label || null,
-          highlighted_by: lead.expert_page_highlighted_by || [],
-          lead_type: 'new' as const
-        })).filter(lead => {
+        const processedNewLeads = (newLeadsData || []).map(lead => {
+          // Get category name from category_id or joined data
+          let categoryName = 'N/A';
+          if (lead.misc_category) {
+            // Use joined category data if available
+            const cat = lead.misc_category as any;
+            if (cat.misc_maincategory?.name) {
+              categoryName = `${cat.name} (${cat.misc_maincategory.name})`;
+            } else {
+              categoryName = cat.name || 'N/A';
+            }
+          } else if (lead.category_id) {
+            // Fallback to getCategoryName if no joined data
+            categoryName = getCategoryName(lead.category_id, lead.category);
+          } else if (lead.category) {
+            categoryName = getCategoryName(null, lead.category);
+          } else if (lead.topic) {
+            categoryName = lead.topic;
+          }
+          
+          return {
+            ...lead,
+            meetings: lead.meetings || [],
+            expert_comments: lead.expert_page_comments || [],
+            label: lead.expert_page_label || null,
+            highlighted_by: lead.expert_page_highlighted_by || [],
+            lead_type: 'new' as const,
+            category: categoryName,
+            topic: lead.topic || categoryName // Keep topic for backward compatibility
+          };
+        }).filter(lead => {
           // Filter new leads to only include those with meeting dates from 2025 onwards
           if (!lead.meetings || lead.meetings.length === 0) return false;
           const hasMeetingIn2025OrLater = lead.meetings.some(meeting => {
@@ -272,13 +392,32 @@ const ExpertPage: React.FC = () => {
             legacyMeetings.push({ meeting_date: combinedDateTime });
           }
 
+          // Get category name for legacy leads (they use category_id)
+          let categoryName = 'N/A';
+          if (lead.misc_category) {
+            // Use joined category data if available
+            const cat = lead.misc_category as any;
+            if (cat.misc_maincategory?.name) {
+              categoryName = `${cat.name} (${cat.misc_maincategory.name})`;
+            } else {
+              categoryName = cat.name || 'N/A';
+            }
+          } else if (lead.category_id) {
+            categoryName = getCategoryName(lead.category_id, lead.category);
+          } else if (lead.category) {
+            categoryName = getCategoryName(null, lead.category);
+          } else if (lead.topic) {
+            categoryName = lead.topic;
+          }
+
           return {
             id: `legacy_${lead.id}`,
             lead_number: lead.id?.toString() || '',
             name: lead.name || '',
             created_at: lead.cdate || new Date().toISOString(),
             expert: lead.expert_id ? employeeNameMap[lead.expert_id] || `Employee ${lead.expert_id}` : null,
-            topic: lead.topic,
+            topic: lead.topic || categoryName, // Keep topic for backward compatibility
+            category: categoryName, // Add category field
             handler_notes: lead.handler_notes || [],
             meetings: legacyMeetings, // Use the constructed meetings array
             onedrive_folder_link: null,
@@ -315,8 +454,11 @@ const ExpertPage: React.FC = () => {
       setIsLoading(false);
     };
 
-    fetchLeads();
-  }, []);
+    // Only fetch leads if categories are loaded (or if we don't need them)
+    if (allCategories.length > 0 || true) { // Always fetch, but categories help with display
+      fetchLeads();
+    }
+  }, [allCategories]);
 
   const filteredLeads = useMemo(() => {
     return leads.filter(lead => {
@@ -631,18 +773,40 @@ const ExpertPage: React.FC = () => {
     const archivalChecks = leads.filter(lead => new Date(lead.created_at) >= thirtyDaysAgo).length;
 
     // Top Worker (expert with most leads in last 30 days)
-    const expertCounts: Record<string, number> = {};
+    // For new leads, expert is an employee ID; for legacy leads, expert is already a name
+    const expertCounts: Record<string | number, number> = {};
+    
     leads.filter(lead => new Date(lead.created_at) >= thirtyDaysAgo).forEach(lead => {
-      const expert = lead.expert || 'Unknown';
-      expertCounts[expert] = (expertCounts[expert] || 0) + 1;
+      // For new leads, expert is an employee ID (number)
+      // For legacy leads, expert is already a name (string)
+      if (lead.lead_type === 'new') {
+        // New lead: expert can be a number (employee ID) or string representation
+        const expertId = lead.expert;
+        // Convert to string for consistent key handling (Object.entries returns string keys)
+        const expertKey = String(expertId);
+        expertCounts[expertKey] = (expertCounts[expertKey] || 0) + 1;
+      } else {
+        // Legacy lead: expert is already a name
+        const expert = lead.expert || 'Unknown';
+        expertCounts[expert] = (expertCounts[expert] || 0) + 1;
+      }
     });
-    let topWorker = 'N/A';
+    
     let topWorkerCount = 0;
+    let topWorkerId: string | number | null = null;
+    
     Object.entries(expertCounts).forEach(([expert, count]) => {
       if (count > topWorkerCount) {
-        topWorker = expert;
         topWorkerCount = count;
+        topWorkerId = expert; // This will be a string from Object.entries
       }
+    });
+    
+    console.log('Top expert calculation:', {
+      topWorkerId,
+      topWorkerCount,
+      topWorkerIdType: typeof topWorkerId,
+      isNumeric: topWorkerId !== null && !isNaN(Number(topWorkerId))
     });
 
     // Total leads
@@ -650,11 +814,58 @@ const ExpertPage: React.FC = () => {
 
     return {
       archivalChecks,
-      topWorker,
       topWorkerCount,
-      totalLeads
+      totalLeads,
+      topWorkerId // Store ID for fetching name
     };
   }, [leads]);
+
+  // Fetch top expert name when topWorkerId changes
+  useEffect(() => {
+    const fetchTopExpertName = async () => {
+      if (summaryStats.topWorkerId === null) {
+        setTopExpertName('N/A');
+        return;
+      }
+      
+      // Object.entries returns keys as strings, so we need to check if it's a numeric string
+      // If it's a number or numeric string, it's an employee ID - fetch the name
+      const employeeId = typeof summaryStats.topWorkerId === 'number' 
+        ? summaryStats.topWorkerId 
+        : (typeof summaryStats.topWorkerId === 'string' && !isNaN(Number(summaryStats.topWorkerId))
+          ? Number(summaryStats.topWorkerId)
+          : null);
+      
+      if (employeeId !== null) {
+        // It's an employee ID (from new leads) - fetch the name
+        try {
+          console.log('Fetching employee name for ID:', employeeId);
+          const { data: employeeData, error: employeeError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .eq('id', employeeId)
+            .single();
+          
+          console.log('Employee data:', employeeData, 'Error:', employeeError);
+          
+          if (!employeeError && employeeData?.display_name) {
+            setTopExpertName(employeeData.display_name);
+          } else {
+            console.error('Error fetching employee name:', employeeError);
+            setTopExpertName(`Employee ${employeeId}`);
+          }
+        } catch (error) {
+          console.error('Error fetching top expert name:', error);
+          setTopExpertName(`Employee ${employeeId}`);
+        }
+      } else {
+        // It's already a name (legacy lead)
+        setTopExpertName(String(summaryStats.topWorkerId));
+      }
+    };
+    
+    fetchTopExpertName();
+  }, [summaryStats.topWorkerId]);
 
   return (
     <div className="p-4 md:p-6 lg:p-8">
@@ -750,7 +961,7 @@ const ExpertPage: React.FC = () => {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-white/90 text-sm font-medium">Top Expert</p>
-              <p className="text-xl font-bold truncate">{summaryStats.topWorker}</p>
+              <p className="text-xl font-bold truncate">{topExpertName}</p>
               <p className="text-white/90 text-xs mt-1">{summaryStats.topWorkerCount} lead{summaryStats.topWorkerCount === 1 ? '' : 's'} (last 30 days)</p>
             </div>
             <div className="bg-white/20 rounded-full p-3">
@@ -841,7 +1052,7 @@ const ExpertPage: React.FC = () => {
                 {/* Category */}
                 <div className="flex justify-between items-center py-1">
                     <span className="text-sm font-semibold text-gray-500">Category</span>
-                    <span className="text-base font-bold text-gray-800 ml-2">{lead.topic || 'N/A'}</span>
+                    <span className="text-base font-bold text-gray-800 ml-2">{(lead as any).category || lead.topic || 'N/A'}</span>
                 </div>
                 {/* Date Created */}
                 <div className="flex justify-between items-center py-1">
@@ -992,7 +1203,7 @@ const ExpertPage: React.FC = () => {
                   <td>{lead.lead_number}</td>
                   <td className="font-bold">{lead.name}</td>
                   <td>{lead.stage ? getStageName(lead.stage) : 'N/A'}</td>
-                  <td>{lead.topic || 'N/A'}</td>
+                  <td>{(lead as any).category || lead.topic || 'N/A'}</td>
                   <td>{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</td>
                   <td>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</td>
                   <td>{lead.number_of_applicants_meeting ?? 'N/A'}</td>
@@ -1082,7 +1293,7 @@ const ExpertPage: React.FC = () => {
                   <div className="flex items-center gap-3">
                     <ChatBubbleLeftRightIcon className="w-6 h-6 text-base-content/70" />
                     <span className="font-medium">Category:</span>
-                    <span>{selectedLead.topic || <span className='text-base-content/40'>N/A</span>}</span>
+                    <span>{(selectedLead as any).category || selectedLead.topic || <span className='text-base-content/40'>N/A</span>}</span>
                   </div>
                   {/* Documents Button */}
                   <div>
