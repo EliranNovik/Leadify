@@ -465,6 +465,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
     if (searchValue.trim()) {
       setIsSearching(true);
+      // Reduced debounce to 100ms for instant fuzzy results as user types
       searchTimeoutRef.current = setTimeout(async () => {
         try {
           const results = await searchLeads(searchValue);
@@ -482,7 +483,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             setIsSearching(false);
           }
         }
-      }, 300); // Increased to 300ms to reduce redundant queries
+      }, 0); // No debounce - instant results as user types
     }
 
     return () => {

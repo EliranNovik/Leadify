@@ -682,7 +682,7 @@ const AdminPage: React.FC = () => {
       'l': 'Lawyer',
       'a': 'Administrator',
       's': 'Scheduler',
-      'c': 'Coordinator',
+      'c': 'Closer',
       'p': 'Partner',
       'adv': 'Advocate',
       'advocate': 'Advocate',
@@ -691,7 +691,6 @@ const AdminPage: React.FC = () => {
       'manager': 'Manager',
       'lawyer': 'Lawyer',
       'admin': 'Administrator',
-      'coordinator': 'Coordinator',
       'scheduler': 'Scheduler'
     };
     return roleMap[role.toLowerCase()] || role;
